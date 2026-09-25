@@ -88,4 +88,39 @@ public class AppSettingsServiceTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => service.Get<string>(SettingsKeys.ApiKey, ""));
         Assert.Throws<InvalidOperationException>(() => service.Set(SettingsKeys.ApiKey, "x"));
     }
+
+    [Fact]
+    public void Set_WhenCalledConcurrently_KeepsCacheConsistent()
+    {
+        using var service = Create();
+        var raised = 0;
+        service.SettingsChanged += () => Interlocked.Increment(ref raised);
+
+        const int taskCount = 6;
+        const int iterationsPerTask = 20;
+
+        // Nhiều task ghi cùng một cặp key để race đọc/ghi trên đúng key xảy ra
+        var tasks = Enumerable.Range(0, taskCount).Select(i => Task.Run(() =>
+        {
+            for (var n = 0; n < iterationsPerTask; n++)
+            {
+                service.Set(SettingsKeys.Theme, $"v{i}-{n}");
+                service.Set(SettingsKeys.Port, i * 1000 + n);
+                _ = service.Theme;
+                _ = service.Port;
+            }
+        })).ToArray();
+
+        Assert.Null(Record.Exception(() => Task.WaitAll(tasks)));
+
+        // Mỗi Set thành công phát event đúng một lần
+        Assert.Equal(taskCount * iterationsPerTask * 2, raised);
+
+        // Đọc được sau race và instance nạp lại từ DB cho cùng giá trị → cache không lệch DB
+        using var reopened = Create();
+        Assert.Matches(@"^v\d+-\d+$", service.Theme);
+        Assert.InRange(service.Port, 0, (taskCount - 1) * 1000 + iterationsPerTask);
+        Assert.Equal(service.Theme, reopened.Theme);
+        Assert.Equal(service.Port, reopened.Port);
+    }
 }
