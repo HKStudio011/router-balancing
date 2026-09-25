@@ -1,0 +1,58 @@
+@theme inline {
+    --color-background: var(--background);
+    --color-surface: var(--surface);
+    --color-text: var(--text);
+    --color-border: var(--border);
+}
+
+@theme {
+    --color-primary: #007bff;
+    --color-secondary: #6c757d;
+    --color-success: #28a745;
+    --color-danger: #dc3545;
+    --color-warning: #ffda6a;
+    --color-info: #17a2b8;
+    --color-light: #f8f9fa;
+    --color-dark: #343a40;
+}
+
+/* LIGHT THEME (default) — surface phải SÁNG hơn background (sửa mapping cũ bị đảo) */
+:root, [data-theme="light"] {
+    --background: #f5f6f8;
+    --surface: #ffffff;
+    --text: #1a1d21;
+    --border: #d9dde3;
+}
+
+/* DARK THEME */
+[data-theme="dark"] {
+    --background: #141414;
+    --surface: #1f2024;
+    --text: #e8eaed;
+    --border: #33363c;
+}
+
+#blazor-error-ui {
+    background: var(--surface);
+    color: var(--text);
+    bottom: 0;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
+    display: none;
+    left: 0;
+    padding: 0.6rem 1.25rem;
+    position: fixed;
+    right: 0;
+    z-index: 1000;
+}
+
+#blazor-error-ui .reload {
+    color: var(--color-primary);
+    margin-left: 0.5rem;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 0.75rem;
+    top: 0.5rem;
+}
