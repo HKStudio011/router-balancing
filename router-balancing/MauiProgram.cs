@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 #endif
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Localization;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
@@ -47,6 +48,7 @@ namespace router_balancing
             builder.Services.AddSingleton<ISecretProtector, DpapiSecretProtector>();
             builder.Services.AddSingleton<IAppSettingsService, AppSettingsService>();
             builder.Services.AddSingleton<ILogService, LogService>();
+            builder.Services.AddSingleton<LocalizationService>();
             builder.Services.AddSingleton<IProxyHost, ProxyHost>();
 
 #if DEBUG
