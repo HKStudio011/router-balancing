@@ -23,6 +23,9 @@ public class DpapiSecretProtectorTests
     [Fact]
     public void Unprotect_WhenEntropyDiffers_ThrowsCryptographicException()
     {
+        // DPAPI chỉ chạy trên Windows — guard để CA1416 nhận diện, test bỏ qua ở CI phi Windows
+        if (!OperatingSystem.IsWindows()) return;
+
         // Mã hóa với entropy khác (mô phỏng file DB bị đổi purpose) phải fail, không trả bừa
         var wrongEntropy = Encoding.UTF8.GetBytes("other-purpose");
         var foreign = Convert.ToBase64String(ProtectedData.Protect(

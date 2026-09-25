@@ -14,7 +14,10 @@ public sealed class DpapiSecretProtector : ISecretProtector
 
     public string Protect(string plaintext)
     {
-        EnsureWindows();
+        // Inline guard: CA1416 chỉ nhận diện guard cùng method với lời gọi ProtectedData
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException("DPAPI chỉ hỗ trợ Windows.");
+
         var bytes = ProtectedData.Protect(
             Encoding.UTF8.GetBytes(plaintext), Purpose, DataProtectionScope.CurrentUser);
         return Convert.ToBase64String(bytes);
@@ -22,15 +25,12 @@ public sealed class DpapiSecretProtector : ISecretProtector
 
     public string Unprotect(string protectedValue)
     {
-        EnsureWindows();
+        // Inline guard: CA1416 chỉ nhận diện guard cùng method với lời gọi ProtectedData
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException("DPAPI chỉ hỗ trợ Windows.");
+
         var bytes = ProtectedData.Unprotect(
             Convert.FromBase64String(protectedValue), Purpose, DataProtectionScope.CurrentUser);
         return Encoding.UTF8.GetString(bytes);
-    }
-
-    private static void EnsureWindows()
-    {
-        if (!OperatingSystem.IsWindows())
-            throw new PlatformNotSupportedException("DPAPI chỉ hỗ trợ Windows.");
     }
 }
