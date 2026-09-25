@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="router balancing test/router balancing test.csproj" />
+  <Project Path="router-balancing/router-balancing.csproj">
+    <Deploy Solution="Debug|*" />
+  </Project>
+</Solution>
