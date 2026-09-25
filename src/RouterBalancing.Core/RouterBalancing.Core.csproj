@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RouterBalancing.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Kestrel/middleware trong Server/ — dùng chung shared framework, không cần NuGet -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Test project dùng lại helper nội bộ (TestDb, FakeSettings…) -->
+    <InternalsVisibleTo Include="router balancing test" />
+  </ItemGroup>
+
+</Project>

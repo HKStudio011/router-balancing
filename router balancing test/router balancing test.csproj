@@ -19,4 +19,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\src\RouterBalancing.Core\RouterBalancing.Core.csproj" />
+  </ItemGroup>
+
 </Project>
