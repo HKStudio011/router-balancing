@@ -534,7 +534,8 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
 
         modelBuilder.Entity<ComboItem>(e =>
         {
-            e.HasOne<Combo>().WithMany().HasForeignKey(x => x.ComboId)
+            // WithMany() không map nav Combo.Items → EF sinh FK shadow ComboId1 (đã fix)
+            e.HasOne<Combo>().WithMany(c => c.Items).HasForeignKey(x => x.ComboId)
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasOne<Model>().WithMany().HasForeignKey(x => x.TargetModelId)
                 .OnDelete(DeleteBehavior.Cascade);
