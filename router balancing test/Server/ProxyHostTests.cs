@@ -148,4 +148,56 @@ public class ProxyHostTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         await host.DisposeAsync();
     }
+
+    [Fact]
+    public async Task StartAsync_WhenStarted_RaisesStateChanged()
+    {
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory());
+        var raised = 0;
+        host.StateChanged += () => raised++;
+
+        await host.StartAsync();
+        await host.StartAsync(); // no-op — không được phát event lần hai
+
+        Assert.Equal(1, raised);
+        await host.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task StartAsync_WhenCalledTwice_IsIdempotent()
+    {
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory());
+        var raised = 0;
+        host.StateChanged += () => raised++;
+
+        await host.StartAsync();
+        var port = host.Port;
+        await host.StartAsync();
+
+        Assert.True(host.IsRunning);
+        Assert.Equal(port, host.Port);
+        Assert.Equal(1, raised);
+        _client.BaseAddress = new Uri($"http://127.0.0.1:{host.Port}");
+        var response = await _client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await host.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenCalledTwice_IsIdempotent()
+    {
+        var host = await StartHostAsync();
+        var raised = 0;
+        host.StateChanged += () => raised++;
+
+        await host.StopAsync();
+        Assert.Equal(1, raised);
+
+        await host.StopAsync();
+
+        Assert.False(host.IsRunning);
+        Assert.Null(host.Port);
+        Assert.Equal(1, raised);
+        await host.DisposeAsync();
+    }
 }

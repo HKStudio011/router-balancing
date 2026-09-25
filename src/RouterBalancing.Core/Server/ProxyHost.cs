@@ -1,4 +1,5 @@
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -61,7 +62,19 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             app.UseMiddleware<ApiKeyMiddleware>();
             MapEndpoints(app);
 
-            await app.StartAsync(cancellationToken);
+            // StartAsync có thể thất bại thật (port bị đánh cắp giữa FindAvailable và
+            // Listen, hoặc ct hủy) — nếu không dispose thì service provider/socket rò rỉ
+            // và lần thử sau kế thừa state hỏng. State chỉ cập nhật khi start thành công.
+            try
+            {
+                await app.StartAsync(cancellationToken);
+            }
+            catch
+            {
+                await app.DisposeAsync();
+                throw;
+            }
+
             _app = app;
             Port = port;
             _log.Info($"Proxy server đang chạy tại http://127.0.0.1:{port}/");
@@ -80,12 +93,30 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         {
             if (_app is null) return;
             var app = _app;
-            _app = null;
-            await app.StopAsync(cancellationToken);
+
+            // Bắt lỗi StopAsync (vd. ct hủy) để DisposeAsync vẫn chạy: nếu bỏ qua dispose
+            // thì socket giữ nguyên port, Port/IsRunning sai lệch với XML doc của IProxyHost
+            // và lần StartAsync sau không bind được. State chỉ xóa sau khi dispose xong.
+            Exception? stopFailure = null;
+            try
+            {
+                await app.StopAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                stopFailure = ex;
+            }
+
             await app.DisposeAsync();
+            _app = null;
             Port = null;
             _log.Info("Proxy server đã dừng.");
             StateChanged?.Invoke();
+
+            if (stopFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(stopFailure).Throw();
+            }
         }
         finally
         {
