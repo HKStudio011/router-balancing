@@ -110,6 +110,8 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
         SettingsChanged?.Invoke();
     }
 
+    public void SetApiKeyEnabled(bool enabled) => Set(SettingsKeys.ApiKeyEnabled, enabled);
+
     private static void GuardApiKey(string key)
     {
         if (key == SettingsKeys.ApiKey)

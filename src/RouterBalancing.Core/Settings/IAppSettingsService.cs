@@ -42,4 +42,7 @@ public interface IAppSettingsService
 
     /// <summary>Mã hóa DPAPI rồi lưu API key.</summary>
     void SetApiKey(string plain);
+
+    /// <summary>Bật/tắt bắt buộc API key — có hiệu lực ngay cho request tiếp theo.</summary>
+    void SetApiKeyEnabled(bool enabled);
 }
