@@ -62,6 +62,11 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
         modelBuilder.Entity<LogEntry>(e =>
         {
             e.Property(x => x.Message).IsRequired();
+            // SQLite không dịch được WHERE/ORDER BY trên DateTimeOffset
+            // ("SQLite does not support expressions of type 'DateTimeOffset'") —
+            // lưu UTC ticks (long → INTEGER) để From/To/OrderBy chạy server-side.
+            e.Property(x => x.Timestamp)
+                .HasConversion(v => v.UtcTicks, v => new DateTimeOffset(v, TimeSpan.Zero));
             e.HasIndex(x => x.Timestamp);
             // Cover query stats: WHERE Category + range time + group theo Provider/Model
             e.HasIndex(x => new { x.Category, x.Timestamp, x.ProviderId, x.ModelId });

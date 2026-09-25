@@ -45,7 +45,7 @@ public sealed class LogService : ILogService, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         using var db = _db.CreateDbContext();
-        return ApplyTimeFilter(ApplyFilter(db.LogEntries.AsNoTracking(), query).AsEnumerable(), query)
+        return ApplyFilter(db.LogEntries.AsNoTracking(), query)
             .OrderByDescending(e => e.Timestamp)
             .ThenByDescending(e => e.Id)
             .Skip((Math.Max(query.Page, 1) - 1) * query.PageSize)
@@ -57,7 +57,7 @@ public sealed class LogService : ILogService, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         using var db = _db.CreateDbContext();
-        return ApplyTimeFilter(ApplyFilter(db.LogEntries.AsNoTracking(), query).AsEnumerable(), query).Count();
+        return ApplyFilter(db.LogEntries.AsNoTracking(), query).Count();
     }
 
     private static IQueryable<LogEntry> ApplyFilter(IQueryable<LogEntry> source, LogQuery query)
@@ -71,14 +71,8 @@ public sealed class LogService : ILogService, IDisposable
             var term = query.Search.Trim();
             source = source.Where(e => e.Message.Contains(term));
         }
-        return source;
-    }
-
-    private static IEnumerable<LogEntry> ApplyTimeFilter(IEnumerable<LogEntry> source, LogQuery query)
-    {
-        // Phải chạy client-side: EF Core SQLite không dịch được predicate/ORDER BY
-        // trên DateTimeOffset ("SQLite does not support expressions of type
-        // 'DateTimeOffset'") — để trong IQueryable sẽ ném lúc enumerate.
+        // Timestamp được converter sang UTC ticks (xem RouterBalancingDbContext)
+        // nên WHERE/ORDER BY chạy trọn vẹn trong SQL.
         if (query.From is { } from)
             source = source.Where(e => e.Timestamp >= from);
         if (query.To is { } to)

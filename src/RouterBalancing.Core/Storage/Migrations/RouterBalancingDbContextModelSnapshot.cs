@@ -126,8 +126,8 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<int>("Severity")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("Timestamp")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 

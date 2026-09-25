@@ -44,7 +44,7 @@ namespace RouterBalancing.Core.Storage.Migrations
                 {
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
-                    Timestamp = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    Timestamp = table.Column<long>(type: "INTEGER", nullable: false),
                     Severity = table.Column<int>(type: "INTEGER", nullable: false),
                     Category = table.Column<int>(type: "INTEGER", nullable: false),
                     Message = table.Column<string>(type: "TEXT", nullable: false),

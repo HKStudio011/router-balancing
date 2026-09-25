@@ -11,7 +11,7 @@ using RouterBalancing.Core.Storage;
 namespace RouterBalancing.Core.Storage.Migrations
 {
     [DbContext(typeof(RouterBalancingDbContext))]
-    [Migration("20260925161332_InitialCreate")]
+    [Migration("20260925172150_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -129,8 +129,8 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<int>("Severity")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("Timestamp")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 

@@ -98,6 +98,27 @@ public class LogServiceTests : IDisposable
     }
 
     [Fact]
+    public void Query_WhenFromToSet_ReturnsOnlyInRange()
+    {
+        using var service = Create();
+        var from = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var to = from.AddHours(2);
+        service.Write(new LogEntry { Message = "before", Timestamp = from.AddHours(-1) });
+        service.Write(new LogEntry { Message = "at from", Timestamp = from });
+        service.Write(new LogEntry { Message = "middle", Timestamp = from.AddHours(1) });
+        service.Write(new LogEntry { Message = "at to", Timestamp = to });
+        service.Write(new LogEntry { Message = "after", Timestamp = to.AddHours(1) });
+
+        var query = new LogQuery(From: from, To: to);
+
+        var result = service.Query(query);
+
+        Assert.Equal(3, result.Count);
+        Assert.Equal(new[] { "at to", "middle", "at from" }, result.Select(e => e.Message));
+        Assert.Equal(3, service.Count(query));
+    }
+
+    [Fact]
     public void Query_EntriesPersistAcrossServiceInstances()
     {
         using (var service = Create())
