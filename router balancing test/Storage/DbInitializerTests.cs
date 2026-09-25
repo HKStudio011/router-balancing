@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Storage;
 
 namespace router_balancing_test.Storage;
@@ -41,5 +42,34 @@ public class DbInitializerTests : IDisposable
             .SqlQueryRaw<string>("SELECT MigrationId FROM __EFMigrationsHistory")
             .ToList();
         Assert.Single(migrations);
+    }
+
+    [Fact]
+    public void Initialize_WhenComboItemsWritten_BothNavigationAndForeignKeyLoad()
+    {
+        var factory = _db.CreateFactory();
+        DbInitializer.Initialize(factory);
+
+        long comboId;
+        using (var db = factory.CreateDbContext())
+        {
+            var combo = new Combo
+            {
+                Name = "combo-roundtrip",
+                Items = [new ComboItem { Position = 0 }],
+            };
+            db.Combos.Add(combo);
+            db.SaveChanges();
+            comboId = combo.Id;
+        }
+
+        using (var db = factory.CreateDbContext())
+        {
+            var reloaded = db.Combos.Include(c => c.Items).Single(c => c.Id == comboId);
+            Assert.Single(reloaded.Items);
+
+            var byForeignKey = db.ComboItems.Single(i => i.ComboId == comboId);
+            Assert.Equal(reloaded.Items[0].Id, byForeignKey.Id);
+        }
     }
 }

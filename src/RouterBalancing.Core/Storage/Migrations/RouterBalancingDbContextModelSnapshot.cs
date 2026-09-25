@@ -66,9 +66,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<long>("ComboId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<long?>("ComboId1")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int>("Position")
                         .HasColumnType("INTEGER");
 
@@ -79,8 +76,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("ComboId1");
 
                     b.HasIndex("TargetComboId");
 
@@ -247,14 +242,10 @@ namespace RouterBalancing.Core.Storage.Migrations
             modelBuilder.Entity("RouterBalancing.Core.Domain.ComboItem", b =>
                 {
                     b.HasOne("RouterBalancing.Core.Domain.Combo", null)
-                        .WithMany()
+                        .WithMany("Items")
                         .HasForeignKey("ComboId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.HasOne("RouterBalancing.Core.Domain.Combo", null)
-                        .WithMany("Items")
-                        .HasForeignKey("ComboId1");
 
                     b.HasOne("RouterBalancing.Core.Domain.Combo", null)
                         .WithMany()

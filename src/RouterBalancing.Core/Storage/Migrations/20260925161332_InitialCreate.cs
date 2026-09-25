@@ -124,8 +124,7 @@ namespace RouterBalancing.Core.Storage.Migrations
                     ComboId = table.Column<long>(type: "INTEGER", nullable: false),
                     Position = table.Column<int>(type: "INTEGER", nullable: false),
                     TargetModelId = table.Column<long>(type: "INTEGER", nullable: true),
-                    TargetComboId = table.Column<long>(type: "INTEGER", nullable: true),
-                    ComboId1 = table.Column<long>(type: "INTEGER", nullable: true)
+                    TargetComboId = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -136,11 +135,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                         principalTable: "Combos",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
-                        name: "FK_ComboItems_Combos_ComboId1",
-                        column: x => x.ComboId1,
-                        principalTable: "Combos",
-                        principalColumn: "Id");
                     table.ForeignKey(
                         name: "FK_ComboItems_Combos_TargetComboId",
                         column: x => x.TargetComboId,
@@ -159,11 +153,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                 name: "IX_ComboItems_ComboId_Position",
                 table: "ComboItems",
                 columns: new[] { "ComboId", "Position" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_ComboItems_ComboId1",
-                table: "ComboItems",
-                column: "ComboId1");
 
             migrationBuilder.CreateIndex(
                 name: "IX_ComboItems_TargetComboId",
