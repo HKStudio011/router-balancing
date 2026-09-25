@@ -2554,7 +2554,7 @@ function setPanel(id: string, expanded: boolean): void {
 }
 
 const rbTheme = { applyTheme };
-const rbPanel = { get, set };
+const rbPanel = { get: getPanel, set: setPanel };
 
 declare global {
     interface Window {
