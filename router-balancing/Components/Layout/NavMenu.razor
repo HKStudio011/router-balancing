@@ -1,27 +1,10 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">router-balancing</a>
-    </div>
-</div>
+﻿@inject LocalizationService L
 
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+<nav class="flex flex-col gap-1 p-3">
+    <div class="px-3 pb-2 text-base font-semibold">@L["app.title"]</div>
 
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="nav flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="counter">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Counter
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="weather">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Weather
-            </NavLink>
-        </div>
-    </nav>
-</div>
+    <NavLink class="rounded px-3 py-2 text-sm no-underline hover:bg-background"
+             href="" Match="NavLinkMatch.All">
+        @L["nav.dashboard"]
+    </NavLink>
+</nav>

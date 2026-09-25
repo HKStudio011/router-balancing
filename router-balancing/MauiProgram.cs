@@ -9,6 +9,7 @@ using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
+using router_balancing.Services;
 
 namespace router_balancing
 {
@@ -49,6 +50,10 @@ namespace router_balancing
             builder.Services.AddSingleton<IAppSettingsService, AppSettingsService>();
             builder.Services.AddSingleton<ILogService, LogService>();
             builder.Services.AddSingleton<LocalizationService>();
+            // Scoped: ThemeService phụ thuộc IJSRuntime — lifetime scoped để Blazor resolve được
+            // (singleton không được inject scoped service).
+            builder.Services.AddScoped<ThemeService>();
+            builder.Services.AddScoped<ToastService>();
             builder.Services.AddSingleton<IProxyHost, ProxyHost>();
 
 #if DEBUG

@@ -1,17 +1,86 @@
 ﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject IProxyHost ProxyHost
+@inject ThemeService Theme
+@inject LocalizationService L
+@inject ToastService Toast
 
-<div class="page">
-    <div class="sidebar">
+<div class="flex h-screen overflow-hidden bg-background text-text">
+    <aside class="w-56 shrink-0 border-r border-border bg-surface">
         <NavMenu />
+    </aside>
+
+    <div class="flex min-w-0 flex-1 flex-col">
+        <header class="flex items-center justify-between border-b border-border bg-surface px-4 py-2">
+            <span class="text-sm font-semibold">@L["app.title"]</span>
+            <span class="@_badgeClass">@_badgeText</span>
+        </header>
+
+        <main class="flex-1 overflow-auto p-4">
+            @Body
+        </main>
     </div>
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
-
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
+    @* Toast stack: fixed góc dưới phải, z-index cao để nổi trên nội dung *@
+    <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+        @foreach (var toast in _toasts)
+        {
+            <div class="@ToastClass(toast.Severity) rounded px-4 py-2 shadow" @key="toast.Id">
+                @toast.Message
+            </div>
+        }
+    </div>
 </div>
+
+@code {
+    private string _badgeText = string.Empty;
+    private string _badgeClass = string.Empty;
+    private readonly List<ToastItem> _toasts = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        ProxyHost.StateChanged += OnProxyStateChanged;
+        Toast.ToastAdded += OnToastAdded;
+        UpdateBadge();
+        await Theme.ApplyAsync();
+    }
+
+    private void OnProxyStateChanged() => _ = InvokeAsync(() =>
+    {
+        UpdateBadge();
+        StateHasChanged();
+    });
+
+    private void OnToastAdded(ToastItem item) => _ = InvokeAsync(async () =>
+    {
+        _toasts.Add(item);
+        StateHasChanged();
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        _toasts.Remove(item);
+        StateHasChanged();
+    });
+
+    private void UpdateBadge()
+    {
+        // Badge dùng màu Tailwind literal — class động không được purge vì nằm sẵn trong string constant
+        _badgeText = ProxyHost.IsRunning
+            ? $"● {L["dashboard.status.running"]} : {ProxyHost.Port}"
+            : $"○ {L["dashboard.status.stopped"]}";
+        _badgeClass = ProxyHost.IsRunning
+            ? "rounded-full bg-green-600 px-3 py-1 text-xs text-white"
+            : "rounded-full bg-neutral-500 px-3 py-1 text-xs text-white";
+    }
+
+    private static string ToastClass(ToastSeverity severity) => severity switch
+    {
+        ToastSeverity.Success => "bg-green-700 text-white",
+        ToastSeverity.Error => "bg-red-700 text-white",
+        _ => "bg-neutral-700 text-white",
+    };
+
+    public void Dispose()
+    {
+        ProxyHost.StateChanged -= OnProxyStateChanged;
+        Toast.ToastAdded -= OnToastAdded;
+    }
+}
