@@ -8,7 +8,7 @@ namespace RouterBalancing.Core.Logging;
 public sealed class LogService : ILogService, IDisposable
 {
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public event Action<LogEntry>? LogAdded;
 
@@ -18,10 +18,45 @@ public sealed class LogService : ILogService, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (entry.Timestamp == default) entry.Timestamp = DateTimeOffset.UtcNow;
+        Persist(entry);
+        NotifySubscribers(entry);
+    }
+
+    private void Persist(LogEntry entry)
+    {
         using var db = _db.CreateDbContext();
         db.LogEntries.Add(entry);
         db.SaveChanges();
-        LogAdded?.Invoke(entry);
+    }
+
+    private void NotifySubscribers(LogEntry entry)
+    {
+        var handlers = LogAdded;
+        if (handlers is null) return;
+        // Cách ly từng handler: multicast delegate dừng ở handler ném lỗi đầu tiên,
+        // và subscriber (VD Log panel gọi sai thread) có thể ném exception làm hỏng
+        // request đang gọi Write. Lỗi handler được ghi vào store (không nuốt) —
+        // gọi Persist (KHÔNG gọi Write) để tránh đệ quy: Write sẽ phát lại LogAdded.
+        foreach (var handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<LogEntry>)handler)(entry);
+            }
+            catch (Exception ex)
+            {
+                Persist(new LogEntry
+                {
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Severity = LogSeverity.Error,
+                    Category = LogCategory.App,
+                    Message = $"LogAdded subscriber {handler.Method.Name} threw while handling '{entry.Message}'",
+                    // Giữ stack trace để chẩn đoán từ Log panel — không nuốt exception
+                    Details = ex.ToString(),
+                    ErrorCode = ex.GetType().Name,
+                });
+            }
+        }
     }
 
     public void Info(string message, LogCategory category = LogCategory.App) =>

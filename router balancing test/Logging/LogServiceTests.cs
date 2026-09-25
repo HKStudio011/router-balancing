@@ -46,6 +46,38 @@ public class LogServiceTests : IDisposable
     }
 
     [Fact]
+    public void Write_WhenOneSubscriberThrows_OthersStillNotifiedAndErrorLogged()
+    {
+        using var service = Create();
+        var throwingCalls = 0;
+        var recorded = new List<LogEntry>();
+        // Handler ném lỗi đăng ký TRƯỚC: multicast delegate mặc định dừng ở đây,
+        // nên handler ghi nhận phía sau sẽ mất event nếu không được cách ly.
+        service.LogAdded += _ =>
+        {
+            throwingCalls++;
+            throw new InvalidOperationException("UI thread only");
+        };
+        service.LogAdded += recorded.Add;
+
+        service.Info("user action");
+
+        Assert.Equal(1, throwingCalls);
+        var notified = Assert.Single(recorded);
+        Assert.Equal("user action", notified.Message);
+
+        // Lỗi handler phải nằm trong store, và KHÔNG được phát lại LogAdded
+        // (nếu phát lại thì recorded sẽ có 2 phần tử / đệ quy vô hạn).
+        using var verify = Create();
+        var error = Assert.Single(verify.Query(new LogQuery(MinSeverity: LogSeverity.Error)));
+        Assert.Contains("LogAdded", error.Message);
+        Assert.Contains("user action", error.Message);
+        Assert.Contains("UI thread only", error.Details);
+        Assert.Equal(nameof(InvalidOperationException), error.ErrorCode);
+        Assert.Equal(LogCategory.App, error.Category);
+    }
+
+    [Fact]
     public void Query_WhenMinSeverityWarning_ExcludesInfo()
     {
         using var service = Create();
