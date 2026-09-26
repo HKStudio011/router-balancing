@@ -10,6 +10,8 @@ public static class Translations
     public static readonly IReadOnlyDictionary<string, string> English = new Dictionary<string, string>
     {
         ["app.title"] = "router-balancing",
+        ["tray.open"] = "Open router-balancing",
+        ["tray.exit"] = "Exit",
         ["nav.dashboard"] = "Dashboard",
         ["nav.logs"] = "Logs",
         ["nav.settings"] = "Settings",
@@ -31,6 +33,8 @@ public static class Translations
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
     {
         ["app.title"] = "router-balancing",
+        ["tray.open"] = "Mở router-balancing",
+        ["tray.exit"] = "Thoát",
         ["nav.dashboard"] = "Bảng điều khiển",
         ["nav.logs"] = "Nhật ký",
         ["nav.settings"] = "Cài đặt",

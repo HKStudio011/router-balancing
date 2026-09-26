@@ -5,10 +5,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RouterBalancing.Core.Localization;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Platform;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
+#if WINDOWS
+using router_balancing.Platforms.Windows;
+#endif
 using router_balancing.Services;
 
 namespace router_balancing
@@ -54,6 +58,14 @@ namespace router_balancing
             // (singleton không được inject scoped service).
             builder.Services.AddScoped<ThemeService>();
             builder.Services.AddScoped<ToastService>();
+            // Tray + tự khởi động cùng Windows: bản Windows thật, nền tảng khác là no-op
+#if WINDOWS
+            builder.Services.AddSingleton<ITrayService, TrayService>();
+            builder.Services.AddSingleton<IStartupRegistration, StartupRegistration>();
+#else
+            builder.Services.AddSingleton<ITrayService, NullTrayService>();
+            builder.Services.AddSingleton<IStartupRegistration, NullStartupRegistration>();
+#endif
             builder.Services.AddSingleton<IProxyHost, ProxyHost>();
 
 #if DEBUG

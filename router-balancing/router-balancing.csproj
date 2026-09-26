@@ -72,6 +72,11 @@
         <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
     </ItemGroup>
 
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+        <!-- NotifyIcon (khay hệ thống) cần WinForms; chỉ trên TFM windows -->
+        <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+    </ItemGroup>
+
     <ItemGroup>
         <ProjectReference Include="..\src\RouterBalancing.Core\RouterBalancing.Core.csproj" />
     </ItemGroup>
