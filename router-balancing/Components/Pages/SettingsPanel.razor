@@ -255,8 +255,20 @@
             Toast.Show(L["settings.msg.startupFailed"], ToastSeverity.Error);
         }
 
-        L.Reload();
-        await Theme.ApplyAsync();
+        // Persist đã thành công trước đó → lỗi reload/theme không được nuốt
+        // (exception sẽ thoát khỏi dispatch async void của event) nhưng cũng
+        // không được phủ nhận Save — toast "Saved." vẫn phải chạy.
+        try
+        {
+            L.Reload();
+            await Theme.ApplyAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không áp dụng lại ngôn ngữ/theme sau khi lưu.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+
         Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
     }
 
