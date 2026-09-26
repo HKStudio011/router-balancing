@@ -67,6 +67,7 @@ namespace router_balancing
             builder.Services.AddSingleton<IStartupRegistration, NullStartupRegistration>();
 #endif
             builder.Services.AddSingleton<IProxyHost, ProxyHost>();
+            builder.Services.AddSingleton<LogRetentionWorker>();
 
 #if DEBUG
             builder.Services.AddBlazorWebViewDeveloperTools();

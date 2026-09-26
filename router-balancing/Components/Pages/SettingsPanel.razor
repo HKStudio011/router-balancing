@@ -11,6 +11,7 @@
 @inject IProxyHost Proxy
 @inject IStartupRegistration Startup
 @inject ILogService Log
+@inject LogRetentionWorker Retention
 
 <h1 class="mb-4 text-xl font-semibold">@L["panel.settings.title"]</h1>
 
@@ -165,6 +166,12 @@
     }
 
     <button class="btn btn-primary mt-3" @onclick="SaveData">@L["settings.action.save"]</button>
+
+    <div class="mt-3">
+        <button class="btn btn-outline-danger" disabled="@_purging" @onclick="PurgeLogsAsync">
+            @L["settings.purge"]
+        </button>
+    </div>
 </section>
 
 @code {
@@ -193,6 +200,7 @@
 
     private SettingsDraft _draft = new();
     private Dictionary<string, string> _errors = [];
+    private bool _purging;
 
     protected override void OnInitialized()
     {
@@ -328,6 +336,26 @@
     {
         // 256-bit từ CSPRNG; chỉ đi vào field — persists khi bấm Save của nhóm Server
         _draft.ApiKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    }
+
+    private async Task PurgeLogsAsync()
+    {
+        if (_purging) return;
+        _purging = true;
+        try
+        {
+            var removed = await Retention.PurgeAsync();
+            Toast.Show(string.Format(L["settings.purge.done"], removed), ToastSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Dọn log cũ thất bại từ Settings.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _purging = false;
+        }
     }
 
     public void Dispose() => L.LanguageChanged -= OnLanguageChanged;

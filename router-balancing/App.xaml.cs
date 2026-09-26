@@ -16,6 +16,7 @@ namespace router_balancing
         private readonly IAppSettingsService _settings;
         private readonly IStartupRegistration _startup;
         private readonly ITrayService _tray;
+        private readonly LogRetentionWorker _retention;
         private Window? _mainWindow;
 #if WINDOWS
         // Chỉ Windows dùng: phân biệt thoát từ tray với đóng cửa sổ về khay (AppWindow.Closing)
@@ -27,7 +28,8 @@ namespace router_balancing
             IProxyHost proxyHost,
             IAppSettingsService settings,
             IStartupRegistration startup,
-            ITrayService tray)
+            ITrayService tray,
+            LogRetentionWorker retention)
         {
             InitializeComponent();
             _log = log;
@@ -35,8 +37,12 @@ namespace router_balancing
             _settings = settings;
             _startup = startup;
             _tray = tray;
+            _retention = retention;
 
             _log.Info("router-balancing khởi động.");
+
+            // Dọn log quá hạn ngay khi mở app rồi lặp 24h — retention không cần user bấm
+            _retention.Start();
 
             _tray.OpenRequested += ShowMainWindow;
             _tray.ExitRequested += ExitFromTray;
@@ -137,6 +143,16 @@ namespace router_balancing
             catch (Exception ex)
             {
                 _log.Error("Dừng proxy khi process thoát thất bại.", ex);
+            }
+
+            try
+            {
+                // Dừng vòng lặp dọn log trước khi process chết
+                _retention.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Dừng LogRetentionWorker khi process thoát thất bại.", ex);
             }
         }
 

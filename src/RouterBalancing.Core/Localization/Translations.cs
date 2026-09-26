@@ -67,6 +67,8 @@ public static class Translations
         ["settings.error.retention"] = "Log retention must be between 1 and 3650 days.",
         ["settings.error.threshold"] = "Error rate threshold must be between 1 and 100.",
         ["settings.error.apiKey"] = "API key is required when enabled.",
+        ["settings.purge"] = "Delete old logs now",
+        ["settings.purge.done"] = "Removed {0} log entries.",
 
         // Log panel (Task 14)
         ["log.filter.title"] = "Filters",
@@ -151,6 +153,8 @@ public static class Translations
         ["settings.error.retention"] = "Giữ nhật ký phải từ 1–3650 ngày.",
         ["settings.error.threshold"] = "Ngưỡng tỷ lệ lỗi phải từ 1–100.",
         ["settings.error.apiKey"] = "Bắt buộc nhập API key khi bật yêu cầu.",
+        ["settings.purge"] = "Dọn log cũ ngay",
+        ["settings.purge.done"] = "Đã xóa {0} dòng nhật ký.",
 
         // Log panel (Task 14)
         ["log.filter.title"] = "Bộ lọc",
