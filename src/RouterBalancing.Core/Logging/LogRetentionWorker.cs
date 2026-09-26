@@ -63,8 +63,18 @@ public sealed class LogRetentionWorker : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                // Lỗi một chu kỳ không được giết vòng lặp — vẫn thử ở chu kỳ sau
-                _log.Error("Dọn nhật ký định kỳ thất bại.", ex);
+                // Lỗi một chu kỳ không được giết vòng lặp — vẫn thử ở chu kỳ sau.
+                // Lần ghi lỗi này cũng có thể ném khi DB hỏng (nguyên nhân gốc làm
+                // purge thất bại) — nuốt là chấp nhận được vì đây là best-effort
+                // diagnostics, nếu không thì vòng lặp sẽ chết vĩnh viễn.
+                try
+                {
+                    _log.Error("Dọn nhật ký định kỳ thất bại.", ex);
+                }
+                catch
+                {
+                    // Đã nuốt: không còn chỗ nào an toàn để báo lỗi
+                }
             }
 
             try
