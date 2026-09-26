@@ -392,6 +392,8 @@ public interface IProviderService
 
 Tạo `src/RouterBalancing.Core/Providers/ProviderService.cs`:
 
+> **XML doc:** ngoài class-level `<inheritdoc cref>`, mỗi public member (ctor + mọi public method) khai báo `/// <inheritdoc/>` ngay trên declaration — compiler không cascade inheritdoc xuống member (AGENTS.md yêu cầu `///` trên public method; thêm theo review Task 4).
+
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
@@ -1201,6 +1203,8 @@ public interface IModelService
 ```
 
 Tạo `src/RouterBalancing.Core/Providers/ModelService.cs`:
+
+> **XML doc:** ngoài class-level `<inheritdoc cref>`, mỗi public member (ctor + mọi public method) khai báo `/// <inheritdoc/>` ngay trên declaration — compiler không cascade inheritdoc xuống member (AGENTS.md yêu cầu `///` trên public method; thêm theo review Task 4).
 
 ```csharp
 using System.Text.Json;
