@@ -153,9 +153,12 @@ public static class ProviderValidator
             errors[nameof(ProviderDraft.Name)] = "providers.error.name";
         }
 
-        // Chỉ chấp nhận http(s) — SSRF/parse URL ở tầng service tin được BaseUrl này
-        if (draft.BaseUrl is not (string s && (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-                                              || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))))
+        // Chỉ chấp nhận http(s) — SSRF/parse URL ở tầng service tin được BaseUrl này.
+        // Lưu ý: pattern `is not (s && ...)` không hợp lệ ngữ pháp C# — viết bằng ||
+        // short-circuit: null/""/không http(s) -> lỗi; http(s):// (mọi hoa thường) -> hợp lệ.
+        if (draft.BaseUrl is not string s
+            || (!s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
         {
             errors[nameof(ProviderDraft.BaseUrl)] = "providers.error.baseUrl";
         }
