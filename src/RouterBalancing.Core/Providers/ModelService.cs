@@ -14,18 +14,21 @@ public sealed class ModelService : IModelService
     private readonly ISecretProtector _protector;
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
+    private readonly IModelMetadataService _metadata;
 
     /// <inheritdoc/>
     public ModelService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector,
         IHttpClientFactory http,
-        ILogService log)
+        ILogService log,
+        IModelMetadataService metadata)
     {
         _db = db;
         _protector = protector;
         _http = http;
         _log = log;
+        _metadata = metadata;
     }
 
     /// <inheritdoc/>
@@ -53,6 +56,9 @@ public sealed class ModelService : IModelService
 
         var existing = provider.Models.Select(m => m.ModelId).ToHashSet(StringComparer.Ordinal);
         int added = 0, skipped = 0;
+        // Gom entities vừa Add để fill metadata SAU khi SaveChanges gán Id —
+        // không query lại theo IsManual/Local (dễ trúng entity cũ do Include đã load).
+        var created = new List<Model>();
 
         if (json.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
         {
@@ -63,14 +69,21 @@ public sealed class ModelService : IModelService
                 if (string.IsNullOrWhiteSpace(modelId)) continue;
                 if (!existing.Add(modelId)) { skipped++; continue; }
 
-                db.Models.Add(new Model { ProviderId = providerId, ModelId = modelId, IsManual = false });
+                var newModel = new Model { ProviderId = providerId, ModelId = modelId, IsManual = false };
+                db.Models.Add(newModel);
+                created.Add(newModel);
                 added++;
             }
         }
 
-        if (added > 0)
+        if (created.Count > 0)
         {
             await db.SaveChangesAsync(ct);
+            foreach (var entity in created)
+            {
+                // Metadata best-effort — lỗi không ảnh hưởng kết quả fetch (đã log bên trong)
+                await _metadata.TryFillAsync(entity.Id, ct);
+            }
             _log.Info($"Fetched {added} models for provider {providerId}.");
         }
 
@@ -96,6 +109,7 @@ public sealed class ModelService : IModelService
         var model = new Model { ProviderId = providerId, ModelId = trimmed, IsManual = true };
         db.Models.Add(model);
         await db.SaveChangesAsync(ct);
+        await _metadata.TryFillAsync(model.Id, ct);
         return model;
     }
 
@@ -115,17 +129,28 @@ public sealed class ModelService : IModelService
             .ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
 
         int added = 0, skipped = 0;
+        // Gom entities vừa Add để fill SAU SaveChanges (xem FetchFromProviderAsync).
+        var created = new List<Model>();
         foreach (var raw in modelIds)
         {
             var trimmed = raw.Trim();
             if (trimmed.Length == 0) continue; // dòng rỗng — không tính skipped
             if (!existing.Add(trimmed)) { skipped++; continue; }
 
-            db.Models.Add(new Model { ProviderId = providerId, ModelId = trimmed, IsManual = true });
+            var newModel = new Model { ProviderId = providerId, ModelId = trimmed, IsManual = true };
+            db.Models.Add(newModel);
+            created.Add(newModel);
             added++;
         }
 
-        if (added > 0) await db.SaveChangesAsync(ct);
+        if (created.Count > 0)
+        {
+            await db.SaveChangesAsync(ct);
+            foreach (var entity in created)
+            {
+                await _metadata.TryFillAsync(entity.Id, ct);
+            }
+        }
         return (added, skipped);
     }
 

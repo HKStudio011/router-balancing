@@ -35,8 +35,18 @@ public class ModelServiceTests : IDisposable
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
     }
 
-    private ModelService ServiceWith(string json) =>
-        new(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog());
+    private ModelService ServiceWith(string json)
+    {
+        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()]);
+        return new ModelService(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog(), metadata);
+    }
+
+    /// <summary>Catalog stub không biết gì — tests CRUD không quan tâm metadata.</summary>
+    private sealed class NoopMetadata : IModelMetadataProvider
+    {
+        public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default) =>
+            Task.FromResult<ModelMetadata?>(null);
+    }
 
     private async Task<long> SeedProviderAsync(params string[] existingModels)
     {

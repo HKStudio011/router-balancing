@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using RouterBalancing.Core.Localization;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Platform;
+using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
@@ -67,6 +68,15 @@ namespace router_balancing
             builder.Services.AddSingleton<IStartupRegistration, NullStartupRegistration>();
 #endif
             builder.Services.AddSingleton<IProxyHost, ProxyHost>();
+            // Named client cho test connection/fetch models/metadata — timeout 10s (spec §3.1)
+            builder.Services.AddHttpClient(ProviderRequestFactory.HttpClientName,
+                client => client.Timeout = TimeSpan.FromSeconds(10));
+            builder.Services.AddSingleton<IProviderService, ProviderService>();
+            builder.Services.AddSingleton<IModelService, ModelService>();
+            builder.Services.AddSingleton<IModelMetadataService, ModelMetadataService>();
+            // Thứ tự đăng ký = thứ tự chain: endpoint trước, static catalog sau
+            builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();
+            builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
             builder.Services.AddSingleton<LogRetentionWorker>();
 
 #if DEBUG
