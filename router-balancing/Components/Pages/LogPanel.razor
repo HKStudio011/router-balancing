@@ -52,8 +52,9 @@
 
         <label class="flex flex-col gap-1 text-sm">
             @L["log.filter.search"]
+            @* Search cũng phải reset về trang 1 + chạy lại query như 2 select bên trên *@
             <input class="rounded border border-border bg-surface px-2 py-1.5"
-                   @bind="_search" @bind:event="onchange" />
+                   @bind="_search" @bind:event="onchange" @bind:after="ApplyFilters" />
         </label>
     </div>
 }
