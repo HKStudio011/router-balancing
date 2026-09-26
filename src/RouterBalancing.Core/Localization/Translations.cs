@@ -91,6 +91,17 @@ public static class Translations
         ["log.count"] = "{0} entries",
         ["log.empty"] = "No log entries.",
         ["log.detail"] = "Details",
+
+        // Shared components (Phase 2A Task 7)
+        ["confirm.cancel"] = "Cancel",
+        ["modal.close"] = "Close",
+        ["pager.prev"] = "Previous",
+        ["pager.next"] = "Next",
+        ["pager.page"] = "Page {0}",
+        ["pager.of"] = "of",
+        ["pager.total"] = "({0} items)",
+        ["pager.goto"] = "Go to",
+        ["pager.pageSize"] = "Per page",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -177,6 +188,17 @@ public static class Translations
         ["log.count"] = "{0} dòng",
         ["log.empty"] = "Không có nhật ký nào.",
         ["log.detail"] = "Chi tiết",
+
+        // Shared components (Phase 2A Task 7)
+        ["confirm.cancel"] = "Hủy",
+        ["modal.close"] = "Đóng",
+        ["pager.prev"] = "Trước",
+        ["pager.next"] = "Sau",
+        ["pager.page"] = "Trang {0}",
+        ["pager.of"] = "trên",
+        ["pager.total"] = "({0} mục)",
+        ["pager.goto"] = "Đến trang",
+        ["pager.pageSize"] = "Mỗi trang",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>

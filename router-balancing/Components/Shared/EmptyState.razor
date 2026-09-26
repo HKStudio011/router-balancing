@@ -1,0 +1,15 @@
+<div class="flex flex-col items-center gap-2 py-6 text-center text-sm text-secondary">
+    @if (!string.IsNullOrEmpty(Icon))
+    {
+        <span class="text-2xl" aria-hidden="true">@Icon</span>
+    }
+    <p>@Message</p>
+</div>
+
+@code {
+    /// <summary>Cần hiển thị — text đã i18n ở nơi gọi.</summary>
+    [Parameter] public string Message { get; set; } = string.Empty;
+
+    /// <summary>Emoji trang trí tùy chọn (không bắt buộc).</summary>
+    [Parameter] public string? Icon { get; set; }
+}

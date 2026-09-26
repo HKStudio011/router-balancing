@@ -1,0 +1,36 @@
+@* Dialog xác nhận — dùng Modal bên trong; nút Cancel có autofocus (mặc định focus Cancel) *@
+<Modal Visible="Visible" Title="@Title" OnClose="CancelAsync">
+    <p class="mb-4 whitespace-pre-line text-sm">@Message</p>
+    <div class="flex justify-end gap-2">
+        <button type="button" class="btn btn-outline-secondary" autofocus
+                @onclick="CancelAsync">@CancelText</button>
+        <button type="button" class="@(Danger ? "btn btn-danger" : "btn btn-primary")"
+                @onclick="ConfirmAsync">@ConfirmText</button>
+    </div>
+</Modal>
+
+@code {
+    /// <summary>Điều khiển mở/đóng — khi đóng bằng cách khác (Esc/backdrop) = Cancel.</summary>
+    [Parameter] public bool Visible { get; set; }
+
+    [Parameter] public string Title { get; set; } = string.Empty;
+
+    [Parameter] public string Message { get; set; } = string.Empty;
+
+    /// <summary><see langword="true"/> = nút xác nhận màu đỏ (hành động phá hủy).</summary>
+    [Parameter] public bool Danger { get; set; }
+
+    /// <summary>Text nút xác nhận — bắt buộc truyền từ nơi gọi (i18n).</summary>
+    [Parameter] public string ConfirmText { get; set; } = string.Empty;
+
+    /// <summary>Text nút hủy — bắt buộc truyền từ nơi gọi (i18n, thường <c>L["confirm.cancel"]</c>).</summary>
+    [Parameter] public string CancelText { get; set; } = string.Empty;
+
+    [Parameter] public EventCallback OnConfirm { get; set; }
+
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private Task ConfirmAsync() => OnConfirm.InvokeAsync();
+
+    private Task CancelAsync() => OnCancel.InvokeAsync();
+}

@@ -1,0 +1,21 @@
+<span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs @ClassFor(Variant)">@Text</span>
+
+@code {
+    /// <summary>Nội dung badge — text đã i18n ở nơi gọi (trừ khi là dữ liệu như "ctx: 128k").</summary>
+    [Parameter] public string Text { get; set; } = string.Empty;
+
+    [Parameter] public BadgeVariant Variant { get; set; } = BadgeVariant.Neutral;
+
+    /// <summary>
+    /// Map tĩnh từng variant → chuỗi class đầy đủ: Tailwind phải scan thấy literal
+    /// trong file (không nối chuỗi động thì class mới được sinh vào CSS).
+    /// </summary>
+    private static string ClassFor(BadgeVariant variant) => variant switch
+    {
+        BadgeVariant.Success => "bg-success text-light",
+        BadgeVariant.Danger => "bg-danger text-light",
+        BadgeVariant.Warning => "bg-warning text-dark",
+        BadgeVariant.Info => "bg-info text-light",
+        _ => "bg-secondary text-light",
+    };
+}

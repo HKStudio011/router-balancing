@@ -1,0 +1,73 @@
+@* Phân trang client-side — state (Page/PageSize) do parent giữ qua @bind để persist qua re-render *@
+@inject LocalizationService L
+
+@if (Total > PageSize)
+{
+    <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
+        <button type="button" class="btn btn-outline-secondary" disabled="@(Page <= 1)" @onclick="PrevAsync">
+            @L["pager.prev"]
+        </button>
+
+        <span class="opacity-80">
+            @string.Format(L["pager.page"], Page) @L["pager.of"] @PageCount — @string.Format(L["pager.total"], Total)
+        </span>
+
+        <label class="flex items-center gap-1">
+            @L["pager.goto"]
+            <input type="number" min="1" max="@PageCount" value="@Page"
+                   class="w-16 rounded border border-border bg-surface px-1 py-0.5"
+                   @onchange="GotoAsync" />
+        </label>
+
+        <label class="flex items-center gap-1">
+            @L["pager.pageSize"]
+            <select value="@PageSize" class="rounded border border-border bg-surface px-1 py-0.5"
+                    @onchange="PageSizeSelectAsync">
+                @foreach (var size in PageSizeOptions)
+                {
+                    <option value="@size">@size</option>
+                }
+            </select>
+        </label>
+
+        <button type="button" class="btn btn-outline-secondary" disabled="@(Page >= PageCount)" @onclick="NextAsync">
+            @L["pager.next"]
+        </button>
+    </div>
+}
+
+@code {
+    /// <summary>Tổng số dòng.</summary>
+    [Parameter] public int Total { get; set; }
+
+    /// <summary>Số dòng mỗi trang — parent giữ state.</summary>
+    [Parameter] public int PageSize { get; set; } = 10;
+
+    [Parameter] public EventCallback<int> PageSizeChanged { get; set; }
+
+    /// <summary>Trang hiện tại, 1-based — parent giữ state.</summary>
+    [Parameter] public int Page { get; set; } = 1;
+
+    [Parameter] public EventCallback<int> PageChanged { get; set; }
+
+    [Parameter] public int[] PageSizeOptions { get; set; } = [10, 25, 50, 100];
+
+    private int PageCount => Math.Max(1, (Total + PageSize - 1) / PageSize);
+
+    private Task PrevAsync() => PageChanged.InvokeAsync(Page - 1);
+
+    private Task NextAsync() => PageChanged.InvokeAsync(Page + 1);
+
+    private Task GotoAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var target)) return Task.CompletedTask;
+        return PageChanged.InvokeAsync(Math.Clamp(target, 1, PageCount));
+    }
+
+    private async Task PageSizeSelectAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var size)) return;
+        await PageSizeChanged.InvokeAsync(size);
+        await PageChanged.InvokeAsync(1); // đổi page size → về trang 1 tránh trang trống
+    }
+}
