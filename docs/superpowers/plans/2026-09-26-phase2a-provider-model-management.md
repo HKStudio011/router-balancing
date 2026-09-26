@@ -826,17 +826,20 @@ Sửa `ProviderService.cs`:
     public async Task<ProviderTestResult> TestConnectionAsync(
         Provider provider, string? apiKeyOverride, CancellationToken ct = default)
     {
-        // Override (key đang gõ trên form) ưu tiên; không có → giải mã key đã lưu
-        var key = apiKeyOverride;
-        if (string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(provider.ApiKeyEncrypted))
-        {
-            key = _protector.Unprotect(provider.ApiKeyEncrypted);
-        }
-
         var at = DateTimeOffset.UtcNow;
         ProviderTestResult result;
         try
         {
+            // Override (key đang gõ trên form) ưu tiên; không có → giải mã key đã lưu.
+            // Decrypt PHẢI nằm trong try: key DPAPI hỏng (CryptographicException) rơi vào
+            // catch → fail với lý do, không ném ra UI (sửa theo review Task 3 — nếu để
+            // ngoài try thì CryptographicException trong catch filter là dead code).
+            var key = apiKeyOverride;
+            if (string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(provider.ApiKeyEncrypted))
+            {
+                key = _protector.Unprotect(provider.ApiKeyEncrypted);
+            }
+
             using var request = ProviderRequestFactory.Create(provider, key ?? string.Empty);
             using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
                 .SendAsync(request, ct);
