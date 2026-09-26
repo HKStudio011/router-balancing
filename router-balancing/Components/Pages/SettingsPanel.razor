@@ -1,0 +1,322 @@
+@page "/settings"
+@using System.Security.Cryptography
+@using RouterBalancing.Core.Platform
+@using RouterBalancing.Core.Settings
+@using RouterBalancing.Core.Storage
+@implements IDisposable
+@inject IAppSettingsService Settings
+@inject LocalizationService L
+@inject ThemeService Theme
+@inject ToastService Toast
+@inject IProxyHost Proxy
+@inject IStartupRegistration Startup
+@inject ILogService Log
+
+<h1 class="mb-4 text-xl font-semibold">@L["panel.settings.title"]</h1>
+
+@* Spec §8: 4 nhóm form, Save từng nhóm, validate inline *@
+<section class="mb-4 rounded border border-border bg-surface p-4">
+    <h2 class="mb-3 text-base font-semibold">@L["settings.group.general"]</h2>
+
+    <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.language"]
+            <select class="rounded border border-border bg-surface px-2 py-1.5" @bind="_draft.Language">
+                <option value="auto">@L["settings.lang.auto"]</option>
+                <option value="en">@L["settings.lang.en"]</option>
+                <option value="vi">@L["settings.lang.vi"]</option>
+            </select>
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.theme"]
+            <select class="rounded border border-border bg-surface px-2 py-1.5" @bind="_draft.Theme">
+                <option value="light">@L["settings.theme.light"]</option>
+                <option value="dark">@L["settings.theme.dark"]</option>
+                <option value="system">@L["settings.theme.system"]</option>
+            </select>
+        </label>
+    </div>
+
+    <label class="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" @bind="_draft.CloseToTray" />
+        @L["settings.field.closeToTray"]
+    </label>
+    <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" @bind="_draft.StartWithWindows" />
+        @L["settings.field.startWithWindows"]
+    </label>
+
+    @if (Error(nameof(SettingsDraft.Language)) is { } languageError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[languageError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.Theme)) is { } themeError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[themeError]</div>
+    }
+
+    <button class="btn btn-primary mt-3" @onclick="SaveGeneralAsync">@L["settings.action.save"]</button>
+</section>
+
+<section class="mb-4 rounded border border-border bg-surface p-4">
+    <h2 class="mb-3 text-base font-semibold">@L["settings.group.server"]</h2>
+
+    <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.port"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.Port" />
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.apiKey"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="password" @bind="_draft.ApiKey" autocomplete="off" spellcheck="false" />
+        </label>
+    </div>
+
+    @if (Error(nameof(SettingsDraft.Port)) is { } portError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[portError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.ApiKey)) is { } apiKeyError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[apiKeyError]</div>
+    }
+
+    <label class="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" @bind="_draft.ApiKeyEnabled" />
+        @L["settings.field.apiKeyEnabled"]
+    </label>
+
+    <div class="mt-3 flex gap-2">
+        <button class="btn btn-primary" @onclick="SaveServerAsync">@L["settings.action.save"]</button>
+        <button class="btn btn-outline-secondary" @onclick="RegenerateApiKey">@L["settings.action.regenerate"]</button>
+    </div>
+</section>
+
+<section class="mb-4 rounded border border-border bg-surface p-4">
+    <h2 class="mb-3 text-base font-semibold">@L["settings.group.engine"]</h2>
+
+    <div class="grid gap-3 sm:grid-cols-3">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.maxRetry"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.MaxRetry" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.watchdog"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.WatchdogIntervalSec" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.maxConcurrent"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.DefaultMaxConcurrent" />
+        </label>
+    </div>
+
+    @if (Error(nameof(SettingsDraft.MaxRetry)) is { } maxRetryError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[maxRetryError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.WatchdogIntervalSec)) is { } watchdogError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[watchdogError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.DefaultMaxConcurrent)) is { } concurrentError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[concurrentError]</div>
+    }
+
+    <button class="btn btn-primary mt-3" @onclick="SaveEngine">@L["settings.action.save"]</button>
+</section>
+
+<section class="mb-4 rounded border border-border bg-surface p-4">
+    <h2 class="mb-3 text-base font-semibold">@L["settings.group.data"]</h2>
+
+    <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.retention"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.LogRetentionDays" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.threshold"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.StatsErrorRateThreshold" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+            @L["settings.field.dbPath"]
+            @* Read-only: người dùng không sửa đường dẫn tay — app quản lý file DB *@
+            <input class="rounded border border-border bg-background px-2 py-1.5 opacity-70"
+                   value="@StoragePathProvider.GetDatabasePath()" readonly />
+        </label>
+    </div>
+
+    @if (Error(nameof(SettingsDraft.LogRetentionDays)) is { } retentionError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[retentionError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.StatsErrorRateThreshold)) is { } thresholdError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[thresholdError]</div>
+    }
+
+    <button class="btn btn-primary mt-3" @onclick="SaveData">@L["settings.action.save"]</button>
+</section>
+
+@code {
+    /// <summary>Field validator từng nhóm — Save nhóm nào chỉ hiện lỗi của nhóm đó.</summary>
+    private static readonly string[] GeneralFields =
+    [
+        nameof(SettingsDraft.Language),
+        nameof(SettingsDraft.Theme),
+    ];
+    private static readonly string[] ServerFields =
+    [
+        nameof(SettingsDraft.Port),
+        nameof(SettingsDraft.ApiKey),
+    ];
+    private static readonly string[] EngineFields =
+    [
+        nameof(SettingsDraft.MaxRetry),
+        nameof(SettingsDraft.WatchdogIntervalSec),
+        nameof(SettingsDraft.DefaultMaxConcurrent),
+    ];
+    private static readonly string[] DataFields =
+    [
+        nameof(SettingsDraft.LogRetentionDays),
+        nameof(SettingsDraft.StatsErrorRateThreshold),
+    ];
+
+    private SettingsDraft _draft = new();
+    private Dictionary<string, string> _errors = [];
+
+    protected override void OnInitialized()
+    {
+        _draft = LoadDraft();
+        L.LanguageChanged += OnLanguageChanged;
+    }
+
+    private SettingsDraft LoadDraft() => new()
+    {
+        Language = Settings.Language,
+        Theme = Settings.Theme,
+        Port = Settings.Port,
+        ApiKeyEnabled = Settings.ApiKeyEnabled,
+        ApiKey = Settings.GetApiKey(),
+        CloseToTray = Settings.CloseToTray,
+        StartWithWindows = Settings.StartWithWindows,
+        MaxRetry = Settings.MaxRetry,
+        WatchdogIntervalSec = Settings.WatchdogIntervalSec,
+        DefaultMaxConcurrent = Settings.DefaultMaxConcurrent,
+        LogRetentionDays = Settings.LogRetentionDays,
+        StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
+    };
+
+    private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
+
+    /// <summary>Lấy key lỗi i18n của field; null nếu field không có lỗi.</summary>
+    private string? Error(string field) =>
+        _errors.TryGetValue(field, out var key) ? key : null;
+
+    /// <summary>Validate bản nháp, chỉ giữ lỗi của nhóm được lưu; false = có lỗi, chặn ghi.</summary>
+    private bool ValidateFor(string[] fields)
+    {
+        var all = SettingsValidator.Validate(_draft);
+        _errors = all
+            .Where(kv => fields.Contains(kv.Key))
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+        return _errors.Count == 0;
+    }
+
+    private async Task SaveGeneralAsync()
+    {
+        if (!ValidateFor(GeneralFields)) return;
+
+        Settings.Set(SettingsKeys.Language, _draft.Language);
+        Settings.Set(SettingsKeys.Theme, _draft.Theme);
+        Settings.Set(SettingsKeys.CloseToTray, _draft.CloseToTray);
+
+        // Registry có thể bị chính sách máy chặn ghi — lỗi không được chặn cả lượt lưu chung
+        try
+        {
+            if (Startup.IsEnabled != _draft.StartWithWindows)
+            {
+                Startup.SetEnabled(_draft.StartWithWindows);
+            }
+            Settings.Set(SettingsKeys.StartWithWindows, _draft.StartWithWindows);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không cập nhật được khởi động cùng Windows.", ex);
+            Toast.Show(L["settings.msg.startupFailed"], ToastSeverity.Error);
+        }
+
+        L.Reload();
+        await Theme.ApplyAsync();
+        Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
+    }
+
+    private async Task SaveServerAsync()
+    {
+        var portChanged = _draft.Port != Settings.Port;
+        if (!ValidateFor(ServerFields)) return;
+
+        Settings.Set(SettingsKeys.Port, _draft.Port);
+        Settings.SetApiKeyEnabled(_draft.ApiKeyEnabled);
+        if (!string.Equals(_draft.ApiKey, Settings.GetApiKey(), StringComparison.Ordinal))
+        {
+            Settings.SetApiKey(_draft.ApiKey);
+        }
+
+        if (portChanged && Proxy.IsRunning)
+        {
+            try
+            {
+                // Port chỉ có hiệu lực khi Kestrel bind lại — restart để áp dụng ngay
+                await Proxy.RestartAsync();
+                Toast.Show(L["settings.msg.portRestart"], ToastSeverity.Success);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Khởi động lại proxy sau khi đổi cổng thất bại.", ex);
+                Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            }
+        }
+        else
+        {
+            Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
+        }
+    }
+
+    private void SaveEngine()
+    {
+        if (!ValidateFor(EngineFields)) return;
+
+        Settings.Set(SettingsKeys.MaxRetry, _draft.MaxRetry);
+        Settings.Set(SettingsKeys.WatchdogIntervalSec, _draft.WatchdogIntervalSec);
+        Settings.Set(SettingsKeys.DefaultMaxConcurrent, _draft.DefaultMaxConcurrent);
+        // Engine đọc setting mỗi request qua SettingsChanged — giá trị mới áp dụng ngay
+        Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
+    }
+
+    private void SaveData()
+    {
+        if (!ValidateFor(DataFields)) return;
+
+        Settings.Set(SettingsKeys.LogRetentionDays, _draft.LogRetentionDays);
+        Settings.Set(SettingsKeys.StatsErrorRateThreshold, _draft.StatsErrorRateThreshold);
+        Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
+    }
+
+    private void RegenerateApiKey()
+    {
+        // 256-bit từ CSPRNG; chỉ đi vào field — persists khi bấm Save của nhóm Server
+        _draft.ApiKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+    }
+
+    public void Dispose() => L.LanguageChanged -= OnLanguageChanged;
+}

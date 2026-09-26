@@ -42,6 +42,7 @@
     {
         ProxyHost.StateChanged += OnProxyStateChanged;
         Toast.ToastAdded += OnToastAdded;
+        L.LanguageChanged += OnLanguageChanged;
         UpdateBadge();
         try
         {
@@ -71,6 +72,13 @@
         StateHasChanged();
     });
 
+    private void OnLanguageChanged() => _ = InvokeAsync(() =>
+    {
+        // Badge hiển thị text của L — phải cập nhật cả text lẫn StateHasChanged
+        UpdateBadge();
+        StateHasChanged();
+    });
+
     private void UpdateBadge()
     {
         // Badge dùng màu Tailwind literal — class động không được purge vì nằm sẵn trong string constant
@@ -93,5 +101,6 @@
     {
         ProxyHost.StateChanged -= OnProxyStateChanged;
         Toast.ToastAdded -= OnToastAdded;
+        L.LanguageChanged -= OnLanguageChanged;
     }
 }

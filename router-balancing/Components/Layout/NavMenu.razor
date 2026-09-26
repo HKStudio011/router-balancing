@@ -1,4 +1,5 @@
 ﻿@inject LocalizationService L
+@implements IDisposable
 
 <nav class="flex flex-col gap-1 p-3">
     <div class="px-3 pb-2 text-base font-semibold">@L["app.title"]</div>
@@ -7,4 +8,17 @@
              href="" Match="NavLinkMatch.All">
         @L["nav.dashboard"]
     </NavLink>
+
+    <NavLink class="rounded px-3 py-2 text-sm no-underline hover:bg-background"
+             href="settings">
+        @L["nav.settings"]
+    </NavLink>
 </nav>
+
+@code {
+    protected override void OnInitialized() => L.LanguageChanged += OnLanguageChanged;
+
+    private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => L.LanguageChanged -= OnLanguageChanged;
+}
