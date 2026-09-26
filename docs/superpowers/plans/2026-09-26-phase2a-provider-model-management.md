@@ -587,15 +587,8 @@ public class ProviderTestConnectionTests : IDisposable
     private ProviderService ServiceWith(HttpMessageHandler handler) =>
         new(_db, _protector, new StubFactory(handler), new NullLog());
 
-    /// <summary>ILogService rỗng — test không cần ghi log thật.</summary>
-    private sealed class NullLog : ILogService
-    {
-        public event Action<LogEntry>? LogAdded { add { } remove { } }
-        public void Info(string message, LogCategory category = LogCategory.App) { }
-        public void Warn(string message, LogCategory category = LogCategory.App) { }
-        public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App) { }
-        public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
-    }
+    // NullLog: dùng lại từ `router balancing test/TestDoubles.cs` (Task 3) — KHÔNG khai
+    // báo inner class (bản inline thiếu Write/Count → CS0535 với ILogService thật).
 
     private async Task<Provider> SavedProviderAsync(ProviderType type = ProviderType.OpenAI)
     {
@@ -983,14 +976,8 @@ public class ModelServiceTests : IDisposable
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
     }
 
-    private sealed class NullLog : ILogService
-    {
-        public event Action<LogEntry>? LogAdded { add { } remove { } }
-        public void Info(string message, LogCategory category = LogCategory.App) { }
-        public void Warn(string message, LogCategory category = LogCategory.App) { }
-        public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App) { }
-        public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
-    }
+    // NullLog: dùng lại từ `router balancing test/TestDoubles.cs` (Task 3) — KHÔNG khai
+    // báo inner class (bản inline thiếu Write/Count → CS0535 với ILogService thật).
 
     private ModelService ServiceWith(string json) =>
         new(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog());
@@ -1024,12 +1011,15 @@ public class ModelServiceTests : IDisposable
 
         var (added, skipped) = await service.FetchFromProviderAsync(providerId);
 
-        Assert.Equal(2, added);   // gpt-4o-mini + duplicate lần 2 trong payload
-        Assert.Equal(1, skipped); // gpt-4o đã có
+        // Payload cố ý chứa bản sao gpt-4o: unique index (ProviderId, ModelId) chặn
+        // duplicate → service phải skip cả bản sao trong payload (spec §4: "skip thay vì
+        // throw raw"), không được thêm lần 2.
+        Assert.Equal(1, added);   // chỉ gpt-4o-mini là mới
+        Assert.Equal(2, skipped); // gpt-4o đã có + bản sao gpt-4o trong payload (dedupe)
 
         using var db = _db.CreateDbContext();
         var models = await db.Models.Where(m => m.ProviderId == providerId).ToListAsync();
-        Assert.Equal(3, models.Count);
+        Assert.Equal(2, models.Count);
         Assert.All(models, m => Assert.False(m.IsManual)); // auto-fetch
     }
 
@@ -1843,14 +1833,8 @@ public class ModelMetadataServiceTests : IDisposable
             Task.FromResult(result);
     }
 
-    private sealed class NullLog : ILogService
-    {
-        public event Action<LogEntry>? LogAdded { add { } remove { } }
-        public void Info(string message, LogCategory category = LogCategory.App) { }
-        public void Warn(string message, LogCategory category = LogCategory.App) { }
-        public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App) { }
-        public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
-    }
+    // NullLog: dùng lại từ `router balancing test/TestDoubles.cs` (Task 3) — KHÔNG khai
+    // báo inner class (bản inline thiếu Write/Count → CS0535 với ILogService thật).
 
     private async Task<long> SeedModelAsync()
     {
@@ -2161,7 +2145,7 @@ thay khối `if (added > 0) { SaveChanges; log }` thành:
     }
 ```
 
-(Lớp `NullLog` đã có sẵn trong file này từ Task 4 — tái sử dụng, không khai báo lại.)
+(Lớp `NullLog` lấy từ `router balancing test/TestDoubles.cs` (Task 3) — dùng lại, không khai báo inner class mới.)
 
 - [ ] **Step 4: Chạy test — kỳ vọng PASS (GREEN)**
 
