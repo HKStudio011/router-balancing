@@ -67,6 +67,28 @@ public static class Translations
         ["settings.error.retention"] = "Log retention must be between 1 and 3650 days.",
         ["settings.error.threshold"] = "Error rate threshold must be between 1 and 100.",
         ["settings.error.apiKey"] = "API key is required when enabled.",
+
+        // Log panel (Task 14)
+        ["log.filter.title"] = "Filters",
+        ["log.filter.severity"] = "Level",
+        ["log.filter.category"] = "Category",
+        ["log.filter.search"] = "Search",
+        ["log.filter.all"] = "All",
+        ["log.action.pause"] = "Pause",
+        ["log.action.resume"] = "Resume",
+        ["log.live.on"] = "Live",
+        ["log.live.off"] = "Paused",
+        ["log.severity.info"] = "Info",
+        ["log.severity.warning"] = "Warning",
+        ["log.severity.error"] = "Error",
+        ["log.category.app"] = "App",
+        ["log.category.request"] = "Request",
+        ["log.col.time"] = "Time",
+        ["log.col.message"] = "Message",
+        ["log.page"] = "Page {0} of {1}",
+        ["log.count"] = "{0} entries",
+        ["log.empty"] = "No log entries.",
+        ["log.detail"] = "Details",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -129,6 +151,28 @@ public static class Translations
         ["settings.error.retention"] = "Giữ nhật ký phải từ 1–3650 ngày.",
         ["settings.error.threshold"] = "Ngưỡng tỷ lệ lỗi phải từ 1–100.",
         ["settings.error.apiKey"] = "Bắt buộc nhập API key khi bật yêu cầu.",
+
+        // Log panel (Task 14)
+        ["log.filter.title"] = "Bộ lọc",
+        ["log.filter.severity"] = "Mức",
+        ["log.filter.category"] = "Phân loại",
+        ["log.filter.search"] = "Tìm kiếm",
+        ["log.filter.all"] = "Tất cả",
+        ["log.action.pause"] = "Tạm dừng",
+        ["log.action.resume"] = "Tiếp tục",
+        ["log.live.on"] = "Theo thời gian thực",
+        ["log.live.off"] = "Đã tạm dừng",
+        ["log.severity.info"] = "Thông tin",
+        ["log.severity.warning"] = "Cảnh báo",
+        ["log.severity.error"] = "Lỗi",
+        ["log.category.app"] = "Ứng dụng",
+        ["log.category.request"] = "Yêu cầu",
+        ["log.col.time"] = "Thời gian",
+        ["log.col.message"] = "Nội dung",
+        ["log.page"] = "Trang {0} / {1}",
+        ["log.count"] = "{0} dòng",
+        ["log.empty"] = "Không có nhật ký nào.",
+        ["log.detail"] = "Chi tiết",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>

@@ -1,0 +1,239 @@
+@page "/logs"
+@using RouterBalancing.Core.Domain
+@implements IDisposable
+@inject ILogService Log
+@inject LocalizationService L
+@inject IJSRuntime JS
+
+<div class="mb-3 flex items-center justify-between">
+    <h1 class="text-xl font-semibold">@L["panel.log.title"]</h1>
+
+    <div class="flex items-center gap-3">
+        @if (_live)
+        {
+            <span class="text-sm text-success">@L["log.live.on"]</span>
+        }
+        else
+        {
+            <span class="text-sm opacity-70">@L["log.live.off"]</span>
+        }
+        <button class="btn btn-outline-secondary" @onclick="() => _live = !_live">
+            @(_live ? L["log.action.pause"] : L["log.action.resume"])
+        </button>
+        <button class="btn btn-outline-secondary" @onclick="ToggleFiltersAsync">
+            @(_filtersExpanded ? "−" : "+") @L["log.filter.title"]
+        </button>
+    </div>
+</div>
+
+@if (_filtersExpanded)
+{
+    <div class="mb-3 flex flex-wrap items-end gap-3 rounded border border-border bg-surface p-3">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["log.filter.severity"]
+            <select class="rounded border border-border bg-surface px-2 py-1.5"
+                    @bind="_severity" @bind:after="ApplyFilters">
+                <option value="">@L["log.filter.all"]</option>
+                <option value="Info">@L["log.severity.info"]</option>
+                <option value="Warning">@L["log.severity.warning"]</option>
+                <option value="Error">@L["log.severity.error"]</option>
+            </select>
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["log.filter.category"]
+            <select class="rounded border border-border bg-surface px-2 py-1.5"
+                    @bind="_category" @bind:after="ApplyFilters">
+                <option value="">@L["log.filter.all"]</option>
+                <option value="App">@L["log.category.app"]</option>
+                <option value="Request">@L["log.category.request"]</option>
+            </select>
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["log.filter.search"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   @bind="_search" @bind:event="onchange" />
+        </label>
+    </div>
+}
+
+<div class="overflow-x-auto rounded border border-border bg-surface">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="border-b border-border text-left opacity-70">
+                <th class="px-3 py-2 font-medium">@L["log.col.time"]</th>
+                <th class="px-3 py-2 font-medium">@L["log.filter.severity"]</th>
+                <th class="px-3 py-2 font-medium">@L["log.filter.category"]</th>
+                <th class="px-3 py-2 font-medium">@L["log.col.message"]</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (_entries.Count == 0)
+            {
+                <tr>
+                    <td class="px-3 py-4 opacity-70" colspan="4">@L["log.empty"]</td>
+                </tr>
+            }
+            @foreach (var entry in _entries)
+            {
+                @* Key theo Id: live prepend không được re-render diff toàn bộ list *@
+                <tr class="cursor-pointer border-b border-border hover:bg-background"
+                    @key="entry.Id"
+                    @onclick="() => ToggleDetails(entry.Id)">
+                    <td class="whitespace-nowrap px-3 py-1.5 font-mono text-xs opacity-70">
+                        @entry.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                    </td>
+                    <td class="px-3 py-1.5">
+                        @if (entry.Severity == LogSeverity.Error)
+                        {
+                            <span class="font-semibold text-danger">@L["log.severity.error"]</span>
+                        }
+                        else if (entry.Severity == LogSeverity.Warning)
+                        {
+                            <span class="font-semibold">@L["log.severity.warning"]</span>
+                        }
+                        else
+                        {
+                            <span class="opacity-70">@L["log.severity.info"]</span>
+                        }
+                    </td>
+                    <td class="px-3 py-1.5">@CategoryLabel(entry.Category)</td>
+                    <td class="px-3 py-1.5">@entry.Message</td>
+                </tr>
+                @if (_expandedId == entry.Id && !string.IsNullOrEmpty(entry.Details))
+                {
+                    <tr class="border-b border-border bg-background">
+                        <td class="px-3 py-2" colspan="4">
+                            <div class="mb-1 text-xs font-semibold opacity-70">@L["log.detail"]</div>
+                            <pre class="whitespace-pre-wrap text-xs">@entry.Details</pre>
+                        </td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+</div>
+
+<div class="mt-3 flex items-center justify-between text-sm">
+    <span class="opacity-70">@string.Format(L["log.count"], _total)</span>
+    <div class="flex items-center gap-2">
+        <button class="btn btn-outline-secondary" disabled="@(_page <= 1)" @onclick="PrevPage">‹</button>
+        <span>@string.Format(L["log.page"], _page, TotalPages)</span>
+        <button class="btn btn-outline-secondary" disabled="@(_page >= TotalPages)" @onclick="NextPage">›</button>
+    </div>
+</div>
+
+@code {
+    /// <summary>100 dòng/trang — khớp mặc định của <c>LogQuery.PageSize</c>.</summary>
+    private const int PageSize = 100;
+
+    /// <summary>Spec §6: UI giữ tối đa ~500 dòng, dòng cũ nhất bị drop.</summary>
+    private const int MaxRows = 500;
+
+    private readonly List<LogEntry> _entries = [];
+    private int _total;
+    private int _page = 1;
+    private string _severity = string.Empty;
+    private string _category = string.Empty;
+    private string _search = string.Empty;
+    private bool _live = true;
+    private bool _filtersExpanded = true;
+    private long? _expandedId;
+
+    private LogSeverity? MinSeverity =>
+        Enum.TryParse<LogSeverity>(_severity, out var value) ? value : null;
+
+    private LogCategory? Category =>
+        Enum.TryParse<LogCategory>(_category, out var value) ? value : null;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_total / (double)PageSize));
+
+    protected override void OnInitialized()
+    {
+        Load();
+        Log.LogAdded += OnLogAdded;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        // rbPanel: trạng thái collapse filter bar nhớ qua localStorage rb.panel.log.filters
+        _filtersExpanded = await JS.InvokeAsync<bool>("rbPanel.get", "log.filters", true);
+        StateHasChanged();
+    }
+
+    private void Load()
+    {
+        var query = BuildQuery();
+        _entries.Clear();
+        _entries.AddRange(Log.Query(query));
+        _total = Log.Count(query);
+        _expandedId = null;
+    }
+
+    private LogQuery BuildQuery() => new(
+        MinSeverity: MinSeverity,
+        Category: Category,
+        Search: string.IsNullOrWhiteSpace(_search) ? null : _search.Trim(),
+        Page: _page,
+        PageSize: PageSize);
+
+    private void ApplyFilters()
+    {
+        _page = 1;
+        Load();
+    }
+
+    private void PrevPage()
+    {
+        if (_page <= 1) return;
+        _page--;
+        Load();
+    }
+
+    private void NextPage()
+    {
+        if (_page >= TotalPages) return;
+        _page++;
+        Load();
+    }
+
+    /// <summary>Dòng mới: prepend chỉ khi đang live + trang đầu + khớp filter hiện tại.</summary>
+    private void OnLogAdded(LogEntry entry) => _ = InvokeAsync(() =>
+    {
+        if (!_live || _page != 1 || !Matches(entry)) return;
+        _entries.Insert(0, entry);
+        _total++;
+        while (_entries.Count > MaxRows)
+        {
+            _entries.RemoveAt(_entries.Count - 1);
+        }
+        StateHasChanged();
+    });
+
+    /// <summary>Filter live phải khớp đúng ngữ nghĩa của LogService.ApplyFilter.</summary>
+    private bool Matches(LogEntry entry)
+    {
+        if (MinSeverity is { } min && entry.Severity < min) return false;
+        if (Category is { } category && entry.Category != category) return false;
+        if (!string.IsNullOrWhiteSpace(_search) && !entry.Message.Contains(_search.Trim())) return false;
+        return true;
+    }
+
+    private void ToggleDetails(long id) => _expandedId = _expandedId == id ? null : id;
+
+    private string CategoryLabel(LogCategory category) => category switch
+    {
+        LogCategory.Request => L["log.category.request"],
+        _ => L["log.category.app"],
+    };
+
+    private async Task ToggleFiltersAsync()
+    {
+        _filtersExpanded = !_filtersExpanded;
+        await JS.InvokeVoidAsync("rbPanel.set", "log.filters", _filtersExpanded);
+    }
+
+    public void Dispose() => Log.LogAdded -= OnLogAdded;
+}
