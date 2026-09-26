@@ -2248,6 +2248,10 @@ Thêm đúng bộ key đó vào `Translations.Vietnamese` (cùng vị trí cuố
 
 - [ ] **Step 2: Tạo 5 component + enum**
 
+> **Hai yêu cầu thêm theo review Task 7 (apply cho snippets dưới):**
+> 1. **Modal focus-on-open:** `@ref` vào root (`tabindex="-1"`), khi `Visible` chuyển false→true thì focus root trong `OnAfterRenderAsync` (chỉ đúng lần chuyển — re-render không cướp focus; `_dialogRef` null khi element chưa render thì bỏ qua). Bắt buộc: nếu không focus, handler `@onkeydown` (Escape) trên root không nhận sự kiện cho tới khi user click vào trong overlay. Không làm focus trap/restore (YAGNI — quyết định của user).
+> 2. **XML doc `/// <summary>` cho MỌI `[Parameter]`** (tone như param đã có sẵn trong cùng file) — kể cả các brief snippet thiếu: `Modal.ChildContent`, `ConfirmDialog.Title/Message/OnConfirm/OnCancel`, `Pager.PageSizeChanged/PageChanged`, `Badge.Variant`.
+
 Tạo `router-balancing/Components/Shared/BadgeVariant.cs`:
 
 ```csharp
