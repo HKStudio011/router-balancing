@@ -28,4 +28,10 @@ public interface IProviderService
     /// <summary>Bật/tắt provider.</summary>
     /// <exception cref="KeyNotFoundException">Khi không có provider <paramref name="id"/>.</exception>
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
+
+    /// <summary>
+    /// Test kết nối: GET {BaseUrl}/v1/models với key override (form) hoặc key đã lưu.
+    /// Provider đã lưu (Id != 0) → persist LastTestSuccess/At/Message.
+    /// </summary>
+    Task<ProviderTestResult> TestConnectionAsync(Provider provider, string? apiKeyOverride, CancellationToken ct = default);
 }

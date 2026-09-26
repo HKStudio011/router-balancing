@@ -18,7 +18,15 @@ public class ProviderServiceTests : IDisposable
         // Initialize trước mỗi test — TestDb là file trống, schema chưa có (pattern Phase 1)
         _db = _testDb.CreateFactory();
         DbInitializer.Initialize(_db);
-        _service = new ProviderService(_db, _protector);
+        // Task 3 mở rộng ctor — test CRUD dùng StubFactory handler không bao giờ được gọi
+        _service = new ProviderService(_db, _protector, new NeverHttpFactory(), new NullLog());
+    }
+
+    /// <summary>HttpClientFactory ném nếu bị gọi — CRUD không được đụng network.</summary>
+    private sealed class NeverHttpFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) =>
+            throw new InvalidOperationException("CRUD must not perform HTTP calls.");
     }
 
     public void Dispose() => _testDb.Dispose();

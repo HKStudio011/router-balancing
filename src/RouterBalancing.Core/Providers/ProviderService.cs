@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -10,11 +11,19 @@ public sealed class ProviderService : IProviderService
 {
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ISecretProtector _protector;
+    private readonly IHttpClientFactory _http;
+    private readonly ILogService _log;
 
-    public ProviderService(IDbContextFactory<RouterBalancingDbContext> db, ISecretProtector protector)
+    public ProviderService(
+        IDbContextFactory<RouterBalancingDbContext> db,
+        ISecretProtector protector,
+        IHttpClientFactory http,
+        ILogService log)
     {
         _db = db;
         _protector = protector;
+        _http = http;
+        _log = log;
     }
 
     public async Task<IReadOnlyList<Provider>> ListAsync(CancellationToken ct = default)
@@ -93,6 +102,55 @@ public sealed class ProviderService : IProviderService
 
         provider.Enabled = enabled;
         provider.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+    }
+
+    public async Task<ProviderTestResult> TestConnectionAsync(
+        Provider provider, string? apiKeyOverride, CancellationToken ct = default)
+    {
+        // Override (key đang gõ trên form) ưu tiên; không có → giải mã key đã lưu
+        var key = apiKeyOverride;
+        if (string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(provider.ApiKeyEncrypted))
+        {
+            key = _protector.Unprotect(provider.ApiKeyEncrypted);
+        }
+
+        var at = DateTimeOffset.UtcNow;
+        ProviderTestResult result;
+        try
+        {
+            using var request = ProviderRequestFactory.Create(provider, key ?? string.Empty);
+            using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
+                .SendAsync(request, ct);
+
+            result = response.IsSuccessStatusCode
+                ? new ProviderTestResult(true, null, at)
+                : new ProviderTestResult(false, $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}", at);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
+        {
+            // Timeout/Socket error/URL sai/key DPAPI hỏng → fail với lý do, không ném ra UI
+            result = new ProviderTestResult(false, ex.Message, at);
+            _log.Warn($"Test connection failed: {ex.Message}");
+        }
+
+        // Id == 0 = bản nháp chưa lưu — không có hàng để ghi LastTest*
+        if (provider.Id != 0)
+        {
+            await PersistTestResultAsync(provider.Id, result, ct);
+        }
+
+        return result;
+    }
+
+    private async Task PersistTestResultAsync(long id, ProviderTestResult result, CancellationToken ct)
+    {
+        using var db = _db.CreateDbContext();
+        var provider = await db.Providers.FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (provider is null) return;
+        provider.LastTestSuccess = result.Success;
+        provider.LastTestAt = result.At;
+        provider.LastTestMessage = result.Message;
         await db.SaveChangesAsync(ct);
     }
 }
