@@ -147,6 +147,11 @@ namespace router_balancing
 
             try
             {
+                // X-exit với closeToTray=false không đi qua ExitFromTray → phải dispose tray ở đây,
+                // nếu không NotifyIcon chỉ được dọn khi process chết (ghost icon khi không có message pump).
+                // Dispose đặt trước retention: lỗi retention không được phép bỏ sót tray.
+                // TrayService.Dispose idempotent (_icon is null → return) nên trùng lặp với ExitFromTray vô hại.
+                _tray.Dispose();
                 // Dừng vòng lặp dọn log trước khi process chết
                 _retention.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
             }
