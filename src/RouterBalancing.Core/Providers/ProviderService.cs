@@ -14,6 +14,7 @@ public sealed class ProviderService : IProviderService
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
 
+    /// <inheritdoc/>
     public ProviderService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector,
@@ -26,6 +27,7 @@ public sealed class ProviderService : IProviderService
         _log = log;
     }
 
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<Provider>> ListAsync(CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -35,6 +37,7 @@ public sealed class ProviderService : IProviderService
             .ToListAsync(ct);
     }
 
+    /// <inheritdoc/>
     public async Task<Provider?> GetAsync(long id, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -43,6 +46,7 @@ public sealed class ProviderService : IProviderService
             .FirstOrDefaultAsync(p => p.Id == id, ct);
     }
 
+    /// <inheritdoc/>
     public async Task<Provider> CreateAsync(ProviderDraft draft, CancellationToken ct = default)
     {
         var provider = new Provider
@@ -62,6 +66,7 @@ public sealed class ProviderService : IProviderService
         return provider;
     }
 
+    /// <inheritdoc/>
     public async Task UpdateAsync(long id, ProviderDraft draft, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -82,6 +87,7 @@ public sealed class ProviderService : IProviderService
         await db.SaveChangesAsync(ct);
     }
 
+    /// <inheritdoc/>
     public async Task DeleteAsync(long id, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -94,6 +100,7 @@ public sealed class ProviderService : IProviderService
         await db.SaveChangesAsync(ct);
     }
 
+    /// <inheritdoc/>
     public async Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -105,6 +112,7 @@ public sealed class ProviderService : IProviderService
         await db.SaveChangesAsync(ct);
     }
 
+    /// <inheritdoc/>
     public async Task<ProviderTestResult> TestConnectionAsync(
         Provider provider, string? apiKeyOverride, CancellationToken ct = default)
     {

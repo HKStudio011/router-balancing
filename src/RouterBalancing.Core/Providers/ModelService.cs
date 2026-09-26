@@ -15,6 +15,7 @@ public sealed class ModelService : IModelService
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
 
+    /// <inheritdoc/>
     public ModelService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector,
@@ -27,6 +28,7 @@ public sealed class ModelService : IModelService
         _log = log;
     }
 
+    /// <inheritdoc/>
     public async Task<(int Added, int Skipped)> FetchFromProviderAsync(long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -75,6 +77,7 @@ public sealed class ModelService : IModelService
         return (added, skipped);
     }
 
+    /// <inheritdoc/>
     public async Task<Model> AddManualAsync(long providerId, string modelId, CancellationToken ct = default)
     {
         var trimmed = modelId.Trim();
@@ -96,6 +99,7 @@ public sealed class ModelService : IModelService
         return model;
     }
 
+    /// <inheritdoc/>
     public async Task<(int Added, int Skipped)> AddBulkAsync(
         long providerId, IReadOnlyList<string> modelIds, CancellationToken ct = default)
     {
@@ -125,6 +129,7 @@ public sealed class ModelService : IModelService
         return (added, skipped);
     }
 
+    /// <inheritdoc/>
     public async Task RemoveAsync(long modelId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -134,6 +139,7 @@ public sealed class ModelService : IModelService
         await db.SaveChangesAsync(ct);
     }
 
+    /// <inheritdoc/>
     public async Task<int> RemoveAllAsync(long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -143,6 +149,7 @@ public sealed class ModelService : IModelService
         return models.Count;
     }
 
+    /// <inheritdoc/>
     public async Task SetEnabledAsync(long modelId, bool enabled, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -152,6 +159,7 @@ public sealed class ModelService : IModelService
         await db.SaveChangesAsync(ct);
     }
 
+    /// <inheritdoc/>
     public async Task SetAllEnabledAsync(long providerId, bool enabled, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
