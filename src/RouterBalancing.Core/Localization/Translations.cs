@@ -9,7 +9,7 @@ public static class Translations
     /// <summary>Từ điển ngôn ngữ hệ thống → bảng ngôn ngữ nội bộ; thiếu → "en".</summary>
     public static readonly IReadOnlyDictionary<string, string> English = new Dictionary<string, string>
     {
-        ["app.title"] = "router-balancing",
+        ["app.title"] = "Router Balancing",
         ["tray.open"] = "Open router-balancing",
         ["tray.exit"] = "Exit",
         ["nav.dashboard"] = "Dashboard",
@@ -95,7 +95,7 @@ public static class Translations
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
     {
-        ["app.title"] = "router-balancing",
+        ["app.title"] = "Router Balancing",
         ["tray.open"] = "Mở router-balancing",
         ["tray.exit"] = "Thoát",
         ["nav.dashboard"] = "Bảng điều khiển",
