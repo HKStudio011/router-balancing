@@ -4,7 +4,7 @@
 {
     @* z-50: overlay phải đè lên nav + bảng; backdrop bấm để đóng *@
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-         tabindex="-1" @onclick="CloseAsync" @onkeydown="OnKeydownAsync">
+         tabindex="-1" @ref="_dialogRoot" @onclick="CloseAsync" @onkeydown="OnKeydownAsync">
         <div role="dialog" aria-modal="true" aria-label="@Title"
              class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded border border-border bg-surface p-4 shadow-xl"
              @onclick:stopPropagation="true">
@@ -28,11 +28,28 @@
     /// <summary>Gọi khi người dùng đóng (Esc / backdrop / nút &times;).</summary>
     [Parameter] public EventCallback OnClose { get; set; }
 
+    /// <summary>Nội dung dialog — RenderFragment do nơi gọi truyền vào.</summary>
     [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private ElementReference? _dialogRoot;
+    private bool _wasVisible;
 
     private Task CloseAsync() => OnClose.InvokeAsync();
 
     // Esc đóng: keydown trên overlay bắt được cả khi focus đang ở input bên trong (bubbling)
     private Task OnKeydownAsync(KeyboardEventArgs e) =>
         e.Key == "Escape" ? OnClose.InvokeAsync() : Task.CompletedTask;
+
+    // Phải focus vào root ngay khi mở: @onkeydown (Esc) trên root chỉ nhận được key event
+    // khi focus nằm trong dialog — nếu focus vẫn còn ở trigger phía sau overlay thì Esc
+    // không đóng được và Tab bắt đầu phía sau overlay. Chỉ focus ở nhánh false→true để
+    // các re-render sau đó không cướp focus; root chỉ tồn tại khi Visible nên ref có thể null.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Visible && !_wasVisible && _dialogRoot is { } root)
+        {
+            await root.FocusAsync();
+        }
+        _wasVisible = Visible;
+    }
 }

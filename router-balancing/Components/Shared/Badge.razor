@@ -4,6 +4,7 @@
     /// <summary>Nội dung badge — text đã i18n ở nơi gọi (trừ khi là dữ liệu như "ctx: 128k").</summary>
     [Parameter] public string Text { get; set; } = string.Empty;
 
+    /// <summary>Màu badge — quyết định lớp Tailwind sinh ra (Neutral/Success/Danger/Warning/Info).</summary>
     [Parameter] public BadgeVariant Variant { get; set; } = BadgeVariant.Neutral;
 
     /// <summary>

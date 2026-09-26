@@ -43,11 +43,13 @@
     /// <summary>Số dòng mỗi trang — parent giữ state.</summary>
     [Parameter] public int PageSize { get; set; } = 10;
 
+    /// <summary>Thông báo PageSize mới khi người dùng đổi — dùng cùng <c>@bind-PageSize</c>.</summary>
     [Parameter] public EventCallback<int> PageSizeChanged { get; set; }
 
     /// <summary>Trang hiện tại, 1-based — parent giữ state.</summary>
     [Parameter] public int Page { get; set; } = 1;
 
+    /// <summary>Thông báo trang mới khi người dùng chuyển — dùng cùng <c>@bind-Page</c>.</summary>
     [Parameter] public EventCallback<int> PageChanged { get; set; }
 
     [Parameter] public int[] PageSizeOptions { get; set; } = [10, 25, 50, 100];

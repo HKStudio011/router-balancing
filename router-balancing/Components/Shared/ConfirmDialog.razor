@@ -13,8 +13,10 @@
     /// <summary>Điều khiển mở/đóng — khi đóng bằng cách khác (Esc/backdrop) = Cancel.</summary>
     [Parameter] public bool Visible { get; set; }
 
+    /// <summary>Tiêu đề dialog — text đã i18n ở nơi gọi.</summary>
     [Parameter] public string Title { get; set; } = string.Empty;
 
+    /// <summary>Nội dung xác nhận — text đã i18n ở nơi gọi, hỗ trợ xuống dòng.</summary>
     [Parameter] public string Message { get; set; } = string.Empty;
 
     /// <summary><see langword="true"/> = nút xác nhận màu đỏ (hành động phá hủy).</summary>
@@ -26,8 +28,10 @@
     /// <summary>Text nút hủy — bắt buộc truyền từ nơi gọi (i18n, thường <c>L["confirm.cancel"]</c>).</summary>
     [Parameter] public string CancelText { get; set; } = string.Empty;
 
+    /// <summary>Gọi khi người dùng xác nhận.</summary>
     [Parameter] public EventCallback OnConfirm { get; set; }
 
+    /// <summary>Gọi khi người dùng hủy — gồm cả đóng bằng Esc/backdrop/&times;.</summary>
     [Parameter] public EventCallback OnCancel { get; set; }
 
     private Task ConfirmAsync() => OnConfirm.InvokeAsync();
