@@ -1,0 +1,624 @@
+@page "/providers"
+@using RouterBalancing.Core.Domain
+@using RouterBalancing.Core.Providers
+@implements IDisposable
+@inject IProviderService ProviderSvc
+@inject IModelService ModelSvc
+@inject LocalizationService L
+@inject ToastService Toast
+@inject ILogService Log
+
+<h1 class="mb-4 text-xl font-semibold">@L["panel.providers.title"]</h1>
+
+@if (_loading)
+{
+    <p class="text-sm opacity-70">...</p>
+}
+else if (_providers.Count == 0)
+{
+    <EmptyState Icon="&#9881;&#65039;" Message="@L["providers.empty"]" />
+}
+else
+{
+    <div class="overflow-x-auto rounded border border-border bg-surface">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-border text-left text-xs uppercase opacity-70">
+                    <th class="w-10 px-2 py-2"></th>
+                    <th class="px-2 py-2">@L["providers.col.name"]</th>
+                    <th class="px-2 py-2">@L["providers.col.baseUrl"]</th>
+                    <th class="px-2 py-2">@L["providers.col.models"]</th>
+                    <th class="px-2 py-2">@L["providers.col.enabled"]</th>
+                    <th class="px-2 py-2">@L["providers.col.lastTest"]</th>
+                    <th class="px-2 py-2 text-right">@L["providers.col.actions"]</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in PageItems)
+                {
+                    <tr @key="@($"{p.Id}-row")" class="border-b border-border">
+                        <td class="px-2 py-2">
+                            @* Chevron + cột Models cùng một toggle — expand là thao tác chính *@
+                            <button type="button" class="btn btn-outline-secondary px-1.5"
+                                    aria-expanded="@(_expandedId == p.Id)"
+                                    @onclick="() => ToggleExpand(p.Id)">
+                                @(_expandedId == p.Id ? "▾" : "▸")
+                            </button>
+                        </td>
+                        <td class="px-2 py-2">
+                            <div class="flex items-center gap-2">
+                                <span class="font-medium">@p.Name</span>
+                                <Badge Text="@TypeLabel(p.Type)" Variant="TypeVariant(p.Type)" />
+                            </div>
+                        </td>
+                        <td class="max-w-64 truncate px-2 py-2 opacity-80" title="@p.BaseUrl">@p.BaseUrl</td>
+                        <td class="px-2 py-2">
+                            <button type="button" class="hover:underline"
+                                    @onclick="() => ToggleExpand(p.Id)">
+                                @string.Format(L["models.count"], EnabledCount(p), p.Models.Count)
+                            </button>
+                        </td>
+                        <td class="px-2 py-2">
+                            <input type="checkbox" checked="@p.Enabled" disabled="@_busy"
+                                   @onchange="() => ToggleProviderEnabledAsync(p)" />
+                        </td>
+                        <td class="px-2 py-2">
+                            @if (p.LastTestSuccess is null)
+                            {
+                                <Badge Text="@L["providers.lastTest.never"]" Variant="BadgeVariant.Neutral" />
+                            }
+                            else
+                            {
+                                <span title="@(p.LastTestMessage ?? string.Empty)">
+                                    <Badge Variant="@(p.LastTestSuccess == true ? BadgeVariant.Success : BadgeVariant.Danger)"
+                                           Text="@(p.LastTestSuccess == true ? L["providers.lastTest.ok"] : L["providers.lastTest.fail"])" />
+                                    @if (p.LastTestAt is { } testedAt)
+                                    {
+                                        <span class="ml-1 text-xs opacity-70">@testedAt.ToLocalTime().ToString("g")</span>
+                                    }
+                                </span>
+                            }
+                        </td>
+                        <td class="px-2 py-2 text-right">
+                            <div class="flex justify-end gap-1">
+                                <button type="button" class="btn btn-outline-secondary"
+                                        disabled="@(_busy || _testingId == p.Id)"
+                                        @onclick="() => TestAsync(p)">
+                                    @(_testingId == p.Id ? L["providers.testing"] : L["providers.action.test"])
+                                </button>
+                                <button type="button" class="btn btn-outline-danger"
+                                        disabled="@(_busy || _confirmDeleteProvider is not null)"
+                                        @onclick="() => _confirmDeleteProvider = p">
+                                    @L["providers.action.delete"]
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+
+                    @if (_expandedId == p.Id)
+                    {
+                        <tr @key="@($"{p.Id}-models")" class="border-b border-border bg-background">
+                            <td></td>
+                            <td colspan="6" class="px-3 py-3">
+                                @* ===== Model panel inline (spec §4.2) ===== *@
+                                <div class="mb-2 flex flex-wrap items-center gap-2">
+                                    <span class="text-sm font-semibold">@L["models.section"]</span>
+
+                                    <input class="w-56 rounded border border-border bg-surface px-2 py-1"
+                                           placeholder="@L["models.addPlaceholder"]"
+                                           disabled="@_busy" @bind="_newModelId"
+                                           @onkeydown="e => OnModelKeyAsync(e, p)" />
+                                    <button type="button" class="btn btn-outline-secondary"
+                                            disabled="@(_busy || string.IsNullOrWhiteSpace(_newModelId))"
+                                            @onclick="() => AddManualAsync(p)">
+                                        @L["models.action.add"]
+                                    </button>
+
+                                    <button type="button" class="btn btn-outline-secondary"
+                                            disabled="@(_busy || _fetchingId == p.Id)"
+                                            @onclick="() => FetchAsync(p)">
+                                        @(_fetchingId == p.Id ? L["models.fetching"] : L["models.action.fetch"])
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                                            @onclick="() => _bulkOpen = !_bulkOpen">
+                                        @L["models.action.bulk"]
+                                    </button>
+
+                                    <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                                            @onclick="() => SetAllModelsAsync(p, true)">
+                                        @L["models.enableAll"]
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                                            @onclick="() => SetAllModelsAsync(p, false)">
+                                        @L["models.disableAll"]
+                                    </button>
+                                    <button type="button" class="btn btn-outline-danger" disabled="@_busy"
+                                            @onclick="() => _confirmRemoveAll = p">
+                                        @L["models.deleteAll"]
+                                    </button>
+                                </div>
+
+                                @if (_bulkOpen)
+                                {
+                                    @* Inline toggle thay vì modal con — spec §4.2 cho phép implementer chọn inline *@
+                                    <div class="mb-2 flex flex-col gap-2">
+                                        <textarea class="h-24 rounded border border-border bg-surface px-2 py-1 font-mono text-xs"
+                                                  placeholder="@L["models.bulkPlaceholder"]"
+                                                  @bind="_bulkText"></textarea>
+                                        <div class="flex gap-2">
+                                            <button type="button" class="btn btn-primary" disabled="@_busy"
+                                                    @onclick="() => AddBulkAsync(p)">
+                                                @L["models.action.add"]
+                                            </button>
+                                            <button type="button" class="btn btn-outline-secondary"
+                                                    @onclick="() => _bulkOpen = false">
+                                                @L["confirm.cancel"]
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+
+                                @if (p.Models.Count == 0)
+                                {
+                                    <EmptyState Message="@L["models.empty"]" />
+                                }
+                                else
+                                {
+                                    <div class="overflow-x-auto rounded border border-border bg-surface">
+                                        <table class="w-full text-xs">
+                                            <thead>
+                                                <tr class="border-b border-border text-left uppercase opacity-70">
+                                                    <th class="px-2 py-1.5">@L["models.col.id"]</th>
+                                                    <th class="px-2 py-1.5">@L["models.col.metadata"]</th>
+                                                    <th class="px-2 py-1.5">@L["models.col.enabled"]</th>
+                                                    <th class="px-2 py-1.5 text-right">@L["models.col.actions"]</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var m in PagedModels(p))
+                                                {
+                                                    <tr @key="m.Id" class="border-b border-border last:border-b-0">
+                                                        <td class="px-2 py-1.5 font-mono">
+                                                            @(m.DisplayName is null ? m.ModelId : $"{m.DisplayName} ({m.ModelId})")
+                                                        </td>
+                                                        <td class="px-2 py-1.5">
+                                                            <div class="flex flex-wrap items-center gap-1.5">
+                                                                @if (m.IsManual)
+                                                                {
+                                                                    <Badge Text="@L["models.manual"]" Variant="BadgeVariant.Neutral" />
+                                                                }
+                                                                @if (m.ContextWindow is { } ctx)
+                                                                {
+                                                                    <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
+                                                                }
+                                                                @if (m.SupportsVision)
+                                                                {
+                                                                    <Badge Text="@L["models.badge.vision"]" Variant="BadgeVariant.Success" />
+                                                                }
+                                                                @if (m.SupportsThink)
+                                                                {
+                                                                    <Badge Text="@L["models.badge.think"]" Variant="BadgeVariant.Warning" />
+                                                                }
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-2 py-1.5">
+                                                            <input type="checkbox" checked="@m.Enabled" disabled="@_busy"
+                                                                   @onchange="() => ToggleModelAsync(m)" />
+                                                        </td>
+                                                        <td class="px-2 py-1.5 text-right">
+                                                            <button type="button" class="btn btn-outline-danger px-1.5"
+                                                                    disabled="@(_busy || _confirmDeleteModel is not null)"
+                                                                    @onclick="() => _confirmDeleteModel = m">
+                                                                &#128465;&#65039;
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    <Pager Total="p.Models.Count" @bind-Page="_modelPage" @bind-PageSize="_modelPageSize" />
+                                }
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <Pager Total="_providers.Count" @bind-Page="_providerPage" @bind-PageSize="_providerPageSize" />
+}
+
+@if (_confirmDeleteProvider is { } providerToDelete)
+{
+    <ConfirmDialog Visible="true"
+                   Title="@L["providers.action.delete"]"
+                   Message="@string.Format(L["providers.confirmDelete"], providerToDelete.Name, providerToDelete.Models.Count)"
+                   Danger="true"
+                   ConfirmText="@L["providers.action.delete"]"
+                   CancelText="@L["confirm.cancel"]"
+                   OnConfirm="DeleteProviderAsync"
+                   OnCancel="() => _confirmDeleteProvider = null" />
+}
+
+@if (_confirmDeleteModel is { } modelToDelete)
+{
+    <ConfirmDialog Visible="true"
+                   Title="@L["providers.action.delete"]"
+                   Message="@string.Format(L["models.confirmDelete"], modelToDelete.ModelId)"
+                   Danger="true"
+                   ConfirmText="@L["providers.action.delete"]"
+                   CancelText="@L["confirm.cancel"]"
+                   OnConfirm="DeleteModelAsync"
+                   OnCancel="() => _confirmDeleteModel = null" />
+}
+
+@if (_confirmRemoveAll is { } providerToRemoveAll)
+{
+    <ConfirmDialog Visible="true"
+                   Title="@L["providers.action.delete"]"
+                   Message="@string.Format(L["models.confirmDeleteAll"], providerToRemoveAll.Models.Count)"
+                   Danger="true"
+                   ConfirmText="@L["models.deleteAll"]"
+                   CancelText="@L["confirm.cancel"]"
+                   OnConfirm="RemoveAllModelsAsync"
+                   OnCancel="() => _confirmRemoveAll = null" />
+}
+
+@code {
+    private List<Provider> _providers = [];
+    private bool _loading = true;
+    private bool _busy;
+
+    // Expand + phân trang giữ xuyên suốt thao tác (checklist #7: expand persist)
+    private long? _expandedId;
+    private int _providerPage = 1;
+    private int _providerPageSize = 10;
+    private int _modelPage = 1;
+    private int _modelPageSize = 10;
+
+    private long? _testingId;
+    private long? _fetchingId;
+    private string _newModelId = string.Empty;
+    private bool _bulkOpen;
+    private string _bulkText = string.Empty;
+
+    private Provider? _confirmDeleteProvider;
+    private Model? _confirmDeleteModel;
+    private Provider? _confirmRemoveAll;
+
+    /// <summary>Provider của trang hiện tại — client-side paging trong bộ nhớ (spec quyết định 4).</summary>
+    private IEnumerable<Provider> PageItems => _providers
+        .Skip((_providerPage - 1) * _providerPageSize)
+        .Take(_providerPageSize);
+
+    protected override async Task OnInitializedAsync()
+    {
+        L.LanguageChanged += OnLanguageChanged;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _providers = (await ProviderSvc.ListAsync()).ToList();
+            // Sau khi xóa bớt, trang hiện tại có thể vượt số trang — clamp về hợp lệ
+            var providerPages = Math.Max(1, (_providers.Count + _providerPageSize - 1) / _providerPageSize);
+            _providerPage = Math.Clamp(_providerPage, 1, providerPages);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không tải được danh sách provider.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private void ToggleExpand(long id)
+    {
+        if (_expandedId == id)
+        {
+            _expandedId = null;
+            return;
+        }
+        _expandedId = id;
+        _modelPage = 1; // đổi provider đang expand → về trang 1 của bảng model
+        _bulkOpen = false;
+        _newModelId = string.Empty;
+    }
+
+    private async Task ToggleProviderEnabledAsync(Provider provider)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await ProviderSvc.SetEnabledAsync(provider.Id, !provider.Enabled);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không đổi được trạng thái provider.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestAsync(Provider provider)
+    {
+        _testingId = provider.Id;
+        try
+        {
+            // Entity đã lưu → service tự decrypt key đã lưu và persist LastTest* (Task 3)
+            var result = await ProviderSvc.TestConnectionAsync(provider, apiKeyOverride: null);
+            if (result.Success)
+            {
+                Toast.Show(L["providers.msg.testPassed"], ToastSeverity.Success);
+            }
+            else
+            {
+                Toast.Show(string.Format(L["providers.msg.testFailed"], result.Message), ToastSeverity.Error);
+            }
+            await LoadAsync(); // badge LastTest* mới nhất
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Test connection thất bại từ danh sách provider.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _testingId = null;
+        }
+    }
+
+    private async Task DeleteProviderAsync()
+    {
+        if (_confirmDeleteProvider is not { } provider) return;
+        _busy = true;
+        try
+        {
+            await ProviderSvc.DeleteAsync(provider.Id);
+            if (_expandedId == provider.Id)
+            {
+                _expandedId = null;
+            }
+            Toast.Show(L["providers.deleted"], ToastSeverity.Success);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không xóa được provider.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+            _confirmDeleteProvider = null;
+        }
+    }
+
+    private async Task OnModelKeyAsync(KeyboardEventArgs e, Provider provider)
+    {
+        // Enter trong ô Add model = submit (pattern form nhẹ, không cần nút)
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_newModelId))
+        {
+            await AddManualAsync(provider);
+        }
+    }
+
+    private async Task AddManualAsync(Provider provider)
+    {
+        if (_busy || string.IsNullOrWhiteSpace(_newModelId)) return;
+        _busy = true;
+        try
+        {
+            await ModelSvc.AddManualAsync(provider.Id, _newModelId);
+            _newModelId = string.Empty;
+            Toast.Show(L["models.saved"], ToastSeverity.Success);
+            await ReloadKeepExpandAsync(provider.Id);
+        }
+        catch (InvalidOperationException)
+        {
+            // AddManualAsync ném InvalidOperation duy nhất khi duplicate ModelId
+            Toast.Show(L["models.error.duplicate"], ToastSeverity.Error);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Thêm model thủ công thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task AddBulkAsync(Provider provider)
+    {
+        if (_busy || string.IsNullOrWhiteSpace(_bulkText)) return;
+        _busy = true;
+        try
+        {
+            var lines = _bulkText.Replace("\r\n", "\n").Split('\n');
+            var (added, skipped) = await ModelSvc.AddBulkAsync(provider.Id, lines);
+            _bulkText = string.Empty;
+            _bulkOpen = false;
+            Toast.Show(string.Format(L["models.result.added"], added, skipped), ToastSeverity.Success);
+            await ReloadKeepExpandAsync(provider.Id);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Bulk add model thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task FetchAsync(Provider provider)
+    {
+        _fetchingId = provider.Id;
+        try
+        {
+            var (added, skipped) = await ModelSvc.FetchFromProviderAsync(provider.Id);
+            Toast.Show(string.Format(L["models.result.added"], added, skipped), ToastSeverity.Success);
+            await ReloadKeepExpandAsync(provider.Id);
+        }
+        catch (HttpRequestException ex)
+        {
+            Log.Error("Lấy danh sách model thất bại.", ex);
+            Toast.Show(string.Format(L["models.fetchFailed"], ex.Message), ToastSeverity.Error);
+        }
+        catch (TaskCanceledException ex)
+        {
+            // HttpClient timeout ném TaskCanceledException — tách nhánh để toast đúng loại lỗi
+            Log.Error("Lấy danh sách model timeout.", ex);
+            Toast.Show(string.Format(L["models.fetchFailed"], ex.Message), ToastSeverity.Error);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Lấy danh sách model thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _fetchingId = null;
+        }
+    }
+
+    private async Task ToggleModelAsync(Model model)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await ModelSvc.SetEnabledAsync(model.Id, !model.Enabled);
+            await ReloadKeepExpandAsync(model.ProviderId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không đổi được trạng thái model.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SetAllModelsAsync(Provider provider, bool enabled)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await ModelSvc.SetAllEnabledAsync(provider.Id, enabled);
+            await ReloadKeepExpandAsync(provider.Id);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không bật/tắt được toàn bộ model.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteModelAsync()
+    {
+        if (_confirmDeleteModel is not { } model) return;
+        _busy = true;
+        try
+        {
+            await ModelSvc.RemoveAsync(model.Id);
+            Toast.Show(L["models.deleted"], ToastSeverity.Success);
+            await ReloadKeepExpandAsync(model.ProviderId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không xóa được model.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+            _confirmDeleteModel = null;
+        }
+    }
+
+    private async Task RemoveAllModelsAsync()
+    {
+        if (_confirmRemoveAll is not { } provider) return;
+        _busy = true;
+        try
+        {
+            var removed = await ModelSvc.RemoveAllAsync(provider.Id);
+            Toast.Show(string.Format(L["models.removedAll"], removed), ToastSeverity.Success);
+            await ReloadKeepExpandAsync(provider.Id);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không xóa được toàn bộ model.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+            _confirmRemoveAll = null;
+        }
+    }
+
+    /// <summary>Tải lại danh sách nhưng giữ nguyên hàng đang expand + clamp trang model.</summary>
+    private async Task ReloadKeepExpandAsync(long providerId)
+    {
+        await LoadAsync();
+        _expandedId = providerId;
+        if (_providers.FirstOrDefault(x => x.Id == providerId) is { } current)
+        {
+            var pages = Math.Max(1, (current.Models.Count + _modelPageSize - 1) / _modelPageSize);
+            _modelPage = Math.Clamp(_modelPage, 1, pages);
+        }
+    }
+
+    /// <summary>Model của trang hiện tại, sắp xếp ổn định theo ModelId (client-side).</summary>
+    private IEnumerable<Model> PagedModels(Provider provider) => provider.Models
+        .OrderBy(m => m.ModelId, StringComparer.Ordinal)
+        .Skip((_modelPage - 1) * _modelPageSize)
+        .Take(_modelPageSize);
+
+    private static int EnabledCount(Provider provider) => provider.Models.Count(m => m.Enabled);
+
+    private string TypeLabel(ProviderType type) => type switch
+    {
+        ProviderType.OpenAI => L["providers.type.openai"],
+        _ => L["providers.type.anthropic"],
+    };
+
+    private static BadgeVariant TypeVariant(ProviderType type) => type switch
+    {
+        ProviderType.OpenAI => BadgeVariant.Success,
+        _ => BadgeVariant.Info,
+    };
+
+    /// <summary>128000 → "128k"; dưới 1000 giữ nguyên — badge ngắn gọn, không cần chính xác tuyệt đối.</summary>
+    private static string FormatCtx(int contextWindow) =>
+        contextWindow >= 1000 ? $"{contextWindow / 1000}k" : contextWindow.ToString();
+
+    public void Dispose() => L.LanguageChanged -= OnLanguageChanged;
+}
