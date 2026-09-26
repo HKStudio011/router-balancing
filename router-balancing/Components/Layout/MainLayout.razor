@@ -2,6 +2,7 @@
 @implements IDisposable
 @inject IProxyHost ProxyHost
 @inject ThemeService Theme
+@inject ILogService Log
 @inject LocalizationService L
 @inject ToastService Toast
 
@@ -42,7 +43,17 @@
         ProxyHost.StateChanged += OnProxyStateChanged;
         Toast.ToastAdded += OnToastAdded;
         UpdateBadge();
-        await Theme.ApplyAsync();
+        try
+        {
+            await Theme.ApplyAsync();
+        }
+        catch (Exception ex)
+        {
+            // Failure-domain: lỗi theme (bundle/index.html regression) chỉ được phép
+            // tước mất theme — nuốt tại đây để OnInitializedAsync không fault
+            // và làm sập toàn bộ render của layout.
+            Log.Error("Áp dụng theme thất bại — giao diện vẫn hiển thị với theme mặc định.", ex);
+        }
     }
 
     private void OnProxyStateChanged() => _ = InvokeAsync(() =>
