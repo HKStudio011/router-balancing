@@ -1522,7 +1522,8 @@ public class ProviderEndpointMetadataProviderTests
             {"id":"gpt-4o","context_window":128000,
              "supported_modalities":{"input":["text","image"],"output":["text"]}}
             """);
-        var provider = new ProviderEndpointMetadataProvider(new StubFactory(handler));
+        var provider = new ProviderEndpointMetadataProvider(
+            new StubFactory(handler), new DpapiSecretProtector());
         var (p, m) = Pair();
 
         var meta = await provider.FetchAsync(p, m);
@@ -1538,7 +1539,8 @@ public class ProviderEndpointMetadataProviderTests
     [Fact]
     public async Task FetchAsync_WhenEndpointThrows_ReturnsNull()
     {
-        var provider = new ProviderEndpointMetadataProvider(new StubFactory(new ThrowingHandler()));
+        var provider = new ProviderEndpointMetadataProvider(
+            new StubFactory(new ThrowingHandler()), new DpapiSecretProtector());
         var (p, m) = Pair();
 
         Assert.Null(await provider.FetchAsync(p, m));
@@ -1548,7 +1550,7 @@ public class ProviderEndpointMetadataProviderTests
     public async Task FetchAsync_WhenShapeUnrecognized_ReturnsNull()
     {
         var provider = new ProviderEndpointMetadataProvider(
-            new StubFactory(new JsonHandler("""{"foo":"bar"}""")));
+            new StubFactory(new JsonHandler("""{"foo":"bar"}""")), new DpapiSecretProtector());
         var (p, m) = Pair();
 
         Assert.Null(await provider.FetchAsync(p, m));
