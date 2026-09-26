@@ -75,7 +75,11 @@ namespace router_balancing
         {
             try
             {
-                if (_startup.IsEnabled != _settings.StartWithWindows)
+                // true ⇒ Run key phải trỏ đúng exe hiện tại: IsEnabled=false khi thiếu HOẶC path cũ
+                // (exe bị di chuyển) → ghi lại để sửa giá trị lỗi thời.
+                // false ⇒ xóa key thẳng, không tra IsEnabled: path lỗi thời vẫn phải bị xóa
+                // (DeleteValue idempotent — không lỗi khi key chưa tồn tại).
+                if (!_settings.StartWithWindows || !_startup.IsEnabled)
                 {
                     _startup.SetEnabled(_settings.StartWithWindows);
                 }
@@ -137,6 +141,9 @@ namespace router_balancing
         }
 
 #if WINDOWS
+        // AppWindow đang gắn OnMainWindowClosing — lưu để gỡ trước khi gắn lại
+        private AppWindow? _trayCloseAppWindow;
+
         private void AttachCloseToTray(Window window)
         {
             window.HandlerChanged += (_, _) =>
@@ -145,15 +152,24 @@ namespace router_balancing
                 var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(native);
                 var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
                 var appWindow = AppWindow.GetFromWindowId(windowId);
-                appWindow.Closing += (_, args) =>
+                // HandlerChanged có thể chạy lại khi MAUI tái tạo handler — gỡ subscription cũ
+                // trước khi gắn mới, nếu không Closing bị subscribe 2 lần → ẩn + log lặp mỗi lần đóng
+                if (_trayCloseAppWindow is not null)
                 {
-                    // Thoát từ tray thì cho phép đóng; ngược lại closeToTray=true → hủy đóng, ẩn cửa sổ
-                    if (_reallyExiting || !_settings.CloseToTray) return;
-                    args.Cancel = true;
-                    appWindow.Hide();
-                    _log.Info("Đóng cửa sổ → thu về khay hệ thống.");
-                };
+                    _trayCloseAppWindow.Closing -= OnMainWindowClosing;
+                }
+                _trayCloseAppWindow = appWindow;
+                appWindow.Closing += OnMainWindowClosing;
             };
+        }
+
+        private void OnMainWindowClosing(AppWindow appWindow, AppWindowClosingEventArgs args)
+        {
+            // Thoát từ tray thì cho phép đóng; ngược lại closeToTray=true → hủy đóng, ẩn cửa sổ
+            if (_reallyExiting || !_settings.CloseToTray) return;
+            args.Cancel = true;
+            appWindow.Hide();
+            _log.Info("Đóng cửa sổ → thu về khay hệ thống.");
         }
 
         private static AppWindow? GetAppWindow(Window window)
