@@ -52,6 +52,7 @@
     /// <summary>Thông báo trang mới khi người dùng chuyển — dùng cùng <c>@bind-Page</c>.</summary>
     [Parameter] public EventCallback<int> PageChanged { get; set; }
 
+    /// <summary>Danh sách kích thước trang trong dropdown — do nơi gọi cấu hình.</summary>
     [Parameter] public int[] PageSizeOptions { get; set; } = [10, 25, 50, 100];
 
     private int PageCount => Math.Max(1, (Total + PageSize - 1) / PageSize);
