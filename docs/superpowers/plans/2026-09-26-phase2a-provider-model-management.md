@@ -1798,7 +1798,7 @@ git commit -m "feat: add model metadata provider chain"
 - Create: `src/RouterBalancing.Core/Providers/ModelMetadataService.cs`
 - Modify: `src/RouterBalancing.Core/Providers/ModelService.cs` (ctor + fill sau khi add)
 - Modify: `router-balancing/MauiProgram.cs` (DI + AddHttpClient)
-- Modify: `src/RouterBalancing.Core/RouterBalancing.Core.csproj` (package `Microsoft.Extensions.Http` nếu chưa có)
+- ~~Modify: `src/RouterBalancing.Core/RouterBalancing.Core.csproj`~~ — **KHÔNG thêm** package `Microsoft.Extensions.Http`: đã có qua framework reference (`IHttpClientFactory` compile sẵn từ Task 3); thêm PackageReference gây NU1510 phá gate 0W (review Task 6).
 - Modify: `router balancing test/Providers/ModelServiceTests.cs` (update ctor — thêm metadata stub)
 - Test: `router balancing test/Providers/ModelMetadataServiceTests.cs`
 
@@ -1904,8 +1904,10 @@ public class ModelMetadataServiceTests : IDisposable
         var modelId = await SeedModelAsync();
         using (var db = _db.CreateDbContext())
         {
-            var model = await db.Models.SingleAsync(m => m.Id == modelId);
-            model.ContextWindow = 42;
+            // Tên `seeded` (không phải `model`): trùng tên với local ở scope method bên
+            // dưới → CS0136 — sửa theo review Task 6.
+            var seeded = await db.Models.SingleAsync(m => m.Id == modelId);
+            seeded.ContextWindow = 42;
             await db.SaveChangesAsync();
         }
         var service = new ModelMetadataService(_db, new NullLog(),
@@ -2176,13 +2178,7 @@ Sau `builder.Services.AddSingleton<IProxyHost, ProxyHost>();` thêm:
             builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
 ```
 
-Kiểm tra package: `grep Microsoft.Extensions.Http src/RouterBalancing.Core/RouterBalancing.Core.csproj` — nếu chưa có, thêm (MAUI app thường đã có transitively qua ASP.NET Components nhưng **Core project tự chứa mới chắc chắn compile**):
-
-```xml
-    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12" />
-```
-
-(Và nếu thêm cho Core thì verify version có trên NuGet; nếu 10.0.12 không tồn tại cho package này thì dùng version 10.0.x gần nhất khớp family và ghi chú trong commit body.)
+**Package `Microsoft.Extensions.Http`: KHÔNG thêm PackageReference** — Core đã có qua framework reference (`IHttpClientFactory` compile được ngay từ Task 3); thêm PackageReference gây warning **NU1510** ("package automatically available") phá gate 0W/0E. Kiểm tra nhanh: `grep Microsoft.Extensions.Http src/RouterBalancing.Core/RouterBalancing.Core.csproj` — không có dòng nào là đúng (xác nhận theo review Task 6).
 
 - [ ] **Step 6: Verify**
 
