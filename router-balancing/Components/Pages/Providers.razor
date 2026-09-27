@@ -2,6 +2,7 @@
 @using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Providers
 @using RouterBalancing.Core.Settings
+@using System.Globalization
 @implements IDisposable
 @inject IProviderService ProviderSvc
 @inject IModelService ModelSvc
@@ -194,24 +195,68 @@ else
                                                             @(m.DisplayName is null ? m.ModelId : $"{m.DisplayName} ({m.ModelId})")
                                                         </td>
                                                         <td class="px-2 py-1.5">
-                                                            <div class="flex flex-wrap items-center gap-1.5">
-                                                                @if (m.IsManual)
-                                                                {
-                                                                    <Badge Text="@L["models.manual"]" Variant="BadgeVariant.Neutral" />
-                                                                }
-                                                                @if (m.ContextWindow is { } ctx)
-                                                                {
-                                                                    <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
-                                                                }
-                                                                @if (m.SupportsVision)
-                                                                {
-                                                                    <Badge Text="@L["models.badge.vision"]" Variant="BadgeVariant.Success" />
-                                                                }
-                                                                @if (m.SupportsThink)
-                                                                {
-                                                                    <Badge Text="@L["models.badge.think"]" Variant="BadgeVariant.Warning" />
-                                                                }
-                                                            </div>
+                                                            @if (_editingCapabilitiesId == m.Id)
+                                                            {
+                                                                <div class="flex flex-wrap items-center gap-1.5" data-testid="caps-edit-form">
+                                                                    <label class="flex items-center gap-1">
+                                                                        @L["models.capabilities.contextWindow"]
+                                                                        <input type="number" min="1" max="10000000"
+                                                                               class="w-24" disabled="@_busy"
+                                                                               data-testid="caps-ctx-input"
+                                                                               @bind="_editCtx" @bind:event="oninput" />
+                                                                    </label>
+                                                                    <label class="flex items-center gap-1">
+                                                                        <input type="checkbox" disabled="@_busy" @bind="_editVision" />
+                                                                        @L["models.capabilities.vision"]
+                                                                    </label>
+                                                                    <label class="flex items-center gap-1">
+                                                                        <input type="checkbox" disabled="@_busy" @bind="_editThink" />
+                                                                        @L["models.capabilities.think"]
+                                                                    </label>
+                                                                    <button type="button" class="btn btn-primary px-1.5"
+                                                                            disabled="@_busy" data-testid="caps-save"
+                                                                            @onclick="() => SaveCapabilitiesAsync(m)">
+                                                                        &#10003;
+                                                                    </button>
+                                                                    <button type="button" class="btn btn-outline-secondary px-1.5"
+                                                                            disabled="@_busy" data-testid="caps-cancel"
+                                                                            @onclick="CancelEditCapabilities">
+                                                                        &#10005;
+                                                                    </button>
+                                                                </div>
+                                                            }
+                                                            else
+                                                            {
+                                                                <div class="flex flex-wrap items-center gap-1.5">
+                                                                    @if (m.IsManual)
+                                                                    {
+                                                                        <Badge Text="@L["models.manual"]" Variant="BadgeVariant.Neutral" />
+                                                                    }
+                                                                    @if (m.ContextWindow is { } ctx)
+                                                                    {
+                                                                        <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
+                                                                    }
+                                                                    @if (m.SupportsVision)
+                                                                    {
+                                                                        <Badge Text="@L["models.badge.vision"]" Variant="BadgeVariant.Success" />
+                                                                    }
+                                                                    @if (m.SupportsThink)
+                                                                    {
+                                                                        <Badge Text="@L["models.badge.think"]" Variant="BadgeVariant.Warning" />
+                                                                    }
+                                                                    @if (!m.IsManual && m.ContextWindow is null && !m.SupportsVision && !m.SupportsThink)
+                                                                    {
+                                                                        @* Ký hiệu language-neutral — không qua i18n (spec §3.3) *@
+                                                                        <span class="opacity-70" data-testid="caps-placeholder">&#8212;</span>
+                                                                    }
+                                                                    <button type="button" class="btn btn-outline-info px-1.5"
+                                                                            disabled="@_busy" data-testid="caps-edit"
+                                                                            title="@L["models.action.editCapabilities"]"
+                                                                            @onclick="() => BeginEditCapabilities(m)">
+                                                                            &#9998;
+                                                                    </button>
+                                                                </div>
+                                                            }
                                                         </td>
                                                         <td class="px-2 py-1.5">
                                                             <input type="checkbox" checked="@m.Enabled" disabled="@_busy"
@@ -382,6 +427,12 @@ else
     private long? _testingId;
     private long? _fetchingId;
     private string _newModelId = string.Empty;
+
+    // Edit inline capabilities — 1 bộ state duy nhất nên mở row khác tự đóng row cũ (chỉ 1 model sửa 1 lúc)
+    private long? _editingCapabilitiesId;
+    private string _editCtx = string.Empty;
+    private bool _editVision;
+    private bool _editThink;
     private bool _bulkOpen;
     private string _bulkText = string.Empty;
 
@@ -629,6 +680,62 @@ else
         catch (Exception ex)
         {
             Log.Error("Không đổi được trạng thái model.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void BeginEditCapabilities(Model model)
+    {
+        if (_busy) return;
+        _editingCapabilitiesId = model.Id;
+        // Trống = clear (null) — phân biệt với giá trị thật 0 (0 vốn bị range chặn)
+        _editCtx = model.ContextWindow?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        _editVision = model.SupportsVision;
+        _editThink = model.SupportsThink;
+    }
+
+    private void CancelEditCapabilities()
+    {
+        _editingCapabilitiesId = null;
+    }
+
+    private async Task SaveCapabilitiesAsync(Model model)
+    {
+        if (_busy) return;
+
+        int? ctx = null;
+        if (!string.IsNullOrWhiteSpace(_editCtx))
+        {
+            // Parse InvariantCulture để "128000" không phụ thuộc locale của máy user
+            if (!int.TryParse(_editCtx, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                || parsed is < 1 or > 10_000_000)
+            {
+                Toast.Show(L["models.error.contextRange"], ToastSeverity.Error);
+                return;
+            }
+            ctx = parsed;
+        }
+
+        _busy = true;
+        try
+        {
+            await ModelSvc.UpdateCapabilitiesAsync(model.Id, ctx, _editVision, _editThink);
+            _editingCapabilitiesId = null;
+            await ReloadKeepExpandAsync(model.ProviderId);
+            Toast.Show(L["models.msg.capabilitiesSaved"], ToastSeverity.Success);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // Service ném khi range sai — cùng toast với lỗi parse phía trên
+            Toast.Show(L["models.error.contextRange"], ToastSeverity.Error);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không lưu được capabilities model.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
         }
         finally
