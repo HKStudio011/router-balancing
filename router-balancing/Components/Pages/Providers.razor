@@ -1,14 +1,19 @@
 @page "/providers"
 @using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Providers
+@using RouterBalancing.Core.Settings
 @implements IDisposable
 @inject IProviderService ProviderSvc
 @inject IModelService ModelSvc
 @inject LocalizationService L
 @inject ToastService Toast
 @inject ILogService Log
+@inject IAppSettingsService Settings
 
-<h1 class="mb-4 text-xl font-semibold">@L["panel.providers.title"]</h1>
+<div class="mb-4 flex items-center justify-between gap-3">
+    <h1 class="text-xl font-semibold">@L["panel.providers.title"]</h1>
+    <button type="button" class="btn btn-primary" @onclick="OpenAdd">+ @L["providers.add"]</button>
+</div>
 
 @if (_loading)
 {
@@ -85,6 +90,11 @@ else
                                         disabled="@(_busy || _testingId == p.Id)"
                                         @onclick="() => TestAsync(p)">
                                     @(_testingId == p.Id ? L["providers.testing"] : L["providers.action.test"])
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary"
+                                        disabled="@_busy"
+                                        @onclick="() => OpenEdit(p)">
+                                    @L["providers.action.edit"]
                                 </button>
                                 <button type="button" class="btn btn-outline-danger"
                                         disabled="@(_busy || _confirmDeleteProvider is not null)"
@@ -233,6 +243,94 @@ else
     <Pager Total="_providers.Count" @bind-Page="_providerPage" @bind-PageSize="_providerPageSize" />
 }
 
+<Modal Visible="_modalVisible"
+       Title="@(_editingId is null ? L["providers.add"] : L["providers.action.edit"])"
+       OnClose="CloseModal">
+    <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+            @L["providers.field.name"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   autofocus @bind="_draft.Name" />
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["providers.field.type"]
+            <select class="rounded border border-border bg-surface px-2 py-1.5" @bind="_draft.Type">
+                <option value="@ProviderType.OpenAI">@L["providers.type.openai"]</option>
+                <option value="@ProviderType.Anthropic">@L["providers.type.anthropic"]</option>
+            </select>
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["providers.field.maxConcurrent"]
+            <input type="number" min="1" max="64"
+                   class="rounded border border-border bg-surface px-2 py-1.5"
+                   @bind="_draft.MaxConcurrent" />
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+            @L["providers.field.baseUrl"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   placeholder="https://api.openai.com" spellcheck="false"
+                   @bind="_draft.BaseUrl" />
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+            @L["providers.field.apiKey"]
+            @* Edit: placeholder "đã lưu" — để trống = giữ key cũ, không hiển thị giá trị (spec §3.1) *@
+            <input type="password" class="rounded border border-border bg-surface px-2 py-1.5"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="@(_editingId is null ? string.Empty : L["providers.key.saved"])"
+                   @bind="_draft.ApiKey" />
+        </label>
+    </div>
+
+    @if (ModalError(nameof(ProviderDraft.Name)) is { } nameError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[nameError]</div>
+    }
+    @if (ModalError(nameof(ProviderDraft.BaseUrl)) is { } baseUrlError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[baseUrlError]</div>
+    }
+    @if (ModalError(nameof(ProviderDraft.MaxConcurrent)) is { } maxConcurrentError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[maxConcurrentError]</div>
+    }
+
+    <div class="mt-4 flex flex-wrap items-center gap-2">
+        <button type="button" class="btn btn-outline-info" disabled="@(_testing || _saving)"
+                @onclick="TestDraftAsync">
+            @(_testing ? L["providers.testing"] : L["providers.action.testConnection"])
+        </button>
+
+        @if (_testResult is { } testResult)
+        {
+            <Badge Variant="@(testResult.Success ? BadgeVariant.Success : BadgeVariant.Danger)"
+                   Text="@(testResult.Success ? L["providers.lastTest.ok"] : L["providers.lastTest.fail"])" />
+            @if (testResult.Message is not null)
+            {
+                <span class="text-xs opacity-70">@testResult.Message</span>
+            }
+        }
+        else if (_editingId is null)
+        {
+            <span class="text-xs opacity-70">@L["providers.test.hint"]</span>
+        }
+    </div>
+
+    <div class="mt-4 flex justify-end gap-2">
+        <button type="button" class="btn btn-outline-secondary" disabled="@_saving" @onclick="CloseModal">
+            @L["confirm.cancel"]
+        </button>
+        @* Nút Save dùng chung key i18n của Settings ("Save"/"Lưu") — cùng nghĩa, tránh nhân đôi key *@
+        <button type="button" class="btn btn-primary"
+                disabled="@(!CanSave || _saving || _testing)" @onclick="SaveAsync">
+            @L["settings.action.save"]
+        </button>
+    </div>
+</Modal>
+
 @if (_confirmDeleteProvider is { } providerToDelete)
 {
     <ConfirmDialog Visible="true"
@@ -290,6 +388,18 @@ else
     private Provider? _confirmDeleteProvider;
     private Model? _confirmDeleteModel;
     private Provider? _confirmRemoveAll;
+
+    // ===== Modal Add/Edit (Task 9) =====
+    private bool _modalVisible;
+    private bool _saving;
+    private bool _testing;
+    private long? _editingId; // null = thêm mới
+    private ProviderDraft _draft = new();
+    private Dictionary<string, string> _errors = [];
+    private ProviderTestResult? _testResult;
+
+    /// <summary>Chữ ký draft lúc test: Type|BaseUrl|ApiKey — đổi form sau test = test mất hiệu lực.</summary>
+    private string? _testedSignature;
 
     /// <summary>Provider của trang hiện tại — client-side paging trong bộ nhớ (spec quyết định 4).</summary>
     private IEnumerable<Provider> PageItems => _providers
@@ -588,6 +698,139 @@ else
         {
             _busy = false;
             _confirmRemoveAll = null;
+        }
+    }
+
+    private void OpenAdd()
+    {
+        _editingId = null;
+        _draft = new ProviderDraft { MaxConcurrent = Settings.DefaultMaxConcurrent };
+        ResetModalState();
+        _modalVisible = true;
+    }
+
+    private void OpenEdit(Provider provider)
+    {
+        _editingId = provider.Id;
+        // ApiKey để trống = giữ key cũ khi UpdateAsync (spec §3.1); UI hiện placeholder "đã lưu"
+        _draft = new ProviderDraft
+        {
+            Name = provider.Name,
+            Type = provider.Type,
+            BaseUrl = provider.BaseUrl,
+            ApiKey = string.Empty,
+            MaxConcurrent = provider.MaxConcurrent,
+        };
+        ResetModalState();
+        _modalVisible = true;
+    }
+
+    private void ResetModalState()
+    {
+        _errors = [];
+        _testResult = null;
+        _testedSignature = null;
+        _testing = false;
+        _saving = false;
+    }
+
+    private void CloseModal()
+    {
+        _modalVisible = false;
+        ResetModalState();
+    }
+
+    /// <summary>Lấy key lỗi i18n của field; null nếu field không có lỗi (pattern SettingsPanel).</summary>
+    private string? ModalError(string field) =>
+        _errors.TryGetValue(field, out var key) ? key : null;
+
+    private string DraftSignature() =>
+        $"{_draft.Type}|{_draft.BaseUrl.Trim().TrimEnd('/')}|{_draft.ApiKey}";
+
+    /// <summary>
+    /// Provider mới: chỉ Save khi test pass với đúng nội dung hiện tại của form;
+    /// provider đã lưu: Save luôn bật — test là tùy chọn (spec §4.2).
+    /// </summary>
+    private bool CanSave =>
+        _editingId is not null
+        || (_testResult is { Success: true } && _testedSignature == DraftSignature());
+
+    private async Task TestDraftAsync()
+    {
+        // Single-flight như Task 8: double-click khi lượt trước còn await sẽ chạy
+        // song song, _testedSignature/_testResult của lượt sau bị finally lượt trước xóa.
+        if (_busy) return;
+        _errors = ProviderValidator.Validate(_draft).ToDictionary(kv => kv.Key, kv => kv.Value);
+        if (_errors.Count > 0) return;
+
+        _busy = true;
+        _testing = true;
+        try
+        {
+            // Đã lưu: lấy entity (có key mã hóa) rồi vá field form — service tự ưu tiên
+            // apiKeyOverride khi form đang có key gõ (spec §3.1)
+            var target = _editingId is { } id
+                ? await ProviderSvc.GetAsync(id) ?? throw new KeyNotFoundException($"Provider {id} not found.")
+                : new Provider();
+            target.Type = _draft.Type;
+            target.BaseUrl = _draft.BaseUrl.Trim().TrimEnd('/');
+
+            _testResult = await ProviderSvc.TestConnectionAsync(
+                target, string.IsNullOrEmpty(_draft.ApiKey) ? null : _draft.ApiKey);
+            _testedSignature = DraftSignature();
+
+            if (_editingId is not null)
+            {
+                await LoadAsync(); // LastTest* đã persist trong service — badge cột Last test đổi theo
+            }
+        }
+        catch (Exception ex)
+        {
+            // Mạng/DPAPI/URL lạ đều hiển thị như test fail trong modal — không nuốt im lặng
+            Log.Error("Test connection thất bại từ modal.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            _testResult = new ProviderTestResult(false, ex.Message, DateTimeOffset.UtcNow);
+            _testedSignature = DraftSignature();
+        }
+        finally
+        {
+            _testing = false;
+            _busy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_busy) return; // Single-flight — double-click vẫn tới được đây khi nút chưa re-render
+        _errors = ProviderValidator.Validate(_draft).ToDictionary(kv => kv.Key, kv => kv.Value);
+        if (_errors.Count > 0) return;
+        if (!CanSave) return; // chặn cứng — nút đã disabled nhưng test chưa pass thì không được lưu
+
+        _busy = true;
+        _saving = true;
+        try
+        {
+            if (_editingId is { } id)
+            {
+                await ProviderSvc.UpdateAsync(id, _draft);
+            }
+            else
+            {
+                await ProviderSvc.CreateAsync(_draft);
+            }
+            Toast.Show(L["providers.msg.saved"], ToastSeverity.Success);
+            CloseModal();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không lưu được provider.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _saving = false;
+            _busy = false;
         }
     }
 
