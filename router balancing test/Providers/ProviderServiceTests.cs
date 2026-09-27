@@ -55,6 +55,44 @@ public class ProviderServiceTests : IDisposable
         Assert.Equal(provider.ApiKeyEncrypted, saved.ApiKeyEncrypted);
     }
 
+    [Theory]
+    [InlineData("https://api.example.com/v1", "https://api.example.com")]
+    [InlineData("https://api.example.com/v1/", "https://api.example.com")]
+    public async Task Create_WhenBaseUrlEndsWithV1_PersistsCanonicalBaseUrl(string input, string expected)
+    {
+        var provider = await _service.CreateAsync(new ProviderDraft
+        {
+            Name = "P",
+            Type = ProviderType.OpenAI,
+            BaseUrl = input,
+            ApiKey = "sk",
+            MaxConcurrent = 4,
+        });
+
+        Assert.Equal(expected, provider.BaseUrl);
+        using var db = _db.CreateDbContext();
+        Assert.Equal(expected, (await db.Providers.SingleAsync(p => p.Id == provider.Id)).BaseUrl);
+    }
+
+    [Fact]
+    public async Task Update_WhenBaseUrlEndsWithV1_PersistsCanonicalBaseUrl()
+    {
+        var provider = await _service.CreateAsync(Draft());
+
+        await _service.UpdateAsync(provider.Id, new ProviderDraft
+        {
+            Name = provider.Name,
+            Type = ProviderType.OpenAI,
+            BaseUrl = "https://api.example.com/api/v1",
+            ApiKey = string.Empty, // key rỗng = giữ key cũ (hành vi hiện hữu)
+            MaxConcurrent = 4,
+        });
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
+        Assert.Equal("https://api.example.com/api", saved.BaseUrl);
+    }
+
     [Fact]
     public async Task ListAsync_WhenProvidersExist_IncludesModels()
     {

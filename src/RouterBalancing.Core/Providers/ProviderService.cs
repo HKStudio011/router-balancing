@@ -53,7 +53,7 @@ public sealed class ProviderService : IProviderService
         {
             Name = draft.Name.Trim(),
             Type = draft.Type,
-            BaseUrl = draft.BaseUrl.Trim().TrimEnd('/'),
+            BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl),
             ApiKeyEncrypted = string.IsNullOrEmpty(draft.ApiKey)
                 ? string.Empty
                 : _protector.Protect(draft.ApiKey),
@@ -75,7 +75,7 @@ public sealed class ProviderService : IProviderService
 
         provider.Name = draft.Name.Trim();
         provider.Type = draft.Type;
-        provider.BaseUrl = draft.BaseUrl.Trim().TrimEnd('/');
+        provider.BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl);
         provider.MaxConcurrent = draft.MaxConcurrent;
         // Key rỗng khi sửa = giữ nguyên key cũ — không bao giờ ghi đè bằng chuỗi rỗng
         if (!string.IsNullOrEmpty(draft.ApiKey))

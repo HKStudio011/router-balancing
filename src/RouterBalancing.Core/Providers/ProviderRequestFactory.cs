@@ -18,7 +18,13 @@ public static class ProviderRequestFactory
     /// <exception cref="ArgumentOutOfRangeException">Khi Type ngoài 2 giá trị đã biết.</exception>
     public static HttpRequestMessage Create(Provider provider, string apiKey, string? path = null)
     {
-        var url = provider.BaseUrl.TrimEnd('/') + (path ?? "/v1/models");
+        // Canonicalize ngay lúc ghép (idempotent): fix runtime cho row lưu trước khi có save-fix
+        // — chỉ khi path tự có /v1, không đoán với path không version
+        var requestPath = path ?? "/v1/models";
+        var baseUrl = requestPath.StartsWith("/v1", StringComparison.Ordinal)
+            ? ProviderUrl.Canonicalize(provider.BaseUrl)
+            : provider.BaseUrl.TrimEnd('/');
+        var url = baseUrl + requestPath;
         var request = new HttpRequestMessage(HttpMethod.Get, url);
 
         switch (provider.Type)
