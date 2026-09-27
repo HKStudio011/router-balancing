@@ -1,10 +1,12 @@
 @page "/providers"
 @using RouterBalancing.Core.Domain
+@using System.Text.Json
 @using RouterBalancing.Core.Providers
 @using RouterBalancing.Core.Settings
 @using System.Globalization
 @implements IDisposable
 @inject IProviderService ProviderSvc
+@inject IProviderAccountService AccountSvc
 @inject IModelService ModelSvc
 @inject LocalizationService L
 @inject ToastService Toast
@@ -320,14 +322,16 @@ else
                    @bind="_draft.BaseUrl" />
         </label>
 
-        <label class="flex flex-col gap-1 text-sm sm:col-span-2">
-            @L["providers.field.apiKey"]
-            @* Edit: placeholder "đã lưu" — để trống = giữ key cũ, không hiển thị giá trị (spec §3.1) *@
-            <input type="password" class="rounded border border-border bg-surface px-2 py-1.5"
-                   autocomplete="off" spellcheck="false"
-                   placeholder="@(_editingId is null ? string.Empty : L["providers.key.saved"])"
-                   @bind="_draft.ApiKey" />
-        </label>
+        @if (_editingId is null)
+        {
+            <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+                @L["providers.field.apiKey"]
+                @* Key tạo account "Default" khi save (spec §4.2) — edit quản lý key ở section Tài khoản *@
+                <input type="password" class="rounded border border-border bg-surface px-2 py-1.5"
+                       autocomplete="off" spellcheck="false"
+                       @bind="_draft.ApiKey" />
+            </label>
+        }
     </div>
 
     @if (ModalError(nameof(ProviderDraft.Name)) is { } nameError)
@@ -341,6 +345,151 @@ else
     @if (ModalError(nameof(ProviderDraft.MaxConcurrent)) is { } maxConcurrentError)
     {
         <div class="mt-1 text-sm text-danger">@L[maxConcurrentError]</div>
+    }
+
+    @if (_editingId is not null)
+    {
+        @* ===== Section Tài khoản (spec provider-accounts §5.2) — key quản lý hoàn toàn ở đây ===== *@
+        <div class="mt-4 flex flex-col gap-2 text-sm">
+            <div class="flex items-center justify-between">
+                <span class="font-semibold">@L["accounts.section.title"]</span>
+                <div class="flex gap-2">
+                    <button type="button" class="btn btn-outline-secondary"
+                            disabled="@(_busy || _testingAccounts || _accountForm is not null)"
+                            @onclick="TestAllAccountsAsync">
+                        @(_testingAccounts ? L["providers.testing"] : L["accounts.action.testAll"])
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary"
+                            disabled="@(_busy || _accountForm is not null)"
+                            @onclick="AddAccountRow">
+                        @L["accounts.action.add"]
+                    </button>
+                </div>
+            </div>
+
+            @if (_accounts.Count == 0)
+            {
+                <EmptyState Message="@L["accounts.empty"]" />
+            }
+            else
+            {
+                <div class="overflow-x-auto rounded border border-border bg-surface">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="border-b border-border text-left uppercase opacity-70">
+                                <th class="px-2 py-1.5">@L["accounts.field.name"]</th>
+                                <th class="px-2 py-1.5">@L["accounts.field.enabled"]</th>
+                                <th class="px-2 py-1.5">@L["accounts.field.patterns"]</th>
+                                @* Cột info (W/P + usage) và cột test: nhãn language-neutral / tái dùng key test có sẵn *@
+                                <th class="px-2 py-1.5"></th>
+                                <th class="px-2 py-1.5">@L["providers.action.test"]</th>
+                                <th class="px-2 py-1.5 text-right">@L["providers.col.actions"]</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var account in _accounts)
+                            {
+                                <tr @key="account.Id" class="border-b border-border last:border-b-0">
+                                    <td class="px-2 py-1.5 font-medium">@account.Name</td>
+                                    <td class="px-2 py-1.5">
+                                        <Badge Text="@(account.Enabled ? L["accounts.field.enabled"] : L["accounts.badge.disabled"])"
+                                               Variant="@(account.Enabled ? BadgeVariant.Success : BadgeVariant.Neutral)" />
+                                    </td>
+                                    <td class="px-2 py-1.5 opacity-80">@PatternSummary(account)</td>
+                                    <td class="px-2 py-1.5 opacity-80">
+                                        W@(account.Weight) P@(account.Priority) · @UsageText(account)
+                                    </td>
+                                    <td class="px-2 py-1.5">
+                                        @if (account.LastTestSuccess is null)
+                                        {
+                                            <span class="opacity-70">@L["accounts.test.none"]</span>
+                                        }
+                                        else
+                                        {
+                                            @* Message là dữ liệu HTTP hiển thị thẳng, không qua i18n *@
+                                            <span title="@(account.LastTestMessage ?? string.Empty)">
+                                                @(account.LastTestSuccess == true ? "✓" : "✗")
+                                            </span>
+                                        }
+                                    </td>
+                                    <td class="px-2 py-1.5 text-right">
+                                        <button type="button" class="btn btn-outline-info px-1.5" disabled="@_busy"
+                                                @onclick="() => BeginEditAccount(account)">✏️</button>
+                                        <button type="button" class="btn btn-outline-danger px-1.5"
+                                                disabled="@(_busy || _accounts.Count <= 1)"
+                                                @onclick="() => AskDeleteAccount(account)">🗑</button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            @if (_accountForm is { } accountForm)
+            {
+                <div class="flex flex-col gap-2 rounded border border-border bg-background px-2 py-2">
+                    <div class="grid gap-2 sm:grid-cols-2">
+                        <label class="flex flex-col gap-1">
+                            @L["accounts.field.name"]
+                            <input class="rounded border border-border bg-surface px-2 py-1" maxlength="100"
+                                   disabled="@_busy" @bind="accountForm.Name" @bind:event="oninput" />
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            @L["accounts.field.apiKey"]
+                            <input type="password" class="rounded border border-border bg-surface px-2 py-1"
+                                   autocomplete="off" spellcheck="false" disabled="@_busy"
+                                   placeholder="@(accountForm.Id is null ? L["accounts.placeholder.key"] : L["accounts.placeholder.keySaved"])"
+                                   @bind="accountForm.ApiKey" @bind:event="oninput" />
+                        </label>
+                        <label class="flex items-center gap-1.5">
+                            <input type="checkbox" disabled="@_busy" @bind="accountForm.Enabled" />
+                            @L["accounts.field.enabled"]
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            @L["accounts.field.weight"]
+                            <input type="number" min="0" max="10000"
+                                   class="rounded border border-border bg-surface px-2 py-1"
+                                   disabled="@_busy" @bind="accountForm.Weight" @bind:event="oninput" />
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            @L["accounts.field.priority"]
+                            <input type="number" min="-1000" max="1000"
+                                   class="rounded border border-border bg-surface px-2 py-1"
+                                   disabled="@_busy" @bind="accountForm.Priority" @bind:event="oninput" />
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            @L["accounts.field.tokenLimit"]
+                            <input type="number" min="1"
+                                   class="rounded border border-border bg-surface px-2 py-1"
+                                   disabled="@_busy" @bind="accountForm.DailyTokenLimit" @bind:event="oninput" />
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            @L["accounts.field.requestLimit"]
+                            <input type="number" min="1"
+                                   class="rounded border border-border bg-surface px-2 py-1"
+                                   disabled="@_busy" @bind="accountForm.DailyRequestLimit" @bind:event="oninput" />
+                        </label>
+                        <label class="flex flex-col gap-1 sm:col-span-2">
+                            @L["accounts.field.patterns"]
+                            <textarea class="h-16 rounded border border-border bg-surface px-2 py-1 font-mono text-xs"
+                                      placeholder="@L["accounts.placeholder.patterns"]"
+                                      disabled="@_busy" @bind="accountForm.PatternsText" @bind:event="oninput"></textarea>
+                        </label>
+                    </div>
+                    <div class="flex justify-end gap-2">
+                        <button type="button" class="btn btn-outline-secondary" disabled="@_busy" @onclick="CancelAccountForm">
+                            @L["confirm.cancel"]
+                        </button>
+                        <button type="button" class="btn btn-primary"
+                                disabled="@(!CanSaveAccount || _busy || _saving)"
+                                @onclick="SaveAccountAsync">
+                            @L["settings.action.save"]
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
     }
 
     <div class="mt-4 flex flex-wrap items-center gap-2">
@@ -412,6 +561,18 @@ else
                    OnCancel="() => _confirmRemoveAll = null" />
 }
 
+@if (_confirmDeleteAccount is { } accountToDelete)
+{
+    <ConfirmDialog Visible="true"
+                   Title="@L["providers.action.delete"]"
+                   Message="@string.Format(L["accounts.confirm.delete"], accountToDelete.Name)"
+                   Danger="true"
+                   ConfirmText="@L["providers.action.delete"]"
+                   CancelText="@L["confirm.cancel"]"
+                   OnConfirm="DeleteAccountAsync"
+                   OnCancel="CancelDeleteAccount" />
+}
+
 @code {
     private List<Provider> _providers = [];
     private bool _loading = true;
@@ -448,6 +609,35 @@ else
     private ProviderDraft _draft = new();
     private Dictionary<string, string> _errors = [];
     private ProviderTestResult? _testResult;
+
+    // ===== Section Accounts trong modal edit (spec provider-accounts §5.2) =====
+    private List<ProviderAccount> _accounts = [];
+    private bool _testingAccounts;
+    private AccountForm? _accountForm;
+    private ProviderAccount? _confirmDeleteAccount;
+
+    /// <summary>State form account add/edit — ApiKey chỉ tồn tại lúc nhập, không bao giờ hiển thị lại.</summary>
+    private sealed class AccountForm
+    {
+        public long? Id { get; init; } // null = thêm mới
+
+        public string Name { get; set; } = string.Empty;
+
+        public string ApiKey { get; set; } = string.Empty;
+
+        public bool Enabled { get; set; } = true;
+
+        /// <summary>Textarea 1 pattern/dòng — serialize JSON lúc lưu.</summary>
+        public string PatternsText { get; set; } = string.Empty;
+
+        public int Weight { get; set; } = 100;
+
+        public int Priority { get; set; }
+
+        public int? DailyTokenLimit { get; set; }
+
+        public int? DailyRequestLimit { get; set; }
+    }
 
     /// <summary>Chữ ký draft lúc test: Type|BaseUrl|ApiKey — đổi form sau test = test mất hiệu lực.</summary>
     private string? _testedSignature;
@@ -527,16 +717,12 @@ else
         _testingId = provider.Id;
         try
         {
-            // Entity đã lưu → service tự decrypt key đã lưu và persist LastTest* (Task 3)
-            var result = await ProviderSvc.TestConnectionAsync(provider, apiKeyOverride: null);
-            if (result.Success)
-            {
-                Toast.Show(L["providers.msg.testPassed"], ToastSeverity.Success);
-            }
-            else
-            {
-                Toast.Show(string.Format(L["providers.msg.testFailed"], result.Message), ToastSeverity.Error);
-            }
+            // Đa tài khoản: test toàn bộ account enabled — badge provider = AND (service ghi)
+            var results = await AccountSvc.TestAllAsync(provider.Id);
+            var failed = results.Count(r => !r.Success);
+            Toast.Show(
+                string.Format(L["accounts.msg.testDone"], results.Count - failed, failed),
+                failed > 0 ? ToastSeverity.Error : ToastSeverity.Success);
             await LoadAsync(); // badge LastTest* mới nhất
         }
         catch (Exception ex)
@@ -816,10 +1002,10 @@ else
         _modalVisible = true;
     }
 
-    private void OpenEdit(Provider provider)
+    private async Task OpenEdit(Provider provider)
     {
         _editingId = provider.Id;
-        // ApiKey để trống = giữ key cũ khi UpdateAsync (spec §3.1); UI hiện placeholder "đã lưu"
+        // ApiKey không còn ở form edit — key quản lý ở section Accounts (spec §5.2)
         _draft = new ProviderDraft
         {
             Name = provider.Name,
@@ -829,7 +1015,10 @@ else
             MaxConcurrent = provider.MaxConcurrent,
         };
         ResetModalState();
+        _accountForm = null;
+        _accounts = [];
         _modalVisible = true;
+        await LoadAccountsAsync(provider.Id);
     }
 
     private void ResetModalState()
@@ -939,6 +1128,189 @@ else
             _saving = false;
             _busy = false;
         }
+    }
+
+    private async Task LoadAccountsAsync(long providerId)
+    {
+        try
+        {
+            _accounts = (await AccountSvc.ListAsync(providerId)).ToList();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không tải được danh sách tài khoản.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+    }
+
+    private void AddAccountRow() => _accountForm = new AccountForm();
+
+    private void BeginEditAccount(ProviderAccount account) =>
+        _accountForm = new AccountForm
+        {
+            Id = account.Id,
+            Name = account.Name,
+            Enabled = account.Enabled,
+            PatternsText = DecodePatterns(account.ModelPatterns),
+            Weight = account.Weight,
+            Priority = account.Priority,
+            DailyTokenLimit = account.DailyTokenLimit,
+            DailyRequestLimit = account.DailyRequestLimit,
+        };
+
+    private void CancelAccountForm() => _accountForm = null;
+
+    /// <summary>JSON array → textarea 1 pattern/dòng; null/empty → chuỗi rỗng.</summary>
+    private static string DecodePatterns(string? json) =>
+        string.IsNullOrEmpty(json)
+            ? string.Empty
+            : string.Join('\n', JsonSerializer.Deserialize<string[]>(json) ?? []);
+
+    private bool CanSaveAccount =>
+        _accountForm is { } form
+        && form.Name.Trim().Length > 0
+        && (form.Id is not null || form.ApiKey.Trim().Length > 0);
+
+    private async Task SaveAccountAsync()
+    {
+        if (_busy || _accountForm is not { } form || _editingId is not { } providerId) return;
+        if (!CanSaveAccount) return; // chặn cứng — nút đã disabled nhưng guard vẫn đứng đây
+
+        var patterns = form.PatternsText.Replace("\r\n", "\n")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var draft = new ProviderAccountDraft
+        {
+            ProviderId = providerId,
+            Name = form.Name.Trim(),
+            ApiKey = form.ApiKey.Trim(),
+            Enabled = form.Enabled,
+            ModelPatterns = patterns,
+            Weight = form.Weight,
+            Priority = form.Priority,
+            DailyTokenLimit = form.DailyTokenLimit,
+            DailyRequestLimit = form.DailyRequestLimit,
+        };
+
+        _busy = true;
+        try
+        {
+            if (form.Id is { } accountId)
+            {
+                await AccountSvc.UpdateAsync(accountId, draft);
+            }
+            else
+            {
+                await AccountSvc.CreateAsync(draft);
+            }
+
+            Toast.Show(string.Format(L["accounts.msg.saved"], draft.Name), ToastSeverity.Success);
+            _accountForm = null;
+            await LoadAccountsAsync(providerId);
+        }
+        catch (InvalidOperationException)
+        {
+            // Trùng tên là InvalidOperation duy nhất ở nhánh save (lastAccount chỉ ném ở delete)
+            Toast.Show(L["accounts.error.duplicateName"], ToastSeverity.Error);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không lưu được tài khoản.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void AskDeleteAccount(ProviderAccount account)
+    {
+        // Pre-check: không cho xoá account cuối (nút đã disabled, service là backstop)
+        if (_busy || _accounts.Count <= 1) return;
+        _confirmDeleteAccount = account;
+    }
+
+    private void CancelDeleteAccount() => _confirmDeleteAccount = null;
+
+    private async Task DeleteAccountAsync()
+    {
+        if (_busy || _confirmDeleteAccount is not { } account) return;
+
+        _busy = true;
+        try
+        {
+            await AccountSvc.DeleteAsync(account.Id);
+            Toast.Show(string.Format(L["accounts.msg.deleted"], account.Name), ToastSeverity.Success);
+            _confirmDeleteAccount = null;
+            await LoadAccountsAsync(account.ProviderId);
+        }
+        catch (InvalidOperationException)
+        {
+            // Account cuối cùng — service backstop khi UI pre-check bị race
+            Toast.Show(L["accounts.error.lastAccount"], ToastSeverity.Error);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không xóa được tài khoản.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestAllAccountsAsync()
+    {
+        if (_busy || _editingId is not { } providerId) return;
+
+        _busy = true;
+        _testingAccounts = true;
+        try
+        {
+            var results = await AccountSvc.TestAllAsync(providerId);
+            var failed = results.Count(r => !r.Success);
+            Toast.Show(
+                string.Format(L["accounts.msg.testDone"], results.Count - failed, failed),
+                failed > 0 ? ToastSeverity.Error : ToastSeverity.Success);
+            await LoadAccountsAsync(providerId);
+            await LoadAsync(); // Provider.LastTest* (AND các account) đổi theo
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Test tài khoản thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _testingAccounts = false;
+            _busy = false;
+        }
+    }
+
+    /// <summary>Pattern summary: rỗng = mọi model; có = số pattern.</summary>
+    private string PatternSummary(ProviderAccount account)
+    {
+        if (string.IsNullOrEmpty(account.ModelPatterns))
+        {
+            return L["accounts.patterns.all"];
+        }
+        var patterns = JsonSerializer.Deserialize<string[]>(account.ModelPatterns) ?? [];
+        return string.Format(L["accounts.patterns.count"], patterns.Length);
+    }
+
+    /// <summary>Chỉ hiện limit khi CẢ token và request đều set — 1 trong 2 rơi về used-only,
+    /// tránh hiển thị "x/x" giả cho bên chưa set.</summary>
+    private string UsageText(ProviderAccount account)
+    {
+        var tokens = account.TokensUsed.ToString("N0");
+        var requests = account.RequestsUsed.ToString("N0");
+        if (account.DailyTokenLimit is { } tokenLimit && account.DailyRequestLimit is { } requestLimit)
+        {
+            return string.Format(L["accounts.usage.format"],
+                tokens, tokenLimit.ToString("N0"), requests, requestLimit.ToString("N0"));
+        }
+        return string.Format(L["accounts.usage.noLimit"], tokens, requests);
     }
 
     /// <summary>Tải lại danh sách nhưng giữ nguyên hàng đang expand + clamp trang model.</summary>
