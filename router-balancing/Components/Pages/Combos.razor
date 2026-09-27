@@ -1,0 +1,417 @@
+﻿@page "/combos"
+@using RouterBalancing.Core.Combos
+@using RouterBalancing.Core.Domain
+@using RouterBalancing.Core.Providers
+@implements IDisposable
+@inject IComboService ComboSvc
+@inject IProviderService ProviderSvc
+@inject LocalizationService L
+@inject ToastService Toast
+@inject ILogService Log
+
+<div class="mb-4 flex items-center justify-between gap-3">
+    <h1 class="text-xl font-semibold">@L["combos.title"]</h1>
+    <button type="button" class="btn btn-primary" @onclick="OpenAdd">+ @L["combos.add"]</button>
+</div>
+
+@if (_loading)
+{
+    <p class="text-sm opacity-70">...</p>
+}
+else if (_combos.Count == 0)
+{
+    <EmptyState Icon="&#128218;" Message="@L["combos.empty"]" />
+}
+else
+{
+    <div class="overflow-x-auto rounded border border-border bg-surface">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-border text-left text-xs uppercase opacity-70">
+                    <th class="px-2 py-2">@L["combos.col.name"]</th>
+                    <th class="px-2 py-2">@L["combos.col.mode"]</th>
+                    <th class="px-2 py-2">@L["combos.col.items"]</th>
+                    <th class="px-2 py-2 text-right">@L["combos.col.actions"]</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var combo in _combos)
+                {
+                    <tr @key="@($"{combo.Id}-row")" class="border-b border-border">
+                        <td class="px-2 py-2 font-medium">@combo.Name</td>
+                        <td class="px-2 py-2">
+                            <Badge Text="@(combo.Mode == ComboMode.RoundRobin ? L["combos.mode.roundRobin"] : L["combos.mode.fallback"])"
+                                   Variant="@(combo.Mode == ComboMode.RoundRobin ? BadgeVariant.Info : BadgeVariant.Warning)" />
+                        </td>
+                        <td class="px-2 py-2 opacity-80">@combo.Items.Count</td>
+                        <td class="px-2 py-2 text-right">
+                            <button type="button" class="btn btn-outline-secondary mr-1" disabled="@_busy"
+                                    @onclick="() => OpenEdit(combo)">✏️</button>
+                            <button type="button" class="btn btn-outline-danger" disabled="@_busy"
+                                    @onclick="() => AskDeleteAsync(combo)">🗑</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<Modal Visible="_modalVisible"
+       Title="@(_editingId is null ? L["combos.form.title.new"] : L["combos.form.title.edit"])"
+       OnClose="CloseModal">
+    <div class="grid gap-3">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["combos.form.name"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   maxlength="200" autofocus @bind="_draft.Name" @bind:event="oninput" />
+        </label>
+
+        <fieldset class="flex flex-col gap-1 text-sm">
+            <legend class="mb-1">@L["combos.form.mode"]</legend>
+            <div class="flex gap-4">
+                <label class="flex items-center gap-1.5">
+                    <input type="radio" name="combo-mode" checked="@(_draft.Mode == ComboMode.RoundRobin)"
+                           @onchange="() => _draft.Mode = ComboMode.RoundRobin" />
+                    @L["combos.mode.roundRobin"]
+                </label>
+                <label class="flex items-center gap-1.5">
+                    <input type="radio" name="combo-mode" checked="@(_draft.Mode == ComboMode.Fallback)"
+                           @onchange="() => _draft.Mode = ComboMode.Fallback" />
+                    @L["combos.mode.fallback"]
+                </label>
+            </div>
+        </fieldset>
+
+        <div class="flex flex-col gap-2 text-sm">
+            <div class="flex items-center justify-between">
+                <span>@L["combos.form.items"]</span>
+                <div class="flex gap-2">
+                    <button type="button" class="btn btn-outline-secondary"
+                            @onclick="() => AddItemRow(ItemKind.Model)">
+                        + @L["combos.form.addModelItem"]
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary"
+                            @onclick="() => AddItemRow(ItemKind.Combo)">
+                        + @L["combos.form.addComboItem"]
+                    </button>
+                </div>
+            </div>
+
+            @for (var i = 0; i < _rows.Count; i++)
+            {
+                var index = i;
+                var row = _rows[index];
+                <div @key="@($"{index}-item")"
+                     class="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
+                    @if (row.Kind == ItemKind.Model)
+                    {
+                        @* Đúng spec §4: 1 select, optgroup theo Provider, chỉ hiện model Enabled
+                           (giữ model đang chọn dù đã tắt — edit không âm thầm bỏ target) *@
+                        <select class="min-w-64 flex-1 rounded border border-border bg-surface px-1.5 py-1"
+                                @bind="row.ModelId">
+                            <option value="">—</option>
+                            @foreach (var provider in _providers)
+                            {
+                                var models = provider.Models.Where(m => m.Enabled || m.Id == row.ModelId).ToList();
+                                if (models.Count == 0)
+                                {
+                                    continue;
+                                }
+
+                                <optgroup label="@provider.Name">
+                                    @foreach (var model in models)
+                                    {
+                                        <option value="@model.Id">@model.ModelId</option>
+                                    }
+                                </optgroup>
+                            }
+                        </select>
+                    }
+                    else
+                    {
+                        <select class="min-w-64 flex-1 rounded border border-border bg-surface px-1.5 py-1"
+                                @bind="row.ComboId">
+                            <option value="">—</option>
+                            @foreach (var eligible in EligibleCombos)
+                            {
+                                <option value="@eligible.Id">@eligible.Name</option>
+                            }
+                        </select>
+                    }
+
+                    <div class="ml-auto flex gap-1">
+                        <button type="button" class="btn btn-outline-secondary px-1.5" disabled="@(index == 0)"
+                                @onclick="() => MoveRow(index, -1)">↑</button>
+                        <button type="button" class="btn btn-outline-secondary px-1.5"
+                                disabled="@(index == _rows.Count - 1)"
+                                @onclick="() => MoveRow(index, 1)">↓</button>
+                        <button type="button" class="btn btn-outline-danger px-1.5"
+                                @onclick="() => _rows.Remove(row)">✕</button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="mt-4 flex justify-end gap-2">
+        <button type="button" class="btn btn-outline-secondary" disabled="@(_busy || _saving)"
+                @onclick="CloseModal">
+            @L["confirm.cancel"]
+        </button>
+        <button type="button" class="btn btn-primary" disabled="@(!CanSave || _busy || _saving)"
+                @onclick="SaveAsync">
+            @(_saving ? "..." : L["settings.action.save"])
+        </button>
+    </div>
+</Modal>
+
+@if (_confirmDelete is { } comboToDelete)
+{
+    <ConfirmDialog Visible="true"
+                   Title="@L["providers.action.delete"]"
+                   Message="@_deleteMessage"
+                   Danger="true"
+                   ConfirmText="@L["providers.action.delete"]"
+                   CancelText="@L["confirm.cancel"]"
+                   OnConfirm="DeleteAsync"
+                   OnCancel="CancelDelete" />
+}
+
+@code {
+    /// <summary>Loại target của dòng item — quyết định select nào hiển thị.</summary>
+    public enum ItemKind
+    {
+        Model,
+        Combo,
+    }
+
+    /// <summary>Dòng item trong form — state UI.</summary>
+    private sealed class ItemRow
+    {
+        public ItemKind Kind { get; init; }
+
+        public long? ModelId { get; set; }
+
+        public long? ComboId { get; set; }
+
+        /// <summary>Dòng có target hợp lệ — dòng trống bị bỏ qua lúc save (spec §4).</summary>
+        public bool HasTarget => Kind == ItemKind.Model ? ModelId is not null : ComboId is not null;
+    }
+
+    private List<Combo> _combos = [];
+    private List<Provider> _providers = [];
+    private bool _loading = true;
+    private bool _busy;
+    private bool _saving;
+    private bool _modalVisible;
+    private long? _editingId;
+    private ComboDraft _draft = new();
+    private List<ItemRow> _rows = [];
+    private Combo? _confirmDelete;
+    private string? _deleteMessage;
+
+    /// <summary>Chỉ chặn self + tổ tiên; service vẫn là authoritative (spec §4).</summary>
+    private IEnumerable<Combo> EligibleCombos =>
+        _editingId is { } self ? _combos.Where(c => !IsAncestorOrSelf(c.Id, self)) : _combos;
+
+    protected override async Task OnInitializedAsync()
+    {
+        L.LanguageChanged += OnLanguageChanged;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _combos = (await ComboSvc.ListAsync()).ToList();
+            _providers = (await ProviderSvc.ListAsync()).ToList();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không tải được danh sách combo.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void OpenAdd()
+    {
+        _editingId = null;
+        _draft = new ComboDraft();
+        _rows = [];
+        _modalVisible = true;
+    }
+
+    private void OpenEdit(Combo combo)
+    {
+        _editingId = combo.Id;
+        _draft = new ComboDraft { Name = combo.Name, Mode = combo.Mode };
+        _rows = [];
+        foreach (var item in combo.Items.OrderBy(i => i.Position))
+        {
+            if (item.TargetModelId is { } modelId)
+            {
+                _rows.Add(new ItemRow { Kind = ItemKind.Model, ModelId = modelId });
+            }
+            else if (item.TargetComboId is { } childComboId)
+            {
+                // Target null/null không xảy ra: model bị xóa thì cascade xóa luôn item
+                _rows.Add(new ItemRow { Kind = ItemKind.Combo, ComboId = childComboId });
+            }
+        }
+
+        _modalVisible = true;
+    }
+
+    private void CloseModal() => _modalVisible = false;
+
+    private void AddItemRow(ItemKind kind) =>
+        _rows.Add(new ItemRow { Kind = kind });
+
+    private void MoveRow(int index, int delta)
+    {
+        var target = index + delta;
+        if (target < 0 || target >= _rows.Count)
+        {
+            return;
+        }
+
+        (_rows[index], _rows[target]) = (_rows[target], _rows[index]);
+    }
+
+    private bool IsAncestorOrSelf(long comboId, long self)
+    {
+        if (comboId == self)
+        {
+            return true;
+        }
+
+        // BFS theo cạnh ngược (chứa → bị chứa): tìm mọi combo đi tới được self
+        var ancestors = new HashSet<long>();
+        var stack = new Stack<long>();
+        stack.Push(self);
+        while (stack.Count > 0)
+        {
+            var current = stack.Pop();
+            foreach (var candidate in _combos)
+            {
+                if (candidate.Items.Any(i => i.TargetComboId == current) && ancestors.Add(candidate.Id))
+                {
+                    stack.Push(candidate.Id);
+                }
+            }
+        }
+
+        return ancestors.Contains(comboId);
+    }
+
+    private bool CanSave =>
+        _draft.Name.Trim().Length > 0 && _draft.Name.Length <= 200 && _rows.Any(r => r.HasTarget);
+
+    private async Task SaveAsync()
+    {
+        if (_busy) return; // Single-flight — double-click vẫn tới được đây khi nút chưa re-render
+        if (!CanSave) return; // chặn cứng — nút đã disabled nhưng test chưa pass thì không được lưu
+
+        var items = _rows
+            .Where(r => r.HasTarget)
+            .Select(r => new ComboItemDraft
+            {
+                TargetModelId = r.Kind == ItemKind.Model ? r.ModelId : null,
+                TargetComboId = r.Kind == ItemKind.Combo ? r.ComboId : null,
+            })
+            .ToList();
+        var draft = new ComboDraft { Name = _draft.Name, Mode = _draft.Mode, Items = items };
+
+        _busy = true;
+        _saving = true;
+        try
+        {
+            if (_editingId is { } id)
+            {
+                await ComboSvc.UpdateAsync(id, draft);
+            }
+            else
+            {
+                await ComboSvc.CreateAsync(draft);
+            }
+
+            Toast.Show(L["combos.msg.saved"], ToastSeverity.Success);
+            CloseModal();
+            await LoadAsync();
+        }
+        catch (ComboValidationException ex)
+        {
+            // DuplicateName → duplicateName (PascalCase → lowerCamel), spec §4
+            var code = ex.Code.ToString();
+            Toast.Show(L[$"combos.error.{char.ToLowerInvariant(code[0])}{code[1..]}"], ToastSeverity.Error);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không lưu được combo.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _saving = false;
+            _busy = false;
+        }
+    }
+
+    private async Task AskDeleteAsync(Combo combo)
+    {
+        if (_busy) return;
+        try
+        {
+            // Confirm trước với warning nếu có combo khác trỏ tới (spec §4)
+            var names = await ComboSvc.GetReferencingComboNamesAsync(combo.Id);
+            _deleteMessage = names.Count > 0
+                ? $"{L["combos.delete.referenced"]} {string.Join(", ", names)}"
+                : L["combos.delete.confirm"];
+            _confirmDelete = combo;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không kiểm tra được tham chiếu combo.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+    }
+
+    private void CancelDelete()
+    {
+        _confirmDelete = null;
+        _deleteMessage = null;
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_busy || _confirmDelete is not { } combo) return;
+
+        _busy = true;
+        try
+        {
+            await ComboSvc.DeleteAsync(combo.Id);
+            Toast.Show(L["combos.msg.deleted"], ToastSeverity.Success);
+            CancelDelete();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không xóa được combo.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => L.LanguageChanged -= OnLanguageChanged;
+}
