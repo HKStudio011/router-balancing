@@ -255,7 +255,10 @@ public sealed record ProviderAccountTestResult(long AccountId, string AccountNam
 
 Tất cả text hiển thị qua `L["key"]`.
 
-## 6. i18n — 27 keys mới (`combos.*` giữ nguyên, tổng dự kiến 183 → **210**)
+## 6. i18n — 27 keys mới, bỏ 1 key chết (`combos.*` giữ nguyên)
+
+- `providers.key.saved` bị **xoá** (chỉ dùng ở ô key mode edit — form edit bỏ ô key theo §5.2).
+- Tổng: 183 − 1 + 27 = **209**.
 
 Chèn sau nhóm `combos.*` trong `Translations.cs` (EN + VI), guard parity:
 
@@ -316,7 +319,7 @@ Mirror `ProviderServiceTests` (`TestDb` + `DbInitializer` + `NeverHttpFactory`),
 17. `UpdateProviderAsync_IgnoresApiKey`.
 18. `ResolveFirstEnabledKey_...` (helper).
 
-**Dự kiến tổng: 147 → ~170.**
+**Dự kiến tổng: 147 → ~178.**
 
 ### CDP self-test (phase C, script `%TEMP%\opencode\cdp-test\drive40.js`, pattern drive32–34)
 
@@ -325,10 +328,10 @@ S1 Edit modal → section title + bảng (hoặc empty state) visible · S2 Add 
 ### Gates
 
 ```
-dotnet test  →  ~170/0
+dotnet test  →  ~178/0
 dotnet build (net10.0-windows…) → 0 warning / 0 error
 npm run build → exit 0
-i18n parity EN = VI = 210
+i18n parity EN = VI = 209
 git working tree clean
 CDP S1–S8 PASS
 ```
