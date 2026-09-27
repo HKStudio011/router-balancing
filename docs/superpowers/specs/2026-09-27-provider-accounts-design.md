@@ -255,7 +255,7 @@ public sealed record ProviderAccountTestResult(long AccountId, string AccountNam
 
 Tất cả text hiển thị qua `L["key"]`.
 
-## 6. i18n — 26 keys mới (`combos.*` giữ nguyên, tổng dự kiến 183 → **209**)
+## 6. i18n — 27 keys mới (`combos.*` giữ nguyên, tổng dự kiến 183 → **210**)
 
 Chèn sau nhóm `combos.*` trong `Translations.cs` (EN + VI), guard parity:
 
@@ -268,6 +268,7 @@ Chèn sau nhóm `combos.*` trong `Translations.cs` (EN + VI), guard parity:
 | `accounts.field.name` | Tên tài khoản | Account name |
 | `accounts.field.apiKey` | API key | API key |
 | `accounts.field.enabled` | Bật | Enabled |
+| `accounts.badge.disabled` | Đã tắt | Disabled |
 | `accounts.field.patterns` | Gắn model | Model patterns |
 | `accounts.field.weight` | Trọng số | Weight |
 | `accounts.field.priority` | Ưu tiên | Priority |
@@ -294,7 +295,7 @@ Không đổi key `providers.*` (trừ bỏ dùng `apiKey` ở edit — key gi�
 
 ### Unit tests — `router balancing test/Providers/ProviderAccountServiceTests.cs`
 
-Mirror `ProviderServiceTests` (`TestDb` + `DbInitializer` + `NeverHttpFactory`), ~18 test:
+Mirror `ProviderServiceTests` (`TestDb` + `DbInitializer` + `NeverHttpFactory`), ~19 test:
 
 1. `CreateAsync_WithKey_SavesDpapiEncrypted` — không plaintext trong DB.
 2. `CreateAsync_DuplicateNameInSameProvider_Throws`.
@@ -315,7 +316,7 @@ Mirror `ProviderServiceTests` (`TestDb` + `DbInitializer` + `NeverHttpFactory`),
 17. `UpdateProviderAsync_IgnoresApiKey`.
 18. `ResolveFirstEnabledKey_...` (helper).
 
-**Dự kiến tổng: 147 → ~165.**
+**Dự kiến tổng: 147 → ~170.**
 
 ### CDP self-test (phase C, script `%TEMP%\opencode\cdp-test\drive40.js`, pattern drive32–34)
 
@@ -324,10 +325,10 @@ S1 Edit modal → section title + bảng (hoặc empty state) visible · S2 Add 
 ### Gates
 
 ```
-dotnet test  →  ~165/0
+dotnet test  →  ~170/0
 dotnet build (net10.0-windows…) → 0 warning / 0 error
 npm run build → exit 0
-i18n parity EN = VI = 209
+i18n parity EN = VI = 210
 git working tree clean
 CDP S1–S8 PASS
 ```
