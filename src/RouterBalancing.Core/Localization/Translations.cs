@@ -121,8 +121,6 @@ public static class Translations
         ["providers.lastTest.never"] = "Not tested",
         ["providers.lastTest.ok"] = "Passed",
         ["providers.lastTest.fail"] = "Failed",
-        ["providers.msg.testPassed"] = "Connection succeeded.",
-        ["providers.msg.testFailed"] = "Connection failed: {0}",
         ["providers.confirmDelete"] = "Delete provider \"{0}\"? All {1} models will also be removed (cannot undo).",
         ["providers.deleted"] = "Provider deleted.",
 
@@ -345,8 +343,6 @@ public static class Translations
         ["providers.lastTest.never"] = "Chưa test",
         ["providers.lastTest.ok"] = "Đạt",
         ["providers.lastTest.fail"] = "Lỗi",
-        ["providers.msg.testPassed"] = "Kết nối thành công.",
-        ["providers.msg.testFailed"] = "Kết nối thất bại: {0}",
         ["providers.confirmDelete"] = "Xóa nhà cung cấp \"{0}\"? Toàn bộ {1} model cũng sẽ bị xóa (không thể hoàn tác).",
         ["providers.deleted"] = "Đã xóa nhà cung cấp.",
 

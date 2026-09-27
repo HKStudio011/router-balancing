@@ -19,8 +19,8 @@
 - Btn variants chỉ `btn`, `btn-primary`, `btn-outline-info`, `btn-outline-secondary`, `btn-outline-danger`.
 - Test doubles: `NullLog` (TestDoubles.cs); double mới đặt private nested trong file test (precedent `NeverHttpFactory` trong ProviderServiceTests).
 - **Không push** khi chưa user yêu cầu.
-- Parity cuối: EN = VI = **209** (183 − 1 key chết `providers.key.saved` + 27 key mới).
-- Test count cuối: **178** (147 → 152 sau Task 1 → 178 sau Task 2).
+- Parity cuối: EN = VI = **207** (183 − 3 key chết: `providers.key.saved`, `providers.msg.testPassed`/`testFailed` mồ côi sau khi TestAsync → TestAll + 27 key mới).
+- Test count cuối: **179** (147 → 152 sau Task 1 → 179 sau Task 2 — fix wave review thêm 1 regression test whitespace key).
 
 ---
 
@@ -612,7 +612,7 @@ public interface IProviderAccountService
 ```
 
 - DI: `builder.Services.AddSingleton<IProviderAccountService, ProviderAccountService>();`
-- Test count sau task: **178/0**.
+- Test count sau task: **179/0**.
 
 - [ ] **Step 1: `ProviderAccountDraft.cs`**
 
@@ -1325,7 +1325,7 @@ Expected: toàn bộ pass, **26 test** của class này (18 Fact + 8 InlineData)
 - [ ] **Step 9: Chạy full suite**
 
 Run: `dotnet test "router balancing test/router balancing test.csproj" --nologo`
-Expected: **178/0** (152 + 26).
+Expected: **179/0** (152 + 27).
 
 - [ ] **Step 10: Commit**
 
@@ -1339,17 +1339,17 @@ git commit -m "feat: add provider account service with validation and test-all"
 ### Task 3: UI section Tài khoản + i18n + gates
 
 **Files:**
-- Modify: `src/RouterBalancing.Core/Localization/Translations.cs` (+27 key EN/VI, −1 key chết)
+- Modify: `src/RouterBalancing.Core/Localization/Translations.cs` (+27 key EN/VI, −3 key chết)
 - Modify: `router-balancing/Components/Pages/Providers.razor`
 - Modify: `router-balancing/wwwroot/build/` (qua `npm run build`)
 
 **Interfaces:**
 - Consumes (Task 2): `IProviderAccountService` 5 method, `ProviderAccountDraft`, `ProviderAccountTestResult`.
-- Produces: parity **EN = VI = 209**; UI test count giữ **178**; CDP checklist S1–S8 (controller chạy phase C).
+- Produces: parity **EN = VI = 207**; UI test count giữ **179**; CDP checklist S1–S8 (controller chạy phase C).
 
 - [ ] **Step 1: `Translations.cs` — xóa key chết**
 
-Xoá dòng duy nhất `["providers.key.saved"] = "..."` trong **cả** bảng EN và VI (chỉ dùng ở ô key mode edit — form edit không còn ô key).
+Xoá dòng `["providers.key.saved"] = "..."` trong **cả** bảng EN và VI (chỉ dùng ở ô key mode edit — form edit không còn ô key), và 2 key mồ côi `["providers.msg.testPassed"]`/`["providers.msg.testFailed"]` (TestAsync đã đổi sang TestAll — không còn nơi dùng).
 
 - [ ] **Step 2: `Translations.cs` — thêm 27 key EN**
 
@@ -1421,7 +1421,7 @@ Chèn ngay sau dòng `["combos.msg.deleted] = "Đã xóa bộ kết hợp.",` (b
 
 - [ ] **Step 4: Parity check (controller — không phải task subagent)**
 
-Đếm key EN == VI == 209 (183 − 1 + 27). Lệch → sửa Step 2/3.
+Đếm key EN == VI == 207 (183 − 3 + 27). Lệch → sửa Step 2/3.
 
 - [ ] **Step 5: `Providers.razor` — inject + using**
 
@@ -1897,14 +1897,14 @@ Run: `dotnet build router-balancing/router-balancing.csproj -f net10.0-windows10
 Expected: 0 warning / 0 error.
 
 Run: `dotnet test "router balancing test/router balancing test.csproj" --nologo`
-Expected: **178/0**.
+Expected: **179/0**.
 
 Run (workdir `router-balancing/vite-project`): `npm run build`
 Expected: exit 0 (stage `router-balancing/wwwroot/build/`).
 
 - [ ] **Step 14: Parity + git status (controller)**
 
-- EN = VI = **209**.
+- EN = VI = **207**.
 - `git status --short` → sạch sau commit.
 
 - [ ] **Step 15: Commit**
@@ -1927,7 +1927,7 @@ Chạy app với `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=
 - **S7** Settings đổi `en` → section/Sub-form/placeholder EN (`Accounts / API keys`, `+ Add account`, `Enter API key`) → khôi phục ngôn ngữ cũ.
 - **S8** Create provider với key → save → mở edit → account `Default` xuất hiện.
 
-Gate tổng: **178/0 + 0W/0E + npm 0 + parity 209/209 + CDP S1–S8 PASS + git sạch.**
+Gate tổng: **179/0 + 0W/0E + npm 0 + parity 207/207 + CDP S1–S8 PASS + git sạch.**
 
 ---
 
