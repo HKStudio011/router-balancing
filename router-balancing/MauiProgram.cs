@@ -74,6 +74,7 @@ namespace router_balancing
                 client => client.Timeout = TimeSpan.FromSeconds(10));
             builder.Services.AddSingleton<IProviderService, ProviderService>();
             builder.Services.AddSingleton<IModelService, ModelService>();
+            builder.Services.AddSingleton<IProviderAccountService, ProviderAccountService>();
             builder.Services.AddSingleton<IComboService, ComboService>();
             builder.Services.AddSingleton<IModelMetadataService, ModelMetadataService>();
             // Thứ tự đăng ký = thứ tự chain: endpoint trước, static catalog sau
