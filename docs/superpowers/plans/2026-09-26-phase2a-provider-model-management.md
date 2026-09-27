@@ -2747,9 +2747,12 @@ else
                                 <div class="mb-2 flex flex-wrap items-center gap-2">
                                     <span class="text-sm font-semibold">@L["models.section"]</span>
 
+                                    @* oninput: @bind mặc định fire `change` khi blur → handler Enter
+                                       (đọc field ngay) và nút Add sẽ lấy giá trị cũ khi bấm lần đầu;
+                                       oninput giữ field cập nhật từng phím (sửa theo review Task 8) *@
                                     <input class="w-56 rounded border border-border bg-surface px-2 py-1"
                                            placeholder="@L["models.addPlaceholder"]"
-                                           disabled="@_busy" @bind="_newModelId"
+                                           disabled="@_busy" @bind="_newModelId" @bind:event="oninput"
                                            @onkeydown="e => OnModelKeyAsync(e, p)" />
                                     <button type="button" class="btn btn-outline-secondary"
                                             disabled="@(_busy || string.IsNullOrWhiteSpace(_newModelId))"
@@ -3000,6 +3003,11 @@ else
 
     private async Task TestAsync(Provider provider)
     {
+        // Single-flight: _testingId chỉ có một slot — test chạy song song sẽ bị
+        // _testingId = null trong finally của test kia xóa mất (mất label, nút bật giữa chừng).
+        // _busy = true cũng khóa Delete/checkbox trong lúc test đang bay (sửa theo review Task 8).
+        if (_busy) return;
+        _busy = true;
         _testingId = provider.Id;
         try
         {
@@ -3023,6 +3031,7 @@ else
         finally
         {
             _testingId = null;
+            _busy = false;
         }
     }
 
