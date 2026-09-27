@@ -93,7 +93,7 @@ public class ProviderServiceTests : IDisposable
             Name = provider.Name,
             Type = ProviderType.OpenAI,
             BaseUrl = "https://api.example.com/api/v1",
-            ApiKey = string.Empty, // key rỗng = giữ key cũ (hành vi hiện hữu)
+            ApiKey = string.Empty, // UpdateAsync bỏ qua draft.ApiKey hoàn toàn — key sống ở ProviderAccount
             MaxConcurrent = 4,
         });
 

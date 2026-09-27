@@ -5,10 +5,10 @@ namespace RouterBalancing.Core.Providers;
 /// <summary>CRUD provider — key luôn mã hóa DPAPI trước khi xuống DB.</summary>
 public interface IProviderService
 {
-    /// <summary>Tất cả provider, sắp theo Id tăng dần, đã Include Models.</summary>
+    /// <summary>Tất cả provider, sắp theo Id tăng dần, đã Include Models + Accounts.</summary>
     Task<IReadOnlyList<Provider>> ListAsync(CancellationToken ct = default);
 
-    /// <summary>Provider theo id kèm Models; <see langword="null"/> nếu không tồn tại.</summary>
+    /// <summary>Provider theo id kèm Models + Accounts; <see langword="null"/> nếu không tồn tại.</summary>
     Task<Provider?> GetAsync(long id, CancellationToken ct = default);
 
     /// <summary>Tạo provider mới từ bản nháp. <c>draft.ApiKey</c> không rỗng → tạo kèm account "Default".</summary>

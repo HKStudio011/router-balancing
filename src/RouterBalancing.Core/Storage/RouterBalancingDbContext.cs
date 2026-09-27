@@ -15,6 +15,7 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
 
     public DbSet<ComboItem> ComboItems => Set<ComboItem>();
 
+    /// <summary>Bảng tài khoản (API key) của provider — đa tài khoản mỗi nhà cung cấp.</summary>
     public DbSet<ProviderAccount> ProviderAccounts => Set<ProviderAccount>();
 
     public DbSet<LogEntry> LogEntries => Set<LogEntry>();
