@@ -74,4 +74,65 @@ public class ProviderEndpointMetadataProviderTests
 
         Assert.Null(await provider.FetchAsync(p, m));
     }
+
+    [Fact]
+    public async Task FetchAsync_WhenContextLengthOnly_ParsesContextWindow()
+    {
+        // OpenRouter đặt ctx ở context_length, không phải context_window
+        var handler = new JsonHandler("""{"id":"m","context_length":65536}""");
+        var provider = new ProviderEndpointMetadataProvider(new StubFactory(handler), new DpapiSecretProtector());
+
+        var (p, m) = Pair();
+        var meta = await provider.FetchAsync(p, m);
+
+        Assert.NotNull(meta);
+        Assert.Equal(65_536, meta.ContextWindow);
+    }
+
+    [Fact]
+    public async Task FetchAsync_WhenMaxModelLenOnly_ParsesContextWindow()
+    {
+        // vLLM đặt ctx ở max_model_len
+        var handler = new JsonHandler("""{"id":"m","max_model_len":32768}""");
+        var provider = new ProviderEndpointMetadataProvider(new StubFactory(handler), new DpapiSecretProtector());
+
+        var (p, m) = Pair();
+        var meta = await provider.FetchAsync(p, m);
+
+        Assert.NotNull(meta);
+        Assert.Equal(32_768, meta.ContextWindow);
+    }
+
+    [Fact]
+    public async Task FetchAsync_WhenMultipleContextFields_PrefersContextWindow()
+    {
+        var handler = new JsonHandler("""
+            {"id":"m","context_window":128000,"context_length":65536,"max_model_len":32768}
+            """);
+        var provider = new ProviderEndpointMetadataProvider(new StubFactory(handler), new DpapiSecretProtector());
+
+        var (p, m) = Pair();
+        var meta = await provider.FetchAsync(p, m);
+
+        Assert.NotNull(meta);
+        Assert.Equal(128_000, meta.ContextWindow);
+    }
+
+    [Fact]
+    public async Task FetchAsync_WhenArchitectureModalities_ParsesModalitiesAndVision()
+    {
+        // OpenRouter shape: modalities nằm trong architecture, không có supported_modalities
+        var handler = new JsonHandler("""
+            {"id":"m","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]}}
+            """);
+        var provider = new ProviderEndpointMetadataProvider(new StubFactory(handler), new DpapiSecretProtector());
+
+        var (p, m) = Pair();
+        var meta = await provider.FetchAsync(p, m);
+
+        Assert.NotNull(meta);
+        Assert.True(meta.SupportsVision);
+        Assert.Equal("""["text","image"]""", meta.InputModalities);
+        Assert.Equal("""["text"]""", meta.OutputModalities);
+    }
 }

@@ -39,12 +39,15 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
                 await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
             var root = json.RootElement;
 
-            int? contextWindow = root.TryGetProperty("context_window", out var ctx) && ctx.TryGetInt32(out var ctxVal)
-                ? ctxVal
-                : null;
+            // Ưu tiên tường minh: context_window (OpenAI) > context_length (OpenRouter) > max_model_len (vLLM)
+            int? contextWindow = IntFrom(root, "context_window")
+                ?? IntFrom(root, "context_length")
+                ?? IntFrom(root, "max_model_len");
             bool? vision = ParseVision(root);
-            string? input = ParseModalityList(root, "supported_modalities", "input");
-            string? output = ParseModalityList(root, "supported_modalities", "output");
+            string? input = ParseModalityList(root, "supported_modalities", "input")
+                ?? ParseModalityList(root, "architecture", "input_modalities");
+            string? output = ParseModalityList(root, "supported_modalities", "output")
+                ?? ParseModalityList(root, "architecture", "output_modalities");
 
             // Không có field nào quen thuộc → shape lạ, nhường bước sau
             if (contextWindow is null && vision is null && input is null && output is null)
@@ -71,28 +74,25 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
 
     private static bool? ParseVision(JsonElement root)
     {
-        if (!root.TryGetProperty("supported_modalities", out var mods)
-            || mods.ValueKind != JsonValueKind.Object
-            || !mods.TryGetProperty("input", out var input)
-            || input.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-        foreach (var item in input.EnumerateArray())
-        {
-            if (string.Equals(item.GetString(), "image", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-        return false;
+        // Fallback kiến trúc OpenRouter: supported_modalities.input > architecture.input_modalities
+        var input = ParseModalityArray(root, "supported_modalities", "input")
+            ?? ParseModalityArray(root, "architecture", "input_modalities");
+        if (input is null) return null;
+        return input.Contains("image", StringComparer.OrdinalIgnoreCase);
     }
 
     private static string? ParseModalityList(JsonElement root, string property, string direction)
     {
-        if (!root.TryGetProperty(property, out var mods)
-            || mods.ValueKind != JsonValueKind.Object
-            || !mods.TryGetProperty(direction, out var list)
+        var values = ParseModalityArray(root, property, direction);
+        return values is null ? null : JsonSerializer.Serialize(values);
+    }
+
+    /// <summary>Đọc mảng string 2 cấp <c>{property}.{direction}</c>; null nếu shape không khớp.</summary>
+    private static string[]? ParseModalityArray(JsonElement root, string property, string direction)
+    {
+        if (!root.TryGetProperty(property, out var parent)
+            || parent.ValueKind != JsonValueKind.Object
+            || !parent.TryGetProperty(direction, out var list)
             || list.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -102,6 +102,9 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
             .Where(x => !string.IsNullOrEmpty(x))
             .Select(x => x!)
             .ToArray();
-        return values.Length == 0 ? null : JsonSerializer.Serialize(values);
+        return values.Length == 0 ? null : values;
     }
+
+    private static int? IntFrom(JsonElement root, string property) =>
+        root.TryGetProperty(property, out var el) && el.TryGetInt32(out var val) ? val : null;
 }
