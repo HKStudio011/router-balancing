@@ -92,8 +92,9 @@ public sealed class ProviderAccountService : IProviderAccountService
         }
 
         account.Name = name;
-        // Key rỗng khi sửa = giữ nguyên key cũ — không bao giờ ghi đè bằng chuỗi rỗng
-        if (!string.IsNullOrEmpty(draft.ApiKey))
+        // Key rỗng (kể cả toàn khoảng trắng) khi sửa = giữ nguyên key cũ —
+        // nếu không, "   ".Trim() sẽ persist key rỗng và traffic 401 âm thầm
+        if (!string.IsNullOrWhiteSpace(draft.ApiKey))
         {
             account.ApiKeyEncrypted = _protector.Protect(draft.ApiKey.Trim());
         }

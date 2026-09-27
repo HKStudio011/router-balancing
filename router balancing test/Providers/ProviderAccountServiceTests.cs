@@ -211,6 +211,22 @@ public class ProviderAccountServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Update_WhitespaceApiKey_KeepsExistingKey()
+    {
+        var providerId = await SeedProviderAsync();
+        var account = await _service.CreateAsync(Draft(providerId, key: "sk-old"));
+        var draft = Draft(providerId, name: "renamed", key: "   ");
+
+        await _service.UpdateAsync(account.Id, draft);
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.ProviderAccounts.SingleAsync(a => a.Id == account.Id);
+        Assert.Equal("renamed", saved.Name);
+        Assert.Equal("sk-old", _protector.Unprotect(saved.ApiKeyEncrypted));
+        Assert.Equal(1, await db.ProviderAccounts.CountAsync(a => a.ProviderId == providerId));
+    }
+
+    [Fact]
     public async Task Update_NewKey_ReplacesEncrypted()
     {
         var providerId = await SeedProviderAsync();
