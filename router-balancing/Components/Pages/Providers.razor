@@ -413,10 +413,11 @@ else
                                         }
                                     </td>
                                     <td class="px-2 py-1.5 text-right">
-                                        <button type="button" class="btn btn-outline-info px-1.5" disabled="@_busy"
+                                        <button type="button" class="btn btn-outline-info px-1.5"
+                                                disabled="@(_busy || _accountForm is not null)"
                                                 @onclick="() => BeginEditAccount(account)">✏️</button>
                                         <button type="button" class="btn btn-outline-danger px-1.5"
-                                                disabled="@(_busy || _accounts.Count <= 1)"
+                                                disabled="@(_busy || _accounts.Count <= 1 || _accountForm is not null)"
                                                 @onclick="() => AskDeleteAccount(account)">🗑</button>
                                     </td>
                                 </tr>
@@ -518,8 +519,9 @@ else
             @L["confirm.cancel"]
         </button>
         @* Nút Save dùng chung key i18n của Settings ("Save"/"Lưu") — cùng nghĩa, tránh nhân đôi key *@
+        @* Disable khi sub-form tài khoản đang mở: tránh tắt modal làm mất input đang gõ *@
         <button type="button" class="btn btn-primary"
-                disabled="@(!CanSave || _saving || _testing)" @onclick="SaveAsync">
+                disabled="@(!CanSave || _saving || _testing || _accountForm is not null)" @onclick="SaveAsync">
             @L["settings.action.save"]
         </button>
     </div>
