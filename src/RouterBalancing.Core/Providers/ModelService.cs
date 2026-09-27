@@ -37,12 +37,11 @@ public sealed class ModelService : IModelService
         using var db = _db.CreateDbContext();
         var provider = await db.Providers
             .Include(p => p.Models)
+            .Include(p => p.Accounts)
             .FirstOrDefaultAsync(p => p.Id == providerId, ct)
             ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
 
-        var key = string.IsNullOrEmpty(provider.ApiKeyEncrypted)
-            ? string.Empty
-            : _protector.Unprotect(provider.ApiKeyEncrypted);
+        var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
 
         using var request = ProviderRequestFactory.Create(provider, key);
         using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)

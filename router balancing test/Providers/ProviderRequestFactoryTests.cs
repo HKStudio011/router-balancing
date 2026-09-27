@@ -10,7 +10,6 @@ public class ProviderRequestFactoryTests
         Name = "P",
         Type = ProviderType.OpenAI,
         BaseUrl = baseUrl,
-        ApiKeyEncrypted = string.Empty,
     };
 
     [Theory]

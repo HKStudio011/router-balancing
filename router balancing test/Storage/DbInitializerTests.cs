@@ -22,6 +22,7 @@ public class DbInitializerTests : IDisposable
             .SqlQueryRaw<string>("SELECT name FROM sqlite_master WHERE type='table'")
             .ToList();
         Assert.Contains("Providers", tables);
+        Assert.Contains("ProviderAccounts", tables);
         Assert.Contains("Models", tables);
         Assert.Contains("Combos", tables);
         Assert.Contains("ComboItems", tables);
@@ -38,10 +39,16 @@ public class DbInitializerTests : IDisposable
         DbInitializer.Initialize(factory);
 
         using var db = factory.CreateDbContext();
-        var migrations = db.Database
+        var applied = db.Database
             .SqlQueryRaw<string>("SELECT MigrationId FROM __EFMigrationsHistory")
             .ToList();
-        Assert.Single(migrations);
+        // Idempotent = mỗi migration định nghĩa apply đúng 1 lần sau 2 lần Initialize —
+        // không hardcode số migration (thêm migration mới không được phá test này).
+        var defined = db.Database.GetMigrations().ToList();
+        Assert.Equal(defined.Count, applied.Count);
+        Assert.Equal(
+            defined.OrderBy(m => m, StringComparer.Ordinal),
+            applied.OrderBy(m => m, StringComparer.Ordinal));
     }
 
     [Fact]

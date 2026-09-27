@@ -56,7 +56,15 @@ public class ModelServiceTests : IDisposable
             Name = "P",
             Type = ProviderType.OpenAI,
             BaseUrl = "https://api.example.com",
-            ApiKeyEncrypted = _protector.Protect("sk-saved"),
+            Accounts =
+            [
+                new ProviderAccount
+                {
+                    Name = "Default",
+                    ApiKeyEncrypted = _protector.Protect("sk-saved"),
+                    Enabled = true,
+                },
+            ],
         };
         foreach (var id in existingModels)
         {

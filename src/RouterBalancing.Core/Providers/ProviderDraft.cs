@@ -14,7 +14,8 @@ public sealed record ProviderDraft
 
     public string BaseUrl { get; set; } = string.Empty;
 
-    /// <summary>Plaintext từ form — chỉ tồn tại trong lúc nhập, không bao giờ log hay persist trực tiếp.</summary>
+    /// <summary>Plaintext từ form — chỉ tồn tại trong lúc nhập, không bao giờ log hay persist trực tiếp.
+    /// Chỉ có nghĩa khi <c>CreateAsync</c> (tạo account "Default"); <c>UpdateAsync</c> bỏ qua.</summary>
     public string ApiKey { get; set; } = string.Empty;
 
     public int MaxConcurrent { get; set; } = 4;

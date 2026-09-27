@@ -11,12 +11,12 @@ public interface IProviderService
     /// <summary>Provider theo id kèm Models; <see langword="null"/> nếu không tồn tại.</summary>
     Task<Provider?> GetAsync(long id, CancellationToken ct = default);
 
-    /// <summary>Tạo provider mới từ bản nháp (key đã Protect).</summary>
+    /// <summary>Tạo provider mới từ bản nháp. <c>draft.ApiKey</c> không rỗng → tạo kèm account "Default".</summary>
     Task<Provider> CreateAsync(ProviderDraft draft, CancellationToken ct = default);
 
     /// <summary>
-    /// Cập nhật provider. <c>draft.ApiKey</c> rỗng = giữ nguyên key cũ
-    /// (người dùng sửa form không chủ đích xóa key).
+    /// Cập nhật provider. <c>draft.ApiKey</c> bị bỏ qua —
+    /// key quản lý ở <c>IProviderAccountService</c> (spec provider-accounts §4.2).
     /// </summary>
     /// <exception cref="KeyNotFoundException">Khi không có provider <paramref name="id"/>.</exception>
     Task UpdateAsync(long id, ProviderDraft draft, CancellationToken ct = default);
@@ -30,8 +30,8 @@ public interface IProviderService
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
 
     /// <summary>
-    /// Test kết nối: GET {BaseUrl}/v1/models với key override (form) hoặc key đã lưu.
-    /// Provider đã lưu (Id != 0) → persist LastTestSuccess/At/Message.
+    /// Test kết nối: GET {BaseUrl}/v1/models. <paramref name="apiKeyOverride"/> rỗng →
+    /// dùng key của account enabled đầu tiên. Provider đã lưu (Id != 0) → persist LastTest*.
     /// </summary>
     Task<ProviderTestResult> TestConnectionAsync(Provider provider, string? apiKeyOverride, CancellationToken ct = default);
 }

@@ -13,9 +13,6 @@ public class Provider
     /// <summary>Đảo gốc API, ví dụ <c>https://api.openai.com</c>.</summary>
     public string BaseUrl { get; set; } = string.Empty;
 
-    /// <summary>API key đã mã hóa DPAPI — không bao giờ lưu plaintext.</summary>
-    public string ApiKeyEncrypted { get; set; } = string.Empty;
-
     public bool Enabled { get; set; } = true;
 
     /// <summary>Số request đồng thời tối đa — kích thước Execution List.</summary>
@@ -33,4 +30,7 @@ public class Provider
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public List<Model> Models { get; set; } = [];
+
+    /// <summary>Tài khoản (API key) thuộc provider — cascade khi xoá provider.</summary>
+    public List<ProviderAccount> Accounts { get; set; } = [];
 }

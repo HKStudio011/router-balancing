@@ -26,9 +26,7 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
     {
         try
         {
-            var key = string.IsNullOrEmpty(provider.ApiKeyEncrypted)
-                ? string.Empty
-                : _protector.Unprotect(provider.ApiKeyEncrypted);
+            var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
 
             using var request = ProviderRequestFactory.Create(provider, key, $"/v1/models/{model.ModelId}");
             using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)

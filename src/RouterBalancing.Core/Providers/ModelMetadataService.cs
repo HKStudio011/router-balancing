@@ -27,8 +27,11 @@ public sealed class ModelMetadataService : IModelMetadataService
     public async Task TryFillAsync(long modelId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        // Provider! : nav nullable theo model — row luôn có Provider (FK bắt buộc),
+        // null-check thực sự nằm ngay dưới sau khi query xong.
         var model = await db.Models
             .Include(m => m.Provider)
+            .ThenInclude(p => p!.Accounts)
             .FirstOrDefaultAsync(m => m.Id == modelId, ct);
         if (model?.Provider is null) return;
 

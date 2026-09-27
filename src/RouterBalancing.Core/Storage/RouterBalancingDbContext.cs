@@ -15,6 +15,8 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
 
     public DbSet<ComboItem> ComboItems => Set<ComboItem>();
 
+    public DbSet<ProviderAccount> ProviderAccounts => Set<ProviderAccount>();
+
     public DbSet<LogEntry> LogEntries => Set<LogEntry>();
 
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
@@ -25,7 +27,6 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
         {
             e.Property(x => x.Name).IsRequired().HasMaxLength(200);
             e.Property(x => x.BaseUrl).IsRequired().HasMaxLength(2000);
-            e.Property(x => x.ApiKeyEncrypted).IsRequired();
         });
 
         modelBuilder.Entity<Model>(e =>
@@ -35,6 +36,18 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             e.HasIndex(x => new { x.ProviderId, x.ModelId }).IsUnique();
             e.HasOne(x => x.Provider)
                 .WithMany(p => p.Models)
+                .HasForeignKey(x => x.ProviderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ProviderAccount>(e =>
+        {
+            e.Property(x => x.Name).IsRequired().HasMaxLength(100);
+            e.Property(x => x.ApiKeyEncrypted).IsRequired();
+            // Đổi tên account trong form có thể trùng account khác cùng provider
+            e.HasIndex(x => new { x.ProviderId, x.Name }).IsUnique();
+            e.HasOne(x => x.Provider)
+                .WithMany(p => p.Accounts)
                 .HasForeignKey(x => x.ProviderId)
                 .OnDelete(DeleteBehavior.Cascade);
         });

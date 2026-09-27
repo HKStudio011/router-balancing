@@ -41,18 +41,27 @@ public class ProviderServiceTests : IDisposable
     };
 
     [Fact]
-    public async Task Create_WhenKeyProvided_EncryptsAndPersists()
+    public async Task Create_WhenKeyProvided_CreatesDefaultAccountEncrypted()
     {
         var provider = await _service.CreateAsync(Draft());
 
-        Assert.NotEqual("sk-secret", provider.ApiKeyEncrypted);
-        Assert.Equal("sk-secret", _protector.Unprotect(provider.ApiKeyEncrypted));
         Assert.Equal("https://api.openai.com", provider.BaseUrl); // trailing slash đã trim
         Assert.Equal("OpenAI", provider.Name);
 
         using var db = _db.CreateDbContext();
-        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
-        Assert.Equal(provider.ApiKeyEncrypted, saved.ApiKeyEncrypted);
+        var account = await db.ProviderAccounts.SingleAsync(a => a.ProviderId == provider.Id);
+        Assert.Equal("Default", account.Name);
+        Assert.NotEqual("sk-secret", account.ApiKeyEncrypted);
+        Assert.Equal("sk-secret", _protector.Unprotect(account.ApiKeyEncrypted));
+    }
+
+    [Fact]
+    public async Task Create_WhenKeyBlank_NoAccountCreated()
+    {
+        var provider = await _service.CreateAsync(Draft(key: string.Empty));
+
+        using var db = _db.CreateDbContext();
+        Assert.False(await db.ProviderAccounts.AnyAsync(a => a.ProviderId == provider.Id));
     }
 
     [Theory]
@@ -110,7 +119,18 @@ public class ProviderServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Update_WhenApiKeyBlank_KeepsExistingKeyAndRefreshesTimestamp()
+    public async Task ListAsync_IncludesAccounts()
+    {
+        var provider = await _service.CreateAsync(Draft());
+
+        var list = await _service.ListAsync();
+
+        var loaded = Assert.Single(list);
+        Assert.Equal("Default", Assert.Single(loaded.Accounts).Name);
+    }
+
+    [Fact]
+    public async Task Update_WhenApiKeyBlank_KeepsAccountKeyAndRefreshesTimestamp()
     {
         var provider = await _service.CreateAsync(Draft(key: "sk-old"));
         var before = provider.UpdatedAt;
@@ -121,20 +141,22 @@ public class ProviderServiceTests : IDisposable
         using var db = _db.CreateDbContext();
         var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
         Assert.Equal("Renamed", saved.Name);
-        Assert.Equal("sk-old", _protector.Unprotect(saved.ApiKeyEncrypted));
         Assert.True(saved.UpdatedAt > before);
+        var account = await db.ProviderAccounts.SingleAsync(a => a.ProviderId == provider.Id);
+        Assert.Equal("sk-old", _protector.Unprotect(account.ApiKeyEncrypted));
     }
 
     [Fact]
-    public async Task Update_WhenApiKeyProvided_Reencrypts()
+    public async Task Update_WhenApiKeyProvided_IgnoresKeyAndKeepsAccount()
     {
         var provider = await _service.CreateAsync(Draft(key: "sk-old"));
 
         await _service.UpdateAsync(provider.Id, Draft(key: "sk-new"));
 
         using var db = _db.CreateDbContext();
-        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
-        Assert.Equal("sk-new", _protector.Unprotect(saved.ApiKeyEncrypted));
+        var account = await db.ProviderAccounts.SingleAsync(a => a.ProviderId == provider.Id);
+        // Key chỉ đổi qua account CRUD — UpdateAsync bỏ qua draft.ApiKey (spec §4.2)
+        Assert.Equal("sk-old", _protector.Unprotect(account.ApiKeyEncrypted));
     }
 
     [Fact]

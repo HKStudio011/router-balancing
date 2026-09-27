@@ -59,8 +59,16 @@ public class ProviderTestConnectionTests : IDisposable
             Name = "P",
             Type = type,
             BaseUrl = "https://api.example.com",
-            ApiKeyEncrypted = _protector.Protect("sk-saved"),
             MaxConcurrent = 4,
+            Accounts =
+            [
+                new ProviderAccount
+                {
+                    Name = "Default",
+                    ApiKeyEncrypted = _protector.Protect("sk-saved"),
+                    Enabled = true,
+                },
+            ],
         };
         db.Providers.Add(provider);
         await db.SaveChangesAsync();
@@ -143,7 +151,7 @@ public class ProviderTestConnectionTests : IDisposable
     }
 
     [Fact]
-    public async Task TestConnection_WhenNoOverride_DecryptsSavedKeyForRequest()
+    public async Task TestConnection_WhenNoOverride_DecryptsFirstEnabledAccountKey()
     {
         var handler = new FakeHandler(HttpStatusCode.OK);
         var provider = await SavedProviderAsync(); // key đã lưu = "sk-saved"
@@ -173,5 +181,19 @@ public class ProviderTestConnectionTests : IDisposable
         Assert.True(result.Success);
         using var db = _db.CreateDbContext();
         Assert.Equal(0, await db.Providers.CountAsync());
+    }
+
+    [Fact]
+    public async Task TestConnection_WhenNoEnabledAccounts_SendsEmptyKey()
+    {
+        var handler = new FakeHandler(HttpStatusCode.OK);
+        var provider = await SavedProviderAsync();
+        provider.Accounts[0].Enabled = false; // entity trong tay — resolver phải bỏ account tắt
+        var service = ServiceWith(handler);
+
+        await service.TestConnectionAsync(provider, apiKeyOverride: null);
+
+        var auth = handler.LastRequest!.Headers.Authorization;
+        Assert.True(auth is null || !auth.ToString().Contains("sk-saved", StringComparison.Ordinal));
     }
 }

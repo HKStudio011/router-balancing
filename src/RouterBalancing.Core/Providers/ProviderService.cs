@@ -33,6 +33,7 @@ public sealed class ProviderService : IProviderService
         using var db = _db.CreateDbContext();
         return await db.Providers
             .Include(p => p.Models)
+            .Include(p => p.Accounts)
             .OrderBy(p => p.Id)
             .ToListAsync(ct);
     }
@@ -43,6 +44,7 @@ public sealed class ProviderService : IProviderService
         using var db = _db.CreateDbContext();
         return await db.Providers
             .Include(p => p.Models)
+            .Include(p => p.Accounts)
             .FirstOrDefaultAsync(p => p.Id == id, ct);
     }
 
@@ -54,11 +56,21 @@ public sealed class ProviderService : IProviderService
             Name = draft.Name.Trim(),
             Type = draft.Type,
             BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl),
-            ApiKeyEncrypted = string.IsNullOrEmpty(draft.ApiKey)
-                ? string.Empty
-                : _protector.Protect(draft.ApiKey),
             MaxConcurrent = draft.MaxConcurrent,
         };
+
+        // Key ở create = tạo kèm account "Default" — key sống hoàn toàn ở ProviderAccount (spec §4.2)
+        if (!string.IsNullOrEmpty(draft.ApiKey))
+        {
+            provider.Accounts.Add(new ProviderAccount
+            {
+                Name = "Default",
+                ApiKeyEncrypted = _protector.Protect(draft.ApiKey),
+                Enabled = true,
+                Weight = 100,
+                Priority = 0,
+            });
+        }
 
         using var db = _db.CreateDbContext();
         db.Providers.Add(provider);
@@ -77,11 +89,7 @@ public sealed class ProviderService : IProviderService
         provider.Type = draft.Type;
         provider.BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl);
         provider.MaxConcurrent = draft.MaxConcurrent;
-        // Key rỗng khi sửa = giữ nguyên key cũ — không bao giờ ghi đè bằng chuỗi rỗng
-        if (!string.IsNullOrEmpty(draft.ApiKey))
-        {
-            provider.ApiKeyEncrypted = _protector.Protect(draft.ApiKey);
-        }
+        // draft.ApiKey bị BỎ QUA khi update — key quản lý ở ProviderAccount (spec §4.2)
         provider.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
@@ -120,14 +128,13 @@ public sealed class ProviderService : IProviderService
         ProviderTestResult result;
         try
         {
-            // Override (key đang gõ trên form) ưu tiên; không có → giải mã key đã lưu.
-            // Decrypt PHẢI nằm trong try: key DPAPI hỏng (CryptographicException) rơi vào
-            // catch → fail với lý do, không ném ra UI (sửa theo review Task 3 — nếu để
-            // ngoài try thì CryptographicException trong catch filter là dead code).
+            // Override (key đang gõ trên form) ưu tiên; không có → account enabled đầu tiên.
+            // Unprotect PHẢI nằm trong try: key DPAPI hỏng (CryptographicException) rơi vào
+            // catch → fail với lý do, không ném ra UI.
             var key = apiKeyOverride;
-            if (string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(provider.ApiKeyEncrypted))
+            if (string.IsNullOrEmpty(key))
             {
-                key = _protector.Unprotect(provider.ApiKeyEncrypted);
+                key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector);
             }
 
             using var request = ProviderRequestFactory.Create(provider, key ?? string.Empty);
