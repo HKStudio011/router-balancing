@@ -195,4 +195,24 @@ public sealed class ModelService : IModelService
         }
         await db.SaveChangesAsync(ct);
     }
+
+    /// <inheritdoc/>
+    public async Task UpdateCapabilitiesAsync(
+        long modelId, int? contextWindow, bool supportsVision, bool supportsThink, CancellationToken ct = default)
+    {
+        // Relational pattern: null không match → ctx null hợp lệ (clear)
+        if (contextWindow is < 1 or > 10_000_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(contextWindow), contextWindow,
+                "Context window phải trong khoảng 1..10.000.000.");
+        }
+
+        using var db = _db.CreateDbContext();
+        var model = await db.Models.FirstOrDefaultAsync(m => m.Id == modelId, ct)
+            ?? throw new KeyNotFoundException($"Model {modelId} not found.");
+        model.ContextWindow = contextWindow;
+        model.SupportsVision = supportsVision;
+        model.SupportsThink = supportsThink;
+        await db.SaveChangesAsync(ct);
+    }
 }

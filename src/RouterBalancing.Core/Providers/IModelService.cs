@@ -28,4 +28,14 @@ public interface IModelService
 
     /// <summary>Bật/tắt toàn bộ models của provider.</summary>
     Task SetAllEnabledAsync(long providerId, bool enabled, CancellationToken ct = default);
+
+    /// <summary>Cập nhật capabilities tay (Context window, Vision, Think) — user sửa inline ở UI.</summary>
+    /// <param name="modelId">Id model cần sửa.</param>
+    /// <param name="contextWindow"><see langword="null"/> = xóa giá trị; hợp lệ 1..10_000_000.</param>
+    /// <param name="supportsVision">Model có nhận input ảnh không.</param>
+    /// <param name="supportsThink">Model có chế độ suy luận không.</param>
+    /// <param name="ct">Token hủy.</param>
+    /// <exception cref="ArgumentOutOfRangeException">Khi <paramref name="contextWindow"/> ngoài 1..10_000_000.</exception>
+    /// <exception cref="KeyNotFoundException">Khi model không tồn tại.</exception>
+    Task UpdateCapabilitiesAsync(long modelId, int? contextWindow, bool supportsVision, bool supportsThink, CancellationToken ct = default);
 }
