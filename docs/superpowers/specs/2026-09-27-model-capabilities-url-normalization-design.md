@@ -1,7 +1,7 @@
 # Spec: Model capabilities (sửa metadata tay) + Chuẩn hoá URL `/v1`
 
 - **Ngày:** 2026-09-27
-- **Trạng thái:** Draft — chờ user review
+- **Trạng thái:** Approved — đã implement (branch feat/model-capabilities-url)
 - **Phạm vi:** Phase 2B-small — fix trên `feat/phase2-provider-mgmt` (sau khi merge Phase 2A), trước Phase 3 (Engine)
 - **Spec liên quan:** [2026-09-26-provider-model-management-design.md](2026-09-26-provider-model-management-design.md) (§3.3 metadata chain), [2026-09-25-router-balancing-design.md](2026-09-25-router-balancing-design.md) (§ retry/watchdog)
 

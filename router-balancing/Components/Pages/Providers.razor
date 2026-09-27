@@ -852,7 +852,7 @@ else
         _errors.TryGetValue(field, out var key) ? key : null;
 
     private string DraftSignature() =>
-        $"{_draft.Type}|{_draft.BaseUrl.Trim().TrimEnd('/')}|{_draft.ApiKey}";
+        $"{_draft.Type}|{ProviderUrl.Canonicalize(_draft.BaseUrl)}|{_draft.ApiKey}";
 
     /// <summary>
     /// Provider mới: chỉ Save khi test pass với đúng nội dung hiện tại của form;
@@ -880,7 +880,7 @@ else
                 ? await ProviderSvc.GetAsync(id) ?? throw new KeyNotFoundException($"Provider {id} not found.")
                 : new Provider();
             target.Type = _draft.Type;
-            target.BaseUrl = _draft.BaseUrl.Trim().TrimEnd('/');
+            target.BaseUrl = ProviderUrl.Canonicalize(_draft.BaseUrl);
 
             _testResult = await ProviderSvc.TestConnectionAsync(
                 target, string.IsNullOrEmpty(_draft.ApiKey) ? null : _draft.ApiKey);

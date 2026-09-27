@@ -49,7 +49,8 @@ public sealed class ModelMetadataService : IModelMetadataService
             if (meta is null) continue;
 
             // Chỉ ghi field còn trống — không ghi đè giá trị đã có (spec §3.3);
-            // bool không nullable trên entity coi false = "chưa rõ" (2A chưa cho sửa tay).
+            // bool không nullable trên entity coi false = "chưa rõ"
+            // (fill chỉ chạy lúc model được tạo — false tại thời điểm đó luôn là "chưa rõ").
             var changed = false;
             if (meta.ContextWindow is not null && model.ContextWindow is null)
             {
