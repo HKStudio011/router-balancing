@@ -1,7 +1,7 @@
 # Spec: Combo CRUD Screen (Router panel)
 
 - **Ngày:** 2026-09-27
-- **Trạng thái:** Draft — chờ user review
+- **Trạng thái:** Approved (user "ok" 2026-09-27)
 - **Phạm vi:** Phase 2C (Bloc B) — sau Phase 2B (capabilities/URL), trước Đa tài khoản provider & Phase 3 (Engine)
 - **Spec liên quan:** [2026-09-25-router-balancing-design.md](2026-09-25-router-balancing-design.md) §8 (UI), §94-95 (entities), §9 (UI system), §299 (Phase 5)
 
@@ -34,7 +34,7 @@ public interface IComboService
 - **`ComboDraft`**: mutable record (giống `ProviderDraft`, phục vụ Blazor `@bind`): `string Name`, `ComboMode Mode`, `List<ComboItemDraft> Items` — mỗi item `long? TargetModelId` **XOR** `long? TargetComboId`. `Position` gán `0..n-1` theo thứ tự list lúc save (thay thế toàn bộ items khi Update).
 - **Validation** ném `ComboValidationException(ComboValidationError Code)` — enum: `DuplicateName`, `EmptyItems`, `CycleDetected`, `InvalidItemTarget`, `TargetNotFound`, `NameTooLong`. UI bắt theo `Code` → toast i18n `combos.error.*`.
 - **Unknown id** (Update/Delete không thấy) → `KeyNotFoundException` (nhất quán contract hiện hữu).
-- Rules: Name trim, bắt buộc, ≤200 ký tự, unique (index DB là backstop); ≥1 item; mỗi item đúng 1 target; `TargetModelId`/`TargetComboId` phải tồn tại (pre-check, không để FK nổ).
+- Rules: Name trim, bắt buộc, ≤200 ký tự, unique (index DB là backstop); Name rỗng (sau trim) → `ArgumentException` (nhất quán `ThrowIfNullOrWhiteSpace` của repo — UI `CanSave` chặn trước nên đường này khó tới); ≥1 item; mỗi item đúng 1 target; `TargetModelId`/`TargetComboId` phải tồn tại (pre-check, không để FK nổ).
 - **Cycle check**: DFS từ mọi `TargetComboId` đã chọn trên graph combo hiện có (adjacency: combo → các combo con trỏ tới nó) — nếu chạm id đang sửa → `CycleDetected`. `CreateAsync` không thể cycle (id mới chưa được combo nào trỏ tới). Self-reference (`TargetComboId == id`) bị bắt ngay.
 - **Delete**: UI gọi trước `GetReferencingComboNamesAsync` → nếu có tên → ConfirmDialog kèm warning; `DeleteAsync` cũng tự chặn khi còn reference (FK Restrict là backstop). Cascade model→item (Phase 1) được giữ nguyên — combo có thể còn 0 item sau khi xóa model; save lại yêu cầu ≥1.
 
@@ -104,7 +104,7 @@ Pattern `Providers.razor`: `@implements IDisposable`, inject `IComboService`, `L
 
 - **Create:** draft hợp lệ → Position 0..n-1 đúng thứ tự, Name trim; từng Code: `DuplicateName`, `EmptyItems`, `NameTooLong` (>200), `InvalidItemTarget` (cả 2 null / cả 2 != null), `TargetNotFound` (model/combo id không có).
 - **Cycle:** item trỏ chính nó → `CycleDetected`; X→Y, sửa Y trỏ X (indirect) → `CycleDetected`; create combo mới trỏ X → OK (không cycle); Update/Delete unknown id → `KeyNotFoundException`.
-- **Update:** đổi Name/Mode; items thay thế toàn bộ (xóa dòng cũ, Position重新 gán).
+- **Update:** đổi Name/Mode; items thay thế toàn bộ (xóa dòng cũ, Position gán lại).
 - **Delete:** không tham chiếu → xóa sạch items (cascade); có tham chiếu → `GetReferencingComboNamesAsync` trả đúng tên, `DeleteAsync` ném (Restrict backstop).
 - **Cascade:** xóa model đang là target → item biến mất (xác nhận contract Phase 1).
 
