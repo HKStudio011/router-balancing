@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 #endif
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Localization;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Platform;
@@ -73,6 +74,7 @@ namespace router_balancing
                 client => client.Timeout = TimeSpan.FromSeconds(10));
             builder.Services.AddSingleton<IProviderService, ProviderService>();
             builder.Services.AddSingleton<IModelService, ModelService>();
+            builder.Services.AddSingleton<IComboService, ComboService>();
             builder.Services.AddSingleton<IModelMetadataService, ModelMetadataService>();
             // Thứ tự đăng ký = thứ tự chain: endpoint trước, static catalog sau
             builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();
