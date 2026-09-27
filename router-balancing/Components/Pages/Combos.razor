@@ -291,7 +291,7 @@ else
             return true;
         }
 
-        // BFS theo cạnh ngược (chứa → bị chứa): tìm mọi combo đi tới được self
+        // DFS theo cạnh ngược (chứa → bị chứa): tìm mọi combo đi tới được self
         var ancestors = new HashSet<long>();
         var stack = new Stack<long>();
         stack.Push(self);
