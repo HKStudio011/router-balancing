@@ -16,8 +16,10 @@ public sealed class RequestQueue : IRequestQueue
     private readonly Dictionary<string, ProxyRequest> _byId = new();
     private long _sequence;
 
+    /// <inheritdoc/>
     public event Action? Changed;
 
+    /// <inheritdoc/>
     public bool Enqueue(ProxyRequest request)
     {
         lock (_lock)
@@ -35,6 +37,7 @@ public sealed class RequestQueue : IRequestQueue
         return true;
     }
 
+    /// <inheritdoc/>
     public bool Peek([NotNullWhen(true)] out ProxyRequest? request)
     {
         lock (_lock)
@@ -46,9 +49,11 @@ public sealed class RequestQueue : IRequestQueue
         }
     }
 
+    /// <inheritdoc/>
     public bool Take(string id, [NotNullWhen(true)] out ProxyRequest? request) =>
         Remove(id, fireChanged: false, out request);
 
+    /// <inheritdoc/>
     public bool TryRemove(string id, [NotNullWhen(true)] out ProxyRequest? request) =>
         Remove(id, fireChanged: true, out request);
 
@@ -70,6 +75,7 @@ public sealed class RequestQueue : IRequestQueue
         return true;
     }
 
+    /// <inheritdoc/>
     public bool SetPriority(string id, RequestPriority priority)
     {
         lock (_lock)
@@ -89,12 +95,14 @@ public sealed class RequestQueue : IRequestQueue
         return true;
     }
 
+    /// <inheritdoc/>
     public bool Contains(string id)
     {
         lock (_lock)
             return _byId.ContainsKey(id);
     }
 
+    /// <inheritdoc/>
     public IReadOnlyList<ProxyRequest> Snapshot()
     {
         lock (_lock)
