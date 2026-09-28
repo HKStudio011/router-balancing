@@ -194,6 +194,7 @@ public class ProviderTestConnectionTests : IDisposable
         await service.TestConnectionAsync(provider, apiKeyOverride: null);
 
         var auth = handler.LastRequest!.Headers.Authorization;
-        Assert.True(auth is null || !auth.ToString().Contains("sk-saved", StringComparison.Ordinal));
+        Assert.NotNull(auth);
+        Assert.Equal("Bearer", auth.ToString()); // key rỗng → chỉ còn scheme, không kèm key nào
     }
 }

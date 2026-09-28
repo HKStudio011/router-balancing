@@ -8,6 +8,7 @@ using RouterBalancing.Core.Storage;
 
 namespace router_balancing_test.Providers;
 
+/// <summary>CRUD/test ProviderAccountService trên DB file tạm — không network, DPAPI thật.</summary>
 public class ProviderAccountServiceTests : IDisposable
 {
     private readonly TestDb _testDb = new();
@@ -23,6 +24,7 @@ public class ProviderAccountServiceTests : IDisposable
         _service = new ProviderAccountService(_db, _protector, new NeverHttpFactory(), new NullLog());
     }
 
+    /// <summary>Giải phóng TestDb (xóa file tạm).</summary>
     public void Dispose() => _testDb.Dispose();
 
     /// <summary>HttpClientFactory ném nếu bị gọi — CRUD không được đụng network.</summary>
@@ -32,9 +34,11 @@ public class ProviderAccountServiceTests : IDisposable
             throw new InvalidOperationException("CRUD must not perform HTTP calls.");
     }
 
+    /// <summary>Service với HTTP stub — test TestAll không đụng mạng.</summary>
     private ProviderAccountService ServiceWith(HttpMessageHandler handler) =>
         new(_db, _protector, new StubFactory(handler), new NullLog());
 
+    /// <summary>IHttpClientFactory trả HttpClient gắn handler test.</summary>
     private sealed class StubFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
@@ -54,12 +58,14 @@ public class ProviderAccountServiceTests : IDisposable
         }
     }
 
+    /// <summary>Trả đúng status cố định cho mọi request.</summary>
     private sealed class FixedHandler(HttpStatusCode status) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
     }
 
+    /// <summary>Seed provider + các account (tên/khối/ưu tiên) — trả ProviderId.</summary>
     private async Task<long> SeedProviderAsync(params (string Name, bool Enabled, int Priority)[] accounts)
     {
         using var db = _db.CreateDbContext();
@@ -85,6 +91,7 @@ public class ProviderAccountServiceTests : IDisposable
         return provider.Id;
     }
 
+    /// <summary>Bản nháp account hợp lệ cho test (ProviderId tùy chỗ gọi).</summary>
     private static ProviderAccountDraft Draft(long providerId, string name = "acct", string key = "sk-1") => new()
     {
         ProviderId = providerId,
@@ -95,6 +102,7 @@ public class ProviderAccountServiceTests : IDisposable
         Priority = 0,
     };
 
+    /// <summary>Key lưu xuống DB phải là ciphertext DPAPI, không plaintext.</summary>
     [Fact]
     public async Task Create_WithKey_SavesDpapiEncrypted()
     {
@@ -110,6 +118,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal(account.ApiKeyEncrypted, saved.ApiKeyEncrypted);
     }
 
+    /// <summary>Trùng Name trong cùng provider → InvalidOperationException.</summary>
     [Fact]
     public async Task Create_DuplicateNameInSameProvider_ThrowsInvalidOperation()
     {
@@ -120,6 +129,7 @@ public class ProviderAccountServiceTests : IDisposable
             () => _service.CreateAsync(Draft(providerId, name: "dup")));
     }
 
+    /// <summary>Cùng Name giữa 2 provider là hợp lệ.</summary>
     [Fact]
     public async Task Create_SameNameDifferentProviders_Ok()
     {
@@ -132,12 +142,14 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal(second, account.ProviderId);
     }
 
+    /// <summary>Provider không tồn tại → KeyNotFoundException.</summary>
     [Fact]
     public async Task Create_WhenProviderMissing_ThrowsKeyNotFound()
     {
         await Assert.ThrowsAsync<KeyNotFoundException>(() => _service.CreateAsync(Draft(999)));
     }
 
+    /// <summary>ModelPatterns → JSON array trong cột TEXT.</summary>
     [Fact]
     public async Task Create_WithPatterns_SerializesJsonArray()
     {
@@ -154,6 +166,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal("""["gpt-4o*","o3*"]""", account.ModelPatterns);
     }
 
+    /// <summary>Pattern rỗng/trắng → ArgumentException.</summary>
     [Fact]
     public async Task Create_EmptyPattern_ThrowsArgument()
     {
@@ -164,6 +177,7 @@ public class ProviderAccountServiceTests : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(() => _service.CreateAsync(draft));
     }
 
+    /// <summary>Name > 100 ký tự → ArgumentException.</summary>
     [Fact]
     public async Task Create_NameTooLong_ThrowsArgument()
     {
@@ -173,6 +187,7 @@ public class ProviderAccountServiceTests : IDisposable
             () => _service.CreateAsync(Draft(providerId, name: new string('a', 101))));
     }
 
+    /// <summary>Lần lượt các rule Weight/Priority/limit vi phạm → ArgumentException.</summary>
     [Theory]
     [InlineData("", "sk", 100, 0, null, null)]   // name rỗng
     [InlineData("A", "", 100, 0, null, null)]    // create bắt buộc key
@@ -195,6 +210,18 @@ public class ProviderAccountServiceTests : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(() => _service.CreateAsync(draft));
     }
 
+    /// <summary>Quá 50 pattern → ArgumentException.</summary>
+    [Fact]
+    public async Task Create_TooManyPatterns_ThrowsArgument()
+    {
+        var providerId = await SeedProviderAsync();
+        var draft = Draft(providerId);
+        draft.ModelPatterns = Enumerable.Range(0, 51).Select(i => $"m{i}").ToArray();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _service.CreateAsync(draft));
+    }
+
+    /// <summary>Key rỗng khi sửa = giữ key đã lưu.</summary>
     [Fact]
     public async Task Update_EmptyApiKey_KeepsExistingKey()
     {
@@ -210,6 +237,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal("sk-old", _protector.Unprotect(saved.ApiKeyEncrypted));
     }
 
+    /// <summary>Key toàn khoảng trắng cũng = giữ (chống persist key rỗng).</summary>
     [Fact]
     public async Task Update_WhitespaceApiKey_KeepsExistingKey()
     {
@@ -226,6 +254,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal(1, await db.ProviderAccounts.CountAsync(a => a.ProviderId == providerId));
     }
 
+    /// <summary>Có key mới → ciphertext đổi.</summary>
     [Fact]
     public async Task Update_NewKey_ReplacesEncrypted()
     {
@@ -239,6 +268,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal("sk-new", _protector.Unprotect(saved.ApiKeyEncrypted));
     }
 
+    /// <summary>Trùng tên chính nó không phải lỗi.</summary>
     [Fact]
     public async Task Update_DuplicateNameExcludingSelf_Ok()
     {
@@ -252,6 +282,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal(1, await db.ProviderAccounts.CountAsync(a => a.ProviderId == providerId));
     }
 
+    /// <summary>Account không tồn tại → KeyNotFoundException.</summary>
     [Fact]
     public async Task Update_WhenAccountMissing_ThrowsKeyNotFound()
     {
@@ -261,6 +292,7 @@ public class ProviderAccountServiceTests : IDisposable
             () => _service.UpdateAsync(999, Draft(providerId)));
     }
 
+    /// <summary>Xoá account cuối → InvalidOperationException.</summary>
     [Fact]
     public async Task Delete_LastAccount_ThrowsInvalidOperation()
     {
@@ -275,6 +307,7 @@ public class ProviderAccountServiceTests : IDisposable
         }
     }
 
+    /// <summary>Còn >1 account → xoá được.</summary>
     [Fact]
     public async Task Delete_NotLast_Succeeds()
     {
@@ -292,6 +325,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal(1, await db2.ProviderAccounts.CountAsync(a => a.ProviderId == providerId));
     }
 
+    /// <summary>Thứ tự Priority tăng dần rồi Name.</summary>
     [Fact]
     public async Task ListAsync_OrdersByPriorityThenName()
     {
@@ -302,6 +336,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal(new[] { "first", "mid", "last" }, list.Select(a => a.Name).ToArray());
     }
 
+    /// <summary>Xoá provider cascade accounts (FK OnDelete).</summary>
     [Fact]
     public async Task DeleteProvider_CascadesToAccounts()
     {
@@ -318,6 +353,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.False(await db2.ProviderAccounts.AnyAsync(a => a.ProviderId == providerId));
     }
 
+    /// <summary>Ghi LastTest* từng account + Provider = AND + composition message.</summary>
     [Fact]
     public async Task TestAllAsync_MixedResults_WritesEachAndProviderAnd()
     {
@@ -340,8 +376,10 @@ public class ProviderAccountServiceTests : IDisposable
         var provider = await db.Providers.SingleAsync(p => p.Id == providerId);
         Assert.False(provider.LastTestSuccess); // AND của 2 account: 1 fail → false
         Assert.NotNull(provider.LastTestAt);
+        Assert.Equal("bad: HTTP 401 Unauthorized", provider.LastTestMessage); // composition "Name: message", chỉ account fail
     }
 
+    /// <summary>Không account enabled → Provider.LastTest* = null.</summary>
     [Fact]
     public async Task TestAllAsync_NoEnabledAccounts_SetsProviderTestNull()
     {
@@ -357,6 +395,7 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Null(provider.LastTestAt);
     }
 
+    /// <summary>Provider không tồn tại → KeyNotFoundException.</summary>
     [Fact]
     public async Task TestAllAsync_WhenProviderMissing_ThrowsKeyNotFound()
     {

@@ -130,6 +130,23 @@ public class ProviderServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAsync_WhenExists_IncludesModelsAndAccounts()
+    {
+        var provider = await _service.CreateAsync(Draft());
+        using (var db = _db.CreateDbContext())
+        {
+            db.Models.Add(new Model { ProviderId = provider.Id, ModelId = "gpt-4o" });
+            await db.SaveChangesAsync();
+        }
+
+        var loaded = await _service.GetAsync(provider.Id);
+
+        Assert.NotNull(loaded);
+        Assert.Equal("gpt-4o", Assert.Single(loaded.Models).ModelId);
+        Assert.Equal("Default", Assert.Single(loaded.Accounts).Name);
+    }
+
+    [Fact]
     public async Task Update_WhenApiKeyBlank_KeepsAccountKeyAndRefreshesTimestamp()
     {
         var provider = await _service.CreateAsync(Draft(key: "sk-old"));
