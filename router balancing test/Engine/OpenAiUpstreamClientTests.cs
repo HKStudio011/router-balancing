@@ -44,6 +44,24 @@ public class OpenAiUpstreamClientTests
         public HttpClient CreateClient(string name) => client;
     }
 
+    private sealed class TrackingContent : HttpContent
+    {
+        public bool WasRead { get; private set; }
+
+        // Chỉ được gọi khi HttpClient bơm body vào bộ nhớ — ResponseHeadersRead không đụng tới
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            WasRead = true;
+            return Task.CompletedTask;
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
     [Fact]
     public async Task PostChatCompletionAsync_SendsPostToChatPath_WithBearerAndJsonBody()
     {
@@ -75,5 +93,19 @@ public class OpenAiUpstreamClientTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("text/event-stream", response.Content.Headers.ContentType!.MediaType);
         Assert.Equal("data: [DONE]\n\n", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PostChatCompletionAsync_WithDefaultCompletionOption_DoesNotBufferUpstreamBody()
+    {
+        var tracking = new TrackingContent();
+        var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = tracking };
+        var client = new HttpClient(new FixedHandler(response, _ => { }));
+        var sut = new OpenAiUpstreamClient(new FixedFactory(client));
+
+        await sut.PostChatCompletionAsync(P(), "k", [], CancellationToken.None);
+
+        // ResponseContentRead sẽ load body vào bộ nhớ trước khi trả về (SerializeToStreamAsync chạy)
+        Assert.False(tracking.WasRead);
     }
 }
