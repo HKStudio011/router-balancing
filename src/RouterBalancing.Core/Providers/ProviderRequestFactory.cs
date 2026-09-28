@@ -3,8 +3,9 @@ using RouterBalancing.Core.Domain;
 namespace RouterBalancing.Core.Providers;
 
 /// <summary>
-/// Tạo request GET tới provider — dùng chung cho test connection, fetch models
-/// và metadata endpoint để header theo Type chỉ viết 1 chỗ (DRY).
+/// Tạo request tới provider — GET mặc định với path <c>/v1/models</c> (test connection,
+/// fetch models, metadata); POST khi truyền method/content (chat completion). Header theo
+/// Type chỉ viết 1 chỗ (DRY).
 /// </summary>
 public static class ProviderRequestFactory
 {
