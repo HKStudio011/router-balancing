@@ -46,14 +46,14 @@ Xây dựng đường request cốt lõi của proxy LLM: `POST /v1/chat/complet
 | `IModelResolver` + `ModelResolver` | `model id` → `ResolvedModel(provider, model)` hoặc `ResolveFailure` phân loại (`NotFound` / `AnthropicNotSupported`); query EF + `Include(Accounts)` | `IDbContextFactory` |
 | `IUpstreamClient` + `OpenAiUpstreamClient` | Gửi POST body thô tới `{BaseUrl}/v1/chat/completions`, nhận **key plaintext qua tham số** → trả `HttpResponseMessage` (đã đọc header, body còn stream) | `IHttpClientFactory` (client `"upstream"`) |
 | `ChatCompletionsHandler` | Orchestrator: validate → resolve → giải mã key → upstream → copy response → log | các type trên + `ISecretProtector` + `ILogService` |
-| `ProxyApp` (static, `Server/`) | `Configure(WebApplicationBuilder, ISecretProtector)`: đăng ký DI + middleware + map route. **Seam testability** — `ProxyHost` và integration test dùng chung | — |
+| `ProxyApp` (static, `Server/`) | **2 method** (tách vì middleware/map phải chạy sau `builder.Build()`, DI đóng băng sau Build): `ConfigureServices(WebApplicationBuilder, ISecretProtector)` đăng ký DI; `ConfigurePipeline(WebApplication)` gắn middleware + map route. **Seam testability** — `ProxyHost` và integration test dùng chung | — |
 
 Mỗi unit test được độc lập; handler nhận `HttpContext` qua tham số (singleton DI được, không giữ state per-request).
 
 ### 2.2 Thay đổi ở `ProxyHost`
 
 - Constructor nhận thêm `ISecretProtector` (đăng ký singleton trong `MauiProgram` sẵn — dòng 55).
-- `StartAsync`: sau khi tạo builder + đăng ký 3 singleton hiện tại, gọi `ProxyApp.Configure(builder, protector)` thay cho `UseMiddleware` + `MapEndpoints` nội tuyến. Logic `/health`, `/v1/models` chuyển vào `ProxyApp.Configure` **nguyên văn** (không đổi hành vi).
+- `StartAsync`: sau khi tạo builder + đăng ký 3 singleton hiện tại, gọi `ProxyApp.ConfigureServices(builder, protector)` → `Build()` → `ProxyApp.ConfigurePipeline(app)` thay cho `UseMiddleware` + `MapEndpoints` nội tuyến. Logic `/health`, `/v1/models` chuyển vào `ProxyApp.ConfigurePipeline` **nguyên văn** (không đổi hành vi).
 - DI container của `ProxyHost` **tách biệt** với MauiProgram — vì vậy `ProxyApp.Configure` phải tự đăng ký mọi thứ engine cần (không thừa hưởng từ app container).
 
 ### 2.3 Resolve model
@@ -163,8 +163,7 @@ handler:
 
 ### 7.2 Integration (in-proc, mock upstream)
 
-- ⚠️ **Deviation đã nhận thức:** `WebApplicationFactory<T>` chính thức **không khả thi** — host nằm trong class library `RouterBalancing.Core`, không có `Program` entry point. Thay bằng **`Microsoft.AspNetCore.TestHost`**: test tự tạo `WebApplication` qua seam `ProxyApp.Configure` + `builder.WebHost.UseTestServer()` → `GetTestClient()`. Cùng mục tiêu (in-proc, không socket, thay thế được upstream), ít cơ chế hơn.
-- Package: thêm `Microsoft.AspNetCore.TestHost` vào test project.
+- ⚠️ **Deviation đã nhận thức:** `WebApplicationFactory<T>` chính thức **không khả thi** — host nằm trong class library `RouterBalancing.Core`, không có `Program` entry point. Thay bằng **`Microsoft.AspNetCore.TestHost` 10.0.12**: test tự tạo `WebApplication` qua seam `ProxyApp.ConfigureServices` → (đăng ký stub) → `Build()` → `ProxyApp.ConfigurePipeline` + `builder.WebHost.UseTestServer()` → `GetTestClient()`; test project cần thêm `<FrameworkReference Include="Microsoft.AspNetCore.App" />`. Cùng mục tiêu (in-proc, không socket, thay thế được upstream), ít cơ chế hơn.
 - Mock upstream: stub `IUpstreamClient` trả `HttpResponseMessage` canned (kể cả `StreamContent` giả lập SSE) — đăng ký đè sau `ProxyApp.Configure`.
 - Case: toàn pipeline gồm `ApiKeyMiddleware` (401 khi thiếu key client); happy-path 200 + SSE body giữ nguyên từng byte; 400/404/503 đúng §4; `/v1/models` + `/health` không đổi hành vi (regression); upstream 429 passthrough.
 
