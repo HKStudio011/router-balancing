@@ -447,7 +447,7 @@ public static class Translations
         ["accounts.msg.saved"] = "Đã lưu tài khoản \"{0}\".",
         ["accounts.msg.deleted"] = "Đã xóa tài khoản \"{0}\".",
         ["accounts.msg.testDone"] = "Test xong: {0} OK, {1} lỗi",
-        ["accounts.msg.testNoAccounts"] = "Khong co tai khoan dang bat nao de test.",
+        ["accounts.msg.testNoAccounts"] = "Không có tài khoản đang bật nào để test.",
         ["accounts.error.duplicateName"] = "Tên tài khoản đã tồn tại trong nhà cung cấp này.",
         ["accounts.error.lastAccount"] = "Phải giữ lại ít nhất một tài khoản.",
         ["accounts.confirm.delete"] = "Xóa tài khoản \"{0}\"?",

@@ -233,7 +233,10 @@ public sealed record ProviderAccountTestResult(long AccountId, string AccountNam
 
 ### 5.3 Test connection
 
-- Nút `Test tất cả` → `TestAllAsync` → toast `accounts.msg.testDone` format `{0}` = số OK, `{1}` = số lỗi; badge từng dòng cập nhật lại (không reload trang — service đã ghi DB, UI re-fetch `ListAsync`).
+- Nút `Test tất cả` → `TestAllAsync`; toast kết quả theo số account enabled:
+  - **0 account đang bật** → toast key `accounts.msg.testNoAccounts` với `ToastSeverity.Info` (không gọi test).
+  - Ngược lại → toast `accounts.msg.testDone` format `{0}` = số OK, `{1}` = số lỗi (`ToastSeverity.Error` nếu có lỗi, ngược lại `Success`).
+  - Badge từng dòng cập nhật lại (không reload trang — service đã ghi DB, UI re-fetch `ListAsync`).
 - Test với key của từng account; request test: **gọi models endpoint của provider** (reuse đúng endpoint/timeout với test cũ), BaseUrl/Type kế thừa từ provider.
 - `Provider.LastTest*` là **dual-writer**: `ProviderAccountService.TestAllAsync` ghi AND các account enabled (Test tất cả / test từ card), `ProviderService.TestConnectionAsync` ghi theo kết quả 1 key (nút Test trong modal, provider đã lưu — spec phase2a §4.2). Hai ngữ nghĩa chưa chuẩn hoá — thống nhất ở Phase 3 Engine.
 
@@ -287,6 +290,7 @@ Chèn sau nhóm `combos.*` trong `Translations.cs` (EN + VI), guard parity:
 | `accounts.msg.saved` | Đã lưu tài khoản "{0}". | Saved account "{0}". |
 | `accounts.msg.deleted` | Đã xóa tài khoản "{0}". | Deleted account "{0}". |
 | `accounts.msg.testDone` | Test xong: {0} OK, {1} lỗi | Test done: {0} ok, {1} failed |
+| `accounts.msg.testNoAccounts` | Không có tài khoản đang bật nào để test. | No enabled accounts to test. |
 | `accounts.error.duplicateName` | Tên tài khoản đã tồn tại trong nhà cung cấp này. | Account name already exists for this provider. |
 | `accounts.error.lastAccount` | Phải giữ lại ít nhất một tài khoản. | At least one account must remain. |
 | `accounts.confirm.delete` | Xóa tài khoản "{0}"? | Delete account "{0}"? |
