@@ -8,7 +8,7 @@ public enum ValidationFailure
     /// <summary>Request hợp lệ.</summary>
     None = 0,
 
-    /// <summary>Body không parse được JSON hoặc root không phải object.</summary>
+    /// <summary>Body không parse được JSON (kể cả body rỗng).</summary>
     InvalidJson = 1,
 
     /// <summary>Thiếu / sai kiểu / rỗng trường <c>model</c>.</summary>
@@ -19,6 +19,8 @@ public enum ValidationFailure
 }
 
 /// <summary>Kết quả validate: thành công kèm model id cần resolve, hoặc lý do thất bại.</summary>
+/// <param name="Failure">Lý do thất bại (<see cref="ValidationFailure.None"/> khi hợp lệ).</param>
+/// <param name="ModelId">Model id trích được từ body; <see langword="null"/> khi failure.</param>
 public readonly record struct ValidationResult(ValidationFailure Failure, string? ModelId)
 {
     /// <summary>True khi request hợp lệ (<see cref="Failure"/> == <see cref="ValidationFailure.None"/>).</summary>
