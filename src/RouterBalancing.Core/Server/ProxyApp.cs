@@ -1,7 +1,9 @@
+using System.Net.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -22,6 +24,19 @@ public static class ProxyApp
     public static void ConfigureServices(WebApplicationBuilder builder, ISecretProtector protector)
     {
         builder.Services.AddSingleton(protector);
+
+        // Streaming SSE vô hạn — timeout (mặc định 100s) cắt giữa chừng là mất stream;
+        // fail kết nối do ConnectTimeout để không treo vô hạn khi upstream chết.
+        builder.Services.AddHttpClient(OpenAiUpstreamClient.HttpClientName,
+            client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+            });
+
+        builder.Services.AddSingleton<IModelResolver, ModelResolver>();
+        builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
+        builder.Services.AddSingleton<ChatCompletionsHandler>();
     }
 
     /// <summary>
@@ -31,6 +46,11 @@ public static class ProxyApp
     public static void ConfigurePipeline(WebApplication app)
     {
         app.UseMiddleware<ApiKeyMiddleware>();
+
+        // Minimal API resolve ChatCompletionsHandler từ DI (singleton) theo request
+        app.MapPost("/v1/chat/completions",
+            (ChatCompletionsHandler handler, HttpContext ctx) => handler.HandleAsync(ctx));
+
         MapEndpoints(app);
     }
 
