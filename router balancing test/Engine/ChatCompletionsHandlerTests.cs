@@ -148,6 +148,7 @@ public class ChatCompletionsHandlerTests
 
         var (status, _, body) = await ReadAsync(ctx);
         Assert.Equal(400, status);
+        Assert.Contains("Missing required parameter: 'messages'.", body);
         Assert.Contains("\"param\":\"messages\"", body);
     }
 
