@@ -367,7 +367,12 @@ else
                 </div>
             </div>
 
-            @if (_accounts.Count == 0)
+            @if (_accountsLoadFailed)
+            {
+                @* Load fail ≠ không có account — không được hiện EmptyState mời thêm account *@
+                <div class="text-sm text-danger">@L["dashboard.msg.failed"]</div>
+            }
+            else if (_accounts.Count == 0)
             {
                 <EmptyState Message="@L["accounts.empty"]" />
             }
@@ -614,6 +619,7 @@ else
 
     // ===== Section Accounts trong modal edit (spec provider-accounts §5.2) =====
     private List<ProviderAccount> _accounts = [];
+    private bool _accountsLoadFailed;
     private bool _testingAccounts;
     private AccountForm? _accountForm;
     private ProviderAccount? _confirmDeleteAccount;
@@ -721,10 +727,7 @@ else
         {
             // Đa tài khoản: test toàn bộ account enabled — badge provider = AND (service ghi)
             var results = await AccountSvc.TestAllAsync(provider.Id);
-            var failed = results.Count(r => !r.Success);
-            Toast.Show(
-                string.Format(L["accounts.msg.testDone"], results.Count - failed, failed),
-                failed > 0 ? ToastSeverity.Error : ToastSeverity.Success);
+            ShowTestResultsToast(results);
             await LoadAsync(); // badge LastTest* mới nhất
         }
         catch (Exception ex)
@@ -1137,11 +1140,13 @@ else
         try
         {
             _accounts = (await AccountSvc.ListAsync(providerId)).ToList();
+            _accountsLoadFailed = false;
         }
         catch (Exception ex)
         {
             Log.Error("Không tải được danh sách tài khoản.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            _accountsLoadFailed = true;
         }
     }
 
@@ -1162,11 +1167,23 @@ else
 
     private void CancelAccountForm() => _accountForm = null;
 
-    /// <summary>JSON array → textarea 1 pattern/dòng; null/empty → chuỗi rỗng.</summary>
-    private static string DecodePatterns(string? json) =>
-        string.IsNullOrEmpty(json)
-            ? string.Empty
-            : string.Join('\n', JsonSerializer.Deserialize<string[]>(json) ?? []);
+    /// <summary>JSON array → textarea 1 pattern/dòng; null/empty hoặc JSON hỏng → chuỗi rỗng.</summary>
+    private static string DecodePatterns(string? json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return string.Empty;
+        }
+        try
+        {
+            return string.Join('\n', JsonSerializer.Deserialize<string[]>(json) ?? []);
+        }
+        catch (JsonException)
+        {
+            // Dữ liệu hỏng không được chặn mở form sửa — mất pattern còn sửa lại được
+            return string.Empty;
+        }
+    }
 
     private bool CanSaveAccount =>
         _accountForm is { } form
@@ -1271,10 +1288,7 @@ else
         try
         {
             var results = await AccountSvc.TestAllAsync(providerId);
-            var failed = results.Count(r => !r.Success);
-            Toast.Show(
-                string.Format(L["accounts.msg.testDone"], results.Count - failed, failed),
-                failed > 0 ? ToastSeverity.Error : ToastSeverity.Success);
+            ShowTestResultsToast(results);
             await LoadAccountsAsync(providerId);
             await LoadAsync(); // Provider.LastTest* (AND các account) đổi theo
         }
@@ -1290,15 +1304,40 @@ else
         }
     }
 
-    /// <summary>Pattern summary: rỗng = mọi model; có = số pattern.</summary>
+    /// <summary>
+    /// Toast kết quả test account: 0 account enabled → Info "không có gì để test"
+    /// (không nói dối bằng success 0/0); có kết quả → OK/lỗi như cũ.
+    /// </summary>
+    private void ShowTestResultsToast(IReadOnlyList<ProviderAccountTestResult> results)
+    {
+        if (results.Count == 0)
+        {
+            Toast.Show(L["accounts.msg.testNoAccounts"], ToastSeverity.Info);
+            return;
+        }
+        var failed = results.Count(r => !r.Success);
+        Toast.Show(
+            string.Format(L["accounts.msg.testDone"], results.Count - failed, failed),
+            failed > 0 ? ToastSeverity.Error : ToastSeverity.Success);
+    }
+
+    /// <summary>Pattern summary: rỗng = mọi model; có = số pattern; JSON hỏng = "?" (không crash render).</summary>
     private string PatternSummary(ProviderAccount account)
     {
         if (string.IsNullOrEmpty(account.ModelPatterns))
         {
             return L["accounts.patterns.all"];
         }
-        var patterns = JsonSerializer.Deserialize<string[]>(account.ModelPatterns) ?? [];
-        return string.Format(L["accounts.patterns.count"], patterns.Length);
+        try
+        {
+            var patterns = JsonSerializer.Deserialize<string[]>(account.ModelPatterns) ?? [];
+            return string.Format(L["accounts.patterns.count"], patterns.Length);
+        }
+        catch (JsonException)
+        {
+            // Render path — 1 row hỏng không được sập cả modal; "?" = unknown count
+            return "?";
+        }
     }
 
     /// <summary>Chỉ hiện limit khi CẢ token và request đều set — 1 trong 2 rơi về used-only,
