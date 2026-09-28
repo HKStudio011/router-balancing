@@ -12,7 +12,7 @@ public sealed class ProviderAccountDraft
     /// <summary>Tên hiển thị, tối đa 100 ký tự, duy nhất trong cùng provider (sau khi Trim).</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>Plaintext lúc nhập; rỗng khi update = giữ key đã lưu. Không bao giờ log/persist trực tiếp.</summary>
+    /// <summary>Plaintext lúc nhập; rỗng hoặc toàn khoảng trắng khi update = giữ key đã lưu. Không bao giờ log/persist trực tiếp.</summary>
     public string ApiKey { get; set; } = string.Empty;
 
     /// <summary>Tắt = account bị loại khỏi chọn traffic và TestAll, không xoá key.</summary>

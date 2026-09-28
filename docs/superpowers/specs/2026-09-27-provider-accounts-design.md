@@ -67,8 +67,7 @@ public class ProviderAccount
 ### 2.2 DbContext
 
 - Nav `Provider.Accounts` — `HasMany().WithOne().HasForeignKey().OnDelete(DeleteBehavior.Cascade)`.
-- Index `IX_ProviderAccounts_ProviderId`.
-- Unique index `(ProviderId, Name)` — `IX_ProviderAccounts_ProviderId_Name`.
+- Unique index `(ProviderId, Name)` — `IX_ProviderAccounts_ProviderId_Name`. Không có index `ProviderId` riêng: FK SQLite không tự index, unique composite phục vụ lookup theo ProviderId qua prefix.
 - **`Provider.ApiKeyEncrypted` bị xoá** (column drop) — key sống hoàn toàn ở account.
 - `Provider.MaxConcurrent`, `LastTestSuccess/At/Message` (level provider) **giữ nguyên**.
 
@@ -230,13 +229,13 @@ public sealed record ProviderAccountTestResult(long AccountId, string AccountNam
 - Nút trong sub-form: `Lưu` (tái dùng `settings.action.save`) + `Hủy` (tái dùng `confirm.cancel`).
 - **`CanSave`**: `Name` không rỗng (trim) — và Create cần `ApiKey` không rỗng.
 - **`CanDelete` (🗑)**: số account > 1 → nếu = 1, nút xoá disabled (pre-check; service `InvalidOperationException` là backstop → toast `accounts.error.lastAccount`).
-- **Xoá**: ConfirmDialog — title `accounts.confirm.delete` format `{0}` = Name (pattern confirm Combos: `ConfirmText` caller-i18n, không liệt kê tên trong body); toast `accounts.msg.deleted` format `{0}`.
+- **Xoá**: ConfirmDialog — Title và ConfirmText tái dùng `providers.action.delete`; Message = `accounts.confirm.delete` format `{0}` = Name; CancelText `confirm.cancel`; toast `accounts.msg.deleted` format `{0}`.
 
 ### 5.3 Test connection
 
 - Nút `Test tất cả` → `TestAllAsync` → toast `accounts.msg.testDone` format `{0}` = số OK, `{1}` = số lỗi; badge từng dòng cập nhật lại (không reload trang — service đã ghi DB, UI re-fetch `ListAsync`).
 - Test với key của từng account; request test: **gọi models endpoint của provider** (reuse đúng endpoint/timeout với test cũ), BaseUrl/Type kế thừa từ provider.
-- `Provider.LastTest*` do service ghi (AND) — badge test level provider ở card list giữ nguyên hiển thị.
+- `Provider.LastTest*` là **dual-writer**: `ProviderAccountService.TestAllAsync` ghi AND các account enabled (Test tất cả / test từ card), `ProviderService.TestConnectionAsync` ghi theo kết quả 1 key (nút Test trong modal, provider đã lưu — spec phase2a §4.2). Hai ngữ nghĩa chưa chuẩn hoá — thống nhất ở Phase 3 Engine.
 
 ### 5.4 Submit form provider
 

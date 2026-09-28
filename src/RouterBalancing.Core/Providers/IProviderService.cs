@@ -21,7 +21,7 @@ public interface IProviderService
     /// <exception cref="KeyNotFoundException">Khi không có provider <paramref name="id"/>.</exception>
     Task UpdateAsync(long id, ProviderDraft draft, CancellationToken ct = default);
 
-    /// <summary>Xóa provider — models con cascade theo cấu hình FK.</summary>
+    /// <summary>Xóa provider — models con và accounts cascade theo cấu hình FK.</summary>
     /// <exception cref="KeyNotFoundException">Khi không có provider <paramref name="id"/>.</exception>
     Task DeleteAsync(long id, CancellationToken ct = default);
 

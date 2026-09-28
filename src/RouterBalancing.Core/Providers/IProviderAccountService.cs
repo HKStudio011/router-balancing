@@ -14,7 +14,7 @@ public interface IProviderAccountService
     /// <exception cref="ArgumentException">Draft không hợp lệ (ProviderAccountValidator).</exception>
     Task<ProviderAccount> CreateAsync(ProviderAccountDraft draft, CancellationToken ct = default);
 
-    /// <summary>Cập nhật; <c>draft.ApiKey</c> rỗng = giữ nguyên key cũ.</summary>
+    /// <summary>Cập nhật; <c>draft.ApiKey</c> rỗng hoặc toàn khoảng trắng = giữ nguyên key cũ.</summary>
     /// <exception cref="KeyNotFoundException">Account không tồn tại.</exception>
     /// <exception cref="InvalidOperationException">Trùng Name trong cùng provider (trừ chính nó).</exception>
     /// <exception cref="ArgumentException">Draft không hợp lệ.</exception>
