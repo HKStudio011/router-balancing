@@ -3,6 +3,10 @@
 ###############################################################################
 * text=auto
 
+# Bash scripts must stay LF even with autocrlf=true checkouts - CRLF breaks
+# them at runtime ("set: pipefail\r: invalid option name").
+*.sh text eol=lf
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #
