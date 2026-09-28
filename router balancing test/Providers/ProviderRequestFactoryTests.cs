@@ -43,4 +43,27 @@ public class ProviderRequestFactoryTests
 
         Assert.Equal("https://gw.example.com/v1/models", request.RequestUri!.ToString());
     }
+
+    [Fact]
+    public void Create_WhenPostWithContent_KeepsMethodContentAndHeaders()
+    {
+        var content = new StringContent("""{"x":1}""", System.Text.Encoding.UTF8, "application/json");
+        using var request = ProviderRequestFactory.Create(
+            P("https://api.openai.com/v1"), "sk-test", "/v1/chat/completions", HttpMethod.Post, content);
+
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal("https://api.openai.com/v1/chat/completions", request.RequestUri!.ToString());
+        Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
+        Assert.Equal("sk-test", request.Headers.Authorization.Parameter);
+        Assert.Same(content, request.Content);
+    }
+
+    [Fact]
+    public void Create_WhenMethodOmitted_DefaultsToGetWithoutContent()
+    {
+        using var request = ProviderRequestFactory.Create(P("https://api.openai.com"), "sk-test");
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Null(request.Content);
+    }
 }

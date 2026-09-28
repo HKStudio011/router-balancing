@@ -12,11 +12,17 @@ public static class ProviderRequestFactory
     public const string HttpClientName = "provider-probe";
 
     /// <summary>
-    /// Tạo GET request {BaseUrl}{path}. Header theo Type:
+    /// Tạo request tới provider. Header theo Type:
     /// OpenAI → <c>Authorization: Bearer</c>; Anthropic → <c>x-api-key</c> + <c>anthropic-version</c>.
     /// </summary>
+    /// <param name="provider">Provider đích.</param>
+    /// <param name="apiKey">Key plaintext sẽ gắn Authorization/x-api-key.</param>
+    /// <param name="path">Path mặc định <c>/v1/models</c>.</param>
+    /// <param name="method">HTTP method — mặc định GET (probe); POST cho chat completion.</param>
+    /// <param name="content">Body request — chỉ dùng khi có <paramref name="method"/>.</param>
     /// <exception cref="ArgumentOutOfRangeException">Khi Type ngoài 2 giá trị đã biết.</exception>
-    public static HttpRequestMessage Create(Provider provider, string apiKey, string? path = null)
+    public static HttpRequestMessage Create(Provider provider, string apiKey, string? path = null,
+        HttpMethod? method = null, HttpContent? content = null)
     {
         // Canonicalize ngay lúc ghép (idempotent): fix runtime cho row lưu trước khi có save-fix
         // — chỉ khi path tự có /v1, không đoán với path không version
@@ -25,7 +31,7 @@ public static class ProviderRequestFactory
             ? ProviderUrl.Canonicalize(provider.BaseUrl)
             : provider.BaseUrl.TrimEnd('/');
         var url = baseUrl + requestPath;
-        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var request = new HttpRequestMessage(method ?? HttpMethod.Get, url) { Content = content };
 
         switch (provider.Type)
         {
