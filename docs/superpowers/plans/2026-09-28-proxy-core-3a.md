@@ -1367,14 +1367,13 @@ Thay toàn bộ method `ConfigureServices` trong `ProxyApp.cs`:
 
         // Streaming SSE vô hạn — timeout (mặc định 100s) cắt giữa chừng là mất stream;
         // fail kết nối do ConnectTimeout để không treo vô hạn khi upstream chết.
+        // ConfigurePrimaryHttpMessageHandler là extension trên IHttpClientBuilder
+        // (chaining sau AddHttpClient) - gọi trên HttpClient (client => ...) là CS1929.
         builder.Services.AddHttpClient(OpenAiUpstreamClient.HttpClientName,
-            client =>
+            client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
-                client.Timeout = Timeout.InfiniteTimeSpan;
-                client.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-                {
-                    ConnectTimeout = TimeSpan.FromSeconds(10),
-                });
+                ConnectTimeout = TimeSpan.FromSeconds(10),
             });
 
         builder.Services.AddSingleton<IModelResolver, ModelResolver>();
@@ -1799,8 +1798,9 @@ Expected: exit 0, không output.
 ```powershell
 $mock = Start-Process node -ArgumentList "scripts/mock-upstream.mjs","9999" -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 1
-$ok = curl.exe -s -o - -w "|%{http_code}" -X POST http://127.0.0.1:9999/v1/chat/completions -H "Authorization: Bearer sk-test" -H "Content-Type: application/json" -d "{\"model\":\"m\"}"
-$unauth = curl.exe -s -o - -w "|%{http_code}" -X POST http://127.0.0.1:9999/v1/chat/completions -H "Content-Type: application/json" -d "{}"
+# Body curl dùng single-quote: PowerShell 7.6 (native arg passing) làm hỏng -d "{\"model\":\"m\"}"
+$ok = curl.exe -s -o - -w "|%{http_code}" -X POST http://127.0.0.1:9999/v1/chat/completions -H "Authorization: Bearer sk-test" -H "Content-Type: application/json" -d '{"model":"m"}'
+$unauth = curl.exe -s -o - -w "|%{http_code}" -X POST http://127.0.0.1:9999/v1/chat/completions -H "Content-Type: application/json" -d '{}'
 Stop-Process -Id $mock.Id -Force
 $ok; $unauth
 ```
