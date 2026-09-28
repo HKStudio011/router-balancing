@@ -22,7 +22,7 @@
 - Không dùng `WebApplicationFactory<T>` (host trong class library, không có `Program`) — integration theo spec §7.2 dùng TestServer.
 - Lệnh test (folder có space): `dotnet test "router balancing test/router balancing test.csproj" --nologo`
 - Lệnh build app: `dotnet build router-balancing/router-balancing.csproj -f net10.0-windows10.0.19041.0 --nologo`
-- **Baseline: 183 tests.** Kỳ vọng cuối plan: **225** (Task2 +13, Task3 +7, Task4 +4, Task5 +10, Task6 +8).
+- **Baseline: 183 tests.** Kỳ vọng cuối plan: **226** (Task2 +13, Task3 +7, Task4 +5, Task5 +10, Task6 +8). *(Task4 +5: 2 factory + 2 client + 1 SSE buffering guard — user-approved amendment sau Task 4 review.)*
 - **Đóng app trước khi chạy `dotnet test`** (mutex giữ DB/port).
 
 ---
@@ -862,9 +862,9 @@ Run: `dotnet test "router balancing test/router balancing test.csproj" --filter 
 Expected: `Passed! - Failed: 0, Passed: 2`
 
 Run: `dotnet test "router balancing test/router balancing test.csproj" --nologo`
-Expected: `Passed! - Failed: 0, Passed: 207` (203 + 2 factory + 2 client)
+Expected: `Passed! - Failed: 0, Passed: 208` (203 + 2 factory + 2 client + 1 SSE buffering guard `PostChatCompletionAsync_WithDefaultCompletionOption_DoesNotBufferUpstreamBody`)
 
-> Chốt số: Task 2 case 13 (đã tính: 183→196), Task 3 +7 (→203), Task 4 +4 (→**207**). Nếu chạy ra con số khác, dừng lại báo controller — không commit khi số lệch.
+> Chốt số: Task 2 case 13 (đã tính: 183→196), Task 3 +7 (→203), Task 4 +5 (→**208**). Nếu chạy ra con số khác, dừng lại báo controller — không commit khi số lệch.
 
 - [ ] **Step 10: Commit**
 
@@ -1312,7 +1312,7 @@ Expected: `Passed! - Failed: 0, Passed: 10`
 - [ ] **Step 5: Chạy toàn bộ suite**
 
 Run: `dotnet test "router balancing test/router balancing test.csproj" --nologo`
-Expected: `Passed! - Failed: 0, Passed: 217` (207 + 10)
+Expected: `Passed! - Failed: 0, Passed: 218` (208 + 10)
 
 - [ ] **Step 6: Commit**
 
@@ -1643,9 +1643,9 @@ Expected: `Passed! - Failed: 0, Passed: 8`
 - [ ] **Step 7: Chạy toàn bộ suite**
 
 Run: `dotnet test "router balancing test/router balancing test.csproj" --nologo`
-Expected: `Passed! - Failed: 0, Passed: 225` (217 + 8)
+Expected: `Passed! - Failed: 0, Passed: 226` (218 + 8)
 
-> Chốt số cuối: **225 tests** (183 baseline + 42). Nếu lệch — dừng, báo controller.
+> Chốt số cuối: **226 tests** (183 baseline + 43). Nếu lệch — dừng, báo controller.
 
 - [ ] **Step 8: Build app 0W/0E**
 
@@ -1819,7 +1819,7 @@ git commit -m "test: add e2e smoke script for proxy core slice3a"
 ## Final Gates (controller — trước khi merge)
 
 - [ ] `dotnet build router-balancing/router-balancing.csproj -f net10.0-windows10.0.19041.0 --nologo` → **0W/0E**
-- [ ] `dotnet test "router balancing test/router balancing test.csproj" --nologo` → **225/0** (app đã đóng)
+- [ ] `dotnet test "router balancing test/router balancing test.csproj" --nologo` → **226/0** (app đã đóng)
 - [ ] Parity i18n: `Select-String -Path "src\RouterBalancing.Core\Localization\Translations.cs" -Pattern '\["'` → EN=208 (dòng < 232), VI=208 (dòng ≥ 232)
 - [ ] `git status --short` sạch
 - [ ] **e2e run thật** (controller): mở app → cấu hình provider `e2e-mock` (BaseUrl `http://127.0.0.1:9999`, model `e2e-mock-model` enabled, 1 account key) — cấu hình qua CDP/UI pattern drive40 → start `node scripts/mock-upstream.mjs 9999` → `bash scripts/e2e-3a.sh` → **ALL PASS**
