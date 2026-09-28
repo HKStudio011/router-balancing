@@ -39,7 +39,7 @@ public class ProxyHostTests : IDisposable
 
     private async Task<ProxyHost> StartHostAsync()
     {
-        var host = new ProxyHost(_settings, _log, _db.CreateFactory());
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector());
         await host.StartAsync();
         _client.BaseAddress = new Uri($"http://127.0.0.1:{host.Port}");
         return host;
@@ -152,7 +152,7 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task StartAsync_WhenStarted_RaisesStateChanged()
     {
-        var host = new ProxyHost(_settings, _log, _db.CreateFactory());
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector());
         var raised = 0;
         host.StateChanged += () => raised++;
 
@@ -166,7 +166,7 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task StartAsync_WhenCalledTwice_IsIdempotent()
     {
-        var host = new ProxyHost(_settings, _log, _db.CreateFactory());
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector());
         var raised = 0;
         host.StateChanged += () => raised++;
 

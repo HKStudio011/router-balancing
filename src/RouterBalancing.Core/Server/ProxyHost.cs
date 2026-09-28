@@ -1,14 +1,13 @@
 using System.Net;
 using System.Runtime.ExceptionServices;
-using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
@@ -20,6 +19,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly IAppSettingsService _settings;
     private readonly ILogService _log;
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
+    private readonly ISecretProtector _protector;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private WebApplication? _app;
     private bool _disposed;
@@ -30,11 +30,13 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
 
     public event Action? StateChanged;
 
-    public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db)
+    public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
+        ISecretProtector protector)
     {
         _settings = settings;
         _log = log;
         _db = db;
+        _protector = protector;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -58,9 +60,9 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_db);
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 
+            ProxyApp.ConfigureServices(builder, _protector);
             var app = builder.Build();
-            app.UseMiddleware<ApiKeyMiddleware>();
-            MapEndpoints(app);
+            ProxyApp.ConfigurePipeline(app);
 
             // StartAsync có thể thất bại thật (port bị đánh cắp giữa FindAvailable và
             // Listen, hoặc ct hủy) — nếu không dispose thì service provider/socket rò rỉ
@@ -128,32 +130,6 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     {
         await StopAsync(cancellationToken);
         await StartAsync(cancellationToken);
-    }
-
-    private void MapEndpoints(WebApplication app)
-    {
-        // /health mở luôn (middleware bỏ qua path này) — watchdog của Phase 2 dùng để ping
-        app.MapGet("/health", () => Results.Json(new { status = "ok" }));
-
-        // Danh sách model đã bật, đúng shape OpenAI /v1/models để client không cần phân biệt
-        app.MapGet("/v1/models", async (HttpContext http) =>
-        {
-            using var db = _db.CreateDbContext();
-            var models = await db.Models.AsNoTracking()
-                .Where(m => m.Enabled)
-                .OrderBy(m => m.Id)
-                .Select(m => new
-                {
-                    id = m.ModelId,
-                    // @object: keyword 'object' không đặt được thẳng làm tên member — JSON vẫn ra "object"
-                    @object = "model",
-                    created = m.CreatedAt.ToUnixTimeSeconds(),
-                    owned_by = m.Provider != null ? m.Provider.Name : "unknown",
-                })
-                .ToListAsync(http.RequestAborted);
-
-            return Results.Json(new { @object = "list", data = models });
-        });
     }
 
     public async ValueTask DisposeAsync()
