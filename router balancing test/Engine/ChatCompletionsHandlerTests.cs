@@ -34,8 +34,7 @@ public class ChatCompletionsHandlerTests
         return provider;
     }
 
-    private static ModelResolveSuccess Success(Provider p) =>
-        new(p, p.Models[0]);
+    private static Model ModelOf(Provider provider) => provider.Models[0];
 
     private static DefaultHttpContext Ctx(string? json = null)
     {
@@ -55,22 +54,11 @@ public class ChatCompletionsHandlerTests
     private static HttpResponseMessage Upstream(int status, string body, string mediaType = "application/json") =>
         new((HttpStatusCode)status) { Content = new StringContent(body, Encoding.UTF8, mediaType) };
 
-    private sealed class StubResolver(ModelResolveResult result) : IModelResolver
-    {
-        public Task<ModelResolveResult> ResolveAsync(string modelId, CancellationToken ct) =>
-            Task.FromResult(result);
-    }
-
     private sealed class StubUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
     {
-        public byte[]? LastBody { get; private set; }
-
         public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
-        {
-            LastBody = body;
-            return Task.FromResult(factory());
-        }
+            Provider provider, string apiKey, byte[] body, CancellationToken ct) =>
+            Task.FromResult(factory());
     }
 
     private sealed class ThrowingUpstream(Exception ex) : IUpstreamClient
@@ -96,21 +84,19 @@ public class ChatCompletionsHandlerTests
         public int Count(LogQuery query) => 0;
     }
 
-    private ChatCompletionsHandler Create(
-        ModelResolveResult resolve, IUpstreamClient upstream, CapturingLog? log = null) =>
-        new(new StubResolver(resolve), upstream, _protector, log ?? new CapturingLog());
+    private ChatCompletionsHandler Create(IUpstreamClient upstream, CapturingLog? log = null) =>
+        new(upstream, _protector, log ?? new CapturingLog());
 
     [Fact]
-    public async Task HandleAsync_WhenJsonInvalid_Returns400OpenAiShapeAndSingleWarn()
+    public async Task PrepareAsync_WhenJsonInvalid_Returns400OpenAiShapeAndSingleWarn()
     {
         var log = new CapturingLog();
-        var sut = Create(
-            new ModelResolveFailure("x", ResolveFailure.NotFound),
-            new StubUpstream(() => Upstream(200, "{}")), log);
+        var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx("{broken");
 
-        await sut.HandleAsync(ctx);
+        var prepared = await sut.PrepareAsync(ctx);
 
+        Assert.Null(prepared);
         var (status, contentType, body) = await ReadAsync(ctx);
         Assert.Equal(400, status);
         Assert.StartsWith("application/json", contentType);
@@ -121,15 +107,14 @@ public class ChatCompletionsHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_WhenModelMissing_Returns400ParamModel()
+    public async Task PrepareAsync_WhenModelMissing_Returns400ParamModel()
     {
-        var sut = Create(
-            new ModelResolveFailure("x", ResolveFailure.NotFound),
-            new StubUpstream(() => Upstream(200, "{}")));
+        var sut = Create(new StubUpstream(() => Upstream(200, "{}")));
         var ctx = Ctx("""{"messages":[{"role":"user"}]}""");
 
-        await sut.HandleAsync(ctx);
+        var prepared = await sut.PrepareAsync(ctx);
 
+        Assert.Null(prepared);
         var (status, _, body) = await ReadAsync(ctx);
         Assert.Equal(400, status);
         Assert.Contains("Missing required parameter: 'model'.", body);
@@ -137,15 +122,14 @@ public class ChatCompletionsHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_WhenMessagesMissing_Returns400ParamMessages()
+    public async Task PrepareAsync_WhenMessagesMissing_Returns400ParamMessages()
     {
-        var sut = Create(
-            new ModelResolveFailure("x", ResolveFailure.NotFound),
-            new StubUpstream(() => Upstream(200, "{}")));
+        var sut = Create(new StubUpstream(() => Upstream(200, "{}")));
         var ctx = Ctx("""{"model":"gpt-4o-mini"}""");
 
-        await sut.HandleAsync(ctx);
+        var prepared = await sut.PrepareAsync(ctx);
 
+        Assert.Null(prepared);
         var (status, _, body) = await ReadAsync(ctx);
         Assert.Equal(400, status);
         Assert.Contains("Missing required parameter: 'messages'.", body);
@@ -153,106 +137,71 @@ public class ChatCompletionsHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_WhenModelUnknown_Returns404ModelNotFound()
+    public async Task ForwardAsync_WhenNoEnabledKey_ReturnsError503WithoutWritingResponse()
     {
         var log = new CapturingLog();
-        var sut = Create(
-            new ModelResolveFailure("nope", ResolveFailure.NotFound),
-            new StubUpstream(() => Upstream(200, "{}")), log);
-        var ctx = Ctx(ValidJson);
-
-        await sut.HandleAsync(ctx);
-
-        var (status, _, body) = await ReadAsync(ctx);
-        Assert.Equal(404, status);
-        Assert.Contains("The model 'nope' does not exist", body);
-        Assert.Contains("\"model_not_found\"", body);
-        Assert.Single(log.Warns);
-    }
-
-    [Fact]
-    public async Task HandleAsync_WhenProviderAnthropic_Returns503ServerError()
-    {
-        var log = new CapturingLog();
-        var sut = Create(
-            new ModelResolveFailure("sonnet-4", ResolveFailure.AnthropicNotSupported),
-            new StubUpstream(() => Upstream(200, "{}")), log);
-        var ctx = Ctx(ValidJson);
-
-        await sut.HandleAsync(ctx);
-
-        var (status, _, body) = await ReadAsync(ctx);
-        Assert.Equal(503, status);
-        Assert.Contains("not supported yet", body);
-        Assert.Contains("\"server_error\"", body);
-        Assert.Single(log.Warns);
-    }
-
-    [Fact]
-    public async Task HandleAsync_WhenNoEnabledKey_Returns503WithProviderName()
-    {
         var provider = SeedProvider(withKey: false);
-        var sut = Create(
-            Success(provider),
-            new StubUpstream(() => Upstream(200, "{}")));
-        var ctx = Ctx(ValidJson);
+        var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
+        var ctx = Ctx();
 
-        await sut.HandleAsync(ctx);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
 
-        var (status, _, body) = await ReadAsync(ctx);
-        Assert.Equal(503, status);
-        Assert.Contains("No enabled API key for provider 'openai-main'", body);
+        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
+        Assert.Equal(503, error.Status);
+        Assert.Contains("No enabled API key for provider 'openai-main'", error.Message);
+        Assert.Single(log.Warns);
+        // Handler không tự ghi response lỗi — endpoint ghi theo outcome (spec §2.1)
+        Assert.Equal(200, ctx.Response.StatusCode);
     }
 
     [Fact]
-    public async Task HandleAsync_WhenUpstreamThrows_Returns502AndLogsError()
+    public async Task ForwardAsync_WhenUpstreamThrows_ReturnsError502AndLogsError()
     {
         var log = new CapturingLog();
-        var sut = Create(
-            Success(SeedProvider()),
-            new ThrowingUpstream(new HttpRequestException("connection refused")), log);
-        var ctx = Ctx(ValidJson);
+        var provider = SeedProvider();
+        var sut = Create(new ThrowingUpstream(new HttpRequestException("connection refused")), log);
+        var ctx = Ctx();
 
-        await sut.HandleAsync(ctx);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
 
-        var (status, _, body) = await ReadAsync(ctx);
-        Assert.Equal(502, status);
-        Assert.Contains("Upstream provider request failed", body);
+        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
+        Assert.Equal(502, error.Status);
+        Assert.Equal("Upstream provider request failed", error.Message);
         Assert.Single(log.Errors);
         Assert.Empty(log.Infos);
     }
 
     [Fact]
-    public async Task HandleAsync_WhenUpstream429_PassesStatusAndBodyThroughWithInfoLog()
+    public async Task ForwardAsync_WhenUpstream429_PassesStatusAndBodyThroughWithInfoLog()
     {
         var log = new CapturingLog();
+        var provider = SeedProvider();
         var upstreamBody = """{"error":{"message":"rate limited"}}""";
-        var sut = Create(
-            Success(SeedProvider()),
-            new StubUpstream(() => Upstream(429, upstreamBody)), log);
-        var ctx = Ctx(ValidJson);
+        var sut = Create(new StubUpstream(() => Upstream(429, upstreamBody)), log);
+        var ctx = Ctx();
 
-        await sut.HandleAsync(ctx);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
 
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
         var (status, contentType, body) = await ReadAsync(ctx);
         Assert.Equal(429, status);
         Assert.Equal(upstreamBody, body);
         Assert.StartsWith("application/json", contentType);
-        // Upstream đã trả response → Info là dòng log duy nhất (spec §6)
         Assert.Single(log.Infos);
         Assert.Empty(log.Warns);
     }
 
     [Fact]
-    public async Task HandleAsync_WhenUpstreamSse_PassesStreamBytesUnchanged()
+    public async Task ForwardAsync_WhenUpstreamSse_PassesStreamBytesUnchanged()
     {
-        var sut = Create(
-            Success(SeedProvider()),
-            new StubUpstream(() => Upstream(200, "data: {\"x\":1}\n\ndata: [DONE]\n\n", "text/event-stream")));
-        var ctx = Ctx(ValidJson);
+        var provider = SeedProvider();
+        var sut = Create(new StubUpstream(() => Upstream(200, "data: {\"x\":1}\n\ndata: [DONE]\n\n",
+            "text/event-stream")));
+        var ctx = Ctx();
 
-        await sut.HandleAsync(ctx);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
 
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
         var (status, contentType, body) = await ReadAsync(ctx);
         Assert.Equal(200, status);
         Assert.StartsWith("text/event-stream", contentType);
@@ -260,16 +209,16 @@ public class ChatCompletionsHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_WhenSuccess_LogsExactlyOneInfoWithModelAndProvider()
+    public async Task ForwardAsync_WhenSuccess_LogsExactlyOneInfoWithModelAndProvider()
     {
         var log = new CapturingLog();
         var provider = SeedProvider();
-        var stub = new StubUpstream(() => Upstream(200, "{}"));
-        var sut = Create(Success(provider), stub, log);
-        var ctx = Ctx(ValidJson);
+        var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
+        var ctx = Ctx();
 
-        await sut.HandleAsync(ctx);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
 
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Single(log.Infos);
         Assert.Contains("gpt-4o-mini", log.Infos[0]);
         Assert.Contains("openai-main", log.Infos[0]);

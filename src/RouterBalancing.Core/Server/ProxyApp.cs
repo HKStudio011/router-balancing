@@ -3,7 +3,9 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
+using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -47,9 +49,45 @@ public static class ProxyApp
     {
         app.UseMiddleware<ApiKeyMiddleware>();
 
-        // Minimal API resolve ChatCompletionsHandler từ DI (singleton) theo request
+        // Interim 3B (T5): validate → resolve (3A) → forward. T7 thay bằng queue-first.
         app.MapPost("/v1/chat/completions",
-            (ChatCompletionsHandler handler, HttpContext ctx) => handler.HandleAsync(ctx));
+            async (HttpContext ctx, IModelResolver resolver, ILogService log,
+                ChatCompletionsHandler handler) =>
+        {
+            var prepared = await handler.PrepareAsync(ctx);
+            if (prepared is null)
+                return;
+
+            var resolved = await resolver.ResolveAsync(prepared.ModelId, ctx.RequestAborted);
+            if (resolved is ModelResolveFailure failure)
+            {
+                if (failure.Reason == ResolveFailure.NotFound)
+                {
+                    log.Warn($"Model '{failure.ModelId}' không tồn tại hoặc đã tắt.", LogCategory.Request);
+                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 404,
+                        $"The model '{failure.ModelId}' does not exist",
+                        "invalid_request_error", "model", "model_not_found");
+                }
+                else
+                {
+                    log.Warn($"Model '{failure.ModelId}' thuộc provider Anthropic — chưa hỗ trợ (3E).",
+                        LogCategory.Request);
+                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 503,
+                        $"The model '{failure.ModelId}' is not supported yet", "server_error", null, null);
+                }
+
+                return;
+            }
+
+            var success = (ModelResolveSuccess)resolved;
+            var outcome = await handler.ForwardAsync(ctx, success.Provider, success.Model,
+                prepared.Body, ctx.RequestAborted);
+            if (outcome is DispatchOutcome.Error error)
+            {
+                await ChatCompletionsHandler.WriteErrorAsync(ctx, error.Status, error.Message,
+                    error.Type, error.Param, error.Code);
+            }
+        });
 
         MapEndpoints(app);
     }

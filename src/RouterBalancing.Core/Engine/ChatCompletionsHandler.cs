@@ -1,28 +1,33 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
-using System.Text.Json;
 
 namespace RouterBalancing.Core.Engine;
 
 /// <summary>
-/// Orchestrator cho POST /v1/chat/completions: validate → resolve → key → upstream → stream về.
-/// Singleton, không giữ state per-request — mọi trạng thái qua <see cref="HttpContext"/>.
+/// Phần handler của pipeline queue-first (3B): <see cref="PrepareAsync"/> (buffer + validate —
+/// endpoint gọi trước enqueue) và <see cref="ForwardAsync"/> (key → upstream → stream —
+/// dispatcher gọi khi đã giữ slot). Singleton, không giữ state per-request.
 /// </summary>
 public sealed class ChatCompletionsHandler(
-    IModelResolver resolver,
     IUpstreamClient upstream,
     ISecretProtector protector,
     ILogService log)
 {
+    /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
+    public sealed record PreparedChatRequest(string ModelId, byte[] Body);
+
     /// <summary>
-    /// Xử lý 1 request chat: trả response (thành công stream hoặc error JSON §4) và đúng 1 dòng log.
+    /// Buffer body rồi validate theo rule 3A. Lỗi validate → ghi 400 OpenAI-style NGAY
+    /// (không qua queue, header <c>X-Request-Id</c> đã được endpoint set trước đó) và trả
+    /// <see langword="null"/>; hợp lệ → trả prepared request.
     /// </summary>
-    /// <param name="ctx">HttpContext của request hiện tại.</param>
-    public async Task HandleAsync(HttpContext ctx)
+    /// <param name="ctx">HttpContext của request gốc.</param>
+    public async Task<PreparedChatRequest?> PrepareAsync(HttpContext ctx)
     {
         var ct = ctx.RequestAborted;
 
@@ -46,55 +51,46 @@ public sealed class ChatCompletionsHandler(
             };
             log.Warn($"Yêu cầu chat không hợp lệ: {validation.Failure}.", LogCategory.Request);
             await WriteErrorAsync(ctx, 400, message, "invalid_request_error", param, null);
-            return;
+            return null;
         }
 
-        var modelId = validation.ModelId!;
-        var resolved = await resolver.ResolveAsync(modelId, ct);
-        if (resolved is ModelResolveFailure failure)
-        {
-            if (failure.Reason == ResolveFailure.NotFound)
-            {
-                log.Warn($"Model '{failure.ModelId}' không tồn tại hoặc đã tắt.", LogCategory.Request);
-                await WriteErrorAsync(ctx, 404, $"The model '{failure.ModelId}' does not exist",
-                    "invalid_request_error", "model", "model_not_found");
-            }
-            else
-            {
-                log.Warn($"Model '{failure.ModelId}' thuộc provider Anthropic — chưa hỗ trợ (3E).",
-                    LogCategory.Request);
-                await WriteErrorAsync(ctx, 503, $"Model '{failure.ModelId}' is not supported yet",
-                    "server_error", null, null);
-            }
+        return new PreparedChatRequest(validation.ModelId!, body);
+    }
 
-            return;
-        }
-
-        var success = (ModelResolveSuccess)resolved;
-        var key = ProviderKeyResolver.ResolveFirstEnabledKey(success.Provider, protector);
+    /// <summary>
+    /// Forward request đã resolve lên upstream và stream response về client. Trả
+    /// <see cref="DispatchOutcome.Handled"/> khi đã ghi response xong, hoặc
+    /// <see cref="DispatchOutcome.Error"/> (endpoint ghi JSON) cho lỗi 503/502 —
+    /// KHÔNG tự ghi response lỗi. Client abort / lỗi khác để propagate cho dispatcher bắt.
+    /// </summary>
+    /// <param name="ctx">HttpContext gốc (để ghi status/content-type/stream).</param>
+    /// <param name="provider">Provider đã chọn.</param>
+    /// <param name="model">Model đã chọn (log Info).</param>
+    /// <param name="body">Body JSON gốc.</param>
+    /// <param name="ct">Token — dùng <c>ctx.RequestAborted</c> để disconnect cắt stream.</param>
+    public async Task<DispatchOutcome> ForwardAsync(HttpContext ctx, Provider provider, Model model,
+        byte[] body, CancellationToken ct)
+    {
+        var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, protector);
         if (key is null)
         {
-            log.Warn($"Provider '{success.Provider.Name}' không có account enabled nào.",
-                LogCategory.Request);
-            await WriteErrorAsync(ctx, 503,
-                $"No enabled API key for provider '{success.Provider.Name}'",
-                "server_error", null, null);
-            return;
+            log.Warn($"Provider '{provider.Name}' không có account enabled nào.", LogCategory.Request);
+            return new DispatchOutcome.Error(503,
+                $"No enabled API key for provider '{provider.Name}'", "server_error", null, null);
         }
 
         var stopwatch = Stopwatch.StartNew();
         HttpResponseMessage response;
         try
         {
-            response = await upstream.PostChatCompletionAsync(success.Provider, key, body, ct);
+            response = await upstream.PostChatCompletionAsync(provider, key, body, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                    && !ctx.RequestAborted.IsCancellationRequested)
         {
-            // Client tự ngắt (RequestAborted) thì để propagate — không phải lỗi upstream
-            log.Error($"Không kết nối được upstream '{success.Provider.Name}'.", ex, LogCategory.Request);
-            await WriteErrorAsync(ctx, 502, "Upstream provider request failed", "server_error", null, null);
-            return;
+            // Chỉ bắt lỗi upstream thật — client tự ngắt (RequestAborted) thì propagate (hành vi 3A)
+            log.Error($"Không kết nối được upstream '{provider.Name}'.", ex, LogCategory.Request);
+            return new DispatchOutcome.Error(502, "Upstream provider request failed", "server_error", null, null);
         }
 
         using (response)
@@ -105,20 +101,22 @@ public sealed class ChatCompletionsHandler(
 
             await response.Content.CopyToAsync(ctx.Response.Body, ct);
             log.Info(
-                $"Chuyển tiếp '{success.Model.ModelId}' → '{success.Provider.Name}': " +
+                $"Chuyển tiếp '{model.ModelId}' → '{provider.Name}': " +
                 $"HTTP {(int)response.StatusCode} trong {stopwatch.ElapsedMilliseconds}ms",
                 LogCategory.Request);
+            return new DispatchOutcome.Handled();
         }
     }
 
-    // Encoder relax để giữ nguyên ' (ASCII apostrophe) trong message —
-    // default encoder escape thành \u0027 làm sai contract OpenAI (spec §4).
+    // Encoder relax giữ nguyên apostrophe (0x27) trong message — default encoder escape
+    // apostrophe thành chuỗi unicode, sai contract OpenAI (spec §4) — GIỮ NGUYÊN comment 3A
     private static readonly JsonSerializerOptions ErrorJsonOptions = new()
     {
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    private static async Task WriteErrorAsync(HttpContext ctx, int status, string message,
+    /// <summary>Ghi JSON lỗi OpenAI-style — tái dùng cho endpoint (validate, resolve, cancel).</summary>
+    internal static async Task WriteErrorAsync(HttpContext ctx, int status, string message,
         string type, string? param, string? code)
     {
         ctx.Response.StatusCode = status;
