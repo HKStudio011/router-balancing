@@ -36,9 +36,15 @@ public static class ProxyApp
                 ConnectTimeout = TimeSpan.FromSeconds(10),
             });
 
-        builder.Services.AddSingleton<IModelResolver, ModelResolver>();
+        // Queue-first 3B (spec §2.1): endpoint chỉ enqueue + chờ outcome;
+        // DispatcherLoop (hosted service) resolve → chọn → serve.
+        builder.Services.AddSingleton<IRequestQueue, RequestQueue>();
+        builder.Services.AddSingleton<IExecutionList, ExecutionList>();
+        builder.Services.AddSingleton<IComboResolver, ComboResolver>();
+        builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
         builder.Services.AddSingleton<ChatCompletionsHandler>();
+        builder.Services.AddHostedService<DispatcherLoop>();
     }
 
     /// <summary>
@@ -49,44 +55,63 @@ public static class ProxyApp
     {
         app.UseMiddleware<ApiKeyMiddleware>();
 
-        // Interim 3B (T5): validate → resolve (3A) → forward. T7 thay bằng queue-first.
+        // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
-            async (HttpContext ctx, IModelResolver resolver, ILogService log,
-                ChatCompletionsHandler handler) =>
+            async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
+                ChatCompletionsHandler handler, ILogService log) =>
         {
+            // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
+            string id;
+            do
+            {
+                id = RequestId.New();
+            }
+            while (queue.Contains(id) || executions.Contains(id));
+            ctx.Response.Headers["X-Request-Id"] = id;
+
             var prepared = await handler.PrepareAsync(ctx);
             if (prepared is null)
-                return;
+                return; // validate fail — PrepareAsync đã ghi 400, chưa enqueue
 
-            var resolved = await resolver.ResolveAsync(prepared.ModelId, ctx.RequestAborted);
-            if (resolved is ModelResolveFailure failure)
+            var priority = RequestPriorityParser.Parse(ctx.Request.Headers["X-Priority"].ToString());
+            var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx);
+
+            if (!queue.Enqueue(request))
             {
-                if (failure.Reason == ResolveFailure.NotFound)
-                {
-                    log.Warn($"Model '{failure.ModelId}' không tồn tại hoặc đã tắt.", LogCategory.Request);
-                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 404,
-                        $"The model '{failure.ModelId}' does not exist",
-                        "invalid_request_error", "model", "model_not_found");
-                }
-                else
-                {
-                    log.Warn($"Model '{failure.ModelId}' thuộc provider Anthropic — chưa hỗ trợ (3E).",
-                        LogCategory.Request);
-                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 503,
-                        $"The model '{failure.ModelId}' is not supported yet", "server_error", null, null);
-                }
-
+                // id vừa sinh nên gần như không xảy ra — không được nuốt im lặng
+                log.Warn($"Không enqueue được request {id}.", LogCategory.Request);
+                await ChatCompletionsHandler.WriteErrorAsync(ctx, 500, "Internal server error",
+                    "server_error", null, null);
                 return;
             }
 
-            var success = (ModelResolveSuccess)resolved;
-            var outcome = await handler.ForwardAsync(ctx, success.Provider, success.Model,
-                prepared.Body, ctx.RequestAborted);
+            // Đăng ký SAU Enqueue: dispatcher đã Take thì TryRemove false → serve tự cắt stream (spec §3.4)
+            ctx.RequestAborted.Register(() =>
+            {
+                if (queue.TryRemove(id, out var removed))
+                {
+                    log.Info($"Request {id} bị client ngắt khi đang chờ.", LogCategory.Request);
+                    removed.Completion.TrySetResult(new DispatchOutcome.Cancelled());
+                }
+            });
+
+            var outcome = await request.Completion.Task;
+
             if (outcome is DispatchOutcome.Error error)
             {
                 await ChatCompletionsHandler.WriteErrorAsync(ctx, error.Status, error.Message,
                     error.Type, error.Param, error.Code);
             }
+            else if (outcome is DispatchOutcome.Cancelled
+                     && !ctx.RequestAborted.IsCancellationRequested)
+            {
+                // Huỷ qua control API (client còn kết nối) — ghi log + 400 request_cancelled (spec §5)
+                log.Info($"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
+                    LogCategory.Request);
+                await ChatCompletionsHandler.WriteErrorAsync(ctx, 400, "Request cancelled.",
+                    "invalid_request_error", null, "request_cancelled");
+            }
+            // Handled / Aborted / Cancelled do client ngắt: response đã ghi hoặc kết nối đã đóng
         });
 
         MapEndpoints(app);
