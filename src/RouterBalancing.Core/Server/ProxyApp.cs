@@ -143,5 +143,74 @@ public static class ProxyApp
 
             return Results.Json(new { @object = "list", data = models });
         });
+
+        // Snapshot request đang chờ + đang phục vụ (spec §3.5) — đọc 2 nguồn trong 1 lần,
+        // KHÔNG đồng bộ hóa: id có thể chuyển state giữa 2 lần đọc, cancel tự chịu 404/409
+        app.MapGet("/v1/requests", (IRequestQueue queue, IExecutionList executions) =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var queued = queue.Snapshot().Select(r => new
+            {
+                id = r.Id,
+                state = "queued",
+                priority = SnapshotPriority(r.Priority),
+                model = r.Model,
+                provider = (string?)null,
+                enqueuedAt = r.EnqueuedAt,
+                startedAt = (DateTimeOffset?)null,
+                elapsedMs = (long)(now - r.EnqueuedAt).TotalMilliseconds,
+                cancelable = true,
+            });
+            var serving = executions.Snapshot().Select(e => new
+            {
+                id = e.RequestId,
+                state = "serving",
+                priority = SnapshotPriority(e.Priority),
+                model = e.Model,
+                provider = (string?)e.ProviderName,
+                enqueuedAt = e.EnqueuedAt,
+                startedAt = (DateTimeOffset?)e.StartedAt,
+                elapsedMs = (long)(now - e.StartedAt).TotalMilliseconds,
+                cancelable = false,
+            });
+
+            return Results.Json(new { requests = queued.Concat(serving).ToList() });
+        });
+
+        // Chỉ huỷ được request còn trong queue (spec §3.4): 200 / 409 / 404
+        app.MapPost("/v1/requests/{id}/cancel", async (string id, HttpContext ctx,
+            IRequestQueue queue, IExecutionList executions) =>
+        {
+            // TryRemove atomic với Take — thắng thì 200, thua thì rơi vào nhánh 409/404
+            if (queue.TryRemove(id, out var removed))
+            {
+                removed.Completion.TrySetResult(new DispatchOutcome.Cancelled());
+                await Results.Json(new { cancelled = true }).ExecuteAsync(ctx);
+                return;
+            }
+
+            if (executions.Contains(id))
+            {
+                await ChatCompletionsHandler.WriteErrorAsync(ctx, 409,
+                    $"The request '{id}' is not cancellable", "invalid_request_error", null,
+                    "not_cancellable");
+                return;
+            }
+
+            await ChatCompletionsHandler.WriteErrorAsync(ctx, 404,
+                $"The request '{id}' does not exist", "invalid_request_error", null,
+                "request_not_found");
+        });
     }
+
+    /// <summary>
+    /// Snapshot map ngược vocab input: Highest → "max" (không phải "highest") để client
+    /// gửi thẳng giá trị này lại làm <c>X-Priority</c> — parser chỉ nhận high/max (chốt kỹ thuật §10).
+    /// </summary>
+    private static string SnapshotPriority(RequestPriority priority) => priority switch
+    {
+        RequestPriority.Highest => "max",
+        RequestPriority.High => "high",
+        _ => "normal",
+    };
 }
