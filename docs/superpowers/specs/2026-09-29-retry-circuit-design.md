@@ -1,7 +1,8 @@
 # Spec: Retry, Circuit & Watchdog (Phase 3, Slice 3C)
 
 - **Ngày:** 2026-09-29
-- **Trạng thái:** Chờ user review
+- **Trạng thái:** Approved (user "ok" tại `f266ac3`)
+- **Amend 2026-09-29 (sau approve, cùng lúc viết plan):** API store chốt lại (bỏ `ScheduleProbe` → `RecordProbeFailure` trả `ProbeFailureResult`; `RecordFailure` thêm `retryAfter`; `GetManualRetryModels` trả record giàu thông tin); `Retryable` thêm `RetryAfter` + `Passthrough` thêm `RetryAfterHeader` (client nhận lại header `Retry-After` — §3.6); clarify failed-set sống trên `ProxyRequest` qua park + capacity corner re-enqueue (§3.2).
 - **Slice:** 3C trong roadmap 5 slice Phase 3 (3A → 3B → 3C → 3D → 3E)
 - **Điều kiện đầu:** 3B merge tại `44c84d5` (master, 273/0, e2e ALL PASS 12 checks)
 - **Quyết định user khi brainstorm:** (1) một spec 3C đầy đủ 3 mảng, data layer; (2) merge 3B → master trước khi làm 3C; (3) kiến trúc dispatcher single-walk failover + circuit state machine (Phương án 1); (4) counter circuit +1 theo **exhaustion end-to-end**; (5) exhaustion contract = passthrough response cuối / 502; (6) probe = chat 1 token; (7) verify = unit + integration + e2e script.
@@ -56,7 +57,7 @@ Thêm **retry/failover khi lỗi**, **circuit breaker per-model** (lỗi liên t
 | Component | DI | Responsibility |
 |---|---|---|
 | `RetryClassifier` (static) | — | `IsRetryable(HttpStatusCode)` → 429/408/5xx = true; còn lại false. Lỗi network/timeout classify bởi catch filter sẵn có của handler (3A) → signal retryable. |
-| `IModelHealthStore` / `ModelHealthStore` (singleton) | Singleton | State per `modelId`: `Healthy` \| `ManualRetry(consecutiveFailures, attemptsMade, nextProbeAt)`. API cố định: `RecordSuccess(modelId)`, `RecordFailure(modelId)` (exhaustion), `IsManualRetry(modelId)` (model chưa từng lỗi = `false`), `GetManualRetryModels()`, `ScheduleProbe(modelId, nextAt)`; nội bộ 1 lock cho dict, thread-safe. |
+| `IModelHealthStore` / `ModelHealthStore` (singleton) | Singleton | State per `modelId`: `Healthy` (mặc định — không entry) \| `ManualRetry(consecutiveFailures, attemptsMade, nextProbeAt)`. API cố định (amend): `IsManualRetry(modelId)` (chưa từng lỗi = `false`), `RecordSuccess(modelId)` (xóa entry; nếu đang ManualRetry → log Info recover), `RecordFailure(modelId, TimeSpan? retryAfter = null)` (exhaustion; mở fuse khi `consecutiveFailures ≥ MaxRetry`, `nextProbeAt = now` floor `retryAfter`), `GetManualRetryModels()` → `IReadOnlyList<ManualRetryModel(ModelId, AttemptsMade, NextProbeAt?)>`, `RecordProbeFailure(modelId, TimeSpan? retryAfter = null)` → `ProbeFailureResult(AttemptsMade, NextProbeAt?)` (`attemptsMade+1`; `nextProbeAt = now + max(60s×attemptsMade, retryAfter)`; `NextProbeAt = null` khi `attemptsMade ≥ MaxRetry`). 1 lock cho dict, thread-safe; store tự ghi 4 log state-transition của §5 (mở fuse / recover / probe fail / hết lượt); đồng hồ qua `TimeProvider`. |
 | `ModelHealthWatchdog` (BackgroundService) | Hosted service | Tick `WatchdogIntervalSec`; quét models `ManualRetry` có `nextProbeAt ≤ now` → probe chat 1 token; 2xx → `RecordSuccess`; fail → `attemptsMade+1`, `nextProbeAt = now + 60s×attemptsMade`; hết `MaxRetry` → dừng probe (log Warn). Đồng hồ inject qua `TimeProvider` (test không chờ thật). |
 
 Không thêm file settings mới; không thêm key i18n.
@@ -65,8 +66,8 @@ Không thêm file settings mới; không thêm key i18n.
 
 **`DispatchOutcome`** — mở thêm 2 record:
 
-- `Retryable(int? Status, string? ContentType, byte[] Body)` — tín hiệu nội bộ: `Status=null` ⇔ lỗi mạng (không có HTTP response). **Chỉ dispatcher nhìn thấy** — luôn được convert trước khi về endpoint.
-- `Passthrough(int Status, string? ContentType, byte[] Body)` — endpoint ghi nguyên status + content-type + body (pass-through byte nguyên, không JSON wrap).
+- `Retryable(int? Status, string? ContentType, byte[] Body, TimeSpan? RetryAfter)` — tín hiệu nội bộ: `Status=null` ⇔ lỗi mạng (không có HTTP response); `RetryAfter` = header `Retry-After` đã parse (floor `nextProbeAt` khi exhaustion — §3.6). **Chỉ dispatcher nhìn thấy** — luôn được convert trước khi về endpoint.
+- `Passthrough(int Status, string? ContentType, byte[] Body, string? RetryAfterHeader)` — endpoint ghi nguyên status + content-type + body (pass-through byte nguyên, không JSON wrap); `RetryAfterHeader` (giá trị thô, null khi không có) được copy sang response để client nhận lại header `Retry-After` (§3.6).
 
 **`ChatCompletionsHandler.ForwardAsync`** — đổi một nhánh, giữ nguyên phần còn lại:
 
@@ -74,7 +75,7 @@ Không thêm file settings mới; không thêm key i18n.
 |---|---|---|
 | 2xx (stream) | ghi stream → `Handled` | **giữ nguyên** → `Handled` |
 | 4xx không retryable | ghi trực tiếp → `Handled` | trả `Passthrough` — endpoint ghi (quan sát được y hệt) |
-| 429/408/5xx | ghi trực tiếp → `Handled` | **không ghi** — buffer body (response nhỏ, chưa commit) → `Retryable(status, ct, body)` |
+| 429/408/5xx | ghi trực tiếp → `Handled` | **không ghi** — buffer body (response nhỏ, chưa commit) → `Retryable(status, ct, body, retryAfter)` |
 | Network/timeout (đã catch sẵn) | `Error(502)` ngay | → `Retryable(null, null, [])` (502 chỉ sinh ở exhaustion) |
 | No enabled key | `Error(503)` | **giữ nguyên** (fatal, không retry) |
 | Client abort | propagate | **giữ nguyên** |
@@ -90,8 +91,8 @@ Không thêm file settings mới; không thêm key i18n.
 **`ProxyApp`**:
 
 - **Gate enqueue**: sau validate, trước khi enqueue — `model` exact-id đang `ManualRetry` → ghi 503 §4 ngay (không vào queue). (Model combo chưa resolve lúc này — gate combo nằm ở bước 2 walk phía trên.)
-- **Endpoint xử lý outcome mới**: `Passthrough` → ghi nguyên (giống hành vi passthrough 3A); `Retryable` **không bao giờ tới endpoint** (dispatcher convert — endpoint Debug-assert/default trả 500 như phòng thủ).
-- Đăng ký `IModelHealthStore` Singleton + `AddHostedService<ModelHealthWatchdog>` (cùng chỗ với `DispatcherLoop`, `ProxyApp.ConfigureServices`).
+- **Endpoint xử lý outcome mới**: `Passthrough` → ghi nguyên status + content-type + body + copy `RetryAfterHeader` (giống hành vi passthrough 3A, cộng header `Retry-After`); `Retryable` **không bao giờ tới endpoint** (dispatcher convert — endpoint log Error + trả 500 như phòng thủ).
+- Đăng ký `IModelHealthStore` Singleton + `TimeProvider.System` + `ModelHealthWatchdog` Singleton (hosted qua factory lấy đúng instance này — integration test resolve thẳng được) (cùng chỗ với `DispatcherLoop`, `ProxyApp.ConfigureServices`).
 
 ### 2.3 Data flow
 
@@ -129,6 +130,7 @@ ModelHealthWatchdog: tick → probe chat 1 token → 2xx → RecordSuccess → H
 - Mỗi candidate **thử đúng 1 lần**; retryable → advance ngay (không backoff, không giữ `ExecutionList` slot — `Exit` trước khi advance).
 - **Không advance** khi: `Passthrough` (4xx không retryable — trả endpoint ngay, hành vi 3A), fatal `Error` (no-key, validate), `Cancelled`, `Aborted`, hay request bị park/full (hành vi park 3B giữ nguyên).
 - Combo: failover đi hết các model theo thứ tự combo (candidate kế có thể là model khác).
+- **Failed-set persist qua park (amend):** tập `đã thử = (providerId, modelId)` + `LastRetryable` sống trên `ProxyRequest` (`RetryState`) — filter excludes candidate đã thử ở mọi lần dispatch lại. Capacity corner sau khi advance (không còn slot cho candidate kế, hoặc selector trả `null`) → **re-enqueue request vào queue** (park 3B, chờ `Exited`/`Changed`) — đây KHÔNG phải "requeue-vì-lỗi" bị cấm ở §1.1: request chưa bị thử lại lần nào; candidate đã thử vẫn bị exclude. Không có vòng lặp nóng: dispatch lại chỉ xét candidate chưa thử; hết candidate chưa thử mà `RetryState.HasTried` → `CompleteExhaustion`.
 
 ### 3.3 Exhaustion contract
 
@@ -159,7 +161,7 @@ ModelHealthWatchdog: tick → probe chat 1 token → 2xx → RecordSuccess → H
 
 - Parse khi nhận 429 từ upstream (request thật hoặc probe): hỗ trợ **delta-seconds** và **HTTP-date**; clamp `0..3600s`; không có header/thông lệ → backoff mặc định.
 - Dùng **duy nhất** để floor `nextProbeAt` (§3.5). **Không** chờ trong request (đã chốt Phương án 1) — request failover ngay sang candidate kế.
-- Không có chỗ nào khác đọc `Retry-After` trong 3C (client vẫn nhận nguyên header qua passthrough exhaustion — 3A giữ nguyên).
+- Không có chỗ nào khác đọc `Retry-After` trong 3C. Client nhận lại header qua passthrough (amend: handler capture giá trị thô vào `Passthrough.RetryAfterHeader`; exhaustion convert `Retryable.RetryAfter` (TimeSpan) về chuỗi delta-seconds; endpoint copy sang response) — nội dung response giữ nguyên như 3A.
 
 ## 4. Error contract
 
@@ -177,15 +179,15 @@ Mọi JSON lỗi sinh qua `WriteErrorAsync` (encoder relax giữ apostrophe — 
 
 ## 5. Logging (VI — chỉ event mới)
 
-| Event | Level | Nội dung (giả định) |
-|---|---|---|
-| Advance failover | Warn | `Chuyển candidate kế: '{provider}'/'{model}' lỗi retryable (HTTP {code})` cho requestId |
-| Exhaustion | Error | `Request {requestId} thất bại sau {n} candidate — chuyển phản hồi cuối về client` |
-| Mở fuse | Warn | `Model '{id}' chuyển sang ManualRetry sau {n} lỗi liên tiếp` |
-| Reject enqueue | Warn | `Từ chối request mới: model '{id}' đang ManualRetry` |
-| Probe fail | Warn | `Probe model '{id}' thất bại (lần {k}/{max}) — thử lại sau {sec}s` |
-| Hết lượt probe | Warn | `Model '{id}' hết lượt probe tự động — chờ Retry now (slice UI)` |
-| Recover | Info | `Model '{id}' phục hồi — trở lại Healthy` |
+| Event | Level | Nơi ghi | Nội dung (giả định) |
+|---|---|---|---|
+| Advance failover | Warn | dispatcher | `Chuyển candidate kế: '{provider}'/'{model}' lỗi retryable (HTTP {code})` cho requestId — với lỗi mạng ghi `(lỗi mạng)`; chỉ ghi khi thật sự còn candidate kế |
+| Exhaustion | Error | dispatcher | `Request {requestId} thất bại sau {n} candidate — chuyển phản hồi cuối về client` |
+| Mở fuse | Warn | store | `Model '{id}' chuyển sang ManualRetry sau {n} lỗi liên tiếp` |
+| Reject enqueue | Warn | endpoint | `Từ chối request mới: model '{id}' đang ManualRetry` |
+| Probe fail | Warn | store | `Probe model '{id}' thất bại (lần {k}/{max}) — thử lại sau {sec}s` |
+| Hết lượt probe | Warn | store | `Model '{id}' hết lượt probe tự động — chờ Retry now (slice UI)` |
+| Recover | Info | store | `Model '{id}' phục hồi — trở lại Healthy` |
 
 Không log body/key/messages (nguyên tắc 3A).
 
@@ -194,7 +196,7 @@ Không log body/key/messages (nguyên tắc 3A).
 ### 6.1 Unit
 
 - **`RetryClassifier`**: matrix 429/408/500/502/503/504 = retryable; 400/401/403/404/409/422 = không; network/timeout = retryable-null; client-abort ≠ retryable.
-- **`ModelHealthStore`**: +1 theo exhaustion, reset khi success, mở fuse tại đúng `MaxRetry`, thread-safety cơ bản (nhiều model/lock), `ScheduleProbe`/backoff math `60s×n`, dừng ở `MaxRetry` probe.
+- **`ModelHealthStore`**: +1 theo exhaustion, reset khi success, mở fuse tại đúng `MaxRetry`, thread-safety cơ bản (nhiều model/lock), `RecordProbeFailure`/backoff math `60s×n` floor `Retry-After`, dừng ở `MaxRetry` probe (`NextProbeAt = null`).
 - **Dispatcher walk** (mở rộng `DispatcherLoopTests`): retryable → advance đúng thứ tự combo/provider; fatal → không advance; exhaustion → `Passthrough` với response cuối; exhaustion toàn mạng → 502; list rỗng vì ManualRetry → 503; 2xx giữa chừng → `RecordSuccess` đúng model.
 - **`Retry-After` parser**: delta-seconds, HTTP-date, clamp 0..3600, header thiếu/thông lệ.
 - **Watchdog** với fake `TimeProvider`: probe theo lịch, backoff floor Retry-After, dừng sau MaxRetry probe, recover 2xx.
