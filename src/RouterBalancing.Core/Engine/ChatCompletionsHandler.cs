@@ -119,6 +119,10 @@ public sealed class ChatCompletionsHandler(
     internal static async Task WriteErrorAsync(HttpContext ctx, int status, string message,
         string type, string? param, string? code)
     {
+        // Response đã commit (stream SSE giữa chừng) — không được append JSON lỗi vào stream
+        if (ctx.Response.HasStarted)
+            return;
+
         ctx.Response.StatusCode = status;
         // Serialize trực tiếp (không WriteAsJsonAsync) để ContentType đúng như middleware: application/json
         ctx.Response.ContentType = "application/json";

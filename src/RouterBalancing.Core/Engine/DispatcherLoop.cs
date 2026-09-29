@@ -41,8 +41,17 @@ public sealed class DispatcherLoop(
                 }
                 catch (Exception ex)
                 {
-                    // Vòng lặp phải sống: item đầu giữ nguyên, event sau sẽ retry (spec §4)
-                    log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.App);
+                    // Vòng lặp phải sống: item đầu giữ nguyên, event sau sẽ retry (spec §4).
+                    // try/catch INLINE (không delegate): log (SQLite) ném không được thoát ExecuteAsync —
+                    // loop chết = không còn dispatcher nào serve. "log không được làm hỏng request path" (I2)
+                    try
+                    {
+                        log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.App);
+                    }
+                    catch
+                    {
+                        // Nuốt chủ đích: backend log lỗi không được giết dispatcher loop
+                    }
                 }
 
                 try
@@ -74,10 +83,21 @@ public sealed class DispatcherLoop(
         var selection = await resolver.ResolveAsync(request.Model, ct);
         if (selection is SelectionFailure failure)
         {
-            // Resolve fail = xong xét — gỡ khỏi queue rồi báo outcome để endpoint ghi lỗi
+            // Resolve fail = xong xét — gỡ khỏi queue rồi báo outcome để endpoint ghi lỗi.
+            // Log bọc INLINE: log ném (SQLite) KHÔNG được chặn TrySetResult — item đã rời queue
+            // mà không outcome = endpoint chờ vĩnh viễn, cancel API trả 404 (I2).
+            // GIỮ NGUYÊN thứ tự log → TrySetResult: outcome báo TRƯỚC khi log xong sẽ để endpoint
+            // hoàn tất + test xoá file DB trong lúc log còn ghi → IOException.
             if (!queue.TryRemove(request.Id, out _))
                 return true; // vừa bị cancel/abort gỡ — bên kia đã báo outcome rồi
-            LogResolveFailure(failure);
+            try
+            {
+                LogResolveFailure(failure);
+            }
+            catch
+            {
+                // Nuốt chủ đích: "log không được làm hỏng request path"
+            }
             request.Completion.TrySetResult(CreateResolveError(failure));
             return true;
         }
@@ -118,8 +138,19 @@ public sealed class DispatcherLoop(
         }
         catch (Exception ex)
         {
-            log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
-            outcome = new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
+            // Response đã commit (stream giữa chừng) → Aborted: endpoint KHÔNG append JSON 500 vào stream (I1).
+            // Log bọc INLINE: nếu ném, outcome sẽ không bao giờ ghi → endpoint treo vĩnh viễn (I2)
+            try
+            {
+                log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
+            }
+            catch
+            {
+                // Nuốt chủ đích: "log không được làm hỏng request path"
+            }
+            outcome = request.Context.Response.HasStarted
+                ? new DispatchOutcome.Aborted()
+                : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
         }
         finally
         {

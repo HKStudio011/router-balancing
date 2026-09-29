@@ -147,6 +147,8 @@ public class ProxyAppChatIntegrationTests : IDisposable
             new StringContent("{broken", Encoding.UTF8, "application/json"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        // Spec §3.6: MỌI response — kể cả validate 400 — phải kèm X-Request-Id để client đối chiếu
+        Assert.False(string.IsNullOrWhiteSpace(response.Headers.GetValues("X-Request-Id").Single()));
         var json = await ReadJson(response);
         var error = json.GetProperty("error");
         Assert.Equal("invalid_request_error", error.GetProperty("type").GetString());
