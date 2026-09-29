@@ -3279,6 +3279,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         // Park vô hạn (spec §1.1): KHÔNG trả 503 ngay — request 2 chờ event, không polling
         await Task.Delay(300);
         Assert.False(second.IsCompleted);
+        Assert.Equal(1, upstream.Calls); // bound: request 2 phải nằm trong queue, chưa tới upstream
 
         // Request 1 xong → Exit → bắn Exited → wake → request 2 được serve
         upstream.Release();
