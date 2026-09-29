@@ -102,7 +102,7 @@ Mọi lỗi **từ proxy** trả `Content-Type: application/json`, shape:
 | Thiếu/sai `model` (V2) | 400 | `Missing required parameter: 'model'.` | `invalid_request_error` | `model` | `null` | Warn |
 | Thiếu/sai `messages` (V3) | 400 | `Missing required parameter: 'messages'.` | `invalid_request_error` | `messages` | `null` | Warn |
 | Model unknown / đã tắt / provider đã tắt | 404 | `The model '{model}' does not exist` | `invalid_request_error` | `model` | `model_not_found` | Warn |
-| Provider là Anthropic | 503 | `Model '{model}' is not supported yet` | `server_error` | `null` | `null` | Warn |
+| Provider là Anthropic | 503 | `The model '{model}' is not supported yet` | `server_error` | `null` | `null` | Warn |
 | Provider không có account enabled nào (key = null) | 503 | `No enabled API key for provider '{providerName}'` | `server_error` | `null` | `null` | Warn |
 | Lỗi mạng / không kết nối được upstream | 502 | `Upstream provider request failed` | `server_error` | `null` | `null` | Error (kèm exception message) |
 
