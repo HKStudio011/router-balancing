@@ -24,4 +24,23 @@ public abstract record DispatchOutcome
     /// <param name="Code">Nội dung <c>error.code</c> (nullable).</param>
     public sealed record Error(int Status, string Message, string Type, string? Param, string? Code)
         : DispatchOutcome;
+
+    /// <summary>
+    /// Lỗi retryable (429/408/5xx/lỗi mạng) — tín hiệu NỘI BỘ, chỉ dispatcher nhìn thấy;
+    /// luôn được convert trước khi outcome về endpoint (spec 3C §2.2).
+    /// </summary>
+    /// <param name="Status"><see langword="null"/> = lỗi mạng (không có HTTP response nào).</param>
+    /// <param name="ContentType">Content-Type upstream trả (<see langword="null"/> khi lỗi mạng).</param>
+    /// <param name="Body">Body đã buffer — response lỗi nhỏ, chưa commit (rỗng khi lỗi mạng).</param>
+    /// <param name="RetryAfter"><c>Retry-After</c> đã parse — floor <c>nextProbeAt</c> khi exhaustion (§3.6).</param>
+    public sealed record Retryable(int? Status, string? ContentType, byte[] Body, TimeSpan? RetryAfter)
+        : DispatchOutcome;
+
+    /// <summary>
+    /// Response cần endpoint ghi NGUYÊN status + content-type + body (passthrough byte —
+    /// exhaustion §3.3 và 4xx non-retryable, quan sát client y hệt 3A).
+    /// </summary>
+    /// <param name="RetryAfterHeader">Giá trị thô <c>Retry-After</c> copy lại cho client (null khi không có).</param>
+    public sealed record Passthrough(int Status, string? ContentType, byte[] Body, string? RetryAfterHeader)
+        : DispatchOutcome;
 }

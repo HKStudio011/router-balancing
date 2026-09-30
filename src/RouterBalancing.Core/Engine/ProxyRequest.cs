@@ -35,4 +35,7 @@ public sealed class ProxyRequest(
     /// <summary>Chỗ dispatcher báo outcome cho endpoint đang await — không dùng khi còn trong queue.</summary>
     public TaskCompletionSource<DispatchOutcome> Completion { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Cặp (provider, model) đã thử + lỗi retryable gần nhất — sống qua park/capacity corner re-enqueue (spec 3C §3.2).</summary>
+    public RetryState Retry { get; } = new();
 }
