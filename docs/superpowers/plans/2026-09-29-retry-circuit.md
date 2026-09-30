@@ -11,7 +11,7 @@
 - **Spec:** `docs/superpowers/specs/2026-09-29-retry-circuit-design.md` (approved `f266ac3`, amend `9a1e4eb`) — mọi review đối chiếu spec theo section.
 - **Điều kiện đầu:** master `@9a1e4eb` — **273 passed / 0 failed**.
 - **Branch thực thi:** `feat/retry-circuit-3c` (SDD: implementer + reviewer mỗi task).
-- **Kết thúc:** 9 tasks, **329 tests**, e2e 3A vẫn ALL PASS + e2e 3C ALL PASS. KHÔNG push.
+- **Kết thúc:** 9 tasks, **333 tests**, e2e 3A vẫn ALL PASS + e2e 3C ALL PASS. KHÔNG push.
 
 ## Mục tiêu & phạm vi
 
@@ -27,7 +27,7 @@ Ngoài phạm vi (không đụng): UI [Retry now]/panel health (slice sau), acco
 4. Comment "why" tiếng Việt; XML doc `///` mọi public/protected member; identifier + commit message tiếng Anh conventional; test doubles là nested private trong file test; error client-facing tiếng Anh (message 503 mới = `The model '{model}' is temporarily unavailable`, literal, không i18n); log tiếng Việt; KHÔNG log body/messages/API key.
 5. Test name mô tả hành vi (`Loop_WhenFirstCandidate429_AdvancesToSecondProviderAndCompletesHandled`).
 6. Đúng 1 commit/task, message ghi sẵn ở cuối task. KHÔNG push.
-7. **TDD mọi task có test mới**: viết test → chạy thấy FAIL (CS0246/hành vi) → viết implementation → PASS → full suite → commit. Ngoại lệ: **T8 (e2e script)** không sinh test `dotnet test` mới — gate = full suite giữ nguyên **329** + e2e tay; **T9 (verification)** — test mong đợi PASS ngay, FAIL = bug ở task trước → sửa đúng chỗ đó, không nõn assertion.
+7. **TDD mọi task có test mới**: viết test → chạy thấy FAIL (CS0246/hành vi) → viết implementation → PASS → full suite → commit. Ngoại lệ: **T8 (e2e script)** không sinh test `dotnet test` mới — gate = full suite giữ nguyên **333** + e2e tay; **T9 (verification)** — test mong đợi PASS ngay, FAIL = bug ở task trước → sửa đúng chỗ đó, không nõn assertion.
 8. Log/lỗi luôn bọc try/catch inline theo pattern I2 đã có: **outcome phải luôn tới `TrySetResult`** (log ném SQLite không được chặn); store cam kết "không ném" (SafeLog nội bộ) nhưng dispatcher vẫn bọc các chỗ gọi trực tiếp log.
 
 ## Ladder test (arithmetic thống nhất toàn plan)
@@ -35,15 +35,15 @@ Ngoài phạm vi (không đụng): UI [Retry now]/panel health (slice sau), acco
 | Task | Gate sau task | Delta | Ghi chú |
 |---|---|---|---|
 | — | 273 | base | amend spec `9a1e4eb`, 273/0 đã verify |
-| T1 RetryClassifier + RetryAfterParser | **287** | +14 | classifier 2 theory × 6 row = 12 + parser 6 |
-| T2 Outcome + RetryState | **290** | +3 | |
-| T3 ModelHealthStore | **302** | +12 | |
-| T4 Handler classification | **305** | +3 | 2 test amended tại chỗ (không đổi số) |
-| T5 Dispatcher walk | **313** | +8 | + DI store/TimeProvider |
-| T6 Gate + endpoint + integration | **319** | +6 | |
-| T7 Watchdog + probe recovery | **329** | +10 | 9 unit + 1 integration |
-| T8 e2e scripts | **329** | +0 | e2e tay ngoài `dotnet test` |
-| T9 Final Gates | **329** | 0 | verification |
+| T1 RetryClassifier + RetryAfterParser | **291** | +18 | classifier 2 theory × 6 row = 12 + parser 6 |
+| T2 Outcome + RetryState | **294** | +3 | |
+| T3 ModelHealthStore | **306** | +12 | |
+| T4 Handler classification | **309** | +3 | 2 test amended tại chỗ (không đổi số) |
+| T5 Dispatcher walk | **317** | +8 | + DI store/TimeProvider |
+| T6 Gate + endpoint + integration | **323** | +6 | |
+| T7 Watchdog + probe recovery | **333** | +10 | 9 unit + 1 integration |
+| T8 e2e scripts | **333** | +0 | e2e tay ngoài `dotnet test` |
+| T9 Final Gates | **333** | 0 | verification |
 
 Cuối mỗi task chạy **full suite** (không filter) trước khi commit.
 
@@ -245,13 +245,13 @@ public static class RetryAfterParser
 dotnet test "router balancing test/router balancing test.csproj" --nologo --filter "RetryClassifier|RetryAfterParser"
 ```
 
-Expected: **14 passed / 0 failed**. Sau đó full suite:
+Expected: **18 passed / 0 failed**. Sau đó full suite:
 
 ```powershell
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **287 passed / 0 failed**.
+Expected: **291 passed / 0 failed**.
 
 ### Step 5: Commit
 
@@ -417,7 +417,7 @@ Expected: **3 passed / 0 failed**. Sau đó full suite:
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **290 passed / 0 failed**.
+Expected: **294 passed / 0 failed**.
 
 ### Step 5: Commit
 
@@ -912,7 +912,7 @@ Expected: **12 passed / 0 failed**. Sau đó full suite:
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **302 passed / 0 failed**.
+Expected: **306 passed / 0 failed**.
 
 ### Step 5: Commit
 
@@ -1196,7 +1196,7 @@ Expected: **11 passed / 0 failed**. Full suite (bao gồm integration 429 có s�
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **305 passed / 0 failed**.
+Expected: **309 passed / 0 failed**.
 
 ### Step 5: Commit
 
@@ -1866,7 +1866,7 @@ Expected: **14 passed / 0 failed** (6 cũ + 8 mới). Full suite:
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **313 passed / 0 failed**.
+Expected: **317 passed / 0 failed**.
 
 ### Step 5: Commit
 
@@ -2284,7 +2284,7 @@ Expected: **6 passed / 0 failed**. Full suite:
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **319 passed / 0 failed**.
+Expected: **323 passed / 0 failed**.
 
 ### Step 5: Commit
 
@@ -2786,7 +2786,7 @@ Expected: **9 passed / 0 failed**. Full suite (bao gồm integration probe-recov
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **329 passed / 0 failed**.
+Expected: **333 passed / 0 failed**.
 
 ### Step 5: Commit
 
@@ -2806,7 +2806,7 @@ git commit -m "feat: add watchdog probe loop for manual retry models"
 **Consumes:** hành vi T1–T7 (failover, exhaustion passthrough, Retry-After, gate 503).
 **Produces:** e2e gate cuối slice (spec §6.3) — chạy tay, không thuộc `dotnet test`.
 
-> **Ngoại lệ TDD** (Ràng buộc #7): không sinh test `dotnet test` mới — gate = full suite giữ nguyên **329** + 2 script e2e chạy tay ALL PASS.
+> **Ngoại lệ TDD** (Ràng buộc #7): không sinh test `dotnet test` mới — gate = full suite giữ nguyên **333** + 2 script e2e chạy tay ALL PASS.
 
 ### Chuẩn bị (trước khi chạy)
 
@@ -2993,7 +2993,7 @@ dotnet test "router balancing test/router balancing test.csproj" --nologo
 dotnet build router-balancing/router-balancing.csproj -f net10.0-windows10.0.19041.0 --nologo
 ```
 
-Expected: **329 passed / 0 failed** + 0 Warning / 0 Error (T8 không sửa code app/test).
+Expected: **333 passed / 0 failed** + 0 Warning / 0 Error (T8 không sửa code app/test).
 
 ### Step 5: Commit
 
@@ -3028,7 +3028,7 @@ git status --short                # sạch
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **329 passed / 0 failed**. FAIL = bug ở task trước → sửa đúng chỗ đó, **không nõn assertion**.
+Expected: **333 passed / 0 failed**. FAIL = bug ở task trước → sửa đúng chỗ đó, **không nõn assertion**.
 
 ### Step 2: Build
 
@@ -3063,4 +3063,4 @@ Critical/Important → sửa + commit fix trên branch + re-review; Minor → gh
 
 ### Step 6: Báo user + offer merge
 
-Kết quả cần nêu: **329/0**, build **0W/0E**, parity **208/208**, e2e **ALL PASS ×2**, ledger **9/9**. Offer **merge local** `feat/retry-circuit-3c` → master (KHÔNG push — push là quyết định của user).
+Kết quả cần nêu: **333/0**, build **0W/0E**, parity **208/208**, e2e **ALL PASS ×2**, ledger **9/9**. Offer **merge local** `feat/retry-circuit-3c` → master (KHÔNG push — push là quyết định của user).
