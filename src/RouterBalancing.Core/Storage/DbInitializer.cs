@@ -29,7 +29,7 @@ public static class DbInitializer
 
     /// <summary>
     /// Backfill Identifier từ Name cho hàng cũ (migration thêm cột nullable) — idempotent.
-    ///_slugify Unicode cần C# (Normalize + bỏ combining mark) nên làm ở đây thay vì SQL trong migration.
+    /// Slugify Unicode cần C# (Normalize + bỏ combining mark) nên làm ở đây thay vì SQL trong migration.
     /// </summary>
     internal static void BackfillIdentifiers(RouterBalancingDbContext db)
     {
@@ -46,9 +46,8 @@ public static class DbInitializer
 
         foreach (var provider in pending)
         {
-            // Backfill idempotent: giá trị đã ghi không bao giờ được sửa lại, nên identifier
-            // >50 ký tự (Name tối đa 200) sẽ "dính" vĩnh viễn — Task 3 thêm HasMaxLength(50) +
-            // validator ^[a-z0-9]+(-[a-z0-9]+)*$ sẽ không cho lưu những hàng này nữa (spec §2).
+            // Backfill chỉ đụng hàng Identifier NULL/"" nên giá trị ghi ở đây không bao giờ
+            // được sửa lại — identifier xấu lọt vào là dính vĩnh viễn, không cơ hội vá sau.
             var slug = TruncateSlug(Slugify(provider.Name), MaxIdentifierLength);
             if (slug.Length == 0) slug = $"provider-{provider.Id}";
 
