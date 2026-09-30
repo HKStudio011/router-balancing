@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Hosting;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
@@ -158,6 +159,11 @@ public sealed class DispatcherLoop(
             executions.Exit(request.Id);
         }
 
+        // Dispatcher là nơi duy nhất convert Retryable — endpoint chỉ thấy Passthrough/Error
+        // (spec §2.2). T5 sẽ thay nhánh này bằng walk (advance) + RecordExhaustion.
+        if (outcome is DispatchOutcome.Retryable retryable)
+            outcome = ConvertRetryable(retryable);
+
         request.Completion.TrySetResult(outcome);
     }
 
@@ -177,4 +183,22 @@ public sealed class DispatcherLoop(
             log.Warn($"Model '{failure.ModelId}' thuộc provider Anthropic — chưa hỗ trợ (3E).",
                 LogCategory.Request);
     }
+
+    /// <summary>
+    /// Retryable → outcome endpoint ghi được: có HTTP response → Passthrough (client thấy
+    /// đúng response cuối như 3A); lỗi mạng → Error 502 (exhaustion contract §3.3).
+    /// </summary>
+    private static DispatchOutcome ConvertRetryable(DispatchOutcome.Retryable retryable) =>
+        retryable.Status is { } status
+            ? new DispatchOutcome.Passthrough(status, retryable.ContentType, retryable.Body,
+                FormatRetryAfter(retryable.RetryAfter))
+            : new DispatchOutcome.Error(502, "Upstream provider request failed", "server_error",
+                null, null);
+
+    /// <summary>TimeSpan → chuỗi delta-seconds (InvariantCulture, ceiling) cho header Retry-After.</summary>
+    private static string? FormatRetryAfter(TimeSpan? retryAfter) =>
+        retryAfter is { } value
+            ? ((int)Math.Ceiling(value.TotalSeconds))
+                .ToString(CultureInfo.InvariantCulture)
+            : null;
 }

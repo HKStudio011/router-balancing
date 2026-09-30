@@ -155,7 +155,7 @@ public class ChatCompletionsHandlerTests
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenUpstreamThrows_ReturnsError502AndLogsError()
+    public async Task ForwardAsync_WhenUpstreamThrows_ReturnsNetworkRetryableAndLogsError()
     {
         var log = new CapturingLog();
         var provider = SeedProvider();
@@ -164,15 +164,18 @@ public class ChatCompletionsHandlerTests
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
 
-        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
-        Assert.Equal(502, error.Status);
-        Assert.Equal("Upstream provider request failed", error.Message);
-        Assert.Single(log.Errors);
+        // Lỗi mạng = retryable Status null — 502 chỉ sinh ở exhaustion (T5 convert, spec §2.2)
+        var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
+        Assert.Null(retryable.Status);
+        Assert.Null(retryable.ContentType);
+        Assert.Empty(retryable.Body);
+        Assert.Null(retryable.RetryAfter);
+        Assert.Single(log.Errors); // giữ log Error 3A
         Assert.Empty(log.Infos);
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenUpstream429_PassesStatusAndBodyThroughWithInfoLog()
+    public async Task ForwardAsync_WhenUpstream429_ReturnsRetryableWithoutWritingResponse()
     {
         var log = new CapturingLog();
         var provider = SeedProvider();
@@ -182,13 +185,75 @@ public class ChatCompletionsHandlerTests
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
 
-        Assert.IsType<DispatchOutcome.Handled>(outcome);
-        var (status, contentType, body) = await ReadAsync(ctx);
-        Assert.Equal(429, status);
-        Assert.Equal(upstreamBody, body);
-        Assert.StartsWith("application/json", contentType);
-        Assert.Single(log.Infos);
-        Assert.Empty(log.Warns);
+        // Handler KHÔNG ghi response 429 — dispatcher walk quyết định advance/passthrough (spec §2.2)
+        var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
+        Assert.Equal(429, retryable.Status);
+        Assert.Equal(upstreamBody, Encoding.UTF8.GetString(retryable.Body));
+        Assert.StartsWith("application/json", retryable.ContentType);
+        var (status, _, body) = await ReadAsync(ctx);
+        Assert.Equal(200, status);
+        Assert.Equal(string.Empty, body);
+        // Không Info ở nhánh retryable — Warn/Err do dispatcher ghi (§5)
+        Assert.Empty(log.Infos);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream500_ReturnsRetryableWithBufferedBody()
+    {
+        var log = new CapturingLog();
+        var provider = SeedProvider();
+        var upstreamBody = """{"error":{"message":"internal"}}""";
+        var sut = Create(new StubUpstream(() => Upstream(500, upstreamBody)), log);
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+
+        var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
+        Assert.Equal(500, retryable.Status);
+        Assert.Equal(upstreamBody, Encoding.UTF8.GetString(retryable.Body));
+        // Response chưa commit — ctx untouched để dispatcher advance candidate kế
+        var (status, _, body) = await ReadAsync(ctx);
+        Assert.Equal(200, status);
+        Assert.Equal(string.Empty, body);
+        Assert.Empty(log.Infos);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream400_ReturnsPassthroughWithoutWritingResponse()
+    {
+        var log = new CapturingLog();
+        var provider = SeedProvider();
+        var upstreamBody = """{"error":{"message":"bad request"}}""";
+        var sut = Create(new StubUpstream(() => Upstream(400, upstreamBody)), log);
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+
+        // Non-retryable — endpoint ghi (quan sát client y hệt 3A), không advance
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(400, passthrough.Status);
+        Assert.Equal(upstreamBody, Encoding.UTF8.GetString(passthrough.Body));
+        Assert.Null(passthrough.RetryAfterHeader);
+        var (status, _, body) = await ReadAsync(ctx);
+        Assert.Equal(200, status);
+        Assert.Equal(string.Empty, body);
+        Assert.Single(log.Infos); // Info giữ nguyên cho passthrough (parity quen sát 3A)
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream429WithRetryAfter_ParsesRetryAfterIntoRetryable()
+    {
+        var provider = SeedProvider();
+        var response = Upstream(429, "{}");
+        response.Headers.TryAddWithoutValidation("Retry-After", "30");
+        var sut = Create(new StubUpstream(() => response));
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+
+        var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
+        // Delta-seconds parse được → floor nextProbeAt khi exhaustion (§3.6)
+        Assert.Equal(TimeSpan.FromSeconds(30), retryable.RetryAfter);
     }
 
     [Fact]

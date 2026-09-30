@@ -102,6 +102,17 @@ public static class ProxyApp
                 await ChatCompletionsHandler.WriteErrorAsync(ctx, error.Status, error.Message,
                     error.Type, error.Param, error.Code);
             }
+            else if (outcome is DispatchOutcome.Passthrough passthrough)
+            {
+                // Ghi nguyên response cuối — byte passthrough không JSON wrap (spec 3C §3.3);
+                // Retry-After copy lại cho client (§3.6)
+                ctx.Response.StatusCode = passthrough.Status;
+                if (passthrough.ContentType is not null)
+                    ctx.Response.ContentType = passthrough.ContentType;
+                if (passthrough.RetryAfterHeader is not null)
+                    ctx.Response.Headers["Retry-After"] = passthrough.RetryAfterHeader;
+                await ctx.Response.Body.WriteAsync(passthrough.Body, ctx.RequestAborted);
+            }
             else if (outcome is DispatchOutcome.Cancelled
                      && !ctx.RequestAborted.IsCancellationRequested)
             {
