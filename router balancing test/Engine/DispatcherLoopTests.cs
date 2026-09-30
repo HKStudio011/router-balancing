@@ -6,6 +6,7 @@ using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
+using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
 namespace router_balancing_test.Engine;
@@ -19,6 +20,7 @@ public class DispatcherLoopTests : IDisposable
     private readonly ExecutionList _executions;
     private readonly DpapiSecretProtector _protector = new();
     private DispatcherLoop? _loop;
+    private AppSettingsService? _settings;
 
     public DispatcherLoopTests()
     {
@@ -32,6 +34,7 @@ public class DispatcherLoopTests : IDisposable
         // CancellationToken.None: BackgroundService không có overload không tham số — token None =
         // chỉ StopAsync mới cancel (ExecuteAsync dừng khi loop tự thấy cancellation).
         _loop?.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+        _settings?.Dispose();
         _db.Dispose();
     }
 
@@ -75,11 +78,20 @@ public class DispatcherLoopTests : IDisposable
     }
 
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
-        IUpstreamClient upstream, CapturingLog log)
+        IUpstreamClient upstream, CapturingLog log, ModelHealthStore? health = null)
     {
+        _settings ??= new AppSettingsService(_db.CreateFactory(), _protector);
+        health ??= new ModelHealthStore(_settings, log, TimeProvider.System);
         var handler = new ChatCompletionsHandler(upstream, _protector, log);
-        _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log);
+        _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log, health);
         await _loop.StartAsync(CancellationToken.None);
+    }
+
+    // Test pre-seed fuse cần đúng instance store mà loop sẽ dùng
+    private ModelHealthStore NewStore(CapturingLog log)
+    {
+        _settings ??= new AppSettingsService(_db.CreateFactory(), _protector);
+        return new ModelHealthStore(_settings, log, TimeProvider.System);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
@@ -171,6 +183,55 @@ public class DispatcherLoopTests : IDisposable
             {
                 Content = new StringContent(SseBody, Encoding.UTF8, "text/event-stream"),
             };
+        }
+    }
+
+    private static HttpResponseMessage Sse() => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(SseBody, Encoding.UTF8, "text/event-stream"),
+    };
+
+    private static HttpResponseMessage Resp429(string body = """{"error":{"message":"rate limited"}}""") =>
+        new(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+
+    private sealed class ScriptedUpstream(Func<Provider, HttpResponseMessage> factory) : IUpstreamClient
+    {
+        public int Calls;
+
+        public Task<HttpResponseMessage> PostChatCompletionAsync(
+            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            // Factory throw được (mạng giả) — ném đồng bộ, handler bắt trong try có sẵn
+            return Task.FromResult(factory(provider));
+        }
+    }
+
+    // Góc capacity: call#1 giữ slot tới khi Release, call#2 lỗi 429 (advance), call#3+ OK
+    private sealed class CapacityCornerUpstream : IUpstreamClient
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+        public Task Entered => _entered.Task;
+        public void Release() => _release.TrySetResult();
+
+        public async Task<HttpResponseMessage> PostChatCompletionAsync(
+            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        {
+            var call = Interlocked.Increment(ref _calls);
+            if (call == 1)
+            {
+                _entered.TrySetResult();
+                await _release.Task;
+                return Sse();
+            }
+            return call == 2 ? Resp429() : Sse();
         }
     }
 
@@ -362,5 +423,231 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(2, upstream.Calls);
         Assert.Single(log.Errors);
+    }
+
+    [Fact]
+    public async Task Loop_WhenFirstCandidate429_AdvancesToSecondProviderAndCompletesHandled()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m1"); // cùng model 2 provider — RR sort (p1, p2)
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(p => p.Name == "p1" ? Resp429() : Sse());
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls);
+        // Advance Warn nêu đúng provider/model/status/request rồi chuyển candidate kế (§5)
+        Assert.Contains(log.Warns, w =>
+            w.Contains("Chuyển candidate kế") && w.Contains("'p1'/'m1'")
+            && w.Contains("HTTP 429") && w.Contains("req00001"));
+        Assert.Contains(log.Infos, i => i.Contains("m1") && i.Contains("p2")); // chỉ Info lần thành công
+        Assert.False(_executions.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenAllCandidates429_CompletesPassthroughWithLastResponseAndLogsExhaustion()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(p => p.Name == "p1"
+            ? Resp429("""{"error":{"message":"from-p1"}}""")
+            : Resp429("""{"error":{"message":"from-p2"}}"""));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Exhaustion contract: attempt cuối (p2) quyết định — passthrough nguyên response đó (§3.3)
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(429, passthrough.Status);
+        Assert.Equal("""{"error":{"message":"from-p2"}}""", Encoding.UTF8.GetString(passthrough.Body));
+        Assert.Equal(2, upstream.Calls);
+        Assert.Contains(log.Errors,
+            e => e.Contains("req00001") && e.Contains("thất bại sau 2 candidate"));
+        // Đúng 1 Warn advance (p1→p2) — hết candidate nên không log lần 2
+        Assert.Single(log.Warns);
+        // Handler không tự ghi response — ctx untouched cho endpoint ghi
+        Assert.Equal(200, request.Context.Response.StatusCode);
+        Assert.Equal(0, ((MemoryStream)request.Context.Response.Body).Length);
+    }
+
+    [Fact]
+    public async Task Loop_WhenAllCandidatesFailWithNetworkError_CompletesError502()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => throw new HttpRequestException("connection refused"));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Attempt cuối là mạng → 502 y như 3A, không passthrough body rỗng (§3.3)
+        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
+        Assert.Equal(502, error.Status);
+        Assert.Equal("Upstream provider request failed", error.Message);
+        Assert.Equal(2, upstream.Calls);
+        // 2 lỗi mạng của handler + 1 exhaustion của dispatcher
+        Assert.Equal(3, log.Errors.Count);
+        Assert.Contains(log.Errors, e => e.Contains("thất bại sau 2 candidate"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenFirstCandidate429ThenNetworkError_CompletesError502OnLastAttempt()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(p => p.Name == "p1"
+            ? Resp429()
+            : throw new HttpRequestException("connection refused"));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Attempt cuối (mạng) quyết định — không lấy response 429 của attempt đầu (§3.3)
+        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
+        Assert.Equal(502, error.Status);
+        Assert.Equal("Upstream provider request failed", error.Message);
+        Assert.Equal(2, upstream.Calls);
+        Assert.Contains(log.Warns, w => w.Contains("HTTP 429"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenCandidateReturns400_CompletesPassthroughWithoutAdvancing()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("""{"error":{"message":"bad"}}""", Encoding.UTF8, "application/json"),
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 4xx non-retryable: passthrough NGAY — không advance, không cộng counter (§1.4)
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(400, passthrough.Status);
+        Assert.Equal(1, upstream.Calls);
+        Assert.Empty(log.Warns);
+        Assert.Empty(log.Errors);
+        Assert.Contains(log.Infos, i => i.Contains("HTTP 400")); // Info parity 3A
+    }
+
+    [Fact]
+    public async Task Loop_WhenAllModelsInManualRetry_CompletesError503WithoutUpstreamCall()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m2");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => Sse());
+        var log = new CapturingLog();
+        var store = NewStore(log);
+        // Mở fuse cả 2 model — 3 lần RecordFailure mỗi model (MaxRetry=3)
+        for (var i = 0; i < 3; i++)
+        {
+            store.RecordFailure("m1");
+            store.RecordFailure("m2");
+        }
+        await StartAsync(resolver, selector, upstream, log, store);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Walk rỗng ngay từ đầu (chưa thử gì) → 503, KHÔNG gọi upstream (§3.3)
+        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
+        Assert.Equal(503, error.Status);
+        Assert.Equal("The model 'm1' is temporarily unavailable", error.Message);
+        Assert.Equal(0, upstream.Calls);
+    }
+
+    [Fact]
+    public async Task Loop_WhenSomeModelsInManualRetry_SkipsDeadModelAndServesHealthyOne()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m2");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => Sse());
+        var log = new CapturingLog();
+        var store = NewStore(log);
+        for (var i = 0; i < 3; i++)
+            store.RecordFailure("m1"); // chỉ m1 mở fuse
+        await StartAsync(resolver, selector, upstream, log, store);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Gate walk: model chết bị loại từ đầu — không advance, không Warn "Chuyển candidate kế"
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(1, upstream.Calls);
+        Assert.Contains(log.Infos, i => i.Contains("m2") && i.Contains("p2"));
+        Assert.DoesNotContain(log.Warns, w => w.Contains("Chuyển candidate kế"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenNextCandidateHasNoCapacity_ReenqueuesAndWakesWhenSlotFrees()
+    {
+        var p1 = SeedProvider("p1", maxConcurrent: 1, modelId: "m1");
+        var p2 = SeedProvider("p2", maxConcurrent: 1, modelId: "m1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new CapacityCornerUpstream();
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        // r2 enqueue trước → cursor 0 → p1, call#1 giữ trọn slot (gated)
+        var r2 = Req("req00002");
+        _queue.Enqueue(r2);
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // r1 → p2 (p1 bận), call#2 → 429 → advance p1 nhưng p1 kẹt → re-enqueue (park)
+        var r1 = Req("req00001");
+        _queue.Enqueue(r1);
+        await WaitUntilAsync(() => _queue.Contains("req00001") && upstream.Calls == 2);
+        await Task.Delay(200); // chắc chắn đã park — không còn call nào chạy dở
+        Assert.Equal(2, upstream.Calls);
+        Assert.False(r1.Completion.Task.IsCompleted);
+
+        // r2 xong → Exit p1 → Exited wake → r1 dispatch lại (chỉ còn p1 chưa thử) → call#3 OK
+        upstream.Release();
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(3, upstream.Calls);
+        Assert.False(_queue.Contains("req00001"));
     }
 }

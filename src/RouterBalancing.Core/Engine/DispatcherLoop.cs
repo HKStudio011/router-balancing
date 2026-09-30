@@ -16,7 +16,8 @@ public sealed class DispatcherLoop(
     IComboResolver resolver,
     IModelSelector selector,
     ChatCompletionsHandler handler,
-    ILogService log) : BackgroundService
+    ILogService log,
+    IModelHealthStore health) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
 
@@ -104,7 +105,23 @@ public sealed class DispatcherLoop(
         }
 
         var success = (SelectionSuccess)selection;
-        var candidate = await selector.TrySelectAsync(success, ct);
+
+        // Walk 3C: bỏ candidate model đang ManualRetry + candidate đã thử trong request này (§3.2/§3.4)
+        var remaining = FilterRemaining(success.Candidates, request);
+        if (remaining.Count == 0)
+        {
+            if (!queue.TryRemove(request.Id, out _))
+                return true; // vừa bị cancel/abort gỡ — bên kia đã báo outcome rồi
+            request.Completion.TrySetResult(request.Retry.HasTried
+                ? CompleteExhaustion(request)
+                : new DispatchOutcome.Error(503,
+                    $"The model '{request.Model}' is temporarily unavailable",
+                    "server_error", null, null));
+            return true;
+        }
+
+        var candidate = await selector.TrySelectAsync(
+            new SelectionSuccess(remaining, success.Mode), ct);
         if (candidate is null)
             return false; // park — item KHÔNG bị Take, chờ Changed|Exited
 
@@ -120,51 +137,129 @@ public sealed class DispatcherLoop(
             return true;
         }
 
-        _ = ServeAsync(taken, candidate);
+        _ = ServeAsync(taken, candidate, remaining, success.Mode);
         return true;
     }
 
-    private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate)
+    /// <summary>
+    /// Serve 1 request qua vòng walk: mỗi candidate 1 lần, Retryable → Exit + advance kế;
+    /// hết list → RecordExhaustion + Passthrough/Error502. Fire-and-forget từ
+    /// <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
+    /// </summary>
+    private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
+        IReadOnlyList<ModelCandidate> remaining, ComboMode mode)
     {
-        DispatchOutcome outcome;
-        try
+        while (true)
         {
-            // RequestAborted của client — disconnect giữa chừng cắt stream, không phải lỗi upstream (3A)
-            outcome = await handler.ForwardAsync(request.Context, candidate.Provider,
-                candidate.Model, request.Body, request.Context.RequestAborted);
-        }
-        catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
-        {
-            outcome = new DispatchOutcome.Aborted(); // client ngắt giữa serve — không 502 (3A parity)
-        }
-        catch (Exception ex)
-        {
-            // Response đã commit (stream giữa chừng) → Aborted: endpoint KHÔNG append JSON 500 vào stream (I1).
-            // Log bọc INLINE: nếu ném, outcome sẽ không bao giờ ghi → endpoint treo vĩnh viễn (I2)
+            DispatchOutcome outcome;
             try
             {
-                log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
+                // RequestAborted của client — disconnect giữa chừng cắt stream, không phải lỗi upstream (3A)
+                outcome = await handler.ForwardAsync(request.Context, candidate.Provider,
+                    candidate.Model, request.Body, request.Context.RequestAborted);
             }
-            catch
+            catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
             {
-                // Nuốt chủ đích: "log không được làm hỏng request path"
+                outcome = new DispatchOutcome.Aborted(); // client ngắt giữa serve — không 502 (3A parity)
             }
-            outcome = request.Context.Response.HasStarted
-                ? new DispatchOutcome.Aborted()
-                : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
-        }
-        finally
-        {
-            // Exit TRƯỚC khi báo outcome — cancel endpoint kiểm tra Contains thấy đúng ngay (spec §2.3)
+            catch (Exception ex)
+            {
+                // Response đã commit (stream giữa chừng) → Aborted: endpoint KHÔNG append JSON 500 vào stream (I1).
+                // Log bọc INLINE: nếu ném, outcome sẽ không bao giờ ghi → endpoint treo vĩnh viễn (I2)
+                try
+                {
+                    log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
+                }
+                catch
+                {
+                    // Nuốt chủ đích: "log không được làm hỏng request path"
+                }
+                outcome = request.Context.Response.HasStarted
+                    ? new DispatchOutcome.Aborted()
+                    : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
+            }
+
+            if (outcome is DispatchOutcome.Retryable retryable)
+            {
+                request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
+                request.Retry.LastRetryable = retryable;
+
+                var next = FilterRemaining(remaining, request);
+                if (next.Count == 0)
+                {
+                    // RecordExhaustion TRƯỚC Exit — fuse phải mở trước khi Exited wake dispatch
+                    // request đang queue, nếu không request kế sẽ gọi tiếp vào model vừa chết (§3.4)
+                    var exhausted = CompleteExhaustion(request);
+                    executions.Exit(request.Id);
+                    request.Completion.TrySetResult(exhausted);
+                    return;
+                }
+
+                LogAdvance(request, candidate, retryable);
+                // Exit TRƯỚC khi advance — trả slot ngay, không giữ trong lúc chọn candidate kế
+                executions.Exit(request.Id);
+
+                ModelCandidate? nextCandidate;
+                try
+                {
+                    nextCandidate = await selector.TrySelectAsync(
+                        new SelectionSuccess(next, mode), request.Context.RequestAborted);
+                    if (nextCandidate is not null
+                        && !await executions.TryEnterAsync(nextCandidate.Provider.Id, request.Id,
+                            nextCandidate.Provider.Name, nextCandidate.Model.ModelId,
+                            request.Priority, request.EnqueuedAt, request.Context.RequestAborted))
+                        nextCandidate = null; // capacity corner — park lại
+                }
+                catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
+                {
+                    // Exit đã xong trước advance — chỉ cần báo outcome (idempotent TCS)
+                    request.Completion.TrySetResult(new DispatchOutcome.Aborted());
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // Slot đã trả — lỗi select/enter phải thành outcome, không được nuốt (I2)
+                    try
+                    {
+                        log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
+                    }
+                    catch
+                    {
+                        // Nuốt chủ đích: "log không được làm hỏng request path"
+                    }
+                    request.Completion.TrySetResult(request.Context.Response.HasStarted
+                        ? new DispatchOutcome.Aborted()
+                        : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null));
+                    return;
+                }
+
+                if (nextCandidate is null)
+                {
+                    ReenqueueForPark(request);
+                    return;
+                }
+
+                candidate = nextCandidate;
+                remaining = next;
+                continue;
+            }
+
+            // Không phải Retryable: trả slot rồi complete (Handled/Passthrough/Error/Cancelled/Aborted)
             executions.Exit(request.Id);
+            if (outcome is DispatchOutcome.Handled)
+            {
+                try
+                {
+                    health.RecordSuccess(candidate.Model.ModelId); // 2xx reset counter (§3.4)
+                }
+                catch
+                {
+                    // Nuốt chủ đích: store lỗi không được chặn outcome (I2)
+                }
+            }
+            request.Completion.TrySetResult(outcome);
+            return;
         }
-
-        // Dispatcher là nơi duy nhất convert Retryable — endpoint chỉ thấy Passthrough/Error
-        // (spec §2.2). T5 sẽ thay nhánh này bằng walk (advance) + RecordExhaustion.
-        if (outcome is DispatchOutcome.Retryable retryable)
-            outcome = ConvertRetryable(retryable);
-
-        request.Completion.TrySetResult(outcome);
     }
 
     /// <summary>Payload lỗi resolve — GIỮ NGUYÊN message/type/param/code 3A, chỉ đổi nơi gọi (spec §4).</summary>
@@ -184,16 +279,114 @@ public sealed class DispatcherLoop(
                 LogCategory.Request);
     }
 
+    /// <summary>Candidate chưa thử + model chưa ManualRetry — dùng cho dispatch đầu và mỗi bước walk (§3.2/§3.4).</summary>
+    private IReadOnlyList<ModelCandidate> FilterRemaining(IReadOnlyList<ModelCandidate> candidates,
+        ProxyRequest request) =>
+        candidates
+            .Where(c => !health.IsManualRetry(c.Model.ModelId)
+                && !request.Retry.IsTried(c.Provider.Id, c.Model.ModelId))
+            .ToList();
+
+    /// <summary>Ghi failure từng distinct model đã thử rồi trả outcome exhaustion — gọi 2 nơi (§3.3/§3.4).</summary>
+    private DispatchOutcome CompleteExhaustion(ProxyRequest request)
+    {
+        RecordExhaustion(request);
+        return ExhaustionOutcome(request);
+    }
+
     /// <summary>
-    /// Retryable → outcome endpoint ghi được: có HTTP response → Passthrough (client thấy
-    /// đúng response cuối như 3A); lỗi mạng → Error 502 (exhaustion contract §3.3).
+    /// +1/exhaustion cho từng distinct model đã thử (Quyết định #4) + log Error exhaustion.
+    /// Mọi chỗ gọi bọc try — log/store ném không được chặn TrySetResult (I2).
     /// </summary>
-    private static DispatchOutcome ConvertRetryable(DispatchOutcome.Retryable retryable) =>
-        retryable.Status is { } status
-            ? new DispatchOutcome.Passthrough(status, retryable.ContentType, retryable.Body,
-                FormatRetryAfter(retryable.RetryAfter))
+    private void RecordExhaustion(ProxyRequest request)
+    {
+        var retryAfter = request.Retry.LastRetryable?.RetryAfter;
+        foreach (var modelId in request.Retry.TriedModels)
+        {
+            try
+            {
+                health.RecordFailure(modelId, retryAfter);
+            }
+            catch
+            {
+                // Nuốt chủ đích: store lỗi không được phá outcome
+            }
+        }
+        try
+        {
+            log.Error(
+                $"Request {request.Id} thất bại sau {request.Retry.TriedCount} candidate — " +
+                "chuyển phản hồi cuối về client", category: LogCategory.Request);
+        }
+        catch
+        {
+            // Nuốt chủ đích: log không được phá outcome
+        }
+    }
+
+    /// <summary>Exhaustion contract §3.3: attempt cuối có HTTP → Passthrough nguyên; mạng → Error 502 (y như 3A).</summary>
+    private static DispatchOutcome ExhaustionOutcome(ProxyRequest request)
+    {
+        var last = request.Retry.LastRetryable;
+        return last?.Status is { } status
+            ? new DispatchOutcome.Passthrough(status, last.ContentType, last.Body,
+                FormatRetryAfter(last.RetryAfter))
             : new DispatchOutcome.Error(502, "Upstream provider request failed", "server_error",
                 null, null);
+    }
+
+    /// <summary>Log Warn advance failover — chỉ khi thật sự còn candidate kế (spec §5); bọc nuốt (I2).</summary>
+    private void LogAdvance(ProxyRequest request, ModelCandidate failed,
+        DispatchOutcome.Retryable retryable)
+    {
+        var reason = retryable.Status is { } status ? $"HTTP {status}" : "lỗi mạng";
+        try
+        {
+            log.Warn(
+                $"Chuyển candidate kế: '{failed.Provider.Name}'/'{failed.Model.ModelId}' " +
+                $"lỗi retryable ({reason}) — request {request.Id}", LogCategory.Request);
+        }
+        catch
+        {
+            // Nuốt chủ đích: log không được chặn walk
+        }
+    }
+
+    /// <summary>
+    /// Capacity corner sau advance: re-enqueue vào queue chờ <c>Exited</c>/<c>Changed</c> (park 3B)
+    /// — KHÔNG phải requeue-vì-lỗi: candidate đã thử vẫn bị exclude qua <see cref="RetryState"/> (§3.2).
+    /// </summary>
+    private void ReenqueueForPark(ProxyRequest request)
+    {
+        if (request.Context.RequestAborted.IsCancellationRequested)
+        {
+            request.Completion.TrySetResult(new DispatchOutcome.Aborted());
+            return;
+        }
+        if (!queue.Enqueue(request))
+        {
+            // Id đã có trong queue (rare) — không được nuốt im lặng, outcome luôn phải tới endpoint
+            try
+            {
+                log.Error($"Không enqueue lại được request {request.Id} khi chờ slot.",
+                    category: LogCategory.Request);
+            }
+            catch
+            {
+                // Nuốt chủ đích: log không được phá outcome
+            }
+            request.Completion.TrySetResult(new DispatchOutcome.Error(500, "Internal server error",
+                "server_error", null, null));
+            return;
+        }
+        // Token cancel giữa check trên và Enqueue: callback Register (endpoint) đã lỡ fire khi
+        // item chưa trong queue → tự gỡ lại + Cancelled (spec §3.4); TrySetResult idempotent
+        if (request.Context.RequestAborted.IsCancellationRequested
+            && queue.TryRemove(request.Id, out _))
+        {
+            request.Completion.TrySetResult(new DispatchOutcome.Cancelled());
+        }
+    }
 
     /// <summary>TimeSpan → chuỗi delta-seconds (InvariantCulture, ceiling) cho header Retry-After.</summary>
     private static string? FormatRetryAfter(TimeSpan? retryAfter) =>

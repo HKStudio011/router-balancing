@@ -44,6 +44,10 @@ public static class ProxyApp
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
         builder.Services.AddSingleton<ChatCompletionsHandler>();
+        // Circuit per-model 3C: store singleton + đồng hồ system —
+        // DispatcherLoop (T5), gate endpoint (T6), watchdog (T7) dùng chung 1 instance
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<IModelHealthStore, ModelHealthStore>();
         builder.Services.AddHostedService<DispatcherLoop>();
     }
 
