@@ -15,7 +15,7 @@ public sealed class ComboResolver(
     /// <inheritdoc/>
     public async Task<SelectionResult> ResolveAsync(string model, CancellationToken ct)
     {
-        var candidates = await QueryCandidatesAsync(m => m.ModelId == model, ct);
+        var candidates = await QueryModelCandidatesAsync(model, ct);
         var mode = ComboMode.RoundRobin;
         if (candidates.Count == 0)
         {
@@ -27,6 +27,31 @@ public sealed class ComboResolver(
         }
 
         return Finalize(model, candidates, mode);
+    }
+
+    /// <summary>
+    /// "prefix/rest": nếu prefix là Identifier của bất kỳ provider nào → pin đúng provider
+    /// (m.ModelId == rest). Không match / không có '/' → match toàn bộ ModelId như cũ (fallback spec §5).
+    /// Query Identifier chỉ chạy khi model có '/' — chuỗi thường không tốn query thêm.
+    /// </summary>
+    private async Task<List<ModelCandidate>> QueryModelCandidatesAsync(string model, CancellationToken ct)
+    {
+        var separator = model.IndexOf('/');
+        if (separator > 0)
+        {
+            var prefix = model[..separator];
+            await using var context = await db.CreateDbContextAsync(ct);
+            var isIdentifier = await context.Providers.AsNoTracking()
+                .AnyAsync(p => p.Identifier == prefix, ct);
+            if (isIdentifier)
+            {
+                var rest = model[(separator + 1)..];
+                return await QueryCandidatesAsync(
+                    m => m.Provider!.Identifier == prefix && m.ModelId == rest, ct);
+            }
+        }
+
+        return await QueryCandidatesAsync(m => m.ModelId == model, ct);
     }
 
     /// <summary>Query model enabled + provider enabled, Include Accounts — giống 3A nhưng trả tất cả candidate.</summary>

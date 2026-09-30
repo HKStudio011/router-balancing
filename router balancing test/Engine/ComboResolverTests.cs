@@ -80,6 +80,13 @@ public class ComboResolverTests : IDisposable
         return db.Models.First(m => m.ModelId == modelId).Id;
     }
 
+    private void SetIdentifier(long providerId, string identifier)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        db.Providers.Find(providerId)!.Identifier = identifier;
+        db.SaveChanges();
+    }
+
     private ComboResolver CreateSut(out CapturingLog log)
     {
         log = new CapturingLog();
@@ -319,6 +326,45 @@ public class ComboResolverTests : IDisposable
 
         var fail = Assert.IsType<SelectionFailure>(result);
         Assert.Equal("m1", fail.ModelId);
+        Assert.Equal(ResolveFailure.NotFound, fail.Reason);
+    }
+
+    [Fact]
+    public async Task Resolve_WhenIdentifierPrefixProvided_PinsToThatProvider()
+    {
+        var pinned = SeedProvider("p1", modelIds: ["gpt-4o"]);
+        SeedProvider("p2", modelIds: ["gpt-4o"]); // cùng model id, không pin
+        SetIdentifier(pinned, "myazure");
+
+        var result = await CreateSut(out _).ResolveAsync("myazure/gpt-4o", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        var candidate = Assert.Single(ok.Candidates);
+        Assert.Equal("p1", candidate.Provider.Name);
+        Assert.Equal("gpt-4o", candidate.Model.ModelId);
+    }
+
+    [Fact]
+    public async Task Resolve_WhenPrefixNotAnIdentifier_MatchesWholeModelId()
+    {
+        // Model id kiểu OpenRouter chứa '/' — không có identifier "openai" thì phải match nguyên chuỗi
+        SeedProvider("p1", modelIds: ["openai/gpt-4o"]);
+
+        var result = await CreateSut(out _).ResolveAsync("openai/gpt-4o", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        Assert.Equal("openai/gpt-4o", Assert.Single(ok.Candidates).Model.ModelId);
+    }
+
+    [Fact]
+    public async Task Resolve_WhenPrefixMatchesButModelMissingOnProvider_ReturnsNotFound()
+    {
+        var pinned = SeedProvider("p1", modelIds: ["other"]);
+        SetIdentifier(pinned, "myazure");
+
+        var result = await CreateSut(out _).ResolveAsync("myazure/ghost", default);
+
+        var fail = Assert.IsType<SelectionFailure>(result);
         Assert.Equal(ResolveFailure.NotFound, fail.Reason);
     }
 }
