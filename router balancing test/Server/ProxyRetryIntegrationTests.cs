@@ -323,4 +323,29 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal(1, upstream.Calls); // không ai gọi upstream sau khi fuse mở
         Assert.Empty(_app!.Services.GetRequiredService<IRequestQueue>().Snapshot());
     }
+
+    [Fact]
+    public async Task Chat_AfterProbeSucceeds_ModelServesRequestsAgain()
+    {
+        _settings.Set(SettingsKeys.MaxRetry, 1); // 1 exhaustion = mở fuse
+        SeedProvider("p1", maxConcurrent: 4, "m1");
+        var failUpstream = true; // closure — đổi được giữa chừng (upstream "phục hồi")
+        var upstream = new ScriptedUpstream(_ => failUpstream ? Resp429() : Sse());
+        var client = await StartAsync(upstream);
+
+        var first = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode);
+        var store = _app!.Services.GetRequiredService<IModelHealthStore>();
+        Assert.True(store.IsManualRetry("m1"));
+
+        // Fuse mở, lịch probe = ngay → probe 2xx đóng fuse (§3.5)
+        failUpstream = false;
+        var watchdog = _app.Services.GetRequiredService<ModelHealthWatchdog>();
+        await watchdog.ProbeDueAsync(CancellationToken.None);
+
+        Assert.False(store.IsManualRetry("m1"));
+
+        var second = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode); // model phục hồi — serve lại bình thường
+    }
 }

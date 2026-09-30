@@ -49,6 +49,10 @@ public static class ProxyApp
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IModelHealthStore, ModelHealthStore>();
         builder.Services.AddHostedService<DispatcherLoop>();
+        // Watchdog 3C (spec §2.1): singleton + hosted qua factory lấy ĐÚNG instance này —
+        // integration test resolve ModelHealthWatchdog từ Services rồi gọi ProbeDueAsync
+        builder.Services.AddSingleton<ModelHealthWatchdog>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<ModelHealthWatchdog>());
     }
 
     /// <summary>
