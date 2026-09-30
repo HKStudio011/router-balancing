@@ -51,9 +51,14 @@ public sealed class ProviderService : IProviderService
     /// <inheritdoc/>
     public async Task<Provider> CreateAsync(ProviderDraft draft, CancellationToken ct = default)
     {
+        using var db = _db.CreateDbContext();
+        var identifier = draft.Identifier.Trim();
+        await EnsureIdentifierUsableAsync(db, identifier, excludeId: null, ct);
+
         var provider = new Provider
         {
             Name = draft.Name.Trim(),
+            Identifier = identifier,
             Type = draft.Type,
             BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl),
             MaxConcurrent = draft.MaxConcurrent,
@@ -72,7 +77,6 @@ public sealed class ProviderService : IProviderService
             });
         }
 
-        using var db = _db.CreateDbContext();
         db.Providers.Add(provider);
         await db.SaveChangesAsync(ct);
         return provider;
@@ -85,7 +89,11 @@ public sealed class ProviderService : IProviderService
         var provider = await db.Providers.FirstOrDefaultAsync(p => p.Id == id, ct)
             ?? throw new KeyNotFoundException($"Provider {id} not found.");
 
+        var identifier = draft.Identifier.Trim();
+        await EnsureIdentifierUsableAsync(db, identifier, excludeId: id, ct);
+
         provider.Name = draft.Name.Trim();
+        provider.Identifier = identifier;
         provider.Type = draft.Type;
         provider.BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl);
         provider.MaxConcurrent = draft.MaxConcurrent;
@@ -170,5 +178,42 @@ public sealed class ProviderService : IProviderService
         provider.LastTestAt = result.At;
         provider.LastTestMessage = result.Message;
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Unique + chống segment-trùng (cần DB nên tách khỏi ProviderValidator) —
+    /// ném ProviderValidationException mang dict key i18n.
+    /// </summary>
+    private static async Task EnsureIdentifierUsableAsync(
+        RouterBalancingDbContext db, string identifier, long? excludeId, CancellationToken ct)
+    {
+        var errors = new Dictionary<string, string>();
+
+        var duplicate = await db.Providers.AsNoTracking()
+            .AnyAsync(p => p.Identifier == identifier
+                && (excludeId == null || p.Id != excludeId), ct);
+        if (duplicate)
+        {
+            errors[nameof(ProviderDraft.Identifier)] = "providers.error.identifierDuplicate";
+        }
+        else
+        {
+            // Identifier = segment đầu của model id hiện có (vd model "openai/gpt-4o" của OpenRouter)
+            // → client gửi chuỗi đó sẽ bị pin nhầm — so sánh ordinal để không over-reject với SQLite LIKE
+            var prefix = identifier + "/";
+            var modelIds = await db.Models.AsNoTracking()
+                .Where(m => m.ModelId.StartsWith(prefix))
+                .Select(m => m.ModelId)
+                .ToListAsync(ct);
+            if (modelIds.Any(m => m.StartsWith(prefix, StringComparison.Ordinal)))
+            {
+                errors[nameof(ProviderDraft.Identifier)] = "providers.error.identifierSegmentCollision";
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new ProviderValidationException(errors);
+        }
     }
 }

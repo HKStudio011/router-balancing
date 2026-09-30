@@ -31,12 +31,14 @@ public class ProviderServiceTests : IDisposable
 
     public void Dispose() => _testDb.Dispose();
 
-    private static ProviderDraft Draft(string name = "OpenAI", string key = "sk-secret") => new()
+    private static ProviderDraft Draft(string name = "OpenAI", string key = "sk-secret",
+        string identifier = "openai-prod") => new()
     {
         Name = name,
         Type = ProviderType.OpenAI,
         BaseUrl = "https://api.openai.com/",
         ApiKey = key,
+        Identifier = identifier,
         MaxConcurrent = 4,
     };
 
@@ -174,6 +176,57 @@ public class ProviderServiceTests : IDisposable
         var account = await db.ProviderAccounts.SingleAsync(a => a.ProviderId == provider.Id);
         // Key chỉ đổi qua account CRUD — UpdateAsync bỏ qua draft.ApiKey (spec §4.2)
         Assert.Equal("sk-old", _protector.Unprotect(account.ApiKeyEncrypted));
+    }
+
+    [Fact]
+    public async Task Create_DuplicateIdentifier_ThrowsWithDuplicateKey()
+    {
+        await _service.CreateAsync(Draft(name: "A"));
+
+        var ex = await Assert.ThrowsAsync<ProviderValidationException>(
+            () => _service.CreateAsync(Draft(name: "B")));
+
+        Assert.Equal("providers.error.identifierDuplicate", ex.Errors[nameof(ProviderDraft.Identifier)]);
+    }
+
+    [Fact]
+    public async Task Create_IdentifierCollidesWithModelIdPrefix_ThrowsWithSegmentKey()
+    {
+        var provider = await _service.CreateAsync(Draft(name: "A"));
+        using (var db = _db.CreateDbContext())
+        {
+            db.Models.Add(new Model { ProviderId = provider.Id, ModelId = "openai/gpt-4o" });
+            await db.SaveChangesAsync();
+        }
+
+        var ex = await Assert.ThrowsAsync<ProviderValidationException>(
+            () => _service.CreateAsync(Draft(name: "B", identifier: "openai")));
+
+        Assert.Equal("providers.error.identifierSegmentCollision", ex.Errors[nameof(ProviderDraft.Identifier)]);
+    }
+
+    [Fact]
+    public async Task Update_SameProviderIdentifier_DoesNotThrowAndTrims()
+    {
+        var provider = await _service.CreateAsync(Draft(identifier: "  openai-prod "));
+        Assert.Equal("openai-prod", provider.Identifier);
+
+        await _service.UpdateAsync(provider.Id, Draft(identifier: "renamed-prod"));
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
+        Assert.Equal("renamed-prod", saved.Identifier);
+    }
+
+    [Fact]
+    public async Task Update_DuplicateIdentifierOtherProvider_Throws()
+    {
+        var first = await _service.CreateAsync(Draft(name: "A", identifier: "taken"));
+        var second = await _service.CreateAsync(Draft(name: "B", identifier: "free"));
+
+        await Assert.ThrowsAsync<ProviderValidationException>(
+            () => _service.UpdateAsync(second.Id, Draft(name: "B", identifier: "taken")));
+        Assert.NotNull(first);
     }
 
     [Fact]

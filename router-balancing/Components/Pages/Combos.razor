@@ -119,7 +119,9 @@ else
                                     continue;
                                 }
 
-                                <optgroup label="@provider.Name">
+                                <optgroup label="@(string.IsNullOrEmpty(provider.Identifier)
+                                    ? provider.Name
+                                    : $"{provider.Name} ({provider.Identifier})")">
                                     @foreach (var model in models)
                                     {
                                         <option value="@model.Id">@model.ModelId</option>

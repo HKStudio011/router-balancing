@@ -12,6 +12,7 @@ public interface IProviderService
     Task<Provider?> GetAsync(long id, CancellationToken ct = default);
 
     /// <summary>Tạo provider mới từ bản nháp. <c>draft.ApiKey</c> không rỗng → tạo kèm account "Default".</summary>
+    /// <exception cref="ProviderValidationException">Identifier trùng hoặc xung đột segment model id.</exception>
     Task<Provider> CreateAsync(ProviderDraft draft, CancellationToken ct = default);
 
     /// <summary>
@@ -19,6 +20,7 @@ public interface IProviderService
     /// key quản lý ở <c>IProviderAccountService</c> (spec provider-accounts §4.2).
     /// </summary>
     /// <exception cref="KeyNotFoundException">Khi không có provider <paramref name="id"/>.</exception>
+    /// <exception cref="ProviderValidationException">Identifier trùng hoặc xung đột segment model id.</exception>
     Task UpdateAsync(long id, ProviderDraft draft, CancellationToken ct = default);
 
     /// <summary>Xóa provider — models con và accounts cascade theo cấu hình FK.</summary>

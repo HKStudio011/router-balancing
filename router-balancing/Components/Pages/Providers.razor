@@ -34,6 +34,7 @@ else
                 <tr class="border-b border-border text-left text-xs uppercase opacity-70">
                     <th class="w-10 px-2 py-2"></th>
                     <th class="px-2 py-2">@L["providers.col.name"]</th>
+                    <th class="px-2 py-2">@L["providers.col.identifier"]</th>
                     <th class="px-2 py-2">@L["providers.col.baseUrl"]</th>
                     <th class="px-2 py-2">@L["providers.col.models"]</th>
                     <th class="px-2 py-2">@L["providers.col.enabled"]</th>
@@ -59,6 +60,7 @@ else
                                 <Badge Text="@TypeLabel(p.Type)" Variant="TypeVariant(p.Type)" />
                             </div>
                         </td>
+                        <td class="px-2 py-2 font-mono text-xs opacity-80">@p.Identifier</td>
                         <td class="max-w-64 truncate px-2 py-2 opacity-80" title="@p.BaseUrl">@p.BaseUrl</td>
                         <td class="px-2 py-2">
                             <button type="button" class="hover:underline"
@@ -112,7 +114,8 @@ else
                     {
                         <tr @key="@($"{p.Id}-models")" class="border-b border-border bg-background">
                             <td></td>
-                            <td colspan="6" class="px-3 py-3">
+                            @* colspan = 7 để panel khớp 8 cột header sau khi thêm cột Identifier *@
+                            <td colspan="7" class="px-3 py-3">
                                 @* ===== Model panel inline (spec §4.2) ===== *@
                                 <div class="mb-2 flex flex-wrap items-center gap-2">
                                     <span class="text-sm font-semibold">@L["models.section"]</span>
@@ -301,6 +304,14 @@ else
         </label>
 
         <label class="flex flex-col gap-1 text-sm">
+            @L["providers.field.identifier"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   maxlength="50" spellcheck="false" placeholder="openai-prod"
+                   @bind="_draft.Identifier" />
+            <span class="text-xs opacity-70">@L["providers.hint.identifier"]</span>
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
             @L["providers.field.type"]
             <select class="rounded border border-border bg-surface px-2 py-1.5" @bind="_draft.Type">
                 <option value="@ProviderType.OpenAI">@L["providers.type.openai"]</option>
@@ -345,6 +356,10 @@ else
     @if (ModalError(nameof(ProviderDraft.MaxConcurrent)) is { } maxConcurrentError)
     {
         <div class="mt-1 text-sm text-danger">@L[maxConcurrentError]</div>
+    }
+    @if (ModalError(nameof(ProviderDraft.Identifier)) is { } identifierError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[identifierError]</div>
     }
 
     @if (_editingId is not null)
@@ -1014,6 +1029,7 @@ else
         _draft = new ProviderDraft
         {
             Name = provider.Name,
+            Identifier = provider.Identifier ?? string.Empty,
             Type = provider.Type,
             BaseUrl = provider.BaseUrl,
             ApiKey = string.Empty,
@@ -1122,6 +1138,14 @@ else
             Toast.Show(L["providers.msg.saved"], ToastSeverity.Success);
             CloseModal();
             await LoadAsync();
+        }
+        catch (ProviderValidationException vex)
+        {
+            // Lỗi business (unique/segment) trả key i18n theo field — hiển thị như lỗi validator
+            foreach (var (field, key) in vex.Errors)
+            {
+                _errors[field] = key;
+            }
         }
         catch (Exception ex)
         {

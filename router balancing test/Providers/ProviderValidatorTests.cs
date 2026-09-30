@@ -8,6 +8,7 @@ public class ProviderValidatorTests
     private static ProviderDraft ValidDraft() => new()
     {
         Name = "OpenAI",
+        Identifier = "openai-prod",
         Type = ProviderType.OpenAI,
         BaseUrl = "https://api.openai.com",
         ApiKey = "sk-test",
@@ -50,5 +51,49 @@ public class ProviderValidatorTests
 
         Assert.Equal("providers.error.maxConcurrent", low[nameof(ProviderDraft.MaxConcurrent)]);
         Assert.Equal("providers.error.maxConcurrent", high[nameof(ProviderDraft.MaxConcurrent)]);
+    }
+
+    [Fact]
+    public void Validate_WhenIdentifierBlank_ReturnsIdentifierRequired()
+    {
+        var blank = ProviderValidator.Validate(ValidDraft() with { Identifier = "   " });
+        var missing = ProviderValidator.Validate(ValidDraft() with { Identifier = "" });
+
+        Assert.Equal("providers.error.identifierRequired", blank[nameof(ProviderDraft.Identifier)]);
+        Assert.Equal("providers.error.identifierRequired", missing[nameof(ProviderDraft.Identifier)]);
+    }
+
+    [Theory]
+    [InlineData("OpenAI")]        // uppercase
+    [InlineData("has space")]     // space
+    [InlineData("a--b")]          // gạch đôi
+    [InlineData("-leading")]      // bắt đầu bằng gạch
+    [InlineData("trailing-")]     // kết thúc bằng gạch
+    [InlineData("openai/prod")]   // '/' → cũng là segment-trùng mầm móng
+    [InlineData("Việt-Nam")]      // có dấu
+    public void Validate_WhenIdentifierNotSlug_ReturnsIdentifierFormat(string identifier)
+    {
+        var errors = ProviderValidator.Validate(ValidDraft() with { Identifier = identifier });
+
+        Assert.Equal("providers.error.identifierFormat", errors[nameof(ProviderDraft.Identifier)]);
+    }
+
+    [Fact]
+    public void Validate_WhenIdentifierTooLong_ReturnsIdentifierFormat()
+    {
+        var errors = ProviderValidator.Validate(ValidDraft() with { Identifier = new string('a', 51) });
+
+        Assert.Equal("providers.error.identifierFormat", errors[nameof(ProviderDraft.Identifier)]);
+    }
+
+    [Theory]
+    [InlineData("p1")]
+    [InlineData("openai-prod")]
+    [InlineData("a")]
+    public void Validate_WhenIdentifierValidSlug_NoIdentifierError(string identifier)
+    {
+        var errors = ProviderValidator.Validate(ValidDraft() with { Identifier = identifier });
+
+        Assert.False(errors.ContainsKey(nameof(ProviderDraft.Identifier)));
     }
 }

@@ -10,6 +10,9 @@ public sealed record ProviderDraft
 {
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>Mã định danh slug — bắt buộc, unique. Client pin provider bằng "{Identifier}/{ModelId}".</summary>
+    public string Identifier { get; set; } = string.Empty;
+
     public ProviderType Type { get; set; } = ProviderType.OpenAI;
 
     public string BaseUrl { get; set; } = string.Empty;
