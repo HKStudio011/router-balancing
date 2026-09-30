@@ -116,4 +116,50 @@ public class DbInitializerTests : IDisposable
                 db.Providers.OrderBy(p => p.Id).First().Identifier);
         }
     }
+
+    [Fact]
+    public void Initialize_BackfillsIdentifier_CapsAt50KeepsSlugShapeAndStaysIdempotent()
+    {
+        var factory = _db.CreateFactory();
+        DbInitializer.Initialize(factory);
+
+        // Tên ≥60 ký tự alphanumeric → slug vượt cap 50 (spec §2: identifier ≤50 ký tự)
+        var longName = new string('a', 60);
+        using (var db = factory.CreateDbContext())
+        {
+            db.Providers.AddRange(
+                new Provider { Name = longName, Type = ProviderType.OpenAI, BaseUrl = "https://a.example" },
+                new Provider { Name = longName, Type = ProviderType.OpenAI, BaseUrl = "https://b.example" },
+                // Slug 51 ký tự — cắt tại vị 50 rơi vào '-' cuối, TrimEnd không được để sót dấu '-'
+                new Provider { Name = $"{new string('a', 49)} b", Type = ProviderType.OpenAI, BaseUrl = "https://c.example" });
+            db.SaveChanges();
+            // Mô phỏng hàng cũ trước khi có backfill: Identifier NULL
+            foreach (var p in db.Providers) p.Identifier = null;
+            db.SaveChanges();
+        }
+
+        DbInitializer.Initialize(factory);
+
+        using (var db = factory.CreateDbContext())
+        {
+            var providers = db.Providers.OrderBy(p => p.Id).ToList();
+            foreach (var p in providers)
+            {
+                Assert.True(p.Identifier!.Length <= 50,
+                    $"'{p.Identifier}' dài {p.Identifier.Length} ký tự, vượt 50");
+                Assert.Matches("^[a-z0-9]+(-[a-z0-9]+)*$", p.Identifier);
+            }
+            Assert.Equal(new string('a', 50), providers[0].Identifier);
+            Assert.Equal($"{new string('a', 48)}-2", providers[1].Identifier); // dedupe, suffix vẫn trong 50
+            Assert.Equal(new string('a', 49), providers[2].Identifier); // cắt rớt vào '-' → TrimEnd
+
+            // Idempotent — chạy lần nữa giá trị không đổi
+            DbInitializer.Initialize(factory);
+        }
+        using (var db = factory.CreateDbContext())
+        {
+            Assert.Equal(new string('a', 50),
+                db.Providers.OrderBy(p => p.Id).First().Identifier);
+        }
+    }
 }

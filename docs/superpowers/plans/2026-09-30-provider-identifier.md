@@ -141,9 +141,12 @@ Expected: FAIL `Initialize_BackfillsIdentifier_SlugifiesDedupesAndFallsBack` (Id
 
 - [ ] **Step 1.7: Implement backfill trong `DbInitializer.cs`:**
 
-Thêm `using System.Globalization;` và `using System.Text;` vào đầu file, rồi:
+Thêm `using System.Globalization;` và `using System.Text;` vào đầu file, khai báo hằng `MaxIdentifierLength` ngay trong class, rồi:
 
 ```csharp
+    // Spec §2: identifier ≤50 ký tự — SQLite không enforce HasMaxLength(50) nên phải cắt ngay khi backfill.
+    private const int MaxIdentifierLength = 50;
+
     public static void Initialize(IDbContextFactory<RouterBalancingDbContext> factory)
     {
         Directory.CreateDirectory(StoragePathProvider.GetDataDirectory());
@@ -171,13 +174,21 @@ Thêm `using System.Globalization;` và `using System.Text;` vào đầu file, r
 
         foreach (var provider in pending)
         {
-            var slug = Slugify(provider.Name);
+            // Backfill idempotent: giá trị đã ghi không bao giờ được sửa lại, nên identifier
+            // >50 ký tự (Name tối đa 200) sẽ "dính" vĩnh viễn — Task 3 thêm HasMaxLength(50) +
+            // validator ^[a-z0-9]+(-[a-z0-9]+)*$ sẽ không cho lưu những hàng này nữa (spec §2).
+            var slug = TruncateSlug(Slugify(provider.Name), MaxIdentifierLength);
             if (slug.Length == 0) slug = $"provider-{provider.Id}";
 
             var candidate = slug;
             for (var n = 2; taken.Contains(candidate); n++)
             {
-                candidate = $"{slug}-{n}";
+                // Suffix -{n} cũng phải nằm trong 50: cắt phần slug còn lại theo độ dài suffix;
+                // TrimEnd('-') do cắt sinh ra (kể cả "--" trước suffix) để không phá slug regex.
+                var suffix = $"-{n}";
+                var fitted = TruncateSlug(slug, MaxIdentifierLength - suffix.Length);
+                if (fitted.Length == 0) fitted = $"provider-{provider.Id}";
+                candidate = $"{fitted}{suffix}";
             }
 
             provider.Identifier = candidate;
@@ -185,6 +196,13 @@ Thêm `using System.Globalization;` và `using System.Text;` vào đầu file, r
         }
 
         db.SaveChanges();
+    }
+
+    /// <summary>Cắt slug về tối đa <paramref name="maxLength"/> rồi bỏ dấu '-' còn sót cuối chuỗi; có thể trả về rỗng.</summary>
+    private static string TruncateSlug(string slug, int maxLength)
+    {
+        if (slug.Length <= maxLength) return slug;
+        return slug[..maxLength].TrimEnd('-');
     }
 
     /// <summary>Lowercase ASCII + chữ Việt có dấu → bỏ dấu; ký tự ngoài [a-z0-9] → '-' (collapse, trim).</summary>
@@ -211,12 +229,14 @@ Thêm `using System.Globalization;` và `using System.Text;` vào đầu file, r
 
 Lưu ý: EF chưa translate được `p.Identifier != ""` trên mọi provider — nếu build/test báo lỗi LINQ, thay bằng `!(p.Identifier == null || p.Identifier == "")` tương đương.
 
+Lưu ý (fix review): cap 50 ký tự bao gồm cả suffix dedupe `-{n}` — truncate rồi `TrimEnd('-')` để không sinh dấu '-' cuối (vi phạm slug regex của Task 3); slug rỗng sau truncate → fallback `provider-{Id}`. Kèm test `Initialize_BackfillsIdentifier_CapsAt50KeepsSlugShapeAndStaysIdempotent` (tên 60 ký tự, va chạm dedupe, cắt rơi vào '-', idempotent lần 2).
+
 - [ ] **Step 1.8: Chạy test — kỳ vọng PASS:**
 
 ```bash
 dotnet test "router balancing test/router balancing test.csproj" --filter FullyQualifiedName~DbInitializerTests
 ```
-Expected: PASS tất cả `DbInitializerTests`.
+Expected: PASS tất cả `DbInitializerTests` (5 test: 4 cũ + 1 cap-50).
 
 - [ ] **Step 1.9: Full suite:**
 
