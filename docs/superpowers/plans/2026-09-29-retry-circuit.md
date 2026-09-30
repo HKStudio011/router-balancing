@@ -11,7 +11,7 @@
 - **Spec:** `docs/superpowers/specs/2026-09-29-retry-circuit-design.md` (approved `f266ac3`, amend `9a1e4eb`) — mọi review đối chiếu spec theo section.
 - **Điều kiện đầu:** master `@9a1e4eb` — **273 passed / 0 failed**.
 - **Branch thực thi:** `feat/retry-circuit-3c` (SDD: implementer + reviewer mỗi task).
-- **Kết thúc:** 9 tasks, **333 tests**, e2e 3A vẫn ALL PASS + e2e 3C ALL PASS. KHÔNG push.
+- **Kết thúc:** 9 tasks, **336 tests**, e2e 3A vẫn ALL PASS + e2e 3C ALL PASS. KHÔNG push.
 
 ## Mục tiêu & phạm vi
 
@@ -3038,7 +3038,7 @@ git status --short                # sạch
 dotnet test "router balancing test/router balancing test.csproj" --nologo
 ```
 
-Expected: **333 passed / 0 failed**. FAIL = bug ở task trước → sửa đúng chỗ đó, **không nõn assertion**.
+Expected: **336 passed / 0 failed**. FAIL = bug ở task trước → sửa đúng chỗ đó, **không nõn assertion**.
 
 ### Step 2: Build
 
@@ -3073,4 +3073,4 @@ Critical/Important → sửa + commit fix trên branch + re-review; Minor → gh
 
 ### Step 6: Báo user + offer merge
 
-Kết quả cần nêu: **333/0**, build **0W/0E**, parity **208/208**, e2e **ALL PASS ×2**, ledger **9/9**. Offer **merge local** `feat/retry-circuit-3c` → master (KHÔNG push — push là quyết định của user).
+Kết quả cần nêu: **336/0**, build **0W/0E**, parity **208/208**, e2e **ALL PASS ×2**, ledger **9/9**. Offer **merge local** `feat/retry-circuit-3c` → master (KHÔNG push — push là quyết định của user).

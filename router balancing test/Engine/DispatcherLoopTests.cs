@@ -70,11 +70,11 @@ public class DispatcherLoopTests : IDisposable
         return new ModelCandidate(provider, provider.Models[0]);
     }
 
-    private static ProxyRequest Req(string id)
+    private static ProxyRequest Req(string id, string model = "m1")
     {
         var ctx = new DefaultHttpContext();
         ctx.Response.Body = new MemoryStream();
-        return new ProxyRequest(id, RequestPriority.Normal, "m1", Encoding.UTF8.GetBytes("{}"), ctx);
+        return new ProxyRequest(id, RequestPriority.Normal, model, Encoding.UTF8.GetBytes("{}"), ctx);
     }
 
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
@@ -117,6 +117,15 @@ public class DispatcherLoopTests : IDisposable
                 throw new InvalidOperationException("boom");
             return Task.FromResult(result);
         }
+    }
+
+    // Resolve theo model string của request — mỗi request một danh sách candidate khác nhau
+    // (test dispatch-time cần r1/r2 map sang combo khác nhau, StubResolver chỉ trả 1 kết quả)
+    private sealed class ModelMapResolver(IReadOnlyDictionary<string, SelectionResult> results)
+        : IComboResolver
+    {
+        public Task<SelectionResult> ResolveAsync(string model, CancellationToken ct) =>
+            Task.FromResult(results[model]);
     }
 
     private sealed class GatingResolver(SelectionResult result) : IComboResolver
@@ -232,6 +241,38 @@ public class DispatcherLoopTests : IDisposable
                 return Sse();
             }
             return call == 2 ? Resp429() : Sse();
+        }
+    }
+
+    // Call#1 (request giữ slot) kẹp tới Release rồi kết thúc 400 non-retryable —
+    // KHÔNG RecordSuccess nên không reset fuse trong lúc test mở fuse giữa chừng;
+    // call#2 (attempt đầu của request walk) lỗi 429; call#3+ không được gọi tới
+    // (exhaustion tại dispatch-time không được phép serve thêm).
+    private sealed class GatedBadRequestUpstream : IUpstreamClient
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+        public Task Entered => _entered.Task;
+        public void Release() => _release.TrySetResult();
+
+        public async Task<HttpResponseMessage> PostChatCompletionAsync(
+            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        {
+            var call = Interlocked.Increment(ref _calls);
+            if (call == 1)
+            {
+                _entered.TrySetResult();
+                await _release.Task;
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("""{"error":{"message":"bad"}}""", Encoding.UTF8,
+                        "application/json"),
+                };
+            }
+            return call == 2 ? Resp429("""{"error":{"message":"from-p2"}}""") : Sse();
         }
     }
 
@@ -406,10 +447,13 @@ public class DispatcherLoopTests : IDisposable
         var selector = new CountingSelector(new ModelSelector(_executions));
         var upstream = new StubUpstream();
         var log = new CapturingLog();
-        await StartAsync(resolver, selector, upstream, log);
 
+        // Enqueue TRƯỚC StartAsync: ExecuteAsync chạy async trên thread pool nên enqueue sau
+        // StartAsync có thể để release của Changed "treo" khi loop đang dispatch (chưa tới
+        // WaitAsync) — wake thừa đó retry ngay sau lỗi làm item bị serve trước khi assert.
         var r1 = Req("req00001");
         _queue.Enqueue(r1);
+        await StartAsync(resolver, selector, upstream, log);
         await WaitUntilAsync(() => log.Errors.Count == 1);
 
         Assert.Contains("Lỗi dispatcher", log.Errors[0]);
@@ -649,5 +693,130 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(3, upstream.Calls);
         Assert.False(_queue.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenServedRequestGets2xx_ResetsModelConsecutiveFailureCounter()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new StubUpstream();
+        var log = new CapturingLog();
+        var store = NewStore(log);
+        // 2/3 dưới ngưỡng — vẫn Healthy, candidate không bị gate khi dispatch
+        store.RecordFailure("m1");
+        store.RecordFailure("m1");
+        Assert.False(store.IsManualRetry("m1"));
+        await StartAsync(resolver, selector, upstream, log, store);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 2xx qua dispatcher → health.RecordSuccess("m1") phải reset counter về 0 (spec §6.1)
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+
+        store.RecordFailure("m1");
+        store.RecordFailure("m1");
+        // Nếu dispatcher không reset: counter đã ở 4/3 → fuse mở từ trước — assert này fail
+        Assert.False(store.IsManualRetry("m1"));
+        store.RecordFailure("m1");
+        // Reset đúng về 0: phải cần đủ 3 lỗi liên tiếp mới mở fuse lại
+        Assert.True(store.IsManualRetry("m1"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenExhaustionTriedTwoDistinctModels_IncrementsFailureCounterOfEachTriedModel()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m2");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => Resp429());
+        var log = new CapturingLog();
+        var store = NewStore(log);
+        // m1, m2 pre-seed 1/3 (dưới ngưỡng); m0 ngoài walk — không được cộng (Quyết định #4)
+        store.RecordFailure("m1");
+        store.RecordFailure("m2");
+        store.RecordFailure("m0");
+        store.RecordFailure("m0");
+        await StartAsync(resolver, selector, upstream, log, store);
+
+        var r1 = Req("req00001");
+        _queue.Enqueue(r1);
+        Assert.IsType<DispatchOutcome.Passthrough>(
+            await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        // Walk thử cả 2 distinct model → mỗi model đúng +1 (2/3), model ngoài TriedModels giữ nguyên
+        Assert.False(store.IsManualRetry("m1"));
+        Assert.False(store.IsManualRetry("m2"));
+        Assert.False(store.IsManualRetry("m0"));
+
+        var r2 = Req("req00002");
+        _queue.Enqueue(r2);
+        Assert.IsType<DispatchOutcome.Passthrough>(
+            await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        // Exhaustion lần 2 → 3/3 mở fuse cả 2 model đã thử; m0 chưa từng thử nên vẫn không mở
+        Assert.True(store.IsManualRetry("m1"));
+        Assert.True(store.IsManualRetry("m2"));
+        Assert.False(store.IsManualRetry("m0"));
+        Assert.Equal(4, upstream.Calls);
+        Assert.Equal(2, log.Errors.Count(e => e.Contains("thất bại sau 2 candidate")));
+    }
+
+    [Fact]
+    public async Task Loop_WhenRequeuedRequestHasNoUntriedCandidates_CompletesExhaustionInsteadOfGate503()
+    {
+        // p1 giữ slot cho request kẹp (call#1); p2 là attempt đã thử của r1
+        var p1 = SeedProvider("p1", maxConcurrent: 1, modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m2");
+        var resolver = new ModelMapResolver(new Dictionary<string, SelectionResult>
+        {
+            ["m1"] = new SelectionSuccess([Candidate(p1)], ComboMode.Fallback),
+            ["combo1"] = new SelectionSuccess([Candidate(p2), Candidate(p1)], ComboMode.Fallback),
+        });
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new GatedBadRequestUpstream();
+        var log = new CapturingLog();
+        var store = NewStore(log);
+        // m2 pre-seed 2/3 — RecordExhaustion tại dispatch-time +1 sẽ mở fuse (quan sát được)
+        store.RecordFailure("m2");
+        store.RecordFailure("m2");
+        await StartAsync(resolver, selector, upstream, log, store);
+
+        // r2 kẹt trên p1 (giữ trọn slot duy nhất của p1)
+        var r2 = Req("req00001", "m1");
+        _queue.Enqueue(r2);
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // r1: p2 lỗi 429 → advance p1 nhưng p1 hết slot → re-enqueue (HasTried = true)
+        var r1 = Req("req00002", "combo1");
+        _queue.Enqueue(r1);
+        await WaitUntilAsync(() => _queue.Contains("req00002") && upstream.Calls == 2);
+        await Task.Delay(200); // chắc chắn đã park — không còn call nào chạy dở
+        Assert.False(r1.Completion.Task.IsCompleted);
+
+        // Mở fuse m1 (candidate còn lại của r1) trong lúc r1 đang park
+        for (var i = 0; i < 3; i++)
+            store.RecordFailure("m1");
+        Assert.True(store.IsManualRetry("m1"));
+
+        // r2 kết thúc 400 non-retryable → không RecordSuccess, fuse m1 giữ nguyên
+        upstream.Release();
+        var outcome2 = await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsType<DispatchOutcome.Passthrough>(outcome2);
+
+        // Dispatch lại: p2 đã tried + p1 đang ManualRetry → rỗng mà HasTried →
+        // CompleteExhaustion (m2 2/3 → 3/3) + Passthrough attempt cuối — KHÔNG phải 503 gate
+        var outcome1 = await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome1);
+        Assert.Equal(429, passthrough.Status);
+        Assert.Equal("""{"error":{"message":"from-p2"}}""", Encoding.UTF8.GetString(passthrough.Body));
+        Assert.True(store.IsManualRetry("m2")); // RecordExhaustion ghi failure tại nhánh dispatch-time
+        Assert.Equal(2, upstream.Calls); // nhánh này không serve thêm upstream
+        Assert.Contains(log.Errors,
+            e => e.Contains("req00002") && e.Contains("thất bại sau 1 candidate"));
     }
 }
