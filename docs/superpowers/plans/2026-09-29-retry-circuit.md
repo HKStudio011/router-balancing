@@ -2533,10 +2533,19 @@ public class ModelHealthWatchdogTests : IDisposable
         Assert.Contains(_log.Warns, w => w.Contains("hết lượt probe tự động"));
     }
 
-    private sealed class StubResolver(SelectionResult result) : IComboResolver
+    private sealed class StubResolver : IComboResolver
     {
+        private readonly SelectionResult _result;
+
+        // CreateWatchdog gọi StubResolver(Candidate()) — ModelCandidate chưa phải SelectionResult,
+        // bọc thành Success (watchdog chỉ lấy Candidates[0], không quan tâm Mode)
+        public StubResolver(ModelCandidate candidate) =>
+            _result = new SelectionSuccess([candidate], ComboMode.RoundRobin);
+
+        public StubResolver(SelectionResult result) => _result = result;
+
         public Task<SelectionResult> ResolveAsync(string model, CancellationToken ct) =>
-            Task.FromResult(result);
+            Task.FromResult(_result);
     }
 
     private sealed class ScriptedUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
@@ -2644,6 +2653,7 @@ Expected: **FAIL (compile)** — `error CS0246: The name 'ModelHealthWatchdog' d
 ```csharp
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
+using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
