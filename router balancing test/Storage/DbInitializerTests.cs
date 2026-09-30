@@ -79,4 +79,41 @@ public class DbInitializerTests : IDisposable
             Assert.Equal(reloaded.Items[0].Id, byForeignKey.Id);
         }
     }
+
+    [Fact]
+    public void Initialize_BackfillsIdentifier_SlugifiesDedupesAndFallsBack()
+    {
+        var factory = _db.CreateFactory();
+        DbInitializer.Initialize(factory);
+
+        using (var db = factory.CreateDbContext())
+        {
+            db.Providers.AddRange(
+                new Provider { Name = "Nhà cung cấp A", Type = ProviderType.OpenAI, BaseUrl = "https://a.example" },
+                new Provider { Name = "Nhà cung cấp A", Type = ProviderType.OpenAI, BaseUrl = "https://b.example" },
+                new Provider { Name = "   ---   ", Type = ProviderType.OpenAI, BaseUrl = "https://c.example" });
+            db.SaveChanges();
+            // Mô phỏng hàng cũ trước khi có backfill: Identifier NULL
+            foreach (var p in db.Providers) p.Identifier = null;
+            db.SaveChanges();
+        }
+
+        DbInitializer.Initialize(factory);
+
+        using (var db = factory.CreateDbContext())
+        {
+            var providers = db.Providers.OrderBy(p => p.Id).ToList();
+            Assert.Equal("nha-cung-cap-a", providers[0].Identifier);
+            Assert.Equal("nha-cung-cap-a-2", providers[1].Identifier); // dedupe
+            Assert.Equal($"provider-{providers[2].Id}", providers[2].Identifier); // slug rỗng
+
+            // Idempotent — chạy lần nữa giá trị không đổi
+            DbInitializer.Initialize(factory);
+        }
+        using (var db = factory.CreateDbContext())
+        {
+            Assert.Equal("nha-cung-cap-a",
+                db.Providers.OrderBy(p => p.Id).First().Identifier);
+        }
+    }
 }

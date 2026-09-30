@@ -8,6 +8,9 @@ public class Provider
     /// <summary>Tên hiển thị do người dùng đặt.</summary>
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>Mã định danh slug (unique) — client pin provider bằng "{Identifier}/{ModelId}". Nullable chỉ để migration an toàn; backfill tự chạy khi khởi động.</summary>
+    public string? Identifier { get; set; }
+
     public ProviderType Type { get; set; }
 
     /// <summary>Đảo gốc API, ví dụ <c>https://api.openai.com</c>.</summary>

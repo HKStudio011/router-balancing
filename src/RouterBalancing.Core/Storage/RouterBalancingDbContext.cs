@@ -27,6 +27,10 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
         modelBuilder.Entity<Provider>(e =>
         {
             e.Property(x => x.Name).IsRequired().HasMaxLength(200);
+            e.Property(x => x.Identifier).HasMaxLength(50);
+            // Identifier slug unique toàn cục — nhiều NULL vẫn OK (SQLite distinct NULLs),
+            // hàng cũ được backfill trong DbInitializer sau Migrate
+            e.HasIndex(x => x.Identifier).IsUnique();
             e.Property(x => x.BaseUrl).IsRequired().HasMaxLength(2000);
         });
 
