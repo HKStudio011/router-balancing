@@ -25,6 +25,10 @@ public interface IProviderAccountService
     /// <exception cref="InvalidOperationException">Đây là account cuối cùng của provider.</exception>
     Task DeleteAsync(long id, CancellationToken ct = default);
 
+    /// <summary>Bật/tắt nhanh account — không qua draft, không đụng key (pattern SetEnabledAsync của provider/model).</summary>
+    /// <exception cref="KeyNotFoundException">Account không tồn tại.</exception>
+    Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
+
     /// <summary>
     /// Test mọi account enabled của provider: ghi LastTest* từng account và
     /// Provider.LastTest* = AND các account enabled (null nếu không có account enabled).

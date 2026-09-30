@@ -325,6 +325,27 @@ public class ProviderAccountServiceTests : IDisposable
         Assert.Equal(1, await db2.ProviderAccounts.CountAsync(a => a.ProviderId == providerId));
     }
 
+    /// <summary>Tắt account → Enabled=false được persist xuống DB.</summary>
+    [Fact]
+    public async Task SetEnabled_WhenToggled_FlipsAndPersists()
+    {
+        var providerId = await SeedProviderAsync(("a1", true, 0));
+        var accountId = (await _service.ListAsync(providerId))[0].Id;
+
+        await _service.SetEnabledAsync(accountId, false);
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.ProviderAccounts.SingleAsync(a => a.Id == accountId);
+        Assert.False(saved.Enabled);
+    }
+
+    /// <summary>Account không tồn tại → KeyNotFoundException.</summary>
+    [Fact]
+    public async Task SetEnabled_WhenAccountMissing_ThrowsKeyNotFound()
+    {
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => _service.SetEnabledAsync(999, false));
+    }
+
     /// <summary>Thứ tự Priority tăng dần rồi Name.</summary>
     [Fact]
     public async Task ListAsync_OrdersByPriorityThenName()

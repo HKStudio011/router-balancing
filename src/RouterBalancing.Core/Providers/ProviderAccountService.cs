@@ -130,6 +130,17 @@ public sealed class ProviderAccountService : IProviderAccountService
     }
 
     /// <inheritdoc/>
+    public async Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+        var account = await db.ProviderAccounts.FirstOrDefaultAsync(a => a.Id == id, ct)
+            ?? throw new KeyNotFoundException($"Account {id} not found.");
+        account.Enabled = enabled;
+        account.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<ProviderAccountTestResult>> TestAllAsync(long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();

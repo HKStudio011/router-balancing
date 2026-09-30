@@ -412,8 +412,9 @@ else
                                 <tr @key="account.Id" class="border-b border-border last:border-b-0">
                                     <td class="px-2 py-1.5 font-medium">@account.Name</td>
                                     <td class="px-2 py-1.5">
-                                        <Badge Text="@(account.Enabled ? L["accounts.field.enabled"] : L["accounts.badge.disabled"])"
-                                               Variant="@(account.Enabled ? BadgeVariant.Success : BadgeVariant.Neutral)" />
+                                        <input type="checkbox" checked="@account.Enabled"
+                                               disabled="@(_busy || _accountForm is not null)"
+                                               @onchange="() => ToggleAccountEnabledAsync(account)" />
                                     </td>
                                     <td class="px-2 py-1.5 opacity-80">@PatternSummary(account)</td>
                                     <td class="px-2 py-1.5 opacity-80">
@@ -723,6 +724,26 @@ else
         catch (Exception ex)
         {
             Log.Error("Không đổi được trạng thái provider.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ToggleAccountEnabledAsync(ProviderAccount account)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await AccountSvc.SetEnabledAsync(account.Id, !account.Enabled);
+            await LoadAccountsAsync(account.ProviderId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không đổi được trạng thái tài khoản.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
         }
         finally
