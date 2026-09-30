@@ -53,7 +53,7 @@ Cuối mỗi task chạy **full suite** (không filter) trước khi commit.
 2. **Capacity corner = re-enqueue (park 3B)**, KHÔNG phải requeue-vì-lỗi: request đã `Take` được đưa vào lại queue chờ `Exited`/`Changed`; check `RequestAborted` trước, sau `Enqueue` re-check (race callback đã lỡ `TryRemove` — gỡ lại bằng `TryRemove` + `Cancelled`); `Enqueue` false → log Error + `Error(500)` defensive. Không vòng lặp nóng: dispatch lại chỉ xét candidate chưa thử (failed-set trên `ProxyRequest.Retry`); hết candidate chưa thử mà `HasTried` → `CompleteExhaustion`.
 3. **`TryDispatchOnceAsync`**: resolve → filter bỏ ManualRetry → rỗng: `HasTried` ? `CompleteExhaustion` : **503** `The model '{request.Model}' is temporarily unavailable` (dùng chuỗi client gửi; không log mới) → `selector.TrySelectAsync(success with { Candidates = remaining })` → null/TryEnter fail → park (giữ 3B) → `Take` → `ServeAsync(taken, candidate, remaining, mode)`.
 4. **`CompleteExhaustion`** (dùng 2 nơi, log TRƯỚC `TrySetResult` — I2): foreach `TriedModels` distinct → `RecordFailure(modelId, LastRetryable.RetryAfter)`; log.Error `Request {id} thất bại sau {n} candidate — chuyển phản hồi cuối về client`; outcome = `LastRetryable.Status != null ? Passthrough(status, ct, body, FormatRetryAfter(RetryAfter)) : Error(502, "Upstream provider request failed", "server_error", null, null)`.
-5. **Handler `ForwardAsync`**: 2xx → stream `Handled` + Info (giữ nguyên); lỗi → buffer `ReadAsByteArrayAsync` → `RetryClassifier.IsRetryable` ? `Retryable(status, ct, body, RetryAfterParser.Parse(RetryCondition, UtcNow))` (KHÔNG ghi, KHÔNG Info — dispatcher ghi Warn/Err) : `Passthrough(status, ct, body, RetryCondition thô)` + Info giữ nguyên (parity quen sát 3A); network catch → `Retryable(null, null, [], null)` + giữ log Error; no-key `Error(503)` giữ nguyên; client abort propagate.
+5. **Handler `ForwardAsync`**: 2xx → stream `Handled` + Info (giữ nguyên); lỗi → buffer `ReadAsByteArrayAsync` → `RetryClassifier.IsRetryable` ? `Retryable(status, ct, body, RetryAfterParser.Parse(response.Headers.RetryAfter, UtcNow))` (KHÔNG ghi, KHÔNG Info — dispatcher ghi Warn/Err) : `Passthrough(status, ct, body, RetryAfter thô)` + Info giữ nguyên (parity quen sát 3A); network catch → `Retryable(null, null, [], null)` + giữ log Error; no-key `Error(503)` giữ nguyên; client abort propagate.
 6. **Store API (amend §2.1)**: `IsManualRetry` / `RecordSuccess` / `RecordFailure(modelId, retryAfter?)` / `GetManualRetryModels()` → `ManualRetryModel` / `RecordProbeFailure(modelId, retryAfter?)` → `ProbeFailureResult`. State: entry chỉ tồn tại khi `consecutiveFailures ≥ 1`; `FuseOpen = consecutiveFailures ≥ MaxRetry` (MaxRetry đọc per-call từ settings); fuse mở → `NextProbeAt = now` floor `retryAfter`; probe fail → `NextProbeAt = now + max(60s×attemptsMade, retryAfter)`; `attemptsMade ≥ MaxRetry` → `NextProbeAt = null` (hết lượt). Store **tự log 4 event §5** (mở fuse Warn / recover Info / probe fail Warn / hết lượt Warn) qua SafeLog; `RecordSuccess` chỉ log recover khi vừa từ `FuseOpen` về.
 7. **`RetryState` trên `ProxyRequest`**: `HashSet<(long ProviderId, string ModelId)>` + `LastRetryable` — không lock (1 logical owner = dispatcher; happens-before qua queue lock: ghi trước `Enqueue`, đọc sau `Peek`/`Take`). Key = cặp (provider, model): cùng model 2 provider vẫn failover được; `RecordFailure` theo distinct `ModelId` (Quyết định #4: +1/exhaustion).
 8. **Gate endpoint** (sau `PrepareAsync`, trước `Enqueue`): `IsManualRetry(prepared.ModelId)` → log.Warn `Từ chối request mới: model '{id}' đang ManualRetry` (không dấu chấm) + 503 §4. Endpoint thêm nhánh `Passthrough` (status + content-type + body + copy `RetryAfterHeader`) và `Retryable` defensive (log.Error + 500).
@@ -1115,7 +1115,7 @@ Expected: **11 tests — 5 failed / 6 passed** (5 test đều fail hành vi: `As
             // Lỗi chưa commit (vừa nhận header) — buffer để dispatcher quyết định advance/passthrough
             var errorBody = await response.Content.ReadAsByteArrayAsync(ct);
             var contentType = response.Content.Headers.ContentType?.ToString();
-            var retryAfterRaw = response.Headers.RetryCondition?.ToString();
+            var retryAfterRaw = response.Headers.RetryAfter?.ToString();
             if (RetryClassifier.IsRetryable(response.StatusCode))
                 return new DispatchOutcome.Retryable((int)response.StatusCode, contentType,
                     errorBody, RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow));
@@ -2310,7 +2310,7 @@ git commit -m "feat: gate manual retry models at proxy endpoint"
 
 - `ExecuteAsync` = `Task.Delay(WatchdogIntervalSec, TimeProvider, ct)` thật → `ProbeDueAsync(ct)`; **`ProbeDueAsync` public** — unit test gọi trực tiếp, không fake timer.
 - `ProbeDueAsync`: quét `GetManualRetryModels()`, chỉ probe model có `NextProbeAt ≤ now` (`null` = hết lượt → bỏ qua).
-- Probe: `ResolveAsync(modelId)` → `SelectionFailure`/rỗng → `RecordProbeFailure` (không gọi upstream); `Candidates[0]` → `ResolveFirstEnabledKey` null → `RecordProbeFailure`; body = **Dictionary serialize** (giữ `max_tokens`/`stream` snake_case) `{model, messages:[{role:user,content:ping}], max_tokens:1, stream:false}`; 2xx → `RecordSuccess`, còn lại → `RecordProbeFailure(m, RetryAfterParser.Parse(RetryCondition, now))`.
+- Probe: `ResolveAsync(modelId)` → `SelectionFailure`/rỗng → `RecordProbeFailure` (không gọi upstream); `Candidates[0]` → `ResolveFirstEnabledKey` null → `RecordProbeFailure`; body = **Dictionary serialize** (giữ `max_tokens`/`stream` snake_case) `{model, messages:[{role:user,content:ping}], max_tokens:1, stream:false}`; 2xx → `RecordSuccess`, còn lại → `RecordProbeFailure(m, RetryAfterParser.Parse(response.Headers.RetryAfter, now))`.
 - Catch tách: `OperationCanceledException when ct` → **rethrow** (host stop, không tính probe fail); mọi lỗi khác → `RecordProbeFailure` + `log.Error` (bọc nuốt log — I2). Store tự ghi Warn §5.
 - DI: `AddSingleton<ModelHealthWatchdog>()` + `AddHostedService(sp => sp.GetRequiredService<ModelHealthWatchdog>())` — 1 instance, test resolve thẳng được.
 
@@ -2739,7 +2739,7 @@ public sealed class ModelHealthWatchdog(
                 health.RecordSuccess(modelId);
             else
                 health.RecordProbeFailure(modelId,
-                    RetryAfterParser.Parse(response.Headers.RetryCondition?.ToString(),
+                    RetryAfterParser.Parse(response.Headers.RetryAfter?.ToString(),
                         time.GetUtcNow()));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
