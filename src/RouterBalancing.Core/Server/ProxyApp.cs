@@ -62,7 +62,7 @@ public static class ProxyApp
         // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
             async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
-                ChatCompletionsHandler handler, ILogService log) =>
+                ChatCompletionsHandler handler, ILogService log, IModelHealthStore health) =>
         {
             // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
             string id;
@@ -76,6 +76,18 @@ public static class ProxyApp
             var prepared = await handler.PrepareAsync(ctx);
             if (prepared is null)
                 return; // validate fail — PrepareAsync đã ghi 400, chưa enqueue
+
+            // Gate 3C (spec §3.4): exact-id đang ManualRetry → 503 §4 TRƯỚC khi vào queue.
+            // Combo name chưa resolve lúc này — gate combo nằm ở walk (T5 filter bỏ candidate)
+            if (health.IsManualRetry(prepared.ModelId))
+            {
+                log.Warn($"Từ chối request mới: model '{prepared.ModelId}' đang ManualRetry",
+                    LogCategory.Request);
+                await ChatCompletionsHandler.WriteErrorAsync(ctx, 503,
+                    $"The model '{prepared.ModelId}' is temporarily unavailable",
+                    "server_error", null, null);
+                return;
+            }
 
             var priority = RequestPriorityParser.Parse(ctx.Request.Headers["X-Priority"].ToString());
             var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx);
@@ -116,6 +128,14 @@ public static class ProxyApp
                 if (passthrough.RetryAfterHeader is not null)
                     ctx.Response.Headers["Retry-After"] = passthrough.RetryAfterHeader;
                 await ctx.Response.Body.WriteAsync(passthrough.Body, ctx.RequestAborted);
+            }
+            else if (outcome is DispatchOutcome.Retryable)
+            {
+                // Dispatcher đã convert Retryable → Passthrough/Error (spec §2.2) — tới đây là bug
+                log.Error($"Outcome Retryable lọt tới endpoint request {id}.",
+                    category: LogCategory.Request);
+                await ChatCompletionsHandler.WriteErrorAsync(ctx, 500, "Internal server error",
+                    "server_error", null, null);
             }
             else if (outcome is DispatchOutcome.Cancelled
                      && !ctx.RequestAborted.IsCancellationRequested)
