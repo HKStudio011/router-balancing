@@ -52,8 +52,7 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
 
         // Fetch (spec §6.1): key optional (4 endpoint public) — có account thì gắn Authorization
         var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
-        using var request = ProviderRequestFactory.Create(provider, key);
-        using var response = await _http.CreateClient(HttpClientName).SendAsync(request, ct);
+        using var response = await SendModelListAsync(provider, key, ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -156,5 +155,26 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
             }
         }
         return results;
+    }
+
+    /// <summary>
+    /// Gọi models endpoint qua named client 30s. Timeout wrap thành
+    /// <see cref="FreeModelSyncException"/> (spec §6.1/§9): periodic phân biệt app thoát
+    /// bằng OperationCanceledException và dừng vòng lặp — timeout lọt qua catch đó
+    /// sẽ giết sync định kỳ sau lần timeout đầu tiên.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendModelListAsync(Provider provider, string key, CancellationToken ct)
+    {
+        using var request = ProviderRequestFactory.Create(provider, key);
+        try
+        {
+            return await _http.CreateClient(HttpClientName).SendAsync(request, ct);
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            // ct không hủy mà vẫn cancel = HttpClient timeout 30s; ct hủy (app thoát)
+            // không bắt ở đây — để propagate cho caller dừng đúng việc đang dở.
+            throw new FreeModelSyncException($"{provider.Name} timed out fetching model list.", ex);
+        }
     }
 }

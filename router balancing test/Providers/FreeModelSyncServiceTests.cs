@@ -118,6 +118,21 @@ public class FreeModelSyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncProviderAsync_HttpTimeout_ThrowsFreeModelSyncException()
+    {
+        // Spec §6.1/§9: timeout wrap thành FreeModelSyncException — không để lọt
+        // OperationCanceledException vì periodic hiểu nhầm là app thoát sẽ dừng vòng lặp
+        var id = await PresetIdAsync("OpenRouter Free");
+        var service = ServiceWith(new TimeoutHandler());
+
+        var ex = await Assert.ThrowsAsync<FreeModelSyncException>(() => service.SyncProviderAsync(id));
+
+        Assert.Contains("timed out", ex.Message);
+        using var db = _db.CreateDbContext();
+        Assert.Null((await db.Providers.AsNoTracking().SingleAsync(p => p.Id == id)).LastModelSyncAt);
+    }
+
+    [Fact]
     public async Task SyncAllEnabledAsync_FailingPreset_SkippedAndOthersSynced()
     {
         // Bật 2 preset: OpenCode (handler sẽ 500) + NVIDIA (200)
@@ -166,6 +181,14 @@ public class FreeModelSyncServiceTests : IDisposable
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
+    }
+
+    /// <summary>Mô phỏng HttpClient timeout 30s: ném TaskCanceledException dù caller không hủy ct.</summary>
+    private sealed class TimeoutHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            throw new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout sending request.");
     }
 
     private sealed class RoutingHandler(string failUrlPart, string okJson) : HttpMessageHandler
