@@ -151,12 +151,17 @@ public class ClientKeyHasherTests
     }
 
     [Fact]
-    public void Mask_LegacyKeyOver8Chars_ShowsFirst4AndLast4()
-        => Assert.Equal("abcd…mnop", ClientKeyHasher.Mask("abcdefghijklmnop"));
+    public void Mask_LegacyKey_ShowsOnlyLast4()
+        => Assert.Equal("…mnop", ClientKeyHasher.Mask("abcdefghijklmnop"));
 
     [Fact]
-    public void Mask_ShortKey_ShowsWholeAfterEllipsis()
-        => Assert.Equal("…short", ClientKeyHasher.Mask("short"));
+    public void Mask_ShortLegacyKey_HidesEverythingButLast4()
+    {
+        // 5 ký tự → vẫn chỉ 4 cuối; ≤4 ký tự → mask cố định, không lộ ký tự secret nào (spec §2)
+        Assert.Equal("…hort", ClientKeyHasher.Mask("short"));
+        Assert.Equal("…", ClientKeyHasher.Mask("abcd"));
+        Assert.Equal("…", ClientKeyHasher.Mask("a"));
+    }
 }
 ```
 
@@ -337,13 +342,18 @@ public static class ClientKeyHasher
         return Prefix + base64.Replace('+', '-').Replace('/', '_');
     }
 
-    /// <summary>Mask cho UI: key sinh ra → <c>sk-rb-…xxxx</c>; key cũ tùy ý → 4 đầu…4 cuối.</summary>
+    /// <summary>
+    /// Mask cho UI: key sinh ra → <c>sk-rb-…xxxx</c> (4 ký tự cuối);
+    /// key tùy ý khác → <c>…</c> + 4 ký tự cuối; key ≤4 ký tự → <c>…</c> (không lộ ký tự nào).
+    /// </summary>
     public static string Mask(string plaintext)
     {
+        // Spec §2: DB không bao giờ lưu plaintext — mask chỉ được chứa tối đa 4 ký tự cuối,
+        // kể cả key legacy ≤8 ký tự (nhánh cũ lưu trọn vẹn plaintext vào KeyMask khi migrate).
         if (plaintext.StartsWith(Prefix, StringComparison.Ordinal))
             return $"{Prefix}…{plaintext[^4..]}";
-        if (plaintext.Length <= 8) return $"…{plaintext}";
-        return $"{plaintext[..4]}…{plaintext[^4..]}";
+        if (plaintext.Length <= 4) return "…";
+        return $"…{plaintext[^4..]}";
     }
 }
 ```
@@ -1734,7 +1744,7 @@ git commit -m "feat: authenticate and rate-limit proxy requests via client keys"
 
 **Design decision thêm (bên cạnh 9 đã chốt ở đầu plan):**
 10. **Spec §6/§10 "log Debug"** — codebase không có severity Debug → thêm `LogSeverity.Debug = -1` (dưới Info: ẩn khi filter Info/Warning/Error, hiển thị khi filter All — vốn là filter mặc định của Log panel, user chọn hướng này khi review Task 4; LogPanel thêm render branch + option filter + i18n `log.severity.debug`). Ghi Debug CHỈ khi `expectsUsage && usage is null` (đã yêu cầu include_usage mà upstream không trả = bất thường); không inject (Anthropic/non-stream) mà thiếu usage = degrade bình thường theo spec → không log (tránh spam mỗi request).
-11. **Cả 3 dòng log trong `ForwardAsync` + 5 dòng journal trong endpoint convert sang `log.Write(LogEntry{...})`** để gắn `RequestId`/`ClientKeyId` (spec §7) — **Message giữ nguyên byte-for-byte**; `CapturingLog` của `ChatCompletionsHandlerTests` chuyển route list theo `entry.Severity` (các assert Infos/Warns/Errors cũ giữ nguyên), 4 `CapturingLog` còn lại chỉ thêm method no-op.
+11. **Cả 3 dòng log trong `ForwardAsync` + 5 dòng journal trong endpoint + dòng Warn validate-fail trong `PrepareAsync` convert sang `log.Write(LogEntry{...})`** để gắn `RequestId`/`ClientKeyId` (spec §7 — user chốt bổ sung PrepareAsync ở final review) — **Message giữ nguyên byte-for-byte**; `CapturingLog` của `ChatCompletionsHandlerTests` chuyển route list theo `entry.Severity` (các assert Infos/Warns/Errors cũ giữ nguyên), 4 `CapturingLog` còn lại chỉ thêm method no-op.
 
 - [ ] **Step 1: `UsageCapture`**
 
