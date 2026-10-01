@@ -1733,7 +1733,7 @@ git commit -m "feat: authenticate and rate-limit proxy requests via client keys"
 - Produces: `UsageCapture.WithIncludeUsage/TeeAsync`, `ILogService.LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens)`, `IClientKeyUsageSink.RecordAsync(long? clientKeyId, int promptTokens, int completionTokens, ct)`.
 
 **Design decision thêm (bên cạnh 9 đã chốt ở đầu plan):**
-10. **Spec §6/§10 "log Debug"** — codebase không có severity Debug → thêm `LogSeverity.Debug = -1` (dưới Info: filter mặc định ẩn; LogPanel thêm render branch + option filter + i18n `log.severity.debug`). Ghi Debug CHỈ khi `expectsUsage && usage is null` (đã yêu cầu include_usage mà upstream không trả = bất thường); không inject (Anthropic/non-stream) mà thiếu usage = degrade bình thường theo spec → không log (tránh spam mỗi request).
+10. **Spec §6/§10 "log Debug"** — codebase không có severity Debug → thêm `LogSeverity.Debug = -1` (dưới Info: ẩn khi filter Info/Warning/Error, hiển thị khi filter All — vốn là filter mặc định của Log panel, user chọn hướng này khi review Task 4; LogPanel thêm render branch + option filter + i18n `log.severity.debug`). Ghi Debug CHỈ khi `expectsUsage && usage is null` (đã yêu cầu include_usage mà upstream không trả = bất thường); không inject (Anthropic/non-stream) mà thiếu usage = degrade bình thường theo spec → không log (tránh spam mỗi request).
 11. **Cả 3 dòng log trong `ForwardAsync` + 5 dòng journal trong endpoint convert sang `log.Write(LogEntry{...})`** để gắn `RequestId`/`ClientKeyId` (spec §7) — **Message giữ nguyên byte-for-byte**; `CapturingLog` của `ChatCompletionsHandlerTests` chuyển route list theo `entry.Severity` (các assert Infos/Warns/Errors cũ giữ nguyên), 4 `CapturingLog` còn lại chỉ thêm method no-op.
 
 - [ ] **Step 1: `UsageCapture`**
@@ -1961,7 +1961,7 @@ public sealed class ClientKeyUsageSink(
 ```csharp
 public enum LogSeverity
 {
-    /// <summary>Dưới Info — filter mặc định ẩn; dùng cho telemetry (usage degrade, spec client-keys §6).</summary>
+    /// <summary>Dưới Info — ẩn khi filter Info/Warning/Error, hiển thị khi filter All (mặc định); dùng cho telemetry (usage degrade, spec client-keys §6).</summary>
     Debug = -1,
     Info = 0,
     Warning = 1,
