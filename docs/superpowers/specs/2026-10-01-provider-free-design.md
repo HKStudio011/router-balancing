@@ -1,4 +1,4 @@
-# Spec: Provider Free — preset catalog 5 nhà cung cấp free + sync model free
+# Spec: Provider Free — preset catalog 4 nhà cung cấp free + sync model free
 
 - **Ngày:** 2026-10-01
 - **Trạng thái:** Draft — chờ user review
@@ -7,21 +7,21 @@
 
 ## 1. Mục tiêu
 
-5 nhà cung cấp LLM **miễn phí** được **khai báo sẵn** (seed vào DB lúc khởi động), hiển thị trong tab Providers hiện tại như provider thường (kèm badge **Free**), và có chức năng **tự động lấy danh sách model free** của từng provider (chạy nền định kỳ + nút manual).
+4 nhà cung cấp LLM **miễn phí** được **khai báo sẵn** (seed vào DB lúc khởi động), hiển thị trong tab Providers hiện tại như provider thường (kèm badge **Free**), và có chức năng **tự động lấy danh sách model free** của từng provider (chạy nền định kỳ + nút manual).
 
 ## 2. Non-goals (rõ ràng KHÔNG làm)
 
 - **Không đổi balancer/routing** — provider free tham gia pool như mọi provider bình thường (user bật/tắt tự quyết định traffic).
 - **Không** quota/cost tracking riêng cho free.
 - **Không** config catalog ngoài file (JSON/appsettings) — catalog hardcode trong code.
-- **Không** cho xoá 5 provider preset.
+- **Không** cho xoá 4 provider preset.
 - **Không** auto-assign API key — user tự thêm account/key như provider khác.
 
 ## 3. Quyết định đã chốt (brainstorming Q1–Q9)
 
 | # | Quyết định |
 |---|---|
-| D1 | "Provider free" = preset catalog 5 provider free, **chỉ phục model free**, **balancer không đổi hành vi** (option A + tự động lấy model free) |
+| D1 | "Provider free" = preset catalog 4 provider free, **chỉ phục model free**, **balancer không đổi hành vi** (option A + tự động lấy model free). **Bỏ Antigravity** (user chốt — không có endpoint list model probe được) |
 | D2 | Seed vào DB lúc khởi động (giống pattern legacy settings của client-keys); user bật/tắt/sửa được |
 | D3 | Fetch model: **periodic nền mỗi 6h** + **nút manual** luôn có |
 | D4 | Free detection: **pricing = 0** HOẶC **pattern free** (`:free`, `-free`, free tier) per provider |
@@ -29,18 +29,17 @@
 | D6 | Preset **không xoá được** (luôn có mặt; chỉ bật/tắt/sửa tên/URL) |
 | D7 | UI: nằm trong **tab Providers hiện tại**, xuất hiện như provider thường + badge "Free" |
 | D8 | **Approach 1**: catalog hardcode + cột `IsPreset` mới; dùng lại `Model.IsManual` (KHÔNG thêm cột Model) |
-| D9 | Seed default: **`Enabled = false`** — user tự bật, tránh 5 provider lạ tự nhận traffic |
+| D9 | Seed default: **`Enabled = false`** — user tự bật, tránh 4 provider lạ tự nhận traffic |
 
-## 4. Catalog 5 provider (đã research + probe thật)
+## 4. Catalog 4 provider (đã research + probe thật)
 
-Probe ngày 2026-10-01 (không cần API key, HTTP 200 cả 5):
+Probe ngày 2026-10-01 (không cần API key, HTTP 200 cả 4):
 
 | Key | Tên hiển thị | BaseUrl (chat) | Models endpoint | DetectKind | Probe |
 |---|---|---|---|---|---|
 | `opencode` | OpenCode Free | `https://opencode.ai/zen/v1` | `GET {base}/models` | `FreeSuffix` (`-free`) | 200, 84 models, 11 id `*-free`, `pricing` **null** |
 | `openrouter` | OpenRouter Free | `https://openrouter.ai/api/v1` | `GET {base}/models` | `PricingZeroOrFreeSuffix` | 200, 462 models, 20 pricing=0, 16 `:free` |
 | `nvidia-nim` | NVIDIA NIM Free | `https://integrate.api.nvidia.com/v1` | `GET {base}/models` | `AllFree` | 200, 81 models, không có field pricing |
-| `antigravity` | Antigravity Free | `https://generativelanguage.googleapis.com/v1beta/openai` | `GET https://generativelanguage.googleapis.com/v1beta/models` (**cần key**) | **NEEDS CONFIRM** — xem §12 | chưa probe được không key |
 | `ollama-cloud` | Ollama Cloud Free | `https://ollama.com/v1` | `GET {base}/models` | `AllFree` | 200, 17 models, không pricing (free tier) |
 
 Ghi chú từng provider:
@@ -49,7 +48,6 @@ Ghi chú từng provider:
 - **OpenRouter** — `GET https://openrouter.ai/api/v1/models` → `{data:[{id, name, pricing:{prompt, completion}, context_length, ...}]}`. Free = `pricing.prompt=="0" && pricing.completion=="0"` **HOẶC** `id` endswith `:free`. Nguồn: openrouter.ai/docs/overview/models ("A value of 0 indicates the feature is free").
 - **NVIDIA NIM** — `GET https://integrate.api.nvidia.com/v1/models` (OpenAI list). build.nvidia.com: "All models … are free to prototype with" (rate limit 40 RPM) → **mọi model trong list đều free** → `AllFree`.
 - **Ollama Cloud** — `GET https://ollama.com/v1/models` (OpenAI list, probe 200 không key; `/api/tags` cũng 200). Cloud models free tier, không per-token billing → `AllFree`.
-- **Antigravity** — IDE/agent của Google; free tier = Gemini models. Danh sách model free theo plan: antigravity.google/docs/models (7 model). **Chưa có endpoint list free model probe được không key** → §12.
 
 ## 5. Data model + Migration
 
@@ -120,7 +118,6 @@ public enum FreeDetectKind
     FreeSuffix,
     /// <summary>Mọi model trong response đều free (NVIDIA NIM, Ollama Cloud).</summary>
     AllFree,
-    // Antigravity: TBD §12 — sẽ thêm kind riêng hoặc tái dùng 1 trong 3 trên.
 }
 ```
 
@@ -131,7 +128,7 @@ public enum FreeDetectKind
 ### 6.4 Seed — `DbInitializer`
 
 ```csharp
-// Free provider catalog — seed 5 preset nếu DB chưa có (không re-seed sau khi user sửa tên).
+// Free provider catalog — seed 4 preset nếu DB chưa có (không re-seed sau khi user sửa tên).
 FreeProviderCatalog.Entries: { Key, DisplayName, BaseUrl, ModelsEndpoint, DetectKind, NeedsKey }
 ```
 
@@ -168,7 +165,6 @@ Tái dùng pattern `LogRetentionWorker` (`PeriodicTimer` + `IAsyncDisposable`):
 | Fetch trả 0 model free | `FreeModelSyncException("empty result")` — KHÔNG xoá model cũ (guard §6.2.5) |
 | Provider không match catalog (bị rename) | skip + log warning, coi như chưa sync (periodic); manual → lỗi rõ cho user |
 | Provider `IsPreset` nhưng không Enabled | periodic bỏ qua; manual vẫn cho phép (user chủ động) |
-| Không có account key với endpoint cần key (Antigravity) | skip + log warning (periodic); manual → lỗi "cần API key" |
 | App đóng giữa chừng sync | CancellationToken hủy; DB đã commit giữ nguyên (transaction mỗi provider) |
 
 Không có `catch {}` rỗng; mọi catch đều `LogWarning`/`LogError`.
@@ -182,7 +178,6 @@ Không có `catch {}` rỗng; mọi catch đều `LogWarning`/`LogError`.
 | `providers.sync.success` | Synced {0} free models |
 | `providers.sync.failed` | Free model sync failed: {0} |
 | `providers.sync.lastSync` | Synced: {0} |
-| `providers.sync.noKey` | This provider needs an API key to list models |
 | `providers.delete.preset` | Preset providers cannot be deleted |
 
 (Kiểm tra parity qua `TranslationParityTests` — có sẵn.)
@@ -195,11 +190,7 @@ Không có `catch {}` rỗng; mọi catch đều `LogWarning`/`LogError`.
 
 ## 12. NEEDS CONFIRM (cần user chốt trước/sau plan)
 
-1. **[Antigravity] Endpoint list models + free detection.** Đề xuất mặc định:
-   - Endpoint: `GET https://generativelanguage.googleapis.com/v1beta/models` với header `x-goog-api-key: {account key}` (Gemini API — free tier key của AI Studio).
-   - Free detection: model có `supportedGenerationMethods` chứa `generateContent`, và (không có field giá HOẶC giá = 0)… **chưa chắc field giá có trong response** → phương án an toàn hơn: **curated 7 model từ antigravity.google/docs/models** (Gemini 3.8/3.7/3.6 Flash, 3.1 Pro, Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS-120b) làm `DetectKind.Curated` với list hardcode trong catalog.
-   - Cả 2 phương án đều sync được metadata model; phương án curated ổn định hơn nhưng phải tự cập nhật khi Google thêm model. **User chọn 1 trong 2 (hoặc chọn khác).**
-2. **[S1] Match catalog theo `Name`**: user đổi tên provider preset → mất link sync (skip + warning), không tạo cột `PresetKey`. OK? (Phương án thay thế: thêm cột `PresetKey` để rename vẫn sync.)
+1. **[S1] Match catalog theo `Name`**: user đổi tên provider preset → mất link sync (skip + warning), không tạo cột `PresetKey`. OK? (Phương án thay thế: thêm cột `PresetKey` để rename vẫn sync.)
 
 ## 13. Testing
 
@@ -231,5 +222,4 @@ Gates (chuẩn AGENTS.md): `dotnet build` Core + TFM Windows + `dotnet test` to�
 - OpenCode Zen: https://opencode.ai/docs/zen/ (+ opencode.ai/zen/v1/models probe)
 - NVIDIA free tier: https://build.nvidia.com/models (FAQ "Are all models free to use?")
 - Ollama cloud API: https://docs.ollama.com/api/tags + https://docs.ollama.com/cloud
-- Antigravity models/plans: https://antigravity.google/docs/models + https://antigravity.google/docs/plans
 - Pattern nội bộ: `LogRetentionWorker` (PeriodicTimer), `DbInitializer` (seed client-keys), `Model.IsManual`, `TranslationParityTests`.
