@@ -11,11 +11,6 @@ public static class SettingsKeys
 
     public const string Port = "port";
 
-    public const string ApiKeyEnabled = "apiKeyEnabled";
-
-    /// <summary>Lưu DPAPI-protected — đọc/ghi chỉ qua GetApiKey/SetApiKey.</summary>
-    public const string ApiKey = "apiKey";
-
     public const string CloseToTray = "closeToTray";
 
     public const string StartWithWindows = "startWithWindows";

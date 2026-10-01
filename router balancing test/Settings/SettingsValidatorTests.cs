@@ -69,13 +69,4 @@ public class SettingsValidatorTests
         Assert.Equal("settings.error.retention", errors[nameof(SettingsDraft.LogRetentionDays)]);
         Assert.Equal("settings.error.threshold", errors[nameof(SettingsDraft.StatsErrorRateThreshold)]);
     }
-
-    [Fact]
-    public void Validate_WhenApiKeyEnabledWithoutKey_ReturnsApiKeyError()
-    {
-        var errors = SettingsValidator.Validate(
-            ValidDraft() with { ApiKeyEnabled = true, ApiKey = " " });
-
-        Assert.Equal("settings.error.apiKey", errors[nameof(SettingsDraft.ApiKey)]);
-    }
 }

@@ -1,6 +1,5 @@
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
-using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
@@ -17,7 +16,7 @@ public class LogRetentionWorkerTests : IDisposable
         // TestDb chỉ tạo file trống — phải migrate schema trước khi ghi AppSettings/LogEntry
         DbInitializer.Initialize(_db.CreateFactory());
         var factory = _db.CreateFactory();
-        _settings = new AppSettingsService(factory, new DpapiSecretProtector());
+        _settings = new AppSettingsService(factory);
         _log = new LogService(factory);
     }
 

@@ -1,6 +1,5 @@
 using System.Globalization;
 using RouterBalancing.Core.Localization;
-using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
@@ -15,7 +14,7 @@ public class LocalizationServiceTests : IDisposable
     {
         // TestDb chỉ tạo file trống — phải migrate schema trước khi service đọc AppSettings
         DbInitializer.Initialize(_db.CreateFactory());
-        _settings = new AppSettingsService(_db.CreateFactory(), new DpapiSecretProtector());
+        _settings = new AppSettingsService(_db.CreateFactory());
     }
 
     public void Dispose()

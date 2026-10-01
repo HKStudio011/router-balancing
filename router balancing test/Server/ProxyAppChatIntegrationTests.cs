@@ -36,7 +36,7 @@ public class ProxyAppChatIntegrationTests : IDisposable
         // TestDb chỉ tạo file trống — migrate trước khi AppSettingsService đọc
         DbInitializer.Initialize(_db.CreateFactory());
         var factory = _db.CreateFactory();
-        _settings = new AppSettingsService(factory, new DpapiSecretProtector());
+        _settings = new AppSettingsService(factory);
         _log = new LogService(factory);
         _clientKeys = new ClientKeyService(factory);
     }

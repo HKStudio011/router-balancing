@@ -1,7 +1,6 @@
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
-using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
@@ -17,7 +16,7 @@ public class ModelHealthStoreTests : IDisposable
     public ModelHealthStoreTests()
     {
         DbInitializer.Initialize(_db.CreateFactory());
-        _settings = new AppSettingsService(_db.CreateFactory(), new DpapiSecretProtector());
+        _settings = new AppSettingsService(_db.CreateFactory());
     }
 
     public void Dispose()

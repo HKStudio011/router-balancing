@@ -13,10 +13,6 @@ public sealed record SettingsDraft
 
     public int Port { get; set; } = 8317;
 
-    public bool ApiKeyEnabled { get; set; }
-
-    public string ApiKey { get; set; } = string.Empty;
-
     public bool CloseToTray { get; set; } = true;
 
     public bool StartWithWindows { get; set; }

@@ -24,7 +24,7 @@ public class ProxyHostTests : IDisposable
         // TestDb chỉ tạo file trống — phải migrate schema trước khi service đọc AppSettings
         DbInitializer.Initialize(_db.CreateFactory());
         var factory = _db.CreateFactory();
-        _settings = new AppSettingsService(factory, new DpapiSecretProtector());
+        _settings = new AppSettingsService(factory);
         _log = new LogService(factory);
         _clientKeys = new ClientKeyService(_db.CreateFactory());
         // Port 0-style: lấy port trống để test không đụng port thật của app đang chạy

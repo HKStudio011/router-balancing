@@ -80,7 +80,7 @@ public class DispatcherLoopTests : IDisposable
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
         IUpstreamClient upstream, CapturingLog log, ModelHealthStore? health = null)
     {
-        _settings ??= new AppSettingsService(_db.CreateFactory(), _protector);
+        _settings ??= new AppSettingsService(_db.CreateFactory());
         health ??= new ModelHealthStore(_settings, log, TimeProvider.System);
         var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink());
         _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log, health);
@@ -90,7 +90,7 @@ public class DispatcherLoopTests : IDisposable
     // Test pre-seed fuse cần đúng instance store mà loop sẽ dùng
     private ModelHealthStore NewStore(CapturingLog log)
     {
-        _settings ??= new AppSettingsService(_db.CreateFactory(), _protector);
+        _settings ??= new AppSettingsService(_db.CreateFactory());
         return new ModelHealthStore(_settings, log, TimeProvider.System);
     }
 

@@ -1,7 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
-using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
 namespace RouterBalancing.Core.Settings;
@@ -10,7 +9,6 @@ namespace RouterBalancing.Core.Settings;
 public sealed class AppSettingsService : IAppSettingsService, IDisposable
 {
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
-    private readonly ISecretProtector _protector;
     private readonly Dictionary<string, string> _cache = new();
 
     // Watchdog/ProxyHost đọc cache song song với thread gọi Set — Dictionary không
@@ -21,10 +19,9 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public event Action? SettingsChanged;
 
-    public AppSettingsService(IDbContextFactory<RouterBalancingDbContext> db, ISecretProtector protector)
+    public AppSettingsService(IDbContextFactory<RouterBalancingDbContext> db)
     {
         _db = db;
-        _protector = protector;
         using var context = _db.CreateDbContext();
         lock (_cacheLock)
         {
@@ -40,8 +37,6 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
     public string Theme => Get(SettingsKeys.Theme, "system");
 
     public int Port => Get(SettingsKeys.Port, 8317);
-
-    public bool ApiKeyEnabled => Get(SettingsKeys.ApiKeyEnabled, false);
 
     public bool CloseToTray => Get(SettingsKeys.CloseToTray, true);
 
@@ -59,7 +54,6 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public T Get<T>(string key, T defaultValue = default!)
     {
-        GuardApiKey(key);
         bool found;
         string? json;
         lock (_cacheLock)
@@ -72,7 +66,6 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public void Set<T>(string key, T value)
     {
-        GuardApiKey(key);
         var json = JsonSerializer.Serialize(value);
         lock (_cacheLock)
         {
@@ -84,39 +77,6 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
         }
         // Phát ngoài lock: subscriber chậm không giữ lock chặn thread đọc khác
         SettingsChanged?.Invoke();
-    }
-
-    public string GetApiKey()
-    {
-        string? stored;
-        lock (_cacheLock)
-        {
-            _cache.TryGetValue(SettingsKeys.ApiKey, out stored);
-        }
-        if (string.IsNullOrEmpty(stored)) return string.Empty;
-        // Unprotect ngoài lock — DPAPI không đụng _cache
-        return _protector.Unprotect(stored);
-    }
-
-    public void SetApiKey(string plain)
-    {
-        var value = plain.Length == 0 ? string.Empty : _protector.Protect(plain);
-        lock (_cacheLock)
-        {
-            // Cùng thứ tự persist → cache như Set: lỗi persist không để cache lệch DB
-            Persist(SettingsKeys.ApiKey, value);
-            _cache[SettingsKeys.ApiKey] = value;
-        }
-        SettingsChanged?.Invoke();
-    }
-
-    public void SetApiKeyEnabled(bool enabled) => Set(SettingsKeys.ApiKeyEnabled, enabled);
-
-    private static void GuardApiKey(string key)
-    {
-        if (key == SettingsKeys.ApiKey)
-            throw new InvalidOperationException(
-                "Không đọc/ghi API key qua Get/Set — dùng GetApiKey/SetApiKey để tránh để lộ plaintext.");
     }
 
     private void Persist(string key, string json)

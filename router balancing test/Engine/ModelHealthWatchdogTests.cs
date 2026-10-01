@@ -25,7 +25,7 @@ public class ModelHealthWatchdogTests : IDisposable
     public ModelHealthWatchdogTests()
     {
         DbInitializer.Initialize(_db.CreateFactory());
-        _settings = new AppSettingsService(_db.CreateFactory(), new DpapiSecretProtector());
+        _settings = new AppSettingsService(_db.CreateFactory());
         _store = new ModelHealthStore(_settings, _log, _time);
     }
 

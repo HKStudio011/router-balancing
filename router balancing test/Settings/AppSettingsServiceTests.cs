@@ -1,4 +1,3 @@
-using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
@@ -7,7 +6,6 @@ namespace router_balancing_test.Settings;
 public class AppSettingsServiceTests : IDisposable
 {
     private readonly TestDb _db = new();
-    private readonly ISecretProtector _protector = new DpapiSecretProtector();
 
     public AppSettingsServiceTests()
     {
@@ -17,7 +15,7 @@ public class AppSettingsServiceTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    private AppSettingsService Create() => new(_db.CreateFactory(), _protector);
+    private AppSettingsService Create() => new(_db.CreateFactory());
 
     [Fact]
     public void Get_MissingKey_ReturnsDefault()
@@ -64,29 +62,6 @@ public class AppSettingsServiceTests : IDisposable
         service.Set(SettingsKeys.Theme, "dark");
 
         Assert.Equal(1, raised);
-    }
-
-    [Fact]
-    public void SetApiKey_StoresProtectedValue_Roundtrips()
-    {
-        using var service = Create();
-        service.SetApiKey("sk-plaintext");
-
-        // Plaintext không bao giờ nằm trong DB
-        using var db = _db.CreateFactory().CreateDbContext();
-        var stored = db.AppSettings.First(x => x.Key == "apiKey").ValueJson;
-        Assert.DoesNotContain("sk-plaintext", stored);
-        Assert.Equal("sk-plaintext", service.GetApiKey());
-    }
-
-    [Fact]
-    public void Get_WhenKeyIsApiKey_ThrowsInvalidOperation()
-    {
-        using var service = Create();
-
-        // Chặn đường generic truy cập plaintext key — phải đi qua GetApiKey/SetApiKey
-        Assert.Throws<InvalidOperationException>(() => service.Get<string>(SettingsKeys.ApiKey, ""));
-        Assert.Throws<InvalidOperationException>(() => service.Set(SettingsKeys.ApiKey, "x"));
     }
 
     [Fact]

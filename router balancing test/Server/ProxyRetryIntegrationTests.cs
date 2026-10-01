@@ -35,7 +35,7 @@ public class ProxyRetryIntegrationTests : IDisposable
     {
         DbInitializer.Initialize(_db.CreateFactory());
         var factory = _db.CreateFactory();
-        _settings = new AppSettingsService(factory, new DpapiSecretProtector());
+        _settings = new AppSettingsService(factory);
         _log = new LogService(factory);
         _clientKeys = new ClientKeyService(factory);
         // Capture mọi log Write — assert theo nội dung: gate Warn §5 là dấu hiệu phân biệt

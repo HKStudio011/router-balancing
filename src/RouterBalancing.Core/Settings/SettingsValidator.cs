@@ -36,9 +36,6 @@ public static class SettingsValidator
         if (draft.StatsErrorRateThreshold is < 1 or > 100)
             errors[nameof(SettingsDraft.StatsErrorRateThreshold)] = "settings.error.threshold";
 
-        if (draft.ApiKeyEnabled && string.IsNullOrWhiteSpace(draft.ApiKey))
-            errors[nameof(SettingsDraft.ApiKey)] = "settings.error.apiKey";
-
         return errors;
     }
 }

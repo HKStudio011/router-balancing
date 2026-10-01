@@ -1,6 +1,7 @@
 @page "/settings"
-@using System.Security.Cryptography
+@using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Platform
+@using RouterBalancing.Core.Server
 @using RouterBalancing.Core.Settings
 @using RouterBalancing.Core.Storage
 @implements IDisposable
@@ -12,6 +13,8 @@
 @inject IStartupRegistration Startup
 @inject ILogService Log
 @inject LogRetentionWorker Retention
+@inject IClientKeyService ClientKeys
+@inject IJSRuntime JS
 
 <h1 class="mb-4 text-xl font-semibold">@L["panel.settings.title"]</h1>
 
@@ -69,31 +72,82 @@
             <input class="rounded border border-border bg-surface px-2 py-1.5"
                    type="number" @bind="_draft.Port" />
         </label>
-
-        <label class="flex flex-col gap-1 text-sm">
-            @L["settings.field.apiKey"]
-            <input class="rounded border border-border bg-surface px-2 py-1.5"
-                   type="password" @bind="_draft.ApiKey" autocomplete="off" spellcheck="false" />
-        </label>
     </div>
 
     @if (Error(nameof(SettingsDraft.Port)) is { } portError)
     {
         <div class="mt-1 text-sm text-danger">@L[portError]</div>
     }
-    @if (Error(nameof(SettingsDraft.ApiKey)) is { } apiKeyError)
+
+    <button class="btn btn-primary mt-3" @onclick="SaveServerAsync">@L["settings.action.save"]</button>
+</section>
+
+<section class="mb-4 rounded border border-border bg-surface p-4">
+    <h2 class="mb-3 text-base font-semibold">@L["clientKeys.group"]</h2>
+
+    @if (_keys.Count == 0)
     {
-        <div class="mt-1 text-sm text-danger">@L[apiKeyError]</div>
+        @* 0 key = proxy mở — giải thích rõ trước khi user tạo key đầu tiên (spec §8) *@
+        <p class="mb-3 text-sm opacity-70">@L["clientKeys.hint.empty"]</p>
     }
 
-    <label class="mt-3 flex items-center gap-2 text-sm">
-        <input type="checkbox" @bind="_draft.ApiKeyEnabled" />
-        @L["settings.field.apiKeyEnabled"]
-    </label>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
+        <button class="btn btn-primary" @onclick="OpenCreateKey">@L["clientKeys.action.create"]</button>
+        @if (_newKeyPlaintext is not null)
+        {
+            @* Plaintext hiện đúng 1 lần tại đây — đóng trang là mất vĩnh viễn (spec §2/§8) *@
+            <div class="flex flex-1 items-center gap-2 rounded border border-border bg-background px-2 py-1.5 text-sm">
+                <code class="flex-1 break-all">@_newKeyPlaintext</code>
+                <button class="btn btn-outline-secondary" @onclick="CopyNewKeyAsync">@L["clientKeys.action.copy"]</button>
+            </div>
+        }
+    </div>
 
-    <div class="mt-3 flex gap-2">
-        <button class="btn btn-primary" @onclick="SaveServerAsync">@L["settings.action.save"]</button>
-        <button class="btn btn-outline-secondary" @onclick="RegenerateApiKey">@L["settings.action.regenerate"]</button>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-border text-left opacity-70">
+                    <th class="px-2 py-1.5">@L["clientKeys.col.name"]</th>
+                    <th class="px-2 py-1.5">@L["clientKeys.col.key"]</th>
+                    <th class="px-2 py-1.5">@L["clientKeys.col.status"]</th>
+                    <th class="px-2 py-1.5">@L["clientKeys.col.requests"]</th>
+                    <th class="px-2 py-1.5">@L["clientKeys.col.tokens"]</th>
+                    <th class="px-2 py-1.5">@L["clientKeys.col.lastUsed"]</th>
+                    <th class="px-2 py-1.5">@L["clientKeys.col.limits"]</th>
+                    <th class="px-2 py-1.5">@L["clientKeys.col.actions"]</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var key in _keys)
+                {
+                    <tr @key="key.Id" class="border-b border-border">
+                        <td class="px-2 py-1.5">@key.Name</td>
+                        <td class="px-2 py-1.5"><code>@key.KeyMask</code></td>
+                        <td class="px-2 py-1.5">
+                            @* Toggle nhanh Enabled — không cần mở modal (spec §8) *@
+                            <input type="checkbox" checked="@key.Enabled"
+                                   @onchange="() => ToggleKeyAsync(key)" />
+                        </td>
+                        <td class="px-2 py-1.5">@key.RequestsUsed.ToString("N0")</td>
+                        <td class="px-2 py-1.5">@key.TokensUsed.ToString("N0")</td>
+                        <td class="px-2 py-1.5">@(key.LastUsedAt?.ToLocalTime().ToString("g") ?? "—")</td>
+                        <td class="px-2 py-1.5">
+                            @(key.RatePerMinute is null && key.TokensPerMinute is null
+                                ? L["clientKeys.limits.none"]
+                                : string.Format(L["clientKeys.limits.format"],
+                                    key.RatePerMinute?.ToString("N0") ?? "—",
+                                    key.TokensPerMinute?.ToString("N0") ?? "—"))
+                        </td>
+                        <td class="px-2 py-1.5">
+                            <button class="btn btn-outline-secondary mr-2"
+                                    @onclick="() => OpenEditKey(key)">@L["clientKeys.action.edit"]</button>
+                            <button class="btn btn-outline-danger"
+                                    @onclick="() => ConfirmDeleteKey(key)">@L["clientKeys.action.delete"]</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
     </div>
 </section>
 
@@ -174,6 +228,42 @@
     </div>
 </section>
 
+<Modal Visible="_keyFormOpen"
+       Title="@(_keyFormId is null ? L["clientKeys.title.new"] : L["clientKeys.title.edit"])"
+       OnClose="CloseKeyForm">
+    <label class="mb-2 flex flex-col gap-1 text-sm">
+        @L["clientKeys.field.name"]
+        <input class="rounded border border-border bg-surface px-2 py-1.5" @bind="_keyFormName" />
+    </label>
+    @if (_keyFormError is not null)
+    {
+        <div class="mb-2 text-sm text-danger">@L[_keyFormError]</div>
+    }
+    <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["clientKeys.field.rpm"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5" type="number" @bind="_keyFormRpm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["clientKeys.field.tpm"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5" type="number" @bind="_keyFormTpm" />
+        </label>
+    </div>
+    <div class="mt-3 flex justify-end gap-2">
+        <button class="btn btn-outline-secondary" @onclick="CloseKeyForm">@L["confirm.cancel"]</button>
+        <button class="btn btn-primary" @onclick="SaveKeyFormAsync">@L["clientKeys.action.save"]</button>
+    </div>
+</Modal>
+
+<ConfirmDialog Visible="_deleteKeyOpen"
+               Title="@L["clientKeys.action.delete"]"
+               Message="@L["clientKeys.confirmDelete"]"
+               Danger="true"
+               ConfirmText="@L["clientKeys.action.delete"]"
+               CancelText="@L["confirm.cancel"]"
+               OnConfirm="DeleteKeyAsync"
+               OnCancel="() => _deleteKeyOpen = false" />
+
 @code {
     /// <summary>Field validator từng nhóm — Save nhóm nào chỉ hiện lỗi của nhóm đó.</summary>
     private static readonly string[] GeneralFields =
@@ -184,7 +274,6 @@
     private static readonly string[] ServerFields =
     [
         nameof(SettingsDraft.Port),
-        nameof(SettingsDraft.ApiKey),
     ];
     private static readonly string[] EngineFields =
     [
@@ -201,11 +290,22 @@
     private SettingsDraft _draft = new();
     private Dictionary<string, string> _errors = [];
     private bool _purging;
+    private List<ClientKey> _keys = [];
+    private bool _keyFormOpen;
+    private long? _keyFormId;
+    private string _keyFormName = string.Empty;
+    private int? _keyFormRpm;
+    private int? _keyFormTpm;
+    private string? _keyFormError;
+    private bool _deleteKeyOpen;
+    private ClientKey? _deleteKeyTarget;
+    private string? _newKeyPlaintext;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         _draft = LoadDraft();
         L.LanguageChanged += OnLanguageChanged;
+        await ReloadKeysAsync();
     }
 
     private SettingsDraft LoadDraft() => new()
@@ -213,8 +313,6 @@
         Language = Settings.Language,
         Theme = Settings.Theme,
         Port = Settings.Port,
-        ApiKeyEnabled = Settings.ApiKeyEnabled,
-        ApiKey = Settings.GetApiKey(),
         CloseToTray = Settings.CloseToTray,
         StartWithWindows = Settings.StartWithWindows,
         MaxRetry = Settings.MaxRetry,
@@ -286,11 +384,6 @@
         if (!ValidateFor(ServerFields)) return;
 
         Settings.Set(SettingsKeys.Port, _draft.Port);
-        Settings.SetApiKeyEnabled(_draft.ApiKeyEnabled);
-        if (!string.Equals(_draft.ApiKey, Settings.GetApiKey(), StringComparison.Ordinal))
-        {
-            Settings.SetApiKey(_draft.ApiKey);
-        }
 
         if (portChanged && Proxy.IsRunning)
         {
@@ -332,10 +425,112 @@
         Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
     }
 
-    private void RegenerateApiKey()
+    private async Task ReloadKeysAsync() => _keys = (await ClientKeys.ListAsync()).ToList();
+
+    private void OpenCreateKey()
     {
-        // 256-bit từ CSPRNG; chỉ đi vào field — persists khi bấm Save của nhóm Server
-        _draft.ApiKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        _keyFormId = null;
+        _keyFormName = string.Empty;
+        _keyFormRpm = null;
+        _keyFormTpm = null;
+        _keyFormError = null;
+        _keyFormOpen = true;
+    }
+
+    private void OpenEditKey(ClientKey key)
+    {
+        // Sửa chỉ đổi Name/limits — plaintext không bao giờ xem lại (spec §8)
+        _keyFormId = key.Id;
+        _keyFormName = key.Name;
+        _keyFormRpm = key.RatePerMinute;
+        _keyFormTpm = key.TokensPerMinute;
+        _keyFormError = null;
+        _keyFormOpen = true;
+    }
+
+    private void CloseKeyForm() => _keyFormOpen = false;
+
+    private async Task SaveKeyFormAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_keyFormName))
+        {
+            _keyFormError = "clientKeys.error.name";
+            return;
+        }
+        if (_keyFormRpm is <= 0 || _keyFormTpm is <= 0)
+        {
+            _keyFormError = "clientKeys.error.limit";
+            return;
+        }
+        _keyFormError = null;
+        try
+        {
+            var draft = new ClientKeyDraft(_keyFormName.Trim(), _keyFormRpm, _keyFormTpm);
+            if (_keyFormId is long id)
+            {
+                await ClientKeys.UpdateAsync(id, draft);
+            }
+            else
+            {
+                var (_, plaintext) = await ClientKeys.CreateAsync(draft);
+                _newKeyPlaintext = plaintext; // hiển thị đúng 1 lần
+            }
+            _keyFormOpen = false;
+            await ReloadKeysAsync();
+            Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            // ArgumentException (validate service) hay DB lỗi — đều phải hiện toast, không nuốt
+            Log.Error("Lưu client key thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+    }
+
+    private async Task ToggleKeyAsync(ClientKey key)
+    {
+        try
+        {
+            await ClientKeys.SetEnabledAsync(key.Id, !key.Enabled);
+            await ReloadKeysAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Đổi trạng thái client key thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+    }
+
+    private void ConfirmDeleteKey(ClientKey key)
+    {
+        _deleteKeyTarget = key;
+        _deleteKeyOpen = true;
+    }
+
+    private async Task DeleteKeyAsync()
+    {
+        if (_deleteKeyTarget is null) return;
+        try
+        {
+            await ClientKeys.DeleteAsync(_deleteKeyTarget.Id);
+            _deleteKeyOpen = false;
+            _deleteKeyTarget = null;
+            await ReloadKeysAsync();
+            Toast.Show(L["clientKeys.msg.deleted"], ToastSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Xóa client key thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+    }
+
+    private async Task CopyNewKeyAsync()
+    {
+        if (_newKeyPlaintext is null) return;
+        // Không có clipboard pattern sẵn trong repo — navigator.clipboard qua IJSRuntime
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", _newKeyPlaintext);
+        Toast.Show(L["clientKeys.msg.copied"], ToastSeverity.Success);
     }
 
     private async Task PurgeLogsAsync()
