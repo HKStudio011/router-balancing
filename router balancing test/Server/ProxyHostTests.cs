@@ -16,6 +16,7 @@ public class ProxyHostTests : IDisposable
     private readonly TestDb _db = new();
     private readonly AppSettingsService _settings;
     private readonly LogService _log;
+    private readonly ClientKeyService _clientKeys;
     private readonly HttpClient _client = new();
 
     public ProxyHostTests()
@@ -25,6 +26,7 @@ public class ProxyHostTests : IDisposable
         var factory = _db.CreateFactory();
         _settings = new AppSettingsService(factory, new DpapiSecretProtector());
         _log = new LogService(factory);
+        _clientKeys = new ClientKeyService(_db.CreateFactory());
         // Port 0-style: lấy port trống để test không đụng port thật của app đang chạy
         _settings.Set(SettingsKeys.Port, PortSelector.FindAvailable(24000));
     }
@@ -39,7 +41,7 @@ public class ProxyHostTests : IDisposable
 
     private async Task<ProxyHost> StartHostAsync()
     {
-        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector());
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys);
         await host.StartAsync();
         _client.BaseAddress = new Uri($"http://127.0.0.1:{host.Port}");
         return host;
@@ -152,7 +154,7 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task StartAsync_WhenStarted_RaisesStateChanged()
     {
-        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector());
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys);
         var raised = 0;
         host.StateChanged += () => raised++;
 
@@ -166,7 +168,7 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task StartAsync_WhenCalledTwice_IsIdempotent()
     {
-        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector());
+        var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys);
         var raised = 0;
         host.StateChanged += () => raised++;
 

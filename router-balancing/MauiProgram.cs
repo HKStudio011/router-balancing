@@ -76,6 +76,9 @@ namespace router_balancing
             builder.Services.AddSingleton<IModelService, ModelService>();
             builder.Services.AddSingleton<IProviderAccountService, ProviderAccountService>();
             builder.Services.AddSingleton<IComboService, ComboService>();
+            // Singleton chia sẻ với proxy container qua ProxyHost (spec §4.1) — event KeysChanged
+            // của CHÍNH instance này làm auth cache của proxy invalidate khi UI CRUD key.
+            builder.Services.AddSingleton<IClientKeyService, ClientKeyService>();
             builder.Services.AddSingleton<IModelMetadataService, ModelMetadataService>();
             // Thứ tự đăng ký = thứ tự chain: endpoint trước, static catalog sau
             builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();

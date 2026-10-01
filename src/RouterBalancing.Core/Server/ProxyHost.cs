@@ -20,6 +20,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly ILogService _log;
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ISecretProtector _protector;
+    private readonly IClientKeyService _clientKeys;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private WebApplication? _app;
     private bool _disposed;
@@ -31,12 +32,13 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     public event Action? StateChanged;
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
-        ISecretProtector protector)
+        ISecretProtector protector, IClientKeyService clientKeys)
     {
         _settings = settings;
         _log = log;
         _db = db;
         _protector = protector;
+        _clientKeys = clientKeys;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -58,6 +60,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_settings);
             builder.Services.AddSingleton(_log);
             builder.Services.AddSingleton(_db);
+            builder.Services.AddSingleton(_clientKeys);
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 
             ProxyApp.ConfigureServices(builder, _protector);
