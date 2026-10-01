@@ -8,6 +8,7 @@
 @inject IProviderService ProviderSvc
 @inject IProviderAccountService AccountSvc
 @inject IModelService ModelSvc
+@inject IFreeModelSyncService FreeSyncSvc
 @inject LocalizationService L
 @inject ToastService Toast
 @inject ILogService Log
@@ -58,6 +59,14 @@ else
                             <div class="flex items-center gap-2">
                                 <span class="font-medium">@p.Name</span>
                                 <Badge Text="@TypeLabel(p.Type)" Variant="TypeVariant(p.Type)" />
+                                @if (p.IsPreset)
+                                {
+                                    <Badge Text="@L["providers.badge.free"]" Variant="BadgeVariant.Info" />
+                                    @if (p.LastModelSyncAt is { } syncedAt)
+                                    {
+                                        <span class="text-xs opacity-70">@string.Format(L["providers.sync.lastSync"], syncedAt.ToLocalTime().ToString("g"))</span>
+                                    }
+                                }
                             </div>
                         </td>
                         <td class="px-2 py-2 font-mono text-xs opacity-80">@p.Identifier</td>
@@ -91,6 +100,14 @@ else
                         </td>
                         <td class="px-2 py-2 text-right">
                             <div class="flex justify-end gap-1">
+                                @if (p.IsPreset)
+                                {
+                                    <button type="button" class="btn btn-outline-secondary"
+                                            disabled="@(_busy || _syncingId == p.Id)"
+                                            @onclick="() => SyncFreeModelsAsync(p)">
+                                        @L["providers.sync.now"]
+                                    </button>
+                                }
                                 <button type="button" class="btn btn-outline-secondary"
                                         disabled="@(_busy || _testingId == p.Id)"
                                         @onclick="() => TestAsync(p)">
@@ -101,11 +118,15 @@ else
                                         @onclick="() => OpenEdit(p)">
                                     @L["providers.action.edit"]
                                 </button>
-                                <button type="button" class="btn btn-outline-danger"
-                                        disabled="@(_busy || _confirmDeleteProvider is not null)"
-                                        @onclick="() => _confirmDeleteProvider = p">
-                                    @L["providers.action.delete"]
-                                </button>
+                                @* Preset free không xoá được — ẩn nút (D6); service cũng tự chặn (§8.3) *@
+                                @if (!p.IsPreset)
+                                {
+                                    <button type="button" class="btn btn-outline-danger"
+                                            disabled="@(_busy || _confirmDeleteProvider is not null)"
+                                            @onclick="() => _confirmDeleteProvider = p">
+                                        @L["providers.action.delete"]
+                                    </button>
+                                }
                             </div>
                         </td>
                     </tr>
@@ -610,6 +631,7 @@ else
 
     private long? _testingId;
     private long? _fetchingId;
+    private long? _syncingId;
     private string _newModelId = string.Empty;
 
     // Edit inline capabilities — 1 bộ state duy nhất nên mở row khác tự đóng row cũ (chỉ 1 model sửa 1 lúc)
@@ -778,6 +800,32 @@ else
         }
     }
 
+    /// <summary>Sync model free cho preset — single-flight qua _syncingId + _busy (spec provider-free §8.4).</summary>
+    private async Task SyncFreeModelsAsync(Provider provider)
+    {
+        if (_busy) return;
+        _busy = true;
+        _syncingId = provider.Id;
+        try
+        {
+            var count = await FreeSyncSvc.SyncProviderAsync(provider.Id);
+            Toast.Show(string.Format(L["providers.sync.success"], count), ToastSeverity.Success);
+            // LoadAsync giữ nguyên trạng thái expand/ trang — không ép mở row như ReloadKeepExpandAsync
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            // FreeModelSyncException đã có message thân thiện — hiện thẳng, không nuốt
+            Log.Error("Đồng bộ model free thất bại.", ex);
+            Toast.Show(string.Format(L["providers.sync.failed"], ex.Message), ToastSeverity.Error);
+        }
+        finally
+        {
+            _syncingId = null;
+            _busy = false;
+        }
+    }
+
     private async Task DeleteProviderAsync()
     {
         if (_confirmDeleteProvider is not { } provider) return;
@@ -791,6 +839,12 @@ else
             }
             Toast.Show(L["providers.deleted"], ToastSeverity.Success);
             await LoadAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Service ném khi provider là preset (defense-in-depth) — hiện message riêng thay vì toast chung
+            Log.Error("Không xóa được provider preset.", ex);
+            Toast.Show(L["providers.delete.preset"], ToastSeverity.Error);
         }
         catch (Exception ex)
         {

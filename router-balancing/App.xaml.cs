@@ -165,7 +165,7 @@ namespace router_balancing
             }
             catch (Exception ex)
             {
-                _log.Error("Dừng LogRetentionWorker khi process thoát thất bại.", ex);
+                _log.Error("Dừng worker nền khi process thoát thất bại.", ex);
             }
         }
 

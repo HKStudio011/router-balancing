@@ -110,6 +110,12 @@ public sealed class ProviderService : IProviderService
         var provider = await db.Providers.FirstOrDefaultAsync(p => p.Id == id, ct)
             ?? throw new KeyNotFoundException($"Provider {id} not found.");
 
+        // Preset free không được xoá (D6) — ẩn nút ở UI chưa đủ, service tự chặn (spec §8.3)
+        if (provider.IsPreset)
+        {
+            throw new InvalidOperationException($"Preset provider {id} cannot be deleted.");
+        }
+
         // FK Models→Providers là ON DELETE CASCADE (xem RouterBalancingDbContext.OnModelCreating)
         // — xóa provider, DB tự xóa models con.
         db.Providers.Remove(provider);

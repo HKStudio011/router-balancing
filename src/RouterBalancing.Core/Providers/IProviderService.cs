@@ -25,6 +25,7 @@ public interface IProviderService
 
     /// <summary>Xóa provider — models con và accounts cascade theo cấu hình FK.</summary>
     /// <exception cref="KeyNotFoundException">Khi không có provider <paramref name="id"/>.</exception>
+    /// <exception cref="InvalidOperationException">Khi provider là preset free — không cho xóa (spec provider-free §6 D6).</exception>
     Task DeleteAsync(long id, CancellationToken ct = default);
 
     /// <summary>Bật/tắt provider.</summary>
