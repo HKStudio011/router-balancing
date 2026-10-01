@@ -26,6 +26,7 @@ public class ProxyQueueIntegrationTests : IDisposable
     private readonly TestDb _db = new();
     private readonly AppSettingsService _settings;
     private readonly LogService _log;
+    private readonly ClientKeyService _clientKeys;
     private readonly DpapiSecretProtector _protector = new();
     private WebApplication? _app;
     private HttpClient? _client;
@@ -36,6 +37,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         var factory = _db.CreateFactory();
         _settings = new AppSettingsService(factory, new DpapiSecretProtector());
         _log = new LogService(factory);
+        _clientKeys = new ClientKeyService(factory);
     }
 
     public void Dispose()
@@ -109,6 +111,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         builder.Services.AddSingleton<IAppSettingsService>(_settings);
         builder.Services.AddSingleton<ILogService>(_log);
         builder.Services.AddSingleton<IDbContextFactory<RouterBalancingDbContext>>(_db.CreateFactory());
+        builder.Services.AddSingleton<IClientKeyService>(_clientKeys);
 
         ProxyApp.ConfigureServices(builder, _protector);
         // Đăng ký SAU ConfigureServices → wins (last registration), stub thay OpenAiUpstreamClient

@@ -47,6 +47,10 @@ public static class ProxyApp
         // Circuit per-model 3C: store singleton + đồng hồ system —
         // DispatcherLoop (T5), gate endpoint (T6), watchdog (T7) dùng chung 1 instance
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<IClientKeyRateLimiter, ClientKeyRateLimiter>();
+        // Singleton (không factory): cache phải sống 1 lần/proxy container để event KeysChanged
+        // attach đúng 1 lần; Dispose của container unsubscribe khi proxy dừng.
+        builder.Services.AddSingleton<ClientKeyAuthCache>();
         builder.Services.AddSingleton<IModelHealthStore, ModelHealthStore>();
         builder.Services.AddHostedService<DispatcherLoop>();
         // Watchdog 3C (spec §2.1): singleton + hosted qua factory lấy ĐÚNG instance này —

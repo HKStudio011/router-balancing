@@ -25,6 +25,7 @@ public class ProxyRetryIntegrationTests : IDisposable
     private readonly TestDb _db = new();
     private readonly AppSettingsService _settings;
     private readonly LogService _log;
+    private readonly ClientKeyService _clientKeys;
     private readonly DpapiSecretProtector _protector = new();
     private readonly List<string> _messages = [];
     private WebApplication? _app;
@@ -36,6 +37,7 @@ public class ProxyRetryIntegrationTests : IDisposable
         var factory = _db.CreateFactory();
         _settings = new AppSettingsService(factory, new DpapiSecretProtector());
         _log = new LogService(factory);
+        _clientKeys = new ClientKeyService(factory);
         // Capture mọi log Write — assert theo nội dung: gate Warn §5 là dấu hiệu phân biệt
         // endpoint-gate với walk-rỗng 503 của dispatcher (status giống nhau)
         _log.LogAdded += entry => _messages.Add(entry.Message);
@@ -151,6 +153,7 @@ public class ProxyRetryIntegrationTests : IDisposable
         builder.Services.AddSingleton<IAppSettingsService>(_settings);
         builder.Services.AddSingleton<ILogService>(_log);
         builder.Services.AddSingleton<IDbContextFactory<RouterBalancingDbContext>>(_db.CreateFactory());
+        builder.Services.AddSingleton<IClientKeyService>(_clientKeys);
 
         ProxyApp.ConfigureServices(builder, _protector);
         // Đăng ký SAU ConfigureServices → wins (last registration), stub thay OpenAiUpstreamClient

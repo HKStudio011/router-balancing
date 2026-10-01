@@ -76,8 +76,7 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task Health_WhenApiKeyEnabled_StillOpen()
     {
-        _settings.SetApiKeyEnabled(true);
-        _settings.SetApiKey("secret-key");
+        await _clientKeys.CreateAsync(new ClientKeyDraft("health", null, null));
         await using var _ = await StartHostAsync();
 
         var response = await _client.GetAsync("/health");
@@ -88,13 +87,12 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task Models_WhenApiKeyEnabled_RequiresKey()
     {
-        _settings.SetApiKeyEnabled(true);
-        _settings.SetApiKey("secret-key");
+        var (_, plaintext) = await _clientKeys.CreateAsync(new ClientKeyDraft("models", null, null));
         await using var _ = await StartHostAsync();
 
         var withoutKey = await _client.GetAsync("/v1/models");
         using var withKey = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
-        withKey.Headers.Authorization = new("Bearer", "secret-key");
+        withKey.Headers.Authorization = new("Bearer", plaintext);
         var withKeyResponse = await _client.SendAsync(withKey);
 
         Assert.Equal(HttpStatusCode.Unauthorized, withoutKey.StatusCode);
