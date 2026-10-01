@@ -97,7 +97,10 @@
         {
             @* Plaintext hiện đúng 1 lần tại đây — đóng trang là mất vĩnh viễn (spec §2/§8) *@
             <div class="flex flex-1 items-center gap-2 rounded border border-border bg-background px-2 py-1.5 text-sm">
-                <code class="flex-1 break-all">@_newKeyPlaintext</code>
+                <div class="min-w-0 flex-1">
+                    <div class="text-xs opacity-70">@L["clientKeys.hint.plaintext"]</div>
+                    <code class="break-all">@_newKeyPlaintext</code>
+                </div>
                 <button class="btn btn-outline-secondary" @onclick="CopyNewKeyAsync">@L["clientKeys.action.copy"]</button>
             </div>
         }
@@ -528,9 +531,18 @@
     private async Task CopyNewKeyAsync()
     {
         if (_newKeyPlaintext is null) return;
-        // Không có clipboard pattern sẵn trong repo — navigator.clipboard qua IJSRuntime
-        await JS.InvokeVoidAsync("navigator.clipboard.writeText", _newKeyPlaintext);
-        Toast.Show(L["clientKeys.msg.copied"], ToastSeverity.Success);
+        try
+        {
+            // Không có clipboard pattern sẵn trong repo — navigator.clipboard qua IJSRuntime
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _newKeyPlaintext);
+            Toast.Show(L["clientKeys.msg.copied"], ToastSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            // Clipboard reject khi document không focus (NotAllowedError) — hiện toast thay vì văng JSException
+            Log.Error("Sao chép plaintext client key thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
     }
 
     private async Task PurgeLogsAsync()
