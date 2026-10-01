@@ -137,12 +137,15 @@ public sealed class ChatCompletionsHandler(
                 }
                 else if (expectsUsage)
                 {
-                    // Đã yêu cầu include_usage mà không có usage — telemetry bất thường, không fail request
+                    // Đã yêu cầu include_usage mà không có usage — telemetry bất thường, không fail request;
+                    // gắn id để correlate row Debug với request khi upstream thiếu usage (spec §7)
                     log.Write(new LogEntry
                     {
                         Severity = LogSeverity.Debug,
                         Category = LogCategory.App,
                         Message = "Upstream không trả usage dù đã yêu cầu include_usage — counter token không tăng.",
+                        RequestId = ClientKeyItems.RequestIdOf(ctx),
+                        ClientKeyId = ClientKeyItems.IdOf(ctx),
                     });
                 }
                 return new DispatchOutcome.Handled();
