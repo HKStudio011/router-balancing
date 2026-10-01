@@ -82,7 +82,7 @@ public class DispatcherLoopTests : IDisposable
     {
         _settings ??= new AppSettingsService(_db.CreateFactory(), _protector);
         health ??= new ModelHealthStore(_settings, log, TimeProvider.System);
-        var handler = new ChatCompletionsHandler(upstream, _protector, log);
+        var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink());
         _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log, health);
         await _loop.StartAsync(CancellationToken.None);
     }
@@ -281,13 +281,29 @@ public class DispatcherLoopTests : IDisposable
         public List<string> Infos { get; } = [];
         public List<string> Warns { get; } = [];
         public List<string> Errors { get; } = [];
+        public List<string> Debugs { get; } = [];
 
         public event Action<LogEntry>? LogAdded { add { } remove { } }
-        public void Write(LogEntry entry) { }
-        public void Info(string message, LogCategory category = LogCategory.App) => Infos.Add(message);
-        public void Warn(string message, LogCategory category = LogCategory.App) => Warns.Add(message);
+
+        // ChatCompletionsHandler ghi journal qua Write (spec §7) — route theo Severity để các
+        // assert Infos/Warns/Errors cũ (LogForwarded, lỗi upstream) vẫn bắt được dòng mới
+        public void Write(LogEntry entry)
+        {
+            switch (entry.Severity)
+            {
+                case LogSeverity.Debug: Debugs.Add(entry.Message); break;
+                case LogSeverity.Warning: Warns.Add(entry.Message); break;
+                case LogSeverity.Error: Errors.Add(entry.Message); break;
+                default: Infos.Add(entry.Message); break;
+            }
+        }
+        public void Info(string message, LogCategory category = LogCategory.App) =>
+            Write(new LogEntry { Severity = LogSeverity.Info, Category = category, Message = message });
+        public void Warn(string message, LogCategory category = LogCategory.App) =>
+            Write(new LogEntry { Severity = LogSeverity.Warning, Category = category, Message = message });
         public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App) =>
-            Errors.Add(message);
+            Write(new LogEntry { Severity = LogSeverity.Error, Category = category, Message = message });
+        public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
         public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
         public int Count(LogQuery query) => 0;
     }

@@ -5,6 +5,7 @@ using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
+using RouterBalancing.Core.Server;
 
 namespace RouterBalancing.Core.Engine;
 
@@ -16,7 +17,8 @@ namespace RouterBalancing.Core.Engine;
 public sealed class ChatCompletionsHandler(
     IUpstreamClient upstream,
     ISecretProtector protector,
-    ILogService log)
+    ILogService log,
+    IClientKeyUsageSink usageSink)
 {
     /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
     public sealed record PreparedChatRequest(string ModelId, byte[] Body);
@@ -75,23 +77,42 @@ public sealed class ChatCompletionsHandler(
         var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, protector);
         if (key is null)
         {
-            log.Warn($"Provider '{provider.Name}' không có account enabled nào.", LogCategory.Request);
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Warning,
+                Category = LogCategory.Request,
+                Message = $"Provider '{provider.Name}' không có account enabled nào.",
+                RequestId = ClientKeyItems.RequestIdOf(ctx),
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
             return new DispatchOutcome.Error(503,
                 $"No enabled API key for provider '{provider.Name}'", "server_error", null, null);
         }
+
+        // Yêu cầu upstream trả usage cho stream OpenAI (spec §6) — body gốc giữ nguyên ở queue/prepare
+        var (requestBody, expectsUsage) = UsageCapture.WithIncludeUsage(body, provider.Type);
 
         var stopwatch = Stopwatch.StartNew();
         HttpResponseMessage response;
         try
         {
-            response = await upstream.PostChatCompletionAsync(provider, key, body, ct);
+            response = await upstream.PostChatCompletionAsync(provider, key, requestBody, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                    && !ctx.RequestAborted.IsCancellationRequested)
         {
             // Lỗi upstream thật → retryable Status null (502 sinh ở exhaustion — T5);
             // client tự ngắt (RequestAborted) thì propagate (hành vi 3A)
-            log.Error($"Không kết nối được upstream '{provider.Name}'.", ex, LogCategory.Request);
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Error,
+                Category = LogCategory.Request,
+                Message = $"Không kết nối được upstream '{provider.Name}'.",
+                Details = ex.ToString(),
+                ErrorCode = ex.GetType().Name,
+                RequestId = ClientKeyItems.RequestIdOf(ctx),
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
             return new DispatchOutcome.Retryable(null, null, [], null);
         }
 
@@ -99,12 +120,31 @@ public sealed class ChatCompletionsHandler(
         {
             if (response.IsSuccessStatusCode)
             {
-                // 2xx giữ nguyên 3A/3B: stream thẳng, không buffer
+                // 2xx giữ nguyên 3A/3B: stream thẳng — tee quét usage trong lúc copy (spec §6.1)
                 ctx.Response.StatusCode = (int)response.StatusCode;
                 if (response.Content.Headers.ContentType is { } okType)
                     ctx.Response.ContentType = okType.ToString();
-                await response.Content.CopyToAsync(ctx.Response.Body, ct);
-                LogForwarded(provider, model, response, stopwatch);
+                var usage = await UsageCapture.TeeAsync(response.Content, ctx.Response.Body, ct);
+                LogForwarded(ctx, provider, model, response, stopwatch);
+
+                if (usage is not null)
+                {
+                    log.LogRequestUsage(ClientKeyItems.RequestIdOf(ctx), ClientKeyItems.IdOf(ctx),
+                        usage.PromptTokens, usage.CompletionTokens);
+                    // Fail-open nằm trong sink: DB lỗi → log Error, không nổ sau khi đã stream (spec §10)
+                    await usageSink.RecordAsync(ClientKeyItems.IdOf(ctx),
+                        usage.PromptTokens, usage.CompletionTokens, ct);
+                }
+                else if (expectsUsage)
+                {
+                    // Đã yêu cầu include_usage mà không có usage — telemetry bất thường, không fail request
+                    log.Write(new LogEntry
+                    {
+                        Severity = LogSeverity.Debug,
+                        Category = LogCategory.App,
+                        Message = "Upstream không trả usage dù đã yêu cầu include_usage — counter token không tăng.",
+                    });
+                }
                 return new DispatchOutcome.Handled();
             }
 
@@ -116,19 +156,26 @@ public sealed class ChatCompletionsHandler(
                 return new DispatchOutcome.Retryable((int)response.StatusCode, contentType,
                     errorBody, RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow));
 
-            LogForwarded(provider, model, response, stopwatch);
+            LogForwarded(ctx, provider, model, response, stopwatch);
             return new DispatchOutcome.Passthrough((int)response.StatusCode, contentType,
                 errorBody, retryAfterRaw);
         }
     }
 
-    // Tách helper để 2 nhánh (2xx/passthrough) ghi Info đúng 1 lần, không trùng chữ ký log
-    private void LogForwarded(Provider provider, Model model, HttpResponseMessage response,
-        Stopwatch stopwatch) =>
-        log.Info(
-            $"Chuyển tiếp '{model.ModelId}' → '{provider.Name}': " +
-            $"HTTP {(int)response.StatusCode} trong {stopwatch.ElapsedMilliseconds}ms",
-            LogCategory.Request);
+    // Tách helper để 2 nhánh (2xx/passthrough) ghi Info đúng 1 lần, không trùng chữ ký log;
+    // convert sang Write để gắn RequestId/ClientKeyId (spec §7) — Message giữ nguyên
+    private void LogForwarded(HttpContext ctx, Provider provider, Model model,
+        HttpResponseMessage response, Stopwatch stopwatch) =>
+        log.Write(new LogEntry
+        {
+            Severity = LogSeverity.Info,
+            Category = LogCategory.Request,
+            Message =
+                $"Chuyển tiếp '{model.ModelId}' → '{provider.Name}': " +
+                $"HTTP {(int)response.StatusCode} trong {stopwatch.ElapsedMilliseconds}ms",
+            RequestId = ClientKeyItems.RequestIdOf(ctx),
+            ClientKeyId = ClientKeyItems.IdOf(ctx),
+        });
 
     // Encoder relax giữ nguyên apostrophe (0x27) trong message — default encoder escape
     // apostrophe thành chuỗi unicode, sai contract OpenAI (spec §4) — GIỮ NGUYÊN comment 3A

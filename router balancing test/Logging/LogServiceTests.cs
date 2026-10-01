@@ -163,4 +163,20 @@ public class LogServiceTests : IDisposable
         Assert.Equal(LogSeverity.Error, entry.Severity);
         Assert.Contains("detail", entry.Details);
     }
+
+    [Fact]
+    public void LogRequestUsage_PersistsRowWithTokensAndIds()
+    {
+        var service = Create();
+
+        service.LogRequestUsage("req-1", 42, 10, 5);
+
+        var entry = Assert.Single(service.Query(new LogQuery()));
+        Assert.Equal(LogCategory.Request, entry.Category);
+        Assert.Equal(LogSeverity.Info, entry.Severity);
+        Assert.Equal(10, entry.PromptTokens);
+        Assert.Equal(5, entry.CompletionTokens);
+        Assert.Equal("req-1", entry.RequestId);
+        Assert.Equal(42, entry.ClientKeyId);
+    }
 }

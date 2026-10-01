@@ -76,6 +76,18 @@ public sealed class LogService : ILogService, IDisposable
             ErrorCode = exception?.GetType().Name,
         });
 
+    public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) =>
+        Write(new LogEntry
+        {
+            Severity = LogSeverity.Info,
+            Category = LogCategory.Request,
+            Message = $"Usage từ upstream: {promptTokens} prompt token, {completionTokens} completion token.",
+            PromptTokens = promptTokens,
+            CompletionTokens = completionTokens,
+            RequestId = requestId,
+            ClientKeyId = clientKeyId,
+        });
+
     public IReadOnlyList<LogEntry> Query(LogQuery query)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

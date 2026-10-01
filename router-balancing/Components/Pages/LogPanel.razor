@@ -34,6 +34,7 @@
             <select class="rounded border border-border bg-surface px-2 py-1.5"
                     @bind="_severity" @bind:after="ApplyFilters">
                 <option value="">@L["log.filter.all"]</option>
+                <option value="Debug">@L["log.severity.debug"]</option>
                 <option value="Info">@L["log.severity.info"]</option>
                 <option value="Warning">@L["log.severity.warning"]</option>
                 <option value="Error">@L["log.severity.error"]</option>
@@ -93,6 +94,10 @@
                         else if (entry.Severity == LogSeverity.Warning)
                         {
                             <span class="font-semibold">@L["log.severity.warning"]</span>
+                        }
+                        else if (entry.Severity == LogSeverity.Debug)
+                        {
+                            <span class="opacity-60">@L["log.severity.debug"]</span>
                         }
                         else
                         {

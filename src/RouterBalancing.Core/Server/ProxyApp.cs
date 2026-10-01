@@ -51,6 +51,7 @@ public static class ProxyApp
         // Singleton (không factory): cache phải sống 1 lần/proxy container để event KeysChanged
         // attach đúng 1 lần; Dispose của container unsubscribe khi proxy dừng.
         builder.Services.AddSingleton<ClientKeyAuthCache>();
+        builder.Services.AddSingleton<IClientKeyUsageSink, ClientKeyUsageSink>();
         builder.Services.AddSingleton<IModelHealthStore, ModelHealthStore>();
         builder.Services.AddHostedService<DispatcherLoop>();
         // Watchdog 3C (spec §2.1): singleton + hosted qua factory lấy ĐÚNG instance này —
@@ -80,6 +81,7 @@ public static class ProxyApp
             }
             while (queue.Contains(id) || executions.Contains(id));
             ctx.Response.Headers["X-Request-Id"] = id;
+            ctx.Items[ClientKeyItems.RequestId] = id;
 
             var prepared = await handler.PrepareAsync(ctx);
             if (prepared is null)
@@ -89,8 +91,14 @@ public static class ProxyApp
             // Combo name chưa resolve lúc này — gate combo nằm ở walk (T5 filter bỏ candidate)
             if (health.IsManualRetry(prepared.ModelId))
             {
-                log.Warn($"Từ chối request mới: model '{prepared.ModelId}' đang ManualRetry",
-                    LogCategory.Request);
+                log.Write(new LogEntry
+                {
+                    Severity = LogSeverity.Warning,
+                    Category = LogCategory.Request,
+                    Message = $"Từ chối request mới: model '{prepared.ModelId}' đang ManualRetry",
+                    RequestId = id,
+                    ClientKeyId = ClientKeyItems.IdOf(ctx),
+                });
                 await ChatCompletionsHandler.WriteErrorAsync(ctx, 503,
                     $"The model '{prepared.ModelId}' is temporarily unavailable",
                     "server_error", null, null);
@@ -103,7 +111,14 @@ public static class ProxyApp
             if (!queue.Enqueue(request))
             {
                 // id vừa sinh nên gần như không xảy ra — không được nuốt im lặng
-                log.Warn($"Không enqueue được request {id}.", LogCategory.Request);
+                log.Write(new LogEntry
+                {
+                    Severity = LogSeverity.Warning,
+                    Category = LogCategory.Request,
+                    Message = $"Không enqueue được request {id}.",
+                    RequestId = id,
+                    ClientKeyId = ClientKeyItems.IdOf(ctx),
+                });
                 await ChatCompletionsHandler.WriteErrorAsync(ctx, 500, "Internal server error",
                     "server_error", null, null);
                 return;
@@ -114,7 +129,14 @@ public static class ProxyApp
             {
                 if (queue.TryRemove(id, out var removed))
                 {
-                    log.Info($"Request {id} bị client ngắt khi đang chờ.", LogCategory.Request);
+                    log.Write(new LogEntry
+                    {
+                        Severity = LogSeverity.Info,
+                        Category = LogCategory.Request,
+                        Message = $"Request {id} bị client ngắt khi đang chờ.",
+                        RequestId = id,
+                        ClientKeyId = ClientKeyItems.IdOf(ctx),
+                    });
                     removed.Completion.TrySetResult(new DispatchOutcome.Cancelled());
                 }
             });
@@ -140,8 +162,14 @@ public static class ProxyApp
             else if (outcome is DispatchOutcome.Retryable)
             {
                 // Dispatcher đã convert Retryable → Passthrough/Error (spec §2.2) — tới đây là bug
-                log.Error($"Outcome Retryable lọt tới endpoint request {id}.",
-                    category: LogCategory.Request);
+                log.Write(new LogEntry
+                {
+                    Severity = LogSeverity.Error,
+                    Category = LogCategory.Request,
+                    Message = $"Outcome Retryable lọt tới endpoint request {id}.",
+                    RequestId = id,
+                    ClientKeyId = ClientKeyItems.IdOf(ctx),
+                });
                 await ChatCompletionsHandler.WriteErrorAsync(ctx, 500, "Internal server error",
                     "server_error", null, null);
             }
@@ -149,8 +177,14 @@ public static class ProxyApp
                      && !ctx.RequestAborted.IsCancellationRequested)
             {
                 // Huỷ qua control API (client còn kết nối) — ghi log + 400 request_cancelled (spec §5)
-                log.Info($"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
-                    LogCategory.Request);
+                log.Write(new LogEntry
+                {
+                    Severity = LogSeverity.Info,
+                    Category = LogCategory.Request,
+                    Message = $"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
+                    RequestId = id,
+                    ClientKeyId = ClientKeyItems.IdOf(ctx),
+                });
                 await ChatCompletionsHandler.WriteErrorAsync(ctx, 400, "Request cancelled.",
                     "invalid_request_error", null, "request_cancelled");
             }

@@ -234,6 +234,7 @@ public class ModelHealthStoreTests : IDisposable
         public void Warn(string message, LogCategory category = LogCategory.App) => Warns.Add(message);
         public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App) =>
             Errors.Add(message);
+        public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
         public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
         public int Count(LogQuery query) => 0;
     }

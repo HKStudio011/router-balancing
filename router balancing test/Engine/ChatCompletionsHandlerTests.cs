@@ -5,6 +5,7 @@ using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
+using RouterBalancing.Core.Server;
 
 namespace router_balancing_test.Engine;
 
@@ -73,19 +74,38 @@ public class ChatCompletionsHandlerTests
         public List<string> Infos { get; } = [];
         public List<string> Warns { get; } = [];
         public List<string> Errors { get; } = [];
+        public List<string> Debugs { get; } = [];
+        public List<(string? RequestId, long? ClientKeyId, int Prompt, int Completion)> Usages { get; } = [];
 
         public event Action<LogEntry>? LogAdded { add { } remove { } }
-        public void Write(LogEntry entry) { }
-        public void Info(string message, LogCategory category = LogCategory.App) => Infos.Add(message);
-        public void Warn(string message, LogCategory category = LogCategory.App) => Warns.Add(message);
+
+        // Handler ghi journal qua Write (kèm RequestId/ClientKeyId, spec §7) — route theo Severity
+        // để assert Infos/Warns/Errors cũ vẫn đúng; wrapper Info/Warn/Error gọi Write như LogService thật
+        public void Write(LogEntry entry)
+        {
+            switch (entry.Severity)
+            {
+                case LogSeverity.Debug: Debugs.Add(entry.Message); break;
+                case LogSeverity.Warning: Warns.Add(entry.Message); break;
+                case LogSeverity.Error: Errors.Add(entry.Message); break;
+                default: Infos.Add(entry.Message); break;
+            }
+        }
+        public void Info(string message, LogCategory category = LogCategory.App) =>
+            Write(new LogEntry { Severity = LogSeverity.Info, Category = category, Message = message });
+        public void Warn(string message, LogCategory category = LogCategory.App) =>
+            Write(new LogEntry { Severity = LogSeverity.Warning, Category = category, Message = message });
         public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App) =>
-            Errors.Add(message);
+            Write(new LogEntry { Severity = LogSeverity.Error, Category = category, Message = message });
+        public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) =>
+            Usages.Add((requestId, clientKeyId, promptTokens, completionTokens));
         public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
         public int Count(LogQuery query) => 0;
     }
 
-    private ChatCompletionsHandler Create(IUpstreamClient upstream, CapturingLog? log = null) =>
-        new(upstream, _protector, log ?? new CapturingLog());
+    private ChatCompletionsHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
+        IClientKeyUsageSink? sink = null) =>
+        new(upstream, _protector, log ?? new CapturingLog(), sink ?? new NullUsageSink());
 
     [Fact]
     public async Task PrepareAsync_WhenJsonInvalid_Returns400OpenAiShapeAndSingleWarn()
@@ -290,5 +310,103 @@ public class ChatCompletionsHandlerTests
         Assert.Contains("HTTP 200", log.Infos[0]);
         Assert.Empty(log.Warns);
         Assert.Empty(log.Errors);
+    }
+
+    private const string StreamJson =
+        """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"stream":true}""";
+
+    private sealed class BodyCapturingUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
+    {
+        public byte[]? LastBody { get; private set; }
+        public Task<HttpResponseMessage> PostChatCompletionAsync(
+            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        {
+            LastBody = body;
+            return Task.FromResult(factory());
+        }
+    }
+
+    private sealed class CapturingUsageSink : IClientKeyUsageSink
+    {
+        public List<(long? KeyId, int Prompt, int Completion)> Records { get; } = [];
+        public Task RecordAsync(long? clientKeyId, int promptTokens, int completionTokens,
+            CancellationToken ct = default)
+        {
+            Records.Add((clientKeyId, promptTokens, completionTokens));
+            return Task.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenStreamOpenAi_GetsIncludeUsageInjected()
+    {
+        var upstream = new BodyCapturingUpstream(
+            () => Upstream(200, "data: [DONE]\n\n", "text/event-stream"));
+        var sut = Create(upstream);
+        var ctx = Ctx();
+        var provider = SeedProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.NotNull(upstream.LastBody);
+        using var doc = System.Text.Json.JsonDocument.Parse(upstream.LastBody);
+        Assert.True(doc.RootElement.GetProperty("stream").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("stream_options").GetProperty("include_usage").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenSseHasUsage_WritesUsageRowAndCountsSink()
+    {
+        const string sse =
+            "data: {\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7}}\n\ndata: [DONE]\n\n";
+        var log = new CapturingLog();
+        var sink = new CapturingUsageSink();
+        var sut = Create(new StubUpstream(() => Upstream(200, sse, "text/event-stream")), log, sink);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "abc12345";
+        ctx.Items[ClientKeyItems.Id] = 42L;
+        var provider = SeedProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var (_, _, body) = await ReadAsync(ctx);
+        Assert.Equal(sse, body);                                   // byte-forward nguyên vẹn
+        Assert.Equal(("abc12345", 42L, 11, 7), Assert.Single(log.Usages));
+        Assert.Equal((42L, 11, 7), Assert.Single(sink.Records));
+        Assert.Single(log.Infos);                                  // LogForwarded vẫn đúng 1 Info
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenIncludeUsageButNoUsage_LogsDebugAndStillHandled()
+    {
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => Upstream(200, "data: [DONE]\n\n", "text/event-stream")), log);
+        var ctx = Ctx();
+        var provider = SeedProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Single(log.Debugs);
+        Assert.Empty(log.Usages);
+        Assert.Single(log.Infos);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenNotStreamNoUsage_LogsNoDebug()
+    {
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
+        var ctx = Ctx();
+        var provider = SeedProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Empty(log.Debugs);
+        Assert.Empty(log.Usages);
+        Assert.Single(log.Infos);
     }
 }
