@@ -1,5 +1,6 @@
 ﻿using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Platform;
+using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 // Không import Microsoft.UI.Xaml: Application/Window trùng tên Microsoft.Maui.Controls (global using) → CS0104
@@ -17,6 +18,7 @@ namespace router_balancing
         private readonly IStartupRegistration _startup;
         private readonly ITrayService _tray;
         private readonly LogRetentionWorker _retention;
+        private readonly FreeModelSyncWorker _freeSync;
         private Window? _mainWindow;
 #if WINDOWS
         // Chỉ Windows dùng: phân biệt thoát từ tray với đóng cửa sổ về khay (AppWindow.Closing)
@@ -29,7 +31,8 @@ namespace router_balancing
             IAppSettingsService settings,
             IStartupRegistration startup,
             ITrayService tray,
-            LogRetentionWorker retention)
+            LogRetentionWorker retention,
+            FreeModelSyncWorker freeSync)
         {
             InitializeComponent();
             _log = log;
@@ -38,11 +41,15 @@ namespace router_balancing
             _startup = startup;
             _tray = tray;
             _retention = retention;
+            _freeSync = freeSync;
 
             _log.Info("router-balancing khởi động.");
 
             // Dọn log quá hạn ngay khi mở app rồi lặp 24h — retention không cần user bấm
             _retention.Start();
+
+            // Sync model free: trễ 60s rồi lặp 6h — preset free cần list model mới mà user không tự bấm
+            _freeSync.Start();
 
             _tray.OpenRequested += ShowMainWindow;
             _tray.ExitRequested += ExitFromTray;
@@ -152,8 +159,9 @@ namespace router_balancing
                 // Dispose đặt trước retention: lỗi retention không được phép bỏ sót tray.
                 // TrayService.Dispose idempotent (_icon is null → return) nên trùng lặp với ExitFromTray vô hại.
                 _tray.Dispose();
-                // Dừng vòng lặp dọn log trước khi process chết
+                // Dừng vòng lặp dọn log + sync model free trước khi process chết
                 _retention.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+                _freeSync.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
             }
             catch (Exception ex)
             {

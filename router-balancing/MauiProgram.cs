@@ -88,6 +88,7 @@ namespace router_balancing
             builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();
             builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
             builder.Services.AddSingleton<LogRetentionWorker>();
+            builder.Services.AddSingleton<FreeModelSyncWorker>();
 
 #if DEBUG
             builder.Services.AddBlazorWebViewDeveloperTools();
