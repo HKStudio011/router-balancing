@@ -10,15 +10,19 @@ public interface IClientKeyService
 {
     event Action? KeysChanged;
 
+    /// <summary>Lấy toàn bộ key (kèm <c>KeyMask</c> — không plaintext) cho UI, sắp theo id.</summary>
     Task<IReadOnlyList<ClientKey>> ListAsync(CancellationToken ct = default);
 
     /// <summary>Tạo key mới, trả plaintext 1 lần cho UI hiển thị — server không giữ lại.</summary>
     Task<(ClientKey Key, string Plaintext)> CreateAsync(ClientKeyDraft draft, CancellationToken ct = default);
 
+    /// <summary>Cập nhật name + RPM/TPM của key; id không tồn tại → <see cref="KeyNotFoundException"/>.</summary>
     Task UpdateAsync(long id, ClientKeyDraft draft, CancellationToken ct = default);
 
+    /// <summary>Xóa key theo id; id không tồn tại → <see cref="KeyNotFoundException"/>.</summary>
     Task DeleteAsync(long id, CancellationToken ct = default);
 
+    /// <summary>Bật/tắt key theo id rồi phát <see cref="KeysChanged"/> để auth cache invalidate.</summary>
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
 
     /// <summary>Cộng 1 vào counter daily + cập nhật LastUsedAt (gọi từ middleware sau khi auth qua).</summary>

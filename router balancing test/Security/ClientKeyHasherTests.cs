@@ -33,10 +33,15 @@ public class ClientKeyHasherTests
     }
 
     [Fact]
-    public void Mask_LegacyKeyOver8Chars_ShowsFirst4AndLast4()
-        => Assert.Equal("abcd…mnop", ClientKeyHasher.Mask("abcdefghijklmnop"));
+    public void Mask_LegacyKey_ShowsOnlyLast4()
+        => Assert.Equal("…mnop", ClientKeyHasher.Mask("abcdefghijklmnop"));
 
     [Fact]
-    public void Mask_ShortKey_ShowsWholeAfterEllipsis()
-        => Assert.Equal("…short", ClientKeyHasher.Mask("short"));
+    public void Mask_ShortLegacyKey_HidesEverythingButLast4()
+    {
+        // 5 ký tự → vẫn chỉ 4 cuối; ≤4 ký tự → mask cố định, không lộ ký tự secret nào (spec §2)
+        Assert.Equal("…hort", ClientKeyHasher.Mask("short"));
+        Assert.Equal("…", ClientKeyHasher.Mask("abcd"));
+        Assert.Equal("…", ClientKeyHasher.Mask("a"));
+    }
 }

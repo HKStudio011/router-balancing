@@ -29,14 +29,16 @@ public class DbInitializerLegacyKeyTests : IDisposable
     [Fact]
     public void Initialize_WithLegacyKeyEnabled_CreatesRowAndClearsSettings()
     {
-        var factory = SeedLegacySettings("old-secret", enabled: true);
+        // Seed ≤8 ký tự: nhánh mask cũ lưu trọn plaintext vào KeyMask — regression spec §2
+        var factory = SeedLegacySettings("legacy", enabled: true);
 
         DbInitializer.Initialize(factory, _protector);
 
         using var db = factory.CreateDbContext();
         var key = Assert.Single(db.ClientKeys.AsNoTracking().ToList());
         Assert.Equal("Legacy key", key.Name);
-        Assert.Equal(ClientKeyHasher.Hash("old-secret"), key.KeyHash);
+        Assert.Equal(ClientKeyHasher.Hash("legacy"), key.KeyHash);
+        Assert.Equal("…gacy", key.KeyMask);
         Assert.True(key.Enabled);
         Assert.False(db.AppSettings.AsNoTracking()
             .Any(a => a.Key == "apiKey" || a.Key == "apiKeyEnabled"));

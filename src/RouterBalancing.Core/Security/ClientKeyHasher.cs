@@ -21,12 +21,17 @@ public static class ClientKeyHasher
         return Prefix + base64.Replace('+', '-').Replace('/', '_');
     }
 
-    /// <summary>Mask cho UI: key sinh ra → <c>sk-rb-…xxxx</c>; key cũ tùy ý → 4 đầu…4 cuối.</summary>
+    /// <summary>
+    /// Mask cho UI: key sinh ra → <c>sk-rb-…xxxx</c> (4 ký tự cuối);
+    /// key tùy ý khác → <c>…</c> + 4 ký tự cuối; key ≤4 ký tự → <c>…</c> (không lộ ký tự nào).
+    /// </summary>
     public static string Mask(string plaintext)
     {
+        // Spec §2: DB không bao giờ lưu plaintext — mask chỉ được chứa tối đa 4 ký tự cuối,
+        // kể cả key legacy ≤8 ký tự (nhánh cũ lưu trọn vẹn plaintext vào KeyMask khi migrate).
         if (plaintext.StartsWith(Prefix, StringComparison.Ordinal))
             return $"{Prefix}…{plaintext[^4..]}";
-        if (plaintext.Length <= 8) return $"…{plaintext}";
-        return $"{plaintext[..4]}…{plaintext[^4..]}";
+        if (plaintext.Length <= 4) return "…";
+        return $"…{plaintext[^4..]}";
     }
 }

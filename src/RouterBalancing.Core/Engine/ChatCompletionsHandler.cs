@@ -51,7 +51,16 @@ public sealed class ChatCompletionsHandler(
                     ("Missing required parameter: 'messages'.", "messages"),
                 _ => ("Invalid JSON body", null),
             };
-            log.Warn($"Yêu cầu chat không hợp lệ: {validation.Failure}.", LogCategory.Request);
+            // Spec §7: row validate-fail vẫn phải correlate được request — middleware đã set
+            // Items vào ctx nên gắn RequestId/ClientKeyId như các row Write khác; Message giữ nguyên.
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Warning,
+                Category = LogCategory.Request,
+                Message = $"Yêu cầu chat không hợp lệ: {validation.Failure}.",
+                RequestId = ClientKeyItems.RequestIdOf(ctx),
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
             await WriteErrorAsync(ctx, 400, message, "invalid_request_error", param, null);
             return null;
         }

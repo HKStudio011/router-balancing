@@ -75,6 +75,7 @@ public class ChatCompletionsHandlerTests
         public List<string> Warns { get; } = [];
         public List<string> Errors { get; } = [];
         public List<string> Debugs { get; } = [];
+        public List<LogEntry> Entries { get; } = [];
         public List<(string? RequestId, long? ClientKeyId, int Prompt, int Completion)> Usages { get; } = [];
 
         public event Action<LogEntry>? LogAdded { add { } remove { } }
@@ -83,6 +84,7 @@ public class ChatCompletionsHandlerTests
         // để assert Infos/Warns/Errors cũ vẫn đúng; wrapper Info/Warn/Error gọi Write như LogService thật
         public void Write(LogEntry entry)
         {
+            Entries.Add(entry);
             switch (entry.Severity)
             {
                 case LogSeverity.Debug: Debugs.Add(entry.Message); break;
@@ -113,6 +115,8 @@ public class ChatCompletionsHandlerTests
         var log = new CapturingLog();
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx("{broken");
+        ctx.Items[ClientKeyItems.RequestId] = "req-42";
+        ctx.Items[ClientKeyItems.Id] = 7L;
 
         var prepared = await sut.PrepareAsync(ctx);
 
@@ -124,6 +128,10 @@ public class ChatCompletionsHandlerTests
         Assert.Contains("\"invalid_request_error\"", body);
         Assert.Single(log.Warns);
         Assert.Empty(log.Infos);
+        // Row validate-fail vẫn correlate được request qua RequestId/ClientKeyId (spec §7)
+        var warn = Assert.Single(log.Entries, e => e.Severity == LogSeverity.Warning);
+        Assert.Equal("req-42", warn.RequestId);
+        Assert.Equal(7L, warn.ClientKeyId);
     }
 
     [Fact]
