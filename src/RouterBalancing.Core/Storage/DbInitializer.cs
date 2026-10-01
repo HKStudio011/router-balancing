@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Security;
 
 namespace RouterBalancing.Core.Storage;
 
@@ -11,20 +13,67 @@ public static class DbInitializer
     private const int MaxIdentifierLength = 50;
 
     /// <summary>Tạo factory theo đường dẫn chuẩn rồi migrate — tiện cho app startup.</summary>
-    public static void Initialize()
+    /// <param name="legacyKeyProtector">Cần để giải mã apiKey cũ trong settings sang bảng ClientKeys.</param>
+    public static void Initialize(ISecretProtector? legacyKeyProtector = null)
     {
         var options = new DbContextOptionsBuilder<RouterBalancingDbContext>()
             .UseSqlite($"Data Source={StoragePathProvider.GetDatabasePath()}")
             .Options;
-        Initialize(new SimpleFactory(options));
+        Initialize(new SimpleFactory(options), legacyKeyProtector);
     }
 
-    public static void Initialize(IDbContextFactory<RouterBalancingDbContext> factory)
+    public static void Initialize(IDbContextFactory<RouterBalancingDbContext> factory,
+        ISecretProtector? legacyKeyProtector = null)
     {
         Directory.CreateDirectory(StoragePathProvider.GetDataDirectory());
         using var db = factory.CreateDbContext();
         db.Database.Migrate();
         BackfillIdentifiers(db);
+        MigrateLegacyApiKey(db, legacyKeyProtector);
+    }
+
+    /// <summary>
+    /// Chuyển apiKey 1 đầu trong settings (DPAPI) sang bảng ClientKeys rồi dọn row cũ — chạy 1 lần
+    /// sau Migrate, idempotent nhờ guard "bảng đã có row" (spec client-keys §3).
+    /// Đọc row settings TRỰC TIẾP qua DbContext (không qua IAppSettingsService — service có thể
+    /// đã cache giá trị trước khi migrate). Tên 2 key là storage contract nên dùng literal:
+    /// hằng SettingsKeys.ApiKey/ApiKeyEnabled bị gỡ ở task gỡ settings API (Task 5).
+    /// </summary>
+    private static void MigrateLegacyApiKey(RouterBalancingDbContext db, ISecretProtector? protector)
+    {
+        if (db.ClientKeys.Any()) return;
+
+        var keyRow = db.AppSettings.AsNoTracking()
+            .FirstOrDefault(a => a.Key == "apiKey");
+        if (keyRow is null || string.IsNullOrWhiteSpace(keyRow.ValueJson)) return;
+
+        // Không có protector = không giải mã được key cũ. Fail loud để startup dialog hiện rõ,
+        // tránh khi UI gỡ settings apiKey (Task 5) auth âm thầm chuyển sang open.
+        if (protector is null)
+            throw new InvalidOperationException(
+                "apiKey cũ tồn tại trong settings nhưng thiếu ISecretProtector để migrate sang ClientKeys.");
+
+        // Unprotect lỗi (DB copy sang máy khác...) cũng phải nổi lên - không bỏ qua âm thầm.
+        var plaintext = protector.Unprotect(keyRow.ValueJson);
+        if (string.IsNullOrEmpty(plaintext)) return;
+
+        var enabledRow = db.AppSettings.AsNoTracking()
+            .FirstOrDefault(a => a.Key == "apiKeyEnabled");
+        var enabled = enabledRow is not null
+            && bool.TryParse(enabledRow.ValueJson, out var parsed) && parsed;
+
+        db.ClientKeys.Add(new ClientKey
+        {
+            Name = "Legacy key",
+            KeyHash = ClientKeyHasher.Hash(plaintext),
+            KeyMask = ClientKeyHasher.Mask(plaintext),
+            Enabled = enabled,
+        });
+        db.AppSettings.Remove(keyRow);
+        if (enabledRow is not null) db.AppSettings.Remove(enabledRow);
+        // 1 SaveChanges duy nhất = atomic best-effort (spec §3): migrate xong thì row cũ đi kèm,
+        // thất bại → DB giữ nguyên, lần khởi động sau retry (idempotent) — không bao giờ mất key.
+        db.SaveChanges();
     }
 
     /// <summary>

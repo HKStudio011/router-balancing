@@ -18,6 +18,9 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
     /// <summary>Bảng tài khoản (API key) của provider — đa tài khoản mỗi nhà cung cấp.</summary>
     public DbSet<ProviderAccount> ProviderAccounts => Set<ProviderAccount>();
 
+    /// <summary>API key inbound của client - chỉ lưu hash.</summary>
+    public DbSet<ClientKey> ClientKeys => Set<ClientKey>();
+
     public DbSet<LogEntry> LogEntries => Set<LogEntry>();
 
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
@@ -95,6 +98,18 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             e.HasKey(x => x.Key);
             e.Property(x => x.Key).HasMaxLength(200).IsRequired();
             e.Property(x => x.ValueJson).IsRequired();
+        });
+
+        modelBuilder.Entity<ClientKey>(e =>
+        {
+            e.Property(x => x.Name).IsRequired().HasMaxLength(100);
+            e.Property(x => x.KeyHash).IsRequired().HasMaxLength(64);
+            e.Property(x => x.KeyMask).IsRequired().HasMaxLength(16);
+            e.HasIndex(x => x.KeyHash).IsUnique();
+            // DateOnly → "yyyy-MM-dd" TEXT: tường minh, không phụ thuộc mapping mặc định của provider
+            e.Property(x => x.UsageDate).HasConversion(
+                d => d.HasValue ? d.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) : null,
+                s => s == null ? null : DateOnly.Parse(s, System.Globalization.CultureInfo.InvariantCulture));
         });
     }
 }

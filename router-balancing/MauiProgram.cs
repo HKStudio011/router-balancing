@@ -99,7 +99,9 @@ namespace router_balancing
         {
             try
             {
-                DbInitializer.Initialize();
+                // Protector cho legacy apiKey migration: settings key cũ phải giải mã được
+                // trước khi UI gỡ settings apiKey (spec client-keys §3).
+                DbInitializer.Initialize(new DpapiSecretProtector());
                 return true;
             }
             catch (Exception ex)

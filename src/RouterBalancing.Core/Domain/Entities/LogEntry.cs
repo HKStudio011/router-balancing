@@ -20,8 +20,8 @@ public class LogEntry
 
     public long? ModelId { get; set; }
 
-    /// <summary>Tương quan các dòng của cùng một request.</summary>
-    public Guid? RequestId { get; set; }
+    /// <summary>Id 8 ký tự của request proxy (RequestId.New) - correlate các dòng cùng request.</summary>
+    public string? RequestId { get; set; }
 
     /// <summary>Thời gian xử lý (ms) — chỉ Category=Request.</summary>
     public int? DurationMs { get; set; }
@@ -29,6 +29,9 @@ public class LogEntry
     public int? PromptTokens { get; set; }
 
     public int? CompletionTokens { get; set; }
+
+    /// <summary>Client key đã dùng request này - null khi request đi qua khi auth đang mở.</summary>
+    public long? ClientKeyId { get; set; }
 
     public string? ErrorCode { get; set; }
 
