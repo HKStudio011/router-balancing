@@ -2,6 +2,11 @@
 
 **Date:** 2026-10-01 · **Status:** drafted, chờ user review · **Branch:** `feat/retry-circuit-3c`
 
+- **Amend 2026-10-01 (khi viết plan, verify từ source `dotnet/runtime`):**
+  1. `ReportFailure` trả `bool` (`true` = vừa chuyển sống→down) — handler log Warn duy nhất lần đầu, pool không cần biết message lỗi (§4.1, §7).
+  2. **Auth KHÔNG dùng userinfo trong proxy URI** — .NET 10 không parse userinfo (`dotnet/runtime#125341`, fix chỉ vào .NET 11). Thay bằng `RoundRobinWebProxy.Credentials` trả `ICredentials` ổn định (`DynamicProxyCredentials`), `GetCredential()` đọc `ProxyContext.Current` → credential đúng theo proxy đang dùng (§4.3, §4.6). Verified: `HttpConnectionPoolManager.SendAsync` gọi `_proxy.GetProxy` **per-request** (không cache theo destination), connection pool key gồm `proxyUri` (tái sử dụng kết nối per-proxy), `socks5://` scheme native.
+  3. `ProxyAttempt` mang `Username`/`Password` (đã decrypt, trong memory) song song `Uri` không userinfo; `Endpoint` display không credentials.
+
 ## 1. Mục tiêu & phạm vi
 
 Thêm **pool proxy outbound toàn cục**: mọi request HTTP mà app gửi **tới provider** đi qua 1 proxy được chọn round-robin từ pool — mục đích phân tán IP, tránh rate-limit/geo-block/ban theo IP.
@@ -72,8 +77,10 @@ public interface IProxyPool
     /// Trả <see langword="null"/> = direct (pool rỗng hoặc tất cả down).</summary>
     ProxyAttempt? GetNext();
 
-    /// <summary>Ghi nhận lỗi kết nối tới proxy — đánh down + cooldown <c>DownCooldown</c>.</summary>
-    void ReportFailure(long proxyId);
+    /// <summary>Ghi nhận lỗi kết nối tới proxy — đánh down + cooldown <c>DownCooldown</c>.
+    /// Trả <see langword="true"/> khi vừa chuyển sống→down (log Warn duy nhất lần đầu);
+    /// proxy đã down = no-op, trả <see langword="false"/>.</summary>
+    bool ReportFailure(long proxyId);
 
     /// <summary>Ghi nhận thành công — reset trạng thái failure của proxy.</summary>
     void ReportSuccess(long proxyId);
@@ -86,9 +93,9 @@ public interface IProxyPool
 }
 ```
 
-- `ProxyAttempt` (record): `long Id`, `Uri Uri` (đã URI-escape userinfo nếu có auth), `string Endpoint` (`scheme://host:port`, **không** chứa credentials).
+- `ProxyAttempt` (record): `long Id`, `Uri Uri` (**không** userinfo), `string? Username`, `string? Password` (đã decrypt, chỉ sống trong memory), `string Endpoint` (`scheme://host:port`, **không** chứa credentials — display/log).
 - `ProxyRuntimeStatus` (record): `long Id`, `string Endpoint`, `bool IsDown`, `DateTimeOffset? DownUntil`.
-- **Snapshot từ DB**: chỉ `Enabled = true`, decrypt password vào `Uri`. Cache trong memory; `Invalidate()` reload (CRUD gọi sau Create/Update/Delete/SetEnabled).
+- **Snapshot từ DB**: chỉ `Enabled = true`; decrypt password vào `ProxyAttempt` (không đưa vào `Uri`). Cache trong memory; `Invalidate()` reload (CRUD gọi sau Create/Update/Delete/SetEnabled).
 - **RR + health in-memory**: cursor RR tăng đều qua danh sách proxy sống (thứ tự `Id`); `ReportFailure` → `DownUntil = now + DownCooldown` (**const 60s**), `ReportSuccess` → reset. `ReportFailure` với proxy **đã down** = no-op (không gia hạn cooldown, không log lại — nhiều request cùng fail song song không đụng cooldown của nhau). Passive recover: hết cooldown → proxy quay lại RR (không probe riêng); fail tiếp → cooldown lại. Reset toàn bộ khi restart app — chấp nhận.
 - `GetNext()` bỏ qua down; hết proxy sống → `null`.
 - Thread-safe (lock hoặc concurrent structure); `TimeProvider` inject để test cooldown.
@@ -112,7 +119,8 @@ Vòng lặp cho mỗi request (budget = **số proxy sống lúc bắt đầu re
 1. `pick = pool.GetNext()`; nếu `null` → attempt direct cuối (không report health vì không dính proxy nào).
 2. Set `ProxyContext.Current = pick` → `base.SendAsync(request, ct)`.
 3. **Thành công** (có response) → `ReportSuccess(pick.Id)` (nếu pick != null) → trả response.
-4. **Lỗi connect-phase** — chỉ thỏa mãn TẤT CẢ: `HttpRequestException` (inner `SocketException` **hoặc** inner timeout **hoặc** message chứa `407`) **VÀ** `pick != null` **VÀ** chưa nhận response headers **VÀ** budget còn lượt → `ReportFailure(pick.Id)` → quay vòng (pick kế sẽ tự skip proxy vừa down).
+4. **Lỗi connect-phase** — chỉ thỏa mãn TẤT CẢ: `HttpRequestException` (inner `SocketException` **hoặc** inner timeout **hoặc** message chứa `407`) **VÀ** `pick != null` **VÀ** budget còn lượt → nếu `ReportFailure(pick.Id)` trả `true` → log Warn (§7) → quay vòng (pick kế sẽ tự skip proxy vừa down).
+   - **Response 407 cuối cùng** (proxy yêu cầu auth sai/không có — chỉ proxy sinh được 407, không phải upstream): cũng coi là proxy fail — `ReportFailure` + log + quay vòng như trên. (Flow 407-nội-bộ do .NET tự retry với `GetCredential` xảy ra bên trong `SendAsync` — handler chỉ thấy kết quả cuối.)
 5. Hết budget hoặc lỗi khác → ném nguyên (không wrap) — caller hiện có xử lý như nay.
 
 **Replay guard:** chỉ retry khi `request.Content is null || request.Content is ByteArrayContent || request.Content is StringContent || request.Content is FormUrlEncodedContent` (đều buffer lại được). Content khác → không retry, ném ngay. Toàn bộ outbound hiện tại của app đều khớp nhóm này.
@@ -137,11 +145,12 @@ Vòng lặp cho mỗi request (budget = **số proxy sống lúc bắt đầu re
 - RR cursor + down-state dùng chung giữa chat-forward và probe/sync.
 - Ký thay đổi → sửa call site integration test hiện có (~4 chỗ gọi `ProxyApp.ConfigureServices`).
 
-### 4.6 Auth (userinfo trong proxy URI)
+### 4.6 Auth (`DynamicProxyCredentials`)
 
-- `Uri` của attempt nhúng credentials dạng `scheme://user:pass@host:port` (URI-escaped) — `SocketsHttpHandler` tự dùng cho HTTP `Proxy-Authorization` / SOCKS5 handshake.
-- **Risk cần verify ở plan:** behavior thật của userinfo với từng scheme → plan thêm **integration test với stub proxy cục bộ** (`TcpListener` tối giản trong test project: accept CONNECT, kiểm tra `Proxy-Authorization`, trả `200 Connection Established`; case 407 → pin failover) — không phụ thuộc proxy ngoài, không flaky.
-- Fallback nếu userinfo không chạy cho HTTP: `ProxyHealthHandler` stamp `request.Headers.ProxyAuthorization` cho pick của mình (chỉ HTTP; SOCKS vẫn userinfo). Quyết định sau khi có test.
+- **Không** nhúng userinfo vào `Uri` (§ Amend 2.0 — .NET 10 không parse; fix vào .NET 11).
+- `RoundRobinWebProxy.Credentials` trả về **1 instance `DynamicProxyCredentials` ổn định** (đọc 1 lần lúc `SocketsHttpHandler` construct — getter phải trả object, không evaluate pick tại đó).
+- `DynamicProxyCredentials.GetCredential(uri, authType)` đọc `ProxyContext.Current` → `NetworkCredential(Username, Password)`; proxy hiện tại không có auth → trả `null`.
+- Cơ chế này phục vụ **cả 2 flow**: HTTP proxy 407-challenge (`AuthenticationHelper` gọi `ProxyCredentials.GetCredential` trong cùng execution flow của request) và SOCKS5 handshake. Verify thực nghiệm bằng stub-proxy tests (§8) — nếu SOCKS5 trên .NET 10 không gọi `GetCredential` → fallback plan ghi trong plan (quyết định khi test đỏ).
 
 ## 5. Service — CRUD + Test
 
@@ -157,6 +166,7 @@ Task<ProxyTestResult> TestAsync(long id, CancellationToken ct = default);
 ```
 
 - `ProxyTestResult` (record): `bool Success`, `string? Ip`, `string Message`, `DateTimeOffset At`.
+- Tách seam: **`IProxyEchoClient`** (`GetIpAsync(ProxyEchoTarget, ct)` → IP) — `ProxyService` inject, impl mặc định `ProxyEchoClient` tạo `HttpClient` riêng mỗi lần (không qua named client/pool); unit test stub seam, không network.
 - Mọi thao tác CRUD/toggle → persist `LastTest*` không đổi; **mọi thao tác CRUD/toggle → `pool.Invalidate()`**.
 - `TestAsync`:
   - Tạo `HttpClient` **riêng** mỗi lần (không qua named client/pool) với `SocketsHttpHandler { Proxy = WebProxy(uri cố định của proxy này) }`, timeout 10s.
@@ -181,7 +191,7 @@ Qua `ILogService`, message tiếng Việt (theo chuẩn repo), không bao giờ 
 
 | Event | Level | Format |
 |---|---|---|
-| Proxy bị đánh down | `Warn` | `Proxy {endpoint} đánh dấu down 60s sau lỗi kết nối: {lỗi}` — chỉ lần **đầu** mỗi chuỗi fail liên tiếp (khi proxy chuyển từ sống → down), không lặp mỗi request |
+| Proxy bị đánh down | `Warn` | `Proxy {endpoint} đánh dấu down 60s sau lỗi kết nối: {lỗi}` — do `ProxyHealthHandler` ghi **chỉ khi `ReportFailure` trả `true`** (chuyển sống→down), không lặp mỗi request |
 | Request failover thành công sau khi đổi proxy | — | không log (response đã đi qua log request hiện có) |
 | Test echo | — | không log (đã persist `LastTest*` + hiện UI) |
 
@@ -193,9 +203,10 @@ Lỗi từ upstream: giữ nguyên log hiện có, không đổi.
 |---|---|
 | `Core/Proxies/ProxyPoolTests.cs` | RR đúng thứ tự proxy sống; bỏ qua down; pool rỗng/tất cả down → `null`; `ReportFailure` → down đúng cooldown (`TimeProvider` fake) → advance → recover; `ReportSuccess` reset; `Invalidate` reload từ stub context; `GetNext` nhiều thread an toàn |
 | `Core/Proxies/ProxyHealthHandlerTests.cs` | connect-fail → `ReportFailure` + retry proxy kế → thành công; upstream 500 → **không** report; 407 → coi là proxy fail; hết budget → ném; success → `ReportSuccess`; content không replayable → không retry |
-| `Core/Proxies/RoundRobinWebProxyTests.cs` | có scope → URI của attempt (đúng credentials escape); không scope → bypass |
-| `Core/Proxies/ProxyServiceTests.cs` | validation (scheme/port/duplicate/host rỗng); password encrypt at rest + decrypt khi pool nạp; `Password=null` khi update = giữ cũ; CRUD + `SetEnabled`; mọi CRUD gọi `Invalidate`; `TestAsync` success/fail với echo seam stub |
-| `Server/ProxyOutboundStubProxyTests.cs` | **stub proxy cục bộ** (`TcpListener`): qua được CONNECT + `Proxy-Authorization` đúng (pin userinfo behavior); proxy thứ nhất từ chối/từ chối kết nối → failover sang proxy kế; tất cả chết → direct vẫn qua stub direct endpoint |
+| `Core/Proxies/RoundRobinWebProxyTests.cs` | có scope → `GetProxy` trả `Uri` của attempt (không userinfo); không scope → `IsBypassed` = true; `Credentials` = instance ổn định; `DynamicProxyCredentials.GetCredential` đọc đúng AsyncLocal (set → NetworkCredential, null → null) |
+| `Core/Proxies/ProxyServiceTests.cs` | validation (scheme/port/duplicate/host rỗng); password encrypt at rest + decrypt khi pool nạp; `Password=null` khi update = giữ cũ; username trống khi update = xóa auth; CRUD + `SetEnabled`; mọi CRUD gọi `Invalidate`; `TestAsync` success/fail với echo seam stub |
+| `Server/ProxyOutboundHttpStubTests.cs` | stub proxy cục bộ (`TcpListener` HTTP): GetProxy per-request (2 request → 2 pick RR); 407 → `GetCredential` (AsyncLocal) gửi Basic auth → pass; proxy chết (port đóng) → `ReportFailure` + failover proxy kế; tất cả chết → direct vẫn tới destination stub |
+| `Server/ProxyOutboundSocksStubTests.cs` | stub SOCKS5 cục bộ (RFC1928 + RFC1929): handshake nhận đúng username/password của pick (pin `GetCredential` với socks trên .NET 10 — risk §11.4); no-auth variant; socks chết → failover |
 | Migration test | pattern `AddProviderAccountsMigrationTests` — 3 artifacts của `AddOutboundProxies` coherent |
 
 - Test project thêm gì tùy plan (không thêm thư viện ngoài ngoài xUnit đã có).
@@ -214,13 +225,13 @@ Lỗi từ upstream: giữ nguyên log hiện có, không đổi.
 
 ## 10. File map (dự kiến — plan chốt lại)
 
-**Tạo:** `Domain/Entities/OutboundProxy.cs` · `Core/Proxies/{IProxyPool, ProxyPool, ProxyAttempt, ProxyRuntimeStatus, ProxyContext, RoundRobinWebProxy, ProxyHealthHandler, IProxyService, ProxyService, ProxyDraft, ProxyTestResult}.cs` · `Components/Pages/Proxies.razor` · migration `AddOutboundProxies` · test files ở §8.
+**Tạo:** `Domain/Entities/OutboundProxy.cs` · `Core/Proxies/{IProxyPool, ProxyPool, ProxyAttempt, ProxyRuntimeStatus, ProxyContext, RoundRobinWebProxy, DynamicProxyCredentials, ProxyHealthHandler, IProxyService, ProxyService, ProxyDraft, ProxyValidator, ProxyValidationException, ProxyTestResult, IProxyEchoClient, ProxyEchoClient}.cs` · `Components/Pages/Proxies.razor` · migration `AddOutboundProxies` · test files ở §8.
 
-**Sửa:** `RouterBalancingDbContext` (DbSet) · `MauiProgram` (DI pool/service + wire 2 named client) · `ProxyApp.ConfigureServices` (ký +nhận pool + wire `upstream`) · `ProxyHost` (inject/forward pool) · `NavMenu.razor` · `Translations.cs` (2 dict) · ~4 integration test call site `ConfigureServices`.
+**Sửa:** `RouterBalancingDbContext` (DbSet + unique index) · `MauiProgram` (DI pool/service/echo + wire 2 named client) · `ProxyApp.ConfigureServices` (ký +nhận pool + wire `upstream`) · `ProxyHost` (inject/forward pool) · `NavMenu.razor` · `Translations.cs` (2 dict) · 4 integration test call site `ConfigureServices`.
 
 ## 11. Risks / open items
 
-1. **Userinfo auth behavior** (HTTP `Proxy-Authorization` + SOCKS5 handshake) — verify bằng stub-proxy test (§4.6); fallback stamp header ở handler.
-2. **AsyncLocal flows vào `GetProxy`** — pin bằng cùng stub-proxy test (nếu flow không tới, test đỏ ngay).
-3. `socks5://` native .NET 6+ — đã confirm từ docs cộng đồng; plan step 1 verify bằng docs chính thức + 1 test kết nối qua stub socks tối giản (nếu vượt quá effort → chấp nhận HTTP trước, SOCKS5 ghi nhận — quyết định tại plan review).
-4. `GetProxy` có bị gọi mỗi request (không phải mỗi connection) — stub test sẽ hiện rõ.
+1. ~~**Userinfo auth behavior**~~ — **đã resolve**: .NET 10 không parse userinfo (`dotnet/runtime#125341`) → thay bằng `DynamicProxyCredentials` (§4.6); pin thực nghiệm bằng stub HTTP (407→Basic) + stub SOCKS (RFC1929 handshake).
+2. ~~**AsyncLocal flows vào `GetProxy`**~~ — đã verify từ source: `HttpConnectionPoolManager.SendAsync` gọi `_proxy.GetProxy` per-request trong cùng flow; stub test pin lại.
+3. ~~`socks5://` native~~ — đã verify từ source (`HttpUtilities.IsSocksScheme` + `SocksTunnel` pool kinds).
+4. **SOCKS5 handshake có gọi `ProxyCredentials.GetCredential` trên .NET 10** — chưa verify source; stub SOCKS test (§8) sẽ pin. Nếu đỏ → fallback: `RoundRobinWebProxy.Credentials` trả `NetworkCredential` tĩnh cho tới khi probe đủ (hoặc nâng .NET 11) — quyết định khi test chạy.
