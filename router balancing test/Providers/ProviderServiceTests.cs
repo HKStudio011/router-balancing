@@ -116,7 +116,8 @@ public class ProviderServiceTests : IDisposable
 
         var list = await _service.ListAsync();
 
-        var loaded = Assert.Single(list);
+        // List giờ có cả 4 preset seed — pick đúng hàng test tạo thay vì Single(list)
+        var loaded = Assert.Single(list, p => p.Name == "OpenAI");
         Assert.Equal("gpt-4o", Assert.Single(loaded.Models).ModelId);
     }
 
@@ -127,7 +128,8 @@ public class ProviderServiceTests : IDisposable
 
         var list = await _service.ListAsync();
 
-        var loaded = Assert.Single(list);
+        // List giờ có cả 4 preset seed — pick đúng hàng test tạo thay vì Single(list)
+        var loaded = Assert.Single(list, p => p.Name == "OpenAI");
         Assert.Equal("Default", Assert.Single(loaded.Accounts).Name);
     }
 

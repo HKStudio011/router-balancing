@@ -102,7 +102,8 @@ public class DbInitializerTests : IDisposable
 
         using (var db = factory.CreateDbContext())
         {
-            var providers = db.Providers.OrderBy(p => p.Id).ToList();
+            // Seed thêm 4 preset (Id nhỏ hơn hàng test) — loại ra để index [0..2] trỏ đúng hàng test
+            var providers = db.Providers.Where(p => !p.IsPreset).OrderBy(p => p.Id).ToList();
             Assert.Equal("nha-cung-cap-a", providers[0].Identifier);
             Assert.Equal("nha-cung-cap-a-2", providers[1].Identifier); // dedupe
             Assert.Equal($"provider-{providers[2].Id}", providers[2].Identifier); // slug rỗng
@@ -113,7 +114,7 @@ public class DbInitializerTests : IDisposable
         using (var db = factory.CreateDbContext())
         {
             Assert.Equal("nha-cung-cap-a",
-                db.Providers.OrderBy(p => p.Id).First().Identifier);
+                db.Providers.Where(p => !p.IsPreset).OrderBy(p => p.Id).First().Identifier);
         }
     }
 
@@ -142,7 +143,8 @@ public class DbInitializerTests : IDisposable
 
         using (var db = factory.CreateDbContext())
         {
-            var providers = db.Providers.OrderBy(p => p.Id).ToList();
+            // Seed thêm 4 preset (Id nhỏ hơn hàng test) — loại ra để index [0..2] trỏ đúng hàng test
+            var providers = db.Providers.Where(p => !p.IsPreset).OrderBy(p => p.Id).ToList();
             foreach (var p in providers)
             {
                 Assert.True(p.Identifier!.Length <= 50,
@@ -159,7 +161,7 @@ public class DbInitializerTests : IDisposable
         using (var db = factory.CreateDbContext())
         {
             Assert.Equal(new string('a', 50),
-                db.Providers.OrderBy(p => p.Id).First().Identifier);
+                db.Providers.Where(p => !p.IsPreset).OrderBy(p => p.Id).First().Identifier);
         }
     }
 }

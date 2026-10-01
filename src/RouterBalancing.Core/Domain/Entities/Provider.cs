@@ -28,6 +28,12 @@ public class Provider
 
     public string? LastTestMessage { get; set; }
 
+    /// <summary>Provider preset từ free catalog — seed lúc khởi động, không cho xóa (spec provider-free §5.1).</summary>
+    public bool IsPreset { get; set; }
+
+    /// <summary>Lần sync model free gần nhất — null = chưa sync (tách khỏi LastTestAt: 2 việc khác nhau).</summary>
+    public DateTimeOffset? LastModelSyncAt { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;

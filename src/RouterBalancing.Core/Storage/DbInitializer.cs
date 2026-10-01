@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 
 namespace RouterBalancing.Core.Storage;
@@ -28,8 +29,34 @@ public static class DbInitializer
         Directory.CreateDirectory(StoragePathProvider.GetDataDirectory());
         using var db = factory.CreateDbContext();
         db.Database.Migrate();
+        SeedFreeProviders(db);
         BackfillIdentifiers(db);
         MigrateLegacyApiKey(db, legacyKeyProtector);
+    }
+
+    /// <summary>
+    /// Seed 4 provider free preset (spec provider-free §6.4) — chạy đúng 1 lần cho đời sống DB:
+    /// guard theo "DB đã có hàng preset nào chưa" thay vì match từng Name, để hàng user đã
+    /// đổi tên (§13: không nhân đôi) hay sửa URL không bao giờ bị đụng tới/ghé lại.
+    /// Chạy trước BackfillIdentifiers để Identifier được slugify từ Name ngay lần đầu.
+    /// </summary>
+    private static void SeedFreeProviders(RouterBalancingDbContext db)
+    {
+        if (db.Providers.Any(p => p.IsPreset)) return;
+
+        foreach (var entry in FreeProviderCatalog.Entries)
+        {
+            db.Providers.Add(new Provider
+            {
+                Name = entry.DisplayName,
+                BaseUrl = entry.BaseUrl,
+                Type = ProviderType.OpenAI, // cả 4 endpoint đều OpenAI-compatible (§4)
+                IsPreset = true,
+                Enabled = false, // D9: user tự bật — 4 provider lạ không được tự nhận traffic
+                MaxConcurrent = 4,
+            });
+        }
+        db.SaveChanges();
     }
 
     /// <summary>

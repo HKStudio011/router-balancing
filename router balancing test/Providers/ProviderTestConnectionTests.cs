@@ -180,7 +180,8 @@ public class ProviderTestConnectionTests : IDisposable
 
         Assert.True(result.Success);
         using var db = _db.CreateDbContext();
-        Assert.Equal(0, await db.Providers.CountAsync());
+        // 4 preset free đã seed — chỉ đếm hàng user-created để giữ intent "unsaved không persist"
+        Assert.Equal(0, await db.Providers.CountAsync(p => !p.IsPreset));
     }
 
     [Fact]
