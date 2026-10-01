@@ -31,24 +31,37 @@ public sealed class ClientKeyAuthCache : IDisposable
         lock (_gate)
         {
             if (_snapshot is not null && !_dirty) return _snapshot;
+            // Clear TRƯỚC khi đọc DB: KeysChanged bắn trong lúc đọc sẽ set lại _dirty,
+            // để lock2 phân biệt "invalidate đến sau query" với trạng thái dirty cũ.
+            _dirty = false;
         }
 
         // Đọc DB ngoài lock (không giữ lock khi I/O); nếu trong lúc đọc có KeysChanged nữa thì
         // _dirty vẫn true và snapshot cũ được giữ, lần gọi sau sẽ đọc lại — không bao giờ nuốt invalidate.
-        using var db = _db.CreateDbContext();
-        var fresh = db.ClientKeys.AsNoTracking()
-            .Where(k => k.Enabled)
-            .OrderBy(k => k.Id)
-            .Select(k => new ClientKeyAuthInfo(k.Id, k.KeyHash, k.RatePerMinute, k.TokensPerMinute))
-            .ToArray();
+        ClientKeyAuthInfo[] fresh;
+        try
+        {
+            using var db = _db.CreateDbContext();
+            fresh = db.ClientKeys.AsNoTracking()
+                .Where(k => k.Enabled)
+                .OrderBy(k => k.Id)
+                .Select(k => new ClientKeyAuthInfo(k.Id, k.KeyHash, k.RatePerMinute, k.TokensPerMinute))
+                .ToArray();
+        }
+        catch
+        {
+            // Đọc lỗi: bật lại _dirty nếu không snapshot cũ (có thể thiếu invalidate) sẽ phục vụ
+            // mãi tới CRUD kế tiếp — đúng lỗi "nuốt invalidate" mà fix này chặn.
+            lock (_gate) { _dirty = true; }
+            throw;
+        }
 
         lock (_gate)
         {
-            if (_dirty)
-            {
+            // _dirty=true → có KeysChanged trong lúc đọc → fresh thiếu thay đổi, không ghi đè;
+            // _snapshot null (lần load đầu) vẫn nhận fresh để không trả null, _dirty giữ cho lần gọi sau.
+            if (!_dirty || _snapshot is null)
                 _snapshot = fresh;
-                _dirty = false;
-            }
             return _snapshot!;
         }
     }

@@ -141,10 +141,12 @@ public class ApiKeyMiddlewareTests : IDisposable
     [Fact]
     public async Task Invoke_WhenOneKeyEnabled_DisabledKeyRejected()
     {
-        await CreateKeyAsync(enabled: false);
+        var disabledPlaintext = await CreateKeyAsync(enabled: false);
         await CreateKeyAsync(enabled: true);
 
-        var (status, _, _, _) = await InvokeAsync("/v1/models", apiKeyHeader: "sk-rb-wrong");
+        // Gửi đúng plaintext của key disabled: nếu snapshot bỏ .Where(k => k.Enabled) thì
+        // request này match và trả 200 — test fail, bắt được lỗi auth-critical đó.
+        var (status, _, _, _) = await InvokeAsync("/v1/models", apiKeyHeader: disabledPlaintext);
 
         Assert.Equal(StatusCodes.Status401Unauthorized, status);
     }
