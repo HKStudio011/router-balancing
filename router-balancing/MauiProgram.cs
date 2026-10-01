@@ -74,6 +74,10 @@ namespace router_balancing
                 client => client.Timeout = TimeSpan.FromSeconds(10));
             builder.Services.AddSingleton<IProviderService, ProviderService>();
             builder.Services.AddSingleton<IModelService, ModelService>();
+            builder.Services.AddSingleton<IFreeModelSyncService, FreeModelSyncService>();
+            // Sync list model free lớn hơn probe 10s — timeout 30s (spec provider-free §6.1)
+            builder.Services.AddHttpClient(FreeModelSyncService.HttpClientName,
+                client => client.Timeout = TimeSpan.FromSeconds(30));
             builder.Services.AddSingleton<IProviderAccountService, ProviderAccountService>();
             builder.Services.AddSingleton<IComboService, ComboService>();
             // Singleton chia sẻ với proxy container qua ProxyHost (spec §4.1) — event KeysChanged
