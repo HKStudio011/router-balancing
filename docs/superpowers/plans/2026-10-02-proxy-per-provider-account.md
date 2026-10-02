@@ -1105,7 +1105,11 @@ public sealed record ProxyAssignment
         ProxyMode? mode, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
-        var provider = await db.Providers.FirstOrDefaultAsync(p => p.Id == providerId, ct)
+        // Gồm junction để thay thế tập (gán rỗng) có hàng để xoá; không include thì EF không
+        // biết remove gì khi gán tập mới (mỗi lần 1 DbContext riêng, không giữ state cũ).
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .FirstOrDefaultAsync(p => p.Id == providerId, ct)
             ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
         await ValidateProxyIdsAsync(proxyIds, _db, ct);
 
@@ -1120,7 +1124,11 @@ public sealed record ProxyAssignment
         ProxyMode? mode, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
-        var account = await db.ProviderAccounts.FirstOrDefaultAsync(a => a.Id == accountId, ct)
+        // Gồm junction để thay thế tập (gán rỗng) có hàng để xoá; không include thì EF không
+        // biết remove gì khi gán tập mới (mỗi lần 1 DbContext riêng, không giữ state cũ).
+        var account = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .FirstOrDefaultAsync(a => a.Id == accountId, ct)
             ?? throw new KeyNotFoundException($"Account {accountId} not found.");
         await ValidateProxyIdsAsync(proxyIds, _db, ct);
 
