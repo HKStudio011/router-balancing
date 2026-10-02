@@ -1,6 +1,7 @@
 ﻿#if WINDOWS
 using System.Runtime.InteropServices;
 #endif
+using System.Net.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RouterBalancing.Core.Combos;
@@ -8,6 +9,7 @@ using RouterBalancing.Core.Localization;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Platform;
 using RouterBalancing.Core.Providers;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
@@ -68,7 +70,33 @@ namespace router_balancing
             builder.Services.AddSingleton<ITrayService, NullTrayService>();
             builder.Services.AddSingleton<IStartupRegistration, NullStartupRegistration>();
 #endif
+            // Outbound proxy pool (spec proxy-pool §4)
+            builder.Services.AddSingleton(TimeProvider.System);           // ProxyPool tính cooldown down theo system clock
+            builder.Services.AddSingleton<IProxyPool, ProxyPool>();       // singleton: giữ down-state + RR cursor
+            builder.Services.AddSingleton<IProxyEchoClient, ProxyEchoClient>();
+            builder.Services.AddTransient<ProxyHealthHandler>();          // transient per HttpClient pipeline
+            // T9 (UI) inject IProxyService — đăng ký tại đây để DI tự resolve ctor 4 tham số
+            builder.Services.AddSingleton<IProxyService, ProxyService>();
             builder.Services.AddSingleton<IProxyHost, ProxyHost>();
+            // provider-probe + free-model-sync: 2 outbound point dùng proxy (spec §6) —
+            // AddHttpClient(name) lần 2 trả về builder cùng registry: config dồn vào
+            // client timeout sẵn có, không tạo client thứ 3
+            builder.Services.AddHttpClient(ProviderRequestFactory.HttpClientName)
+                .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+                {
+                    Proxy = new RoundRobinWebProxy(),
+                    UseProxy = true,
+                    ConnectTimeout = TimeSpan.FromSeconds(10),
+                })
+                .AddHttpMessageHandler<ProxyHealthHandler>();
+            builder.Services.AddHttpClient(FreeModelSyncService.HttpClientName)
+                .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+                {
+                    Proxy = new RoundRobinWebProxy(),
+                    UseProxy = true,
+                    ConnectTimeout = TimeSpan.FromSeconds(10),
+                })
+                .AddHttpMessageHandler<ProxyHealthHandler>();
             // Named client cho test connection/fetch models/metadata — timeout 10s (spec §3.1)
             builder.Services.AddHttpClient(ProviderRequestFactory.HttpClientName,
                 client => client.Timeout = TimeSpan.FromSeconds(10));

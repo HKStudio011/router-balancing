@@ -1,5 +1,6 @@
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Server;
 
 namespace router_balancing_test;
@@ -22,4 +23,22 @@ internal sealed class NullUsageSink : IClientKeyUsageSink
 {
     public Task RecordAsync(long? clientKeyId, int promptTokens, int completionTokens,
         CancellationToken ct = default) => Task.CompletedTask;
+}
+
+/// <summary>Pool luôn trả direct — các test cũ không phụ thuộc behavior proxy.</summary>
+public sealed class DirectProxyPool : IProxyPool
+{
+    public ProxyAttempt? GetNext() => null;
+
+    public bool ReportFailure(long proxyId) => false;
+
+    public void ReportSuccess(long proxyId)
+    {
+    }
+
+    public void Invalidate()
+    {
+    }
+
+    public IReadOnlyList<ProxyRuntimeStatus> Snapshot() => [];
 }

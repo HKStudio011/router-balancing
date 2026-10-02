@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -23,18 +24,33 @@ public static class ProxyApp
     /// </summary>
     /// <param name="builder">Builder do ProxyHost (hoặc test) tạo.</param>
     /// <param name="protector">Giải mã API key provider — đăng ký singleton dùng chung.</param>
-    public static void ConfigureServices(WebApplicationBuilder builder, ISecretProtector protector)
+    /// <param name="pool">Pool proxy dùng chung — app truyền ProxyPool singleton, test truyền double.</param>
+    public static void ConfigureServices(WebApplicationBuilder builder, ISecretProtector protector, IProxyPool pool)
     {
         builder.Services.AddSingleton(protector);
 
+        // Test container chỉ gọi ConfigureServices → pool instance (DirectProxyPool) vào;
+        // app container có thể đã đăng ký ProxyPool trước → không ghi đè
+        if (!builder.Services.Any(d => d.ServiceType == typeof(IProxyPool)))
+        {
+            builder.Services.AddSingleton(pool);
+        }
+
+        builder.Services.AddTransient<ProxyHealthHandler>();
+
         // Streaming SSE vô hạn — timeout (mặc định 100s) cắt giữa chừng là mất stream;
         // fail kết nối do ConnectTimeout để không treo vô hạn khi upstream chết.
+        // Proxy + health handler: outbound request qua pool (spec proxy-pool §4),
+        // hết proxy sống thì handler tự attempt direct cuối.
         builder.Services.AddHttpClient(OpenAiUpstreamClient.HttpClientName,
             client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
+                Proxy = new RoundRobinWebProxy(),
+                UseProxy = true,
                 ConnectTimeout = TimeSpan.FromSeconds(10),
-            });
+            })
+            .AddHttpMessageHandler<ProxyHealthHandler>();
 
         // Queue-first 3B (spec §2.1): endpoint chỉ enqueue + chờ outcome;
         // DispatcherLoop (hosted service) resolve → chọn → serve.

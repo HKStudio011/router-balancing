@@ -93,7 +93,7 @@ public class ProxyAppChatIntegrationTests : IDisposable
         builder.Services.AddSingleton<IDbContextFactory<RouterBalancingDbContext>>(_db.CreateFactory());
         builder.Services.AddSingleton<IClientKeyService>(_clientKeys);
 
-        ProxyApp.ConfigureServices(builder, _protector);
+        ProxyApp.ConfigureServices(builder, _protector, new DirectProxyPool());
         // Đăng ký SAU ConfigureServices → wins (last registration), stub thay OpenAiUpstreamClient
         builder.Services.AddSingleton(upstream);
 
