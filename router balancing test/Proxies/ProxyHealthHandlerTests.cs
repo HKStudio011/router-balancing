@@ -1,10 +1,15 @@
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Proxies;
+using RouterBalancing.Core.Security;
+using RouterBalancing.Core.Storage;
+using router_balancing_test.Server;
 
 namespace router_balancing_test.Proxies;
 
-public class ProxyHealthHandlerTests
+public class ProxyHealthHandlerTests : IDisposable
 {
     private static ProxyAttempt Attempt(long id, int port) =>
         new(id, new Uri($"http://127.0.0.1:{port}"), null, null, $"http://127.0.0.1:{port}");
@@ -196,7 +201,7 @@ public class ProxyHealthHandlerTests
     }
 
     private static HttpClient ClientFor(FakePool pool, StubHandler stub) =>
-        new(new ProxyHealthHandler(pool, new NullLog()) { InnerHandler = stub });
+        new(new ProxyHealthHandler(pool, new NullLog(), new ProxySelectionResolver()) { InnerHandler = stub });
 
     private static HttpResponseMessage Ok() => new(HttpStatusCode.OK);
 
@@ -291,6 +296,181 @@ public class ProxyHealthHandlerTests
         {
             length = -1;
             return false;
+        }
+    }
+
+    // ===== Helper cho assignment tests (dùng TestDb + real stubs, pattern ProxyOutboundHttpStubTests) =====
+    private readonly TestDb _db = new();
+    private readonly IDbContextFactory<RouterBalancingDbContext> _factory;
+    private readonly ISecretProtector _protector = new DpapiSecretProtector();
+    private readonly LocalHttpServer _destination = new();
+    private readonly List<IDisposable> _stubs = [];
+
+    public ProxyHealthHandlerTests()
+    {
+        _factory = _db.CreateFactory();
+        DbInitializer.Initialize(_factory);
+    }
+
+    public void Dispose()
+    {
+        foreach (var s in _stubs)
+        {
+            s.Dispose();
+        }
+        _destination.Dispose();
+        _db.Dispose();
+    }
+
+    private async Task<long> AddRowAsync(int port, string? username = null, string? password = null)
+    {
+        using var db = _factory.CreateDbContext();
+        var row = new OutboundProxy
+        {
+            Scheme = "http",
+            Host = "127.0.0.1",
+            Port = port,
+            Enabled = true,
+            Username = username,
+            PasswordEncrypted = password is null ? null : _protector.Protect(password),
+        };
+        db.OutboundProxies.Add(row);
+        await db.SaveChangesAsync();
+        return row.Id;
+    }
+
+    private (HttpClient client, ProxyPool pool) CreateClient()
+    {
+        var pool = new ProxyPool(_factory, _protector, TimeProvider.System, new NullLog());
+        var handler = new ProxyHealthHandler(pool, new NullLog(), new ProxySelectionResolver())
+        {
+            InnerHandler = new SocketsHttpHandler
+            {
+                Proxy = new RoundRobinWebProxy(),
+                UseProxy = true,
+                ConnectTimeout = TimeSpan.FromSeconds(3),
+            },
+        };
+        return (new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) }, pool);
+    }
+
+    private Uri DestinationUrl() => new($"http://127.0.0.1:{_destination.Port}/v1/chat/completions");
+
+    private static int ReserveClosedPort()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port; // port vừa đóng — connect failover nhanh (connection refused)
+    }
+
+    private static Provider ProviderWithProxies(params long[] proxyIds) => new()
+    {
+        Id = 1, Name = "Test", Type = ProviderType.OpenAI, BaseUrl = "https://api.example.com",
+        ProxyMode = ProxyMode.RoundRobin,
+        ProviderProxies = proxyIds.Select(id => new ProviderProxy { ProviderId = 1, ProxyId = id }).ToList(),
+    };
+
+    [Fact]
+    public async Task SendAsync_DirectTarget_SendsDirectNoProxy()
+    {
+        var provider = new Provider { Id = 1, Name = "Test", Type = ProviderType.OpenAI, BaseUrl = "https://a.com" };
+        await AddRowAsync(ReserveClosedPort()); // 1 proxy trong pool nhưng không assign
+        var (client, pool) = CreateClient();
+        ProxyTarget.Current.Value = new ProxyTarget(provider, null); // Direct (không ProxyProxies)
+        try
+        {
+            var response = await client.GetAsync(DestinationUrl());
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(1, _destination.RequestsHandled);
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
+        }
+    }
+
+    [Fact]
+    public async Task SendAsync_RoundRobinTarget_OnlyAssignedProxiesReceiveTraffic()
+    {
+        var liveA = new LocalHttpProxyStub();
+        _stubs.Add(liveA);
+        var liveB = new LocalHttpProxyStub();
+        _stubs.Add(liveB);
+        var unusedA = new LocalHttpProxyStub();
+        _stubs.Add(unusedA);
+        var unusedB = new LocalHttpProxyStub();
+        _stubs.Add(unusedB);
+        var idA = await AddRowAsync(liveA.Port);
+        var idB = await AddRowAsync(liveB.Port);
+        await AddRowAsync(unusedA.Port);
+        await AddRowAsync(unusedB.Port);
+        var provider = ProviderWithProxies(idA, idB);
+        var (client, _) = CreateClient();
+        ProxyTarget.Current.Value = new ProxyTarget(provider, null);
+        try
+        {
+            for (var i = 0; i < 6; i++)
+            {
+                var response = await client.GetAsync(DestinationUrl());
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+            Assert.Equal(3, liveA.RequestsHandled);
+            Assert.Equal(3, liveB.RequestsHandled);
+            Assert.Equal(0, unusedA.RequestsHandled); // không trong set → không dùng
+            Assert.Equal(0, unusedB.RequestsHandled);
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
+        }
+    }
+
+    [Fact]
+    public async Task SendAsync_FallbackTarget_FailsOverInOrder()
+    {
+        var deadPort = ReserveClosedPort();
+        var live = new LocalHttpProxyStub();
+        _stubs.Add(live);
+        var deadId = await AddRowAsync(deadPort);
+        var liveId = await AddRowAsync(live.Port);
+        var provider = ProviderWithProxies(deadId, liveId);
+        provider.ProxyMode = ProxyMode.Fallback;
+        var (client, pool) = CreateClient();
+        ProxyTarget.Current.Value = new ProxyTarget(provider, null);
+        try
+        {
+            var response = await client.GetAsync(DestinationUrl());
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(1, live.RequestsHandled);
+            Assert.Equal(1, _destination.RequestsHandled);
+            Assert.True(pool.Snapshot().Single(s => s.Id == deadId).IsDown);
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
+        }
+    }
+
+    [Fact]
+    public async Task SendAsync_FallbackTarget_AllDown_GoesDirect()
+    {
+        await AddRowAsync(ReserveClosedPort());
+        await AddRowAsync(ReserveClosedPort());
+        var provider = ProviderWithProxies(1, 2);
+        provider.ProxyMode = ProxyMode.Fallback;
+        var (client, pool) = CreateClient();
+        ProxyTarget.Current.Value = new ProxyTarget(provider, null);
+        try
+        {
+            var response = await client.GetAsync(DestinationUrl());
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(1, _destination.RequestsHandled);
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
         }
     }
 }

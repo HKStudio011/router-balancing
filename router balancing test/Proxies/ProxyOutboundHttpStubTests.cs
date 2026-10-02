@@ -71,7 +71,7 @@ public class ProxyOutboundHttpStubTests : IDisposable
     private (HttpClient client, ProxyPool pool) CreateClient()
     {
         var pool = new ProxyPool(_factory, _protector, TimeProvider.System, new NullLog());
-        var handler = new ProxyHealthHandler(pool, new NullLog())
+        var handler = new ProxyHealthHandler(pool, new NullLog(), new ProxySelectionResolver())
         {
             InnerHandler = new SocketsHttpHandler
             {
