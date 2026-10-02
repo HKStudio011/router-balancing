@@ -35,16 +35,14 @@ public sealed class ProxyPool : IProxyPool
     }
 
     /// <inheritdoc/>
-    public ProxyAttempt? GetNext()
+    public ProxyAttempt? GetNext() => GetNext(null);
+
+    /// <inheritdoc/>
+    public ProxyAttempt? GetNext(IReadOnlyList<long>? allowedIds)
     {
         lock (_gate)
         {
             EnsureLoaded();
-            if (_entries.Count == 0)
-            {
-                return null; // pool rỗng → direct
-            }
-
             var now = _time.GetUtcNow();
             for (var step = 0; step < _entries.Count; step++)
             {
@@ -53,11 +51,30 @@ public sealed class ProxyPool : IProxyPool
                 {
                     continue;
                 }
+                if (allowedIds is not null && !allowedIds.Contains(_entries[index].Id))
+                {
+                    continue;
+                }
 
                 _cursor = (index + 1) % _entries.Count;
                 return _entries[index];
             }
-            return null; // tất cả down → direct
+            return null; // không còn proxy sống trong tập → direct
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<ProxyAttempt> GetLivingInOrder(IReadOnlyList<long> ids)
+    {
+        lock (_gate)
+        {
+            EnsureLoaded();
+            var now = _time.GetUtcNow();
+            return _entries
+                .Where(e => ids.Contains(e.Id))
+                .Where(e => !IsDown(_entries.IndexOf(e), now))
+                .OrderBy(e => e.Id)
+                .ToList();
         }
     }
 

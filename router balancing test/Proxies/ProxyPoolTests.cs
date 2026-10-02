@@ -257,12 +257,87 @@ public class ProxyPoolTests : IDisposable
                 FailNext = false;
                 throw new InvalidOperationException("Simulated DB failure.");
             }
-            if (_failuresLeft > 0)
-            {
-                _failuresLeft--;
-                throw new InvalidOperationException("Simulated DB failure.");
-            }
-            return inner.CreateDbContext();
+        if (_failuresLeft > 0)
+        {
+            _failuresLeft--;
+            throw new InvalidOperationException("Simulated DB failure.");
         }
+        return inner.CreateDbContext();
+    }
+    }
+
+    [Fact]
+    public async Task GetNext_NullAllowedId_MatchesGlobal()
+    {
+        var pool = CreatePool();
+        var a = await AddProxyAsync(port: 9000);
+        var b = await AddProxyAsync(port: 9001);
+        pool.Invalidate();
+        var first = pool.GetNext();
+        Assert.NotNull(first);
+        var second = pool.GetNext();
+        Assert.NotNull(second);
+        Assert.NotEqual(first!.Id, second!.Id); // RR, giống GetNext() gốc
+    }
+
+    [Fact]
+    public async Task GetNext_AllowedIds_ReturnsOnlyInSet()
+    {
+        var pool = CreatePool();
+        var inSet = await AddProxyAsync(port: 9100);
+        var inSet2 = await AddProxyAsync(port: 9101);
+        var outSet = await AddProxyAsync(port: 9102);
+        pool.Invalidate();
+        var ids = new[] { inSet, inSet2 };
+        for (var i = 0; i < 6; i++)
+        {
+            var pick = pool.GetNext(ids);
+            Assert.NotNull(pick);
+            Assert.Contains(pick!.Id, ids);
+        }
+        // outSet không bao giờ được chọn
+        var picks = new List<long>();
+        for (var i = 0; i < 6; i++) picks.Add(pool.GetNext(ids)!.Id);
+        Assert.DoesNotContain(outSet, picks);
+    }
+
+    [Fact]
+    public async Task GetNext_AllowedIds_SkipsDown()
+    {
+        var pool = CreatePool();
+        var a = await AddProxyAsync(port: 9200);
+        var b = await AddProxyAsync(port: 9201);
+        pool.Invalidate();
+        pool.ReportFailure(a); // a down
+        var ids = new[] { a, b };
+        var pick = pool.GetNext(ids);
+        Assert.NotNull(pick);
+        Assert.Equal(b, pick!.Id); // bỏ qua a down
+    }
+
+    [Fact]
+    public async Task GetNext_AllowedIds_AllDown_ReturnsNull()
+    {
+        var pool = CreatePool();
+        var a = await AddProxyAsync(port: 9300);
+        var b = await AddProxyAsync(port: 9301);
+        pool.Invalidate();
+        pool.ReportFailure(a);
+        pool.ReportFailure(b);
+        Assert.Null(pool.GetNext(new[] { a, b }));
+    }
+
+    [Fact]
+    public async Task GetLivingInOrder_SortsByIdAndSkipsDown()
+    {
+        var pool = CreatePool();
+        var a = await AddProxyAsync(port: 9400);
+        var b = await AddProxyAsync(port: 9401);
+        var c = await AddProxyAsync(port: 9402);
+        pool.Invalidate();
+        pool.ReportFailure(b); // b down
+        var ordered = pool.GetLivingInOrder(new[] { c, a, b });
+        Assert.Equal(new[] { a, c }, ordered.Select(x => x.Id).ToList());
+        Assert.Empty(pool.GetLivingInOrder(new[] { b }));
     }
 }

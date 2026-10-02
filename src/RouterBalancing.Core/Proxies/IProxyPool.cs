@@ -10,6 +10,19 @@ public interface IProxyPool
     ProxyAttempt? GetNext();
 
     /// <summary>
+    /// Chọn proxy kế theo round-robin trong số proxy sống, chỉ trong tập
+    /// <paramref name="allowedIds"/> khi có (null = toàn bộ, như <see cref="GetNext"/>).
+    /// Trả <see langword="null"/> = direct (không còn proxy sống trong tập).
+    /// </summary>
+    ProxyAttempt? GetNext(IReadOnlyList<long>? allowedIds);
+
+    /// <summary>
+    /// Proxy sống trong <paramref name="ids"/> (không cooldown), sort theo ProxyId tăng —
+    /// cho Fallback (thử theo thứ tự, không RR).
+    /// </summary>
+    IReadOnlyList<ProxyAttempt> GetLivingInOrder(IReadOnlyList<long> ids);
+
+    /// <summary>
     /// Ghi nhận lỗi kết nối tới proxy — đánh down + cooldown 60s.
     /// Trả <see langword="true"/> khi vừa chuyển sống→down (log Warn duy nhất lần đầu);
     /// proxy đã down = no-op, trả <see langword="false"/>.

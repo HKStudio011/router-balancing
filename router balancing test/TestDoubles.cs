@@ -30,6 +30,10 @@ public sealed class DirectProxyPool : IProxyPool
 {
     public ProxyAttempt? GetNext() => null;
 
+    public ProxyAttempt? GetNext(IReadOnlyList<long>? allowedIds) => null;
+
+    public IReadOnlyList<ProxyAttempt> GetLivingInOrder(IReadOnlyList<long> ids) => [];
+
     public bool ReportFailure(long proxyId) => false;
 
     public void ReportSuccess(long proxyId)

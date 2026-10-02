@@ -231,6 +231,24 @@ public class ProxyHealthHandlerTests
             return pick;
         }
 
+        public ProxyAttempt? GetNext(IReadOnlyList<long>? allowedIds)
+        {
+            var candidates = allowedIds is not null
+                ? _alive.Where(a => allowedIds.Contains(a.Id)).ToList()
+                : _alive;
+            if (candidates.Count == 0)
+            {
+                return null;
+            }
+
+            var pick = candidates[_cursor % candidates.Count];
+            _cursor++;
+            return pick;
+        }
+
+        public IReadOnlyList<ProxyAttempt> GetLivingInOrder(IReadOnlyList<long> ids) =>
+            _alive.Where(a => ids.Contains(a.Id)).OrderBy(a => a.Id).ToList();
+
         public bool ReportFailure(long proxyId)
         {
             Failures.Add(proxyId);
