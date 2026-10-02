@@ -211,7 +211,7 @@ public class OutboundProxy
 dotnet ef migrations add AddOutboundProxies --project src/RouterBalancing.Core --startup-project src/RouterBalancing.Design --context RouterBalancingDbContext --output-dir Storage/Migrations
 ```
 
-Expected: file `<ts>_AddOutboundProxies.cs` với `Up()` = `CreateTable` bảng `OutboundProxies` đủ 13 cột (`Id` INTEGER PK AUTOINCREMENT, `Scheme`/`Host` TEXT NOT NULL, `Port` INTEGER NOT NULL, `Username`/`PasswordEncrypted`/`LastTestMessage`/`LastTestIp` TEXT NULL, `LastTestSuccess` INTEGER NULL, `LastTestAt` DATETIMEOFFSET TEXT NULL, `Enabled` INTEGER NOT NULL, `CreatedAt`/`UpdatedAt` DATETIMEOFFSET NOT NULL) + `CreateIndex` unique 3 cột; `Down()` = `DropTable` + `DropIndex`; snapshot cập nhật. **Ghi lại giá trị `<ts>` (vd `20261001143000`) để điền `TargetId` ở Step 4.**
+Expected: file `<ts>_AddOutboundProxies.cs` với `Up()` = `CreateTable` bảng `OutboundProxies` đủ 13 cột (`Id` INTEGER PK AUTOINCREMENT, `Scheme`/`Host` TEXT NOT NULL, `Port` INTEGER NOT NULL, `Username`/`PasswordEncrypted`/`LastTestMessage`/`LastTestIp` TEXT NULL, `LastTestSuccess` INTEGER NULL, `LastTestAt` DATETIMEOFFSET TEXT NULL, `Enabled` INTEGER NOT NULL, `CreatedAt`/`UpdatedAt` DATETIMEOFFSET NOT NULL) + `CreateIndex` unique 3 cột; `Down()` = `DropTable` (EF scaffold chỉ sinh DropTable — SQLite `DROP TABLE` tự xóa index kèm theo, KHÔNG hand-edit migration thêm `DropIndex`); snapshot cập nhật. **Ghi lại giá trị `<ts>` (vd `20261001143000`) để điền `TargetId` ở Step 4.**
 
 - [ ] **Step 4: Migration test `AddOutboundProxyMigrationTests`**
 
