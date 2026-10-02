@@ -265,9 +265,12 @@ public class AddOutboundProxyMigrationTests : IDisposable
         Assert.Equal("127.0.0.1", row.Host);
         Assert.Equal(8080, row.Port);
         Assert.True(row.Enabled);
-        // Unique index 3 cột tồn tại (backstop Design decision 6)
+        // Unique index 3 cột tồn tại (backstop Design decision 6) —
+        // HasIndex().IsUnique() sinh CREATE UNIQUE INDEX → origin='c'
+        // ('u' chỉ dành cho UNIQUE table constraint), "unique"=1 xác nhận unique
         Assert.Equal(1L, Convert.ToInt64(Scalar(
-            "SELECT COUNT(*) FROM pragma_index_list('OutboundProxies') WHERE origin='u'")));
+            "SELECT COUNT(*) FROM pragma_index_list('OutboundProxies') "
+            + "WHERE name='IX_OutboundProxies_Scheme_Host_Port' AND origin='c' AND \"unique\"=1")));
     }
 
     [Fact]
@@ -301,7 +304,7 @@ public class AddOutboundProxyMigrationTests : IDisposable
 }
 ```
 
-**Chú ý Step 4:** nếu unique index không xuất hiện trong migration (EF đặt tên `IX_OutboundProxies_Scheme_Host_Port`, assert `origin='u'` vẫn đúng) → kiểm tra lại Step 2(b); `TargetId` sai format sẽ fail ngay khi `Migrate(TargetId)` ném "migration not found".
+**Chú ý Step 4:** nếu unique index không xuất hiện trong migration (EF đặt tên `IX_OutboundProxies_Scheme_Host_Port`, assert `origin='c' AND "unique"=1` — `HasIndex().IsUnique()` sinh `CREATE UNIQUE INDEX`, không phải table constraint) → kiểm tra lại Step 2(b); `TargetId` sai format sẽ fail ngay khi `Migrate(TargetId)` ném "migration not found".
 
 - [ ] **Step 5: Gates + Commit**
 

@@ -21,6 +21,9 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
     /// <summary>API key inbound của client - chỉ lưu hash.</summary>
     public DbSet<ClientKey> ClientKeys => Set<ClientKey>();
 
+    /// <summary>Bảng proxy outbound toàn cục — pool round-robin đọc khi Invalidate (spec proxy-pool §3.1).</summary>
+    public DbSet<OutboundProxy> OutboundProxies => Set<OutboundProxy>();
+
     public DbSet<LogEntry> LogEntries => Set<LogEntry>();
 
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
@@ -110,6 +113,18 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             e.Property(x => x.UsageDate).HasConversion(
                 d => d.HasValue ? d.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) : null,
                 s => s == null ? null : DateOnly.Parse(s, System.Globalization.CultureInfo.InvariantCulture));
+        });
+
+        modelBuilder.Entity<OutboundProxy>(e =>
+        {
+            e.Property(x => x.Scheme).IsRequired().HasMaxLength(10);
+            e.Property(x => x.Host).IsRequired().HasMaxLength(255);
+            e.Property(x => x.Username).HasMaxLength(200);
+            e.Property(x => x.LastTestMessage).HasMaxLength(500);
+            e.Property(x => x.LastTestIp).HasMaxLength(64);
+            // Backstop chống trùng endpoint — service check Host.ToLower() ordinal-ignore-case
+            // là chủ yếu (SQLite unique index không case-insensitive được, xem Design decision 6)
+            e.HasIndex(x => new { x.Scheme, x.Host, x.Port }).IsUnique();
         });
     }
 }
