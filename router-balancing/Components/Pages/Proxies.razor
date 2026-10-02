@@ -1,0 +1,408 @@
+@page "/proxies"
+@using RouterBalancing.Core.Domain
+@using RouterBalancing.Core.Proxies
+@implements IDisposable
+@inject IProxyService ProxySvc
+@inject IProxyPool ProxyPool
+@inject LocalizationService L
+@inject ToastService Toast
+@inject ILogService Log
+
+<div class="mb-4 flex items-center justify-between gap-3">
+    <h1 class="text-xl font-semibold">@L["proxies.title"]</h1>
+    <button type="button" class="btn btn-primary" @onclick="OpenAdd">+ @L["proxies.add"]</button>
+</div>
+
+@if (_loading)
+{
+    <p class="text-sm opacity-70">...</p>
+}
+else if (_rows.Count == 0)
+{
+    <EmptyState Message="@L["proxies.empty"]" />
+}
+else
+{
+    <div class="overflow-x-auto rounded border border-border bg-surface">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-border text-left text-xs uppercase opacity-70">
+                    <th class="px-2 py-2">@L["proxies.col.endpoint"]</th>
+                    <th class="px-2 py-2">@L["proxies.col.auth"]</th>
+                    <th class="px-2 py-2">@L["proxies.col.enabled"]</th>
+                    <th class="px-2 py-2">@L["proxies.col.status"]</th>
+                    <th class="px-2 py-2">@L["proxies.col.lastTest"]</th>
+                    <th class="px-2 py-2">@L["proxies.col.actions"]</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _rows)
+                {
+                    @* @key để toggle/test không re-render cả bảng *@
+                    <tr @key="row.Id" class="border-b border-border">
+                        <td class="px-2 py-2 font-mono">@EndpointOf(row)</td>
+                        <td class="px-2 py-2">@(row.Username ?? L["proxies.auth.none"])</td>
+                        <td class="px-2 py-2">
+                            @* Toggle enable/disable theo đúng pattern Providers.razor (checkbox) *@
+                            <input type="checkbox" checked="@row.Enabled" disabled="@_busy"
+                                   @onchange="() => ToggleAsync(row)" />
+                        </td>
+                        <td class="px-2 py-2">
+                            @if (_downIds.Contains(row.Id))
+                            {
+                                <span class="text-danger">@L["proxies.status.down"]</span>
+                            }
+                            else
+                            {
+                                <span>@L["proxies.status.ok"]</span>
+                            }
+                        </td>
+                        <td class="px-2 py-2">
+                            @if (row.LastTestAt is null)
+                            {
+                                @L["proxies.lastTest.never"]
+                            }
+                            else
+                            {
+                                <span>@row.LastTestAt.Value.ToLocalTime().ToString("g")</span>
+                                @if (row.LastTestSuccess == false)
+                                {
+                                    @* Message là dữ liệu HTTP hiển thị thẳng, không qua i18n *@
+                                    <div class="text-danger text-xs">@row.LastTestMessage</div>
+                                }
+                            }
+                        </td>
+                        <td class="px-2 py-2">
+                            <button type="button" class="btn btn-outline-secondary mr-1"
+                                    disabled="@(_busy || _testingId == row.Id)"
+                                    @onclick="() => TestAsync(row)">
+                                @(_testingId == row.Id ? L["proxies.action.testing"] : L["proxies.action.test"])
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary mr-1" disabled="@_busy"
+                                    @onclick="() => OpenEdit(row)">@L["providers.action.edit"]</button>
+                            <button type="button" class="btn btn-outline-danger" disabled="@_busy"
+                                    @onclick="() => AskDelete(row)">@L["providers.action.delete"]</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<Modal Visible="@(_editing is not null)"
+       Title="@(_editing is { Id: 0 } ? L["proxies.form.addTitle"] : L["proxies.form.editTitle"])"
+       OnClose="CloseModal">
+    <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1 text-sm">
+            @L["proxies.field.scheme"]
+            @* Tên scheme là protocol language-neutral — không qua i18n *@
+            <select class="rounded border border-border bg-surface px-2 py-1.5" @bind="_scheme">
+                <option value="http">http</option>
+                <option value="socks5">socks5</option>
+            </select>
+            <span class="text-xs opacity-70">@L["proxies.schemes.hint"]</span>
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["proxies.field.port"]
+            <input type="number" min="1" max="65535"
+                   class="rounded border border-border bg-surface px-2 py-1.5"
+                   disabled="@_busy" @bind="_port" @bind:event="oninput" />
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+            @L["proxies.field.host"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   spellcheck="false" disabled="@_busy" @bind="_host" @bind:event="oninput" />
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["proxies.field.username"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   autocomplete="off" disabled="@_busy" @bind="_username" @bind:event="oninput" />
+        </label>
+
+        <label class="flex flex-col gap-1 text-sm">
+            @L["proxies.field.password"]
+            @* Password chỉ tồn tại lúc nhập — không bao giờ hiển thị lại (không đọc PasswordEncrypted) *@
+            <input type="password" class="rounded border border-border bg-surface px-2 py-1.5"
+                   autocomplete="new-password" spellcheck="false" disabled="@_busy"
+                   placeholder="@PasswordPlaceholder"
+                   @bind="_password" @bind:event="oninput" />
+        </label>
+    </div>
+
+    @if (_formError is not null)
+    {
+        <div class="mt-1 text-sm text-danger">@_formError</div>
+    }
+
+    <div class="mt-4 flex justify-end gap-2">
+        <button type="button" class="btn btn-outline-secondary" disabled="@_busy" @onclick="CloseModal">
+            @L["confirm.cancel"]
+        </button>
+        @* Nút Save dùng chung key i18n của Settings — cùng nghĩa, tránh nhân đôi key *@
+        <button type="button" class="btn btn-primary" disabled="@_busy" @onclick="SaveAsync">
+            @L["settings.action.save"]
+        </button>
+    </div>
+</Modal>
+
+@if (_confirmDelete is { } proxyToDelete)
+{
+    <ConfirmDialog Visible="true"
+                   Title="@L["providers.action.delete"]"
+                   Message="@L["proxies.confirm.delete"]"
+                   Danger="true"
+                   ConfirmText="@L["providers.action.delete"]"
+                   CancelText="@L["confirm.cancel"]"
+                   OnConfirm="DeleteAsync"
+                   OnCancel="CancelDelete" />
+}
+
+@code {
+    private List<OutboundProxy> _rows = [];
+    private HashSet<long> _downIds = [];
+    private bool _loading = true;
+    private bool _busy;
+
+    // null = modal đóng; Id == 0 = đang thêm mới (edit giữ Id thật)
+    private OutboundProxy? _editing;
+    private long? _testingId;
+    private string? _formError;
+    private string _scheme = "http";
+    private string _host = string.Empty;
+    private int _port = 8080;
+    private string _username = string.Empty;
+    private string _password = string.Empty; // rỗng = giữ mật khẩu cũ khi edit
+    private OutboundProxy? _confirmDelete;
+
+    // Hủy refresh loop 30s khi rời trang
+    private readonly CancellationTokenSource _refreshCts = new();
+
+    /// <summary>Chỉ hiện hint khi sửa — thêm mới để trống nghĩa là không đặt mật khẩu.</summary>
+    private string? PasswordPlaceholder => _editing is { Id: > 0 } ? L["proxies.hint.password"] : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        L.LanguageChanged += OnLanguageChanged;
+        await ReloadAsync();
+        _ = RunRefreshLoopAsync(_refreshCts.Token);
+    }
+
+    /// <summary>
+    /// Refresh định kỳ 30s: cột Status lấy từ <see cref="IProxyPool.Snapshot"/> (in-memory,
+    /// đổi khi request khác fail/succeed) nên phải tự reload, không chờ hành động của người dùng.
+    /// </summary>
+    private async Task RunRefreshLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await InvokeAsync(ReloadAsync);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            // Rời trang: Cancel token / component đã dispose — không phải lỗi
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            _rows = (await ProxySvc.ListAsync()).ToList();
+            _downIds = ProxyPool.Snapshot().Where(s => s.IsDown).Select(s => s.Id).ToHashSet();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không tải được danh sách proxy.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+
+        StateHasChanged();
+    }
+
+    private static string EndpointOf(OutboundProxy row) =>
+        $"{row.Scheme}://{row.Host}:{row.Port}";
+
+    private void OpenAdd()
+    {
+        if (_busy) return;
+        _editing = new OutboundProxy();
+        _scheme = "http";
+        _host = string.Empty;
+        _port = 8080;
+        _username = string.Empty;
+        _password = string.Empty;
+        _formError = null;
+    }
+
+    private void OpenEdit(OutboundProxy row)
+    {
+        if (_busy) return;
+        _editing = row;
+        _scheme = row.Scheme;
+        _host = row.Host;
+        _port = row.Port;
+        _username = row.Username ?? string.Empty;
+        _password = string.Empty; // để trống = giữ mật khẩu cũ
+        _formError = null;
+    }
+
+    private void CloseModal()
+    {
+        _editing = null;
+        _formError = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        // Single-flight — double-click vẫn tới được đây khi nút chưa re-render
+        if (_busy || _editing is not { } target) return;
+
+        var draft = new ProxyDraft
+        {
+            Scheme = _scheme,
+            Host = _host,
+            Port = _port,
+            Username = _username,
+            Password = string.IsNullOrEmpty(_password) ? null : _password,
+        };
+
+        // Validate chung với service (ProxyValidator) — không nhân bản rule trong Razor
+        var errors = ProxyValidator.Validate(draft);
+        if (errors.Count > 0)
+        {
+            _formError = string.Join(" ", errors.Values.Distinct().Select(k => L[k]));
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            if (target.Id == 0)
+            {
+                await ProxySvc.CreateAsync(draft);
+            }
+            else
+            {
+                await ProxySvc.UpdateAsync(target.Id, draft);
+            }
+
+            Toast.Show(L["proxies.msg.saved"], ToastSeverity.Success);
+            CloseModal();
+            await ReloadAsync();
+        }
+        catch (ProxyValidationException ex)
+        {
+            // Duplicate endpoint do server bắt (cần DB) — map key i18n đã gán sẵn
+            _formError = string.Join(" ", ex.Errors.Values.Distinct().Select(k => L[k]));
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không lưu được proxy.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ToggleAsync(OutboundProxy row)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await ProxySvc.SetEnabledAsync(row.Id, !row.Enabled);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không đổi được trạng thái proxy.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestAsync(OutboundProxy row)
+    {
+        // Single-flight: _testingId chỉ có một slot — test song song sẽ xóa nhãn của nhau
+        if (_busy) return;
+        _busy = true;
+        _testingId = row.Id;
+        try
+        {
+            var result = await ProxySvc.TestAsync(row.Id, CancellationToken.None);
+            if (!result.Success)
+            {
+                // Lỗi chi tiết đã persist và hiện trong cột Last test — toast chỉ báo chung
+                Toast.Show(L["proxies.msg.testFailed"], ToastSeverity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Test proxy thất bại từ danh sách.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _testingId = null;
+            _busy = false;
+            await ReloadAsync();
+        }
+    }
+
+    private void AskDelete(OutboundProxy row)
+    {
+        if (_busy) return;
+        _confirmDelete = row;
+    }
+
+    private void CancelDelete() => _confirmDelete = null;
+
+    private async Task DeleteAsync()
+    {
+        if (_busy || _confirmDelete is not { } proxy) return;
+
+        _busy = true;
+        try
+        {
+            await ProxySvc.DeleteAsync(proxy.Id);
+            Toast.Show(L["proxies.msg.deleted"], ToastSeverity.Success);
+            CancelDelete();
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không xóa được proxy.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        L.LanguageChanged -= OnLanguageChanged;
+        // Không Dispose CTS: tránh race với waiter đang đăng ký tick — loop tự thoát khi Cancel
+        _refreshCts.Cancel();
+    }
+}
