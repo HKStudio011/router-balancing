@@ -153,7 +153,9 @@ public sealed class ProviderService : IProviderService
                 key = account is not null ? _protector.Unprotect(account.ApiKeyEncrypted) : string.Empty;
             }
 
-            ProxyTarget.Current.Value = new ProxyTarget(provider, account);
+            // Provider Test = test proxy của provider (spec §5.3/D4) — không để account
+            // override (D4 tách probe provider vs test account). Key vẫn lấy từ account enabled đầu tiên.
+            ProxyTarget.Current.Value = new ProxyTarget(provider, null);
             try
             {
                 using var request = ProviderRequestFactory.Create(provider, key ?? string.Empty);
