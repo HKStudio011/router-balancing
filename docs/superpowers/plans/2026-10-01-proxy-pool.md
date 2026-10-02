@@ -365,7 +365,7 @@ Tạo `src/RouterBalancing.Core/Proxies/ProxyRuntimeStatus.cs`:
 ```csharp
 namespace RouterBalancing.Core.Proxies;
 
-/// <summary>Trạng thái runtime 1 proxy cho UI — chụp tại1 thời điểm, không tự refresh (spec §4.1).</summary>
+/// <summary>Trạng thái runtime 1 proxy cho UI — chụp tại 1 thời điểm, không tự refresh (spec §4.1).</summary>
 /// <param name="Id">Id hàng <c>OutboundProxy</c>.</param>
 /// <param name="Endpoint"><c>scheme://host:port</c>.</param>
 /// <param name="IsDown">Đang trong cooldown do lỗi kết nối.</param>
