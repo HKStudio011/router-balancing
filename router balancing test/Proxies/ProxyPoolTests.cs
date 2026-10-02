@@ -202,6 +202,33 @@ public class ProxyPoolTests : IDisposable
         Assert.All(results, r => Assert.NotNull(r));
     }
 
+    [Fact]
+    public async Task Reload_InitialLoadFails_KeepsRetryingWithoutInvalidate()
+    {
+        await AddProxyAsync(port: 8041);
+        var wrapper = new FlakyFactory(_factory, failCount: 1);
+        var pool = new ProxyPool(wrapper, _protector, TimeProvider.System, new NullLog());
+
+        Assert.Null(pool.GetNext()); // load lần đầu fail → chưa có list → direct
+
+        // Không Invalidate() — pool phải tự heal ở lần truy cập kế
+        Assert.Equal("http://127.0.0.1:8041", pool.GetNext()!.Endpoint);
+    }
+
+    [Fact]
+    public async Task Reload_ReloadFails_KeepsExistingList()
+    {
+        await AddProxyAsync(port: 8051);
+        var wrapper = new FlakyFactory(_factory, failCount: 0);
+        var pool = new ProxyPool(wrapper, _protector, TimeProvider.System, new NullLog());
+        Assert.Equal("http://127.0.0.1:8051", pool.GetNext()!.Endpoint); // load thành công trước
+
+        wrapper.FailNext = true;
+        pool.Invalidate(); // reload kế sẽ ném
+
+        Assert.Equal("http://127.0.0.1:8051", pool.GetNext()!.Endpoint); // list cũ vẫn chạy
+    }
+
     /// <summary>Clock fake theo pattern ClientKeyRateLimiterTests.FakeTime.</summary>
     private sealed class FakeTime(DateTimeOffset start) : TimeProvider
     {
@@ -210,5 +237,32 @@ public class ProxyPoolTests : IDisposable
         public override DateTimeOffset GetUtcNow() => Now;
 
         public void Advance(TimeSpan by) => Now += by;
+    }
+
+    /// <summary>
+    /// Factory ném <paramref name="failCount"/> lần tạo context đầu (rồi ủy quyền factory thật);
+    /// <see cref="FailNext"/> ép ném đúng 1 lần kế — giả lập DB fail có kiểm soát.
+    /// </summary>
+    private sealed class FlakyFactory(IDbContextFactory<RouterBalancingDbContext> inner, int failCount)
+        : IDbContextFactory<RouterBalancingDbContext>
+    {
+        private int _failuresLeft = failCount;
+
+        public bool FailNext { get; set; }
+
+        public RouterBalancingDbContext CreateDbContext()
+        {
+            if (FailNext)
+            {
+                FailNext = false;
+                throw new InvalidOperationException("Simulated DB failure.");
+            }
+            if (_failuresLeft > 0)
+            {
+                _failuresLeft--;
+                throw new InvalidOperationException("Simulated DB failure.");
+            }
+            return inner.CreateDbContext();
+        }
     }
 }

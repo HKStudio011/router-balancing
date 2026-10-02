@@ -159,10 +159,13 @@ public sealed class ProxyPool : IProxyPool
         }
         catch (Exception ex)
         {
-            // Không nuốt: log + giữ list cũ để request vẫn đi được; không để dirty lặp —
-            // lần Invalidate kế (CRUD kế) sẽ thử đọc DB lại
+            // Không nuốt: log + giữ list cũ để request vẫn đi được.
             _log.Error("Không nạp được danh sách proxy từ DB.", ex);
-            _dirty = false;
+            // Load lần đầu thất bại (_entries rỗng): giữ dirty để lần GetNext/Snapshot kế
+            // thử đọc DB lại — nếu clear luôn, pool trỏ direct vĩnh viễn chỉ vì 1 lỗi transient.
+            // Đã có list cũ: clear dirty để không mỗi request đọc DB + spam log —
+            // lần Invalidate kế (CRUD kế) sẽ thử đọc DB lại.
+            _dirty = _entries.Count == 0;
             return;
         }
 

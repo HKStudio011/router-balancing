@@ -73,7 +73,7 @@
 1. **`RoundRobinWebProxy` parameterless** — chỉ đọc `ProxyContext`, không cần `IProxyPool` (spec §4.5 sketch ghi `new RoundRobinWebProxy(pool)` nhưng mô tả §4.3 không dùng pool; ctor không tham số đơn giản hơn và ít coupling).
 2. **Budget = `Math.Max(1, Snapshot().Count(!IsDown))`** — chặn race budget=0 nhưng `GetNext` vẫn trả proxy (CRUD giữa chừng) gây `throw null`; nhánh hết budget ném lại `lastFailure` qua `ExceptionDispatchInfo` (không wrap).
 3. **Retry bằng clone request, KHÔNG gửi lại cùng instance** — mỗi attempt `CloneRequest(method/uri/headers/version + body bytes đã buffer)`; body đọc 1 lần bằng `ReadAsByteArrayAsync` khi content thuộc nhóm replayable (`ByteArrayContent`/`StringContent`/`FormUrlEncodedContent` — cả 3 đều là/kế thừa `ByteArrayContent`, giữ tường minh theo spec §4.4). Content khác → gửi `original` đúng 1 lần, lỗi → ném ngay.
-4. **`ProxyPool` lazy-reload**: `Invalidate()` chỉ set dirty; lần truy cập kế (dưới lock) mới đọc DB. **Giữ down-state** của proxy còn tồn tại qua reload (CRUD 1 proxy không reset cooldown proxy khác), cursor RR reset về 0 sau rebuild. Đọc DB lỗi → `_log.Error` + giữ list cũ + `_dirty=false` (lần `Invalidate` sau thử lại) — không nuốt im lặng.
+4. **`ProxyPool` lazy-reload**: `Invalidate()` chỉ set dirty; lần truy cập kế (dưới lock) mới đọc DB. **Giữ down-state** của proxy còn tồn tại qua reload (CRUD 1 proxy không reset cooldown proxy khác), cursor RR reset về 0 sau rebuild. Đọc DB lỗi → `_log.Error` + giữ list cũ + `_dirty=false` (lần `Invalidate` sau thử lại) — không nuốt im lặng**; trừ khi list đang rỗng (load lần đầu fail) → giữ `_dirty=true` để retry ở lần truy cập kế — tránh pool trỏ direct vĩnh viễn vì 1 lỗi transient**.
 5. **Invariant `PasswordEncrypted != null ⇒ Username != null`** ở service: create username trống → không lưu password; update username trống → xóa cả username + password (spec §3.2 — không để password mồ côi).
 6. **Duplicate endpoint**: check trong service theo `Scheme == && Port == && Host.ToLower() == hostLower` (EF dịch `ToLower()` → SQLite `lower()`, host case-insensitive) — key `proxies.error.duplicate` gắn field `Host`. Unique index 3 cột trong DbContext là **backstop** (SQLite index không case-insensitive được).
 7. **Migration test đặt ở `router balancing test/Storage/`** (theo pattern `AddProviderAccountsMigrationTests` — cùng họ hàng storage), không phải `Server/`.
@@ -1069,10 +1069,13 @@ public sealed class ProxyPool : IProxyPool
         }
         catch (Exception ex)
         {
-            // Không nuốt: log + giữ list cũ để request vẫn đi được; không để dirty lặp —
-            // lần Invalidate kế (CRUD kế) sẽ thử đọc DB lại
+            // Không nuốt: log + giữ list cũ để request vẫn đi được.
             _log.Error("Không nạp được danh sách proxy từ DB.", ex);
-            _dirty = false;
+            // Load lần đầu thất bại (_entries rỗng): giữ dirty để lần GetNext/Snapshot kế
+            // thử đọc DB lại — nếu clear luôn, pool trỏ direct vĩnh viễn chỉ vì 1 lỗi transient.
+            // Đã có list cũ: clear dirty để không mỗi request đọc DB + spam log —
+            // lần Invalidate kế (CRUD kế) sẽ thử đọc DB lại.
+            _dirty = _entries.Count == 0;
             return;
         }
 
