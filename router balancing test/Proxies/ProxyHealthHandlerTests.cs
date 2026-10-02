@@ -109,6 +109,24 @@ public class ProxyHealthHandlerTests
     }
 
     [Fact]
+    public async Task SendAsync_NonReplayableContent_Throws407WithoutRetry()
+    {
+        var pool = new FakePool().Add(Attempt(1, 8001), Attempt(2, 8002));
+        var stub = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.ProxyAuthenticationRequired));
+        using var client = ClientFor(pool, stub);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://upstream.example/v1/chat")
+        {
+            Content = new OpaqueContent(),
+        };
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.SendAsync(request));
+
+        Assert.Contains("407", ex.Message); // ném 407 ngay, không failover
+        Assert.Equal(1, stub.Calls); // không gửi lần 2 — replay guard mirror nhánh exception
+        Assert.Equal([1L], pool.Failures); // ReportFailure đúng 1 lần cho proxy 1
+    }
+
+    [Fact]
     public async Task SendAsync_EmptyPool_AttemptsDirectImmediately()
     {
         var pool = new FakePool();

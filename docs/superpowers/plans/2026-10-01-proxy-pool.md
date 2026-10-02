@@ -72,7 +72,7 @@
 
 1. **`RoundRobinWebProxy` parameterless** — chỉ đọc `ProxyContext`, không cần `IProxyPool` (spec §4.5 sketch ghi `new RoundRobinWebProxy(pool)` nhưng mô tả §4.3 không dùng pool; ctor không tham số đơn giản hơn và ít coupling).
 2. **Budget = `Math.Max(1, Snapshot().Count(!IsDown))`** — chặn race budget=0 nhưng `GetNext` vẫn trả proxy (CRUD giữa chừng) gây `throw null`; nhánh hết budget ném lại `lastFailure` qua `ExceptionDispatchInfo` (không wrap).
-3. **Retry bằng clone request, KHÔNG gửi lại cùng instance** — mỗi attempt `CloneRequest(method/uri/headers/version + body bytes đã buffer)`; body đọc 1 lần bằng `ReadAsByteArrayAsync` khi content thuộc nhóm replayable (`ByteArrayContent`/`StringContent`/`FormUrlEncodedContent` — cả 3 đều là/kế thừa `ByteArrayContent`, giữ tường minh theo spec §4.4). Content khác → gửi `original` đúng 1 lần, lỗi → ném ngay.
+3. **Retry bằng clone request, KHÔNG gửi lại cùng instance** — mỗi attempt `CloneRequest(method/uri/headers/version + body bytes đã buffer)`; body đọc 1 lần bằng `ReadAsByteArrayAsync` khi content thuộc nhóm replayable (`ByteArrayContent`/`StringContent`/`FormUrlEncodedContent` — cả 3 đều là/kế thừa `ByteArrayContent`, giữ tường minh theo spec §4.4). Content khác → gửi `original` đúng 1 lần, lỗi (kể cả nhánh 407) → ném ngay.
 4. **`ProxyPool` lazy-reload**: `Invalidate()` chỉ set dirty; lần truy cập kế (dưới lock) mới đọc DB. **Giữ down-state** của proxy còn tồn tại qua reload (CRUD 1 proxy không reset cooldown proxy khác), cursor RR reset về 0 sau rebuild. Đọc DB lỗi → `_log.Error` + giữ list cũ + `_dirty=false` (lần `Invalidate` sau thử lại) — không nuốt im lặng**; trừ khi list đang rỗng (load lần đầu fail) → giữ `_dirty=true` để retry ở lần truy cập kế — tránh pool trỏ direct vĩnh viễn vì 1 lỗi transient**.
 5. **Invariant `PasswordEncrypted != null ⇒ Username != null`** ở service: create username trống → không lưu password; update username trống → xóa cả username + password (spec §3.2 — không để password mồ côi).
 6. **Duplicate endpoint**: check trong service theo `Scheme == && Port == && Host.ToLower() == hostLower` (EF dịch `ToLower()` → SQLite `lower()`, host case-insensitive) — key `proxies.error.duplicate` gắn field `Host`. Unique index 3 cột trong DbContext là **backstop** (SQLite index không case-insensitive được).
@@ -1493,26 +1493,10 @@ public sealed class ProxyHealthHandler : DelegatingHandler
             proxyAttempts++;
 
             ProxyContext.Current = pick;
+            HttpResponseMessage response;
             try
             {
-                var response = await SendOnceAsync(request, body, replayable, cancellationToken);
-
-                if ((int)response.StatusCode == 407)
-                {
-                    // Chỉ proxy sinh được 407 (auth sai/không có) — coi là proxy fail (§4.4 bước 4)
-                    response.Dispose();
-                    lastFailure = new HttpRequestException(
-                        "The proxy server returned HTTP 407 (Proxy Authentication Required).");
-                    if (_pool.ReportFailure(pick.Id))
-                    {
-                        LogDown(pick, lastFailure);
-                    }
-                    continue;
-                }
-
-                // Có response từ upstream (kể cả 5xx — 502 sinh tại proxy vẫn tính proxy sống)
-                _pool.ReportSuccess(pick.Id);
-                return response;
+                response = await SendOnceAsync(request, body, replayable, cancellationToken);
             }
             catch (Exception ex) when (IsProxyConnectFailure(ex))
             {
@@ -1527,12 +1511,40 @@ public sealed class ProxyHealthHandler : DelegatingHandler
                     throw; // content không buffer được → không retry, ném ngay (§4.4 replay guard)
                 }
                 // Quay vòng — pick kế tự skip proxy vừa down; hết proxy sống → nhánh direct
+                continue;
             }
             finally
             {
                 // Reset trước khi rời attempt — response đã nhận xong, kết nối đã mở sẵn
                 ProxyContext.Current = null;
             }
+
+            if ((int)response.StatusCode == 407)
+            {
+                // Chỉ proxy sinh được 407 (auth sai/không có) — coi là proxy fail (§4.4 bước 4).
+                // Xử lý SAU khối try/catch — throw trong try sẽ bị catch IsProxyConnectFailure
+                // (filter match "407") của chính handler bắt lại → ReportFailure lần 2.
+                response.Dispose();
+                lastFailure = new HttpRequestException(
+                    "The proxy server returned HTTP 407 (Proxy Authentication Required).");
+                if (_pool.ReportFailure(pick.Id))
+                {
+                    LogDown(pick, lastFailure);
+                }
+                if (!replayable)
+                {
+                    // Content không replay được nên không thể attempt tiếp — ném 407 ngay
+                    // thay vì gửi lại cùng HttpRequestMessage (vi phạm Design decision 3).
+                    // !replayable luôn là attempt đầu (các đường khác đã thoát sớm) nên
+                    // lastFailure luôn là exception 407 vừa tạo.
+                    throw lastFailure;
+                }
+                continue;
+            }
+
+            // Có response từ upstream (kể cả 5xx — 502 sinh tại proxy vẫn tính proxy sống)
+            _pool.ReportSuccess(pick.Id);
+            return response;
         }
     }
 
