@@ -1434,6 +1434,7 @@ public class ProxyAssignmentIntegrationTests : IDisposable
         }
     }
 }
+```
 
 - [ ] **Step 8: Run gates + commit**
 

@@ -301,6 +301,17 @@ public static class Translations
         ["proxies.confirm.delete"] = "Delete this proxy?",
         ["proxies.col.scheme"] = "Scheme",
         ["proxies.status.downUntil"] = "{0}s left",
+
+        // Proxy assignment (Task 7, spec proxy-per-provider)
+        ["proxies.assign.title"] = "Assign proxy",
+        ["proxies.assign.none"] = "No proxy assigned (direct).",
+        ["proxies.assign.mode"] = "Mode",
+        ["proxies.assign.mode_rr"] = "Round-robin",
+        ["proxies.assign.mode_fallback"] = "Fallback",
+        ["proxies.assign.none_mode"] = "None",
+        ["proxies.assign.save"] = "Save",
+        ["proxies.assign.message"] = "Proxy assigned to this provider.",
+        ["proxies.assign.account"] = "Account override",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -597,6 +608,17 @@ public static class Translations
         ["proxies.confirm.delete"] = "Xóa proxy này?",
         ["proxies.col.scheme"] = "Scheme",
         ["proxies.status.downUntil"] = "còn {0}s",
+
+        // Proxy assignment (Task 7, spec proxy-per-provider)
+        ["proxies.assign.title"] = "Gán proxy",
+        ["proxies.assign.none"] = "Chưa gán proxy (direct).",
+        ["proxies.assign.mode"] = "Chế độ",
+        ["proxies.assign.mode_rr"] = "Round-robin",
+        ["proxies.assign.mode_fallback"] = "Fallback",
+        ["proxies.assign.none_mode"] = "Không có",
+        ["proxies.assign.save"] = "Lưu",
+        ["proxies.assign.message"] = "Đã gán proxy cho provider này.",
+        ["proxies.assign.account"] = "Override theo tài khoản",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>

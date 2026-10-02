@@ -59,6 +59,7 @@ else
                             <div class="flex items-center gap-2">
                                 <span class="font-medium">@p.Name</span>
                                 <Badge Text="@TypeLabel(p.Type)" Variant="TypeVariant(p.Type)" />
+                                <Badge Text="@ProxyModeBadgeText(p)" Variant="@ProxyModeBadgeVariant(p)" />
                                 @if (p.IsPreset)
                                 {
                                     <Badge Text="@L["providers.badge.free"]" Variant="BadgeVariant.Info" />
@@ -1484,6 +1485,27 @@ else
         ProviderType.OpenAI => BadgeVariant.Success,
         _ => BadgeVariant.Info,
     };
+
+    /// <summary>
+    /// Badge mode proxy của provider — đọc từ <c>Provider.ProxyMode</c> (đã load trong
+    /// ListAsync). null = Direct. ProviderProxies không được Include nên badge phản ánh
+    /// mode đã gán, không phải selection hiệu lực (spec proxy-per-provider).
+    /// </summary>
+    private string ProxyModeBadgeText(Provider provider) =>
+        provider.ProxyMode switch
+        {
+            ProxyMode.RoundRobin => L["proxies.assign.mode_rr"],
+            ProxyMode.Fallback => L["proxies.assign.mode_fallback"],
+            _ => L["proxies.assign.none"],
+        };
+
+    private static BadgeVariant ProxyModeBadgeVariant(Provider provider) =>
+        provider.ProxyMode switch
+        {
+            ProxyMode.RoundRobin => BadgeVariant.Info,
+            ProxyMode.Fallback => BadgeVariant.Warning,
+            _ => BadgeVariant.Neutral,
+        };
 
     /// <summary>128000 → "128k"; dưới 1000 giữ nguyên — badge ngắn gọn, không cần chính xác tuyệt đối.</summary>
     private static string FormatCtx(int contextWindow) =>
