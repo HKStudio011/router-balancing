@@ -13,6 +13,9 @@ public class ProxyServiceTests : IDisposable
     private readonly ISecretProtector _protector = new DpapiSecretProtector();
     private readonly FakePool _pool = new();
 
+    // Mutable: test TestAsync gán script echo mới trước khi CreateService() đọc field
+    private StubEchoClient _echo = new(() => new ProxyTestResult(true, null, 200, TimeSpan.FromMilliseconds(12)));
+
     public ProxyServiceTests()
     {
         _factory = _db.CreateFactory();
@@ -21,7 +24,7 @@ public class ProxyServiceTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    private ProxyService CreateService() => new(_factory, _protector, _pool);
+    private ProxyService CreateService() => new(_factory, _protector, _pool, _echo);
 
     private static ProxyDraft Draft(
         string scheme = "http", string host = "127.0.0.1", int port = 8080,
@@ -169,6 +172,78 @@ public class ProxyServiceTests : IDisposable
 
         Assert.Equal(2, list.Count);
         Assert.True(list[0].Id < list[1].Id);
+    }
+
+    [Fact]
+    public async Task TestAsync_EchoSucceeds_PersistsLastTestSuccess()
+    {
+        var created = await CreateService().CreateAsync(Draft());
+        _echo = new StubEchoClient(() => new ProxyTestResult(true, null, 200, TimeSpan.FromMilliseconds(30), "203.0.113.7"));
+
+        var result = await CreateService().TestAsync(created.Id, CancellationToken.None);
+
+        Assert.True(result.Success);
+        using var db = _factory.CreateDbContext();
+        var row = await db.OutboundProxies.AsNoTracking().SingleAsync(p => p.Id == created.Id);
+        Assert.True(row.LastTestSuccess);
+        Assert.NotNull(row.LastTestAt);
+        Assert.Null(row.LastTestMessage);
+        Assert.Equal("203.0.113.7", row.LastTestIp);
+    }
+
+    [Fact]
+    public async Task TestAsync_EchoThrowsHttpRequestException_PersistsError()
+    {
+        var created = await CreateService().CreateAsync(Draft());
+        _echo = new StubEchoClient(() => throw new HttpRequestException("Connection refused"));
+
+        var result = await CreateService().TestAsync(created.Id, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("Connection refused", result.Error);
+        using var db = _factory.CreateDbContext();
+        var row = await db.OutboundProxies.AsNoTracking().SingleAsync(p => p.Id == created.Id);
+        Assert.False(row.LastTestSuccess);
+        Assert.Equal("Connection refused", row.LastTestMessage);
+        Assert.NotNull(row.LastTestAt);
+    }
+
+    [Fact]
+    public async Task TestAsync_UserCancels_RethrowsWithoutPersisting()
+    {
+        var created = await CreateService().CreateAsync(Draft());
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        _echo = new StubEchoClient(() => throw new OperationCanceledException(cts.Token));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => CreateService().TestAsync(created.Id, cts.Token));
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.OutboundProxies.AsNoTracking().SingleAsync(p => p.Id == created.Id);
+        Assert.Null(row.LastTestAt); // hủy thật → không ghi gì
+    }
+
+    [Fact]
+    public async Task TestAsync_Timeout_PersistsError()
+    {
+        var created = await CreateService().CreateAsync(Draft());
+        _echo = new StubEchoClient(() => throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"));
+
+        var result = await CreateService().TestAsync(created.Id, CancellationToken.None);
+
+        Assert.False(result.Success);
+        using var db = _factory.CreateDbContext();
+        var row = await db.OutboundProxies.AsNoTracking().SingleAsync(p => p.Id == created.Id);
+        Assert.False(row.LastTestSuccess);
+        Assert.NotNull(row.LastTestMessage);
+    }
+
+    /// <summary>Echo theo script — lambda throw được nên test giả lập được cả nhánh lỗi.</summary>
+    private sealed class StubEchoClient(Func<ProxyTestResult> script) : IProxyEchoClient
+    {
+        public Task<ProxyTestResult> EchoAsync(ProxyAttempt proxy, CancellationToken ct) =>
+            Task.FromResult(script());
     }
 
     /// <summary>IProxyPool ghi nhận Invalidate — health methods không dùng ở service test này.</summary>

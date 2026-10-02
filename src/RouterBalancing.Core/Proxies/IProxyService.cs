@@ -24,4 +24,7 @@ public interface IProxyService
 
     /// <exception cref="KeyNotFoundException">Không có proxy với <paramref name="id"/>.</exception>
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
+
+    /// <summary>Test kết nối thủ công qua proxy — persist LastTest* (spec §5.4).</summary>
+    Task<ProxyTestResult> TestAsync(long proxyId, CancellationToken ct);
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Security;
@@ -11,13 +12,17 @@ public sealed class ProxyService : IProxyService
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ISecretProtector _protector;
     private readonly IProxyPool _pool;
+    private readonly IProxyEchoClient _echo;
 
     /// <inheritdoc/>
-    public ProxyService(IDbContextFactory<RouterBalancingDbContext> db, ISecretProtector protector, IProxyPool pool)
+    public ProxyService(
+        IDbContextFactory<RouterBalancingDbContext> db, ISecretProtector protector, IProxyPool pool,
+        IProxyEchoClient echo)
     {
         _db = db;
         _protector = protector;
         _pool = pool;
+        _echo = echo;
     }
 
     /// <inheritdoc/>
@@ -109,6 +114,47 @@ public sealed class ProxyService : IProxyService
         proxy.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         _pool.Invalidate();
+    }
+
+    /// <inheritdoc/>
+    public async Task<ProxyTestResult> TestAsync(long proxyId, CancellationToken ct)
+    {
+        using var db = _db.CreateDbContext();
+        var row = await db.OutboundProxies.FirstOrDefaultAsync(p => p.Id == proxyId)
+            ?? throw new KeyNotFoundException($"Proxy {proxyId} not found.");
+
+        var attempt = new ProxyAttempt(
+            row.Id,
+            new Uri($"{row.Scheme}://{row.Host}:{row.Port}"),
+            row.Username,
+            row.PasswordEncrypted is null ? null : _protector.Unprotect(row.PasswordEncrypted),
+            $"{row.Scheme}://{row.Host}:{row.Port}");
+
+        try
+        {
+            var result = await _echo.EchoAsync(attempt, ct);
+            row.LastTestAt = DateTimeOffset.UtcNow;
+            row.LastTestSuccess = true;
+            row.LastTestMessage = null;
+            row.LastTestIp = result.Ip;
+            await db.SaveChangesAsync();
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // người dùng hủy thật → không persist, không nuốt
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
+            or InvalidOperationException or CryptographicException)
+        {
+            // Timeout (TaskCanceled), lỗi mạng, lỗi decrypt — persist để UI hiện lỗi
+            row.LastTestAt = DateTimeOffset.UtcNow;
+            row.LastTestSuccess = false;
+            row.LastTestMessage = ex.Message;
+            row.LastTestIp = null; // không để IP cũ của lần test thành công trước hiển thị kèm lỗi mới
+            await db.SaveChangesAsync();
+            return new ProxyTestResult(false, ex.Message, null, TimeSpan.Zero);
+        }
     }
 
     /// <summary>
