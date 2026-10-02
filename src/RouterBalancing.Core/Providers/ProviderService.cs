@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -145,19 +146,28 @@ public sealed class ProviderService : IProviderService
             // Override (key đang gõ trên form) ưu tiên; không có → account enabled đầu tiên.
             // Unprotect PHẢI nằm trong try: key DPAPI hỏng (CryptographicException) rơi vào
             // catch → fail với lý do, không ném ra UI.
+            var account = ProviderKeyResolver.ResolveFirstEnabledAccount(provider);
             var key = apiKeyOverride;
             if (string.IsNullOrEmpty(key))
             {
-                key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector);
+                key = account is not null ? _protector.Unprotect(account.ApiKeyEncrypted) : string.Empty;
             }
 
-            using var request = ProviderRequestFactory.Create(provider, key ?? string.Empty);
-            using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
-                .SendAsync(request, ct);
+            ProxyTarget.Current.Value = new ProxyTarget(provider, account);
+            try
+            {
+                using var request = ProviderRequestFactory.Create(provider, key ?? string.Empty);
+                using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
+                    .SendAsync(request, ct);
 
-            result = response.IsSuccessStatusCode
-                ? new ProviderTestResult(true, null, at)
-                : new ProviderTestResult(false, $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}", at);
+                result = response.IsSuccessStatusCode
+                    ? new ProviderTestResult(true, null, at)
+                    : new ProviderTestResult(false, $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}", at);
+            }
+            finally
+            {
+                ProxyTarget.Current.Value = null;
+            }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
         {

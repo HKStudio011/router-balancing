@@ -19,4 +19,9 @@ public static class ProviderKeyResolver
             .FirstOrDefault();
         return account is null ? null : protector.Unprotect(account.ApiKeyEncrypted);
     }
+
+    /// <summary>Tài khoản enabled đầu tiên (Priority tăng, tie-break Id) — null nếu không có.</summary>
+    public static ProviderAccount? ResolveFirstEnabledAccount(Provider provider) =>
+        provider.Accounts?.Where(a => a.Enabled && !string.IsNullOrEmpty(a.ApiKeyEncrypted))
+            .OrderBy(a => a.Priority).ThenBy(a => a.Id).FirstOrDefault();
 }

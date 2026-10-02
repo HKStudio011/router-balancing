@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
@@ -83,8 +84,8 @@ public sealed class ChatCompletionsHandler(
     public async Task<DispatchOutcome> ForwardAsync(HttpContext ctx, Provider provider, Model model,
         byte[] body, CancellationToken ct)
     {
-        var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, protector);
-        if (key is null)
+        var account = ProviderKeyResolver.ResolveFirstEnabledAccount(provider);
+        if (account is null)
         {
             log.Write(new LogEntry
             {
@@ -98,11 +99,18 @@ public sealed class ChatCompletionsHandler(
                 $"No enabled API key for provider '{provider.Name}'", "server_error", null, null);
         }
 
-        // Yêu cầu upstream trả usage cho stream OpenAI (spec §6) — body gốc giữ nguyên ở queue/prepare
-        var (requestBody, expectsUsage) = UsageCapture.WithIncludeUsage(body, provider.Type);
+        var key = protector.Unprotect(account.ApiKeyEncrypted);
 
-        var stopwatch = Stopwatch.StartNew();
-        HttpResponseMessage response;
+        // Đặt context proxy TRƯỚC khi gọi handler (upstream.PostChatCompletionAsync) —
+        // ProxyHealthHandler đọc ProxyTarget.Current để dispatch theo assignment.
+        ProxyTarget.Current.Value = new ProxyTarget(provider, account);
+        try
+        {
+            // Yêu cầu upstream trả usage cho stream OpenAI (spec §6) — body gốc giữ nguyên ở queue/prepare
+            var (requestBody, expectsUsage) = UsageCapture.WithIncludeUsage(body, provider.Type);
+
+            var stopwatch = Stopwatch.StartNew();
+            HttpResponseMessage response;
         try
         {
             response = await upstream.PostChatCompletionAsync(provider, key, requestBody, ct);
@@ -171,6 +179,11 @@ public sealed class ChatCompletionsHandler(
             LogForwarded(ctx, provider, model, response, stopwatch);
             return new DispatchOutcome.Passthrough((int)response.StatusCode, contentType,
                 errorBody, retryAfterRaw);
+        }
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
         }
     }
 

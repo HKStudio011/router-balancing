@@ -75,6 +75,8 @@ namespace router_balancing
             builder.Services.AddSingleton<IProxyPool, ProxyPool>();       // singleton: giữ down-state + RR cursor
             builder.Services.AddSingleton<IProxyEchoClient, ProxyEchoClient>();
             builder.Services.AddTransient<ProxyHealthHandler>();          // transient per HttpClient pipeline
+            // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
+            builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
             // T9 (UI) inject IProxyService — đăng ký tại đây để DI tự resolve ctor 4 tham số
             builder.Services.AddSingleton<IProxyService, ProxyService>();
             builder.Services.AddSingleton<IProxyHost, ProxyHost>();

@@ -37,6 +37,8 @@ public static class ProxyApp
         }
 
         builder.Services.AddTransient<ProxyHealthHandler>();
+        // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
+        builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
 
         // Streaming SSE vô hạn — timeout (mặc định 100s) cắt giữa chừng là mất stream;
         // fail kết nối do ConnectTimeout để không treo vô hạn khi upstream chết.

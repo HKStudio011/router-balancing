@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -165,10 +166,20 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
     /// </summary>
     private async Task<HttpResponseMessage> SendModelListAsync(Provider provider, string key, CancellationToken ct)
     {
-        using var request = ProviderRequestFactory.Create(provider, key);
+        // Đặt context proxy (provider level, account null) — free-model-sync đi theo provider
+        // nên request qua proxy gán cho provider (D4); reset sau (finally) mọi nhánh.
         try
         {
-            return await _http.CreateClient(HttpClientName).SendAsync(request, ct);
+            using var request = ProviderRequestFactory.Create(provider, key);
+            ProxyTarget.Current.Value = new ProxyTarget(provider, null);
+            try
+            {
+                return await _http.CreateClient(HttpClientName).SendAsync(request, ct);
+            }
+            finally
+            {
+                ProxyTarget.Current.Value = null;
+            }
         }
         catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
         {

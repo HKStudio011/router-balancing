@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -161,6 +162,8 @@ public sealed class ProviderAccountService : IProviderAccountService
             var at = DateTimeOffset.UtcNow;
             bool success;
             string? message;
+
+            ProxyTarget.Current.Value = new ProxyTarget(provider, account);
             try
             {
                 var key = _protector.Unprotect(account.ApiKeyEncrypted);
@@ -179,6 +182,10 @@ public sealed class ProviderAccountService : IProviderAccountService
                 success = false;
                 message = ex.Message;
                 _log.Warn($"Account test failed ({account.Name}): {ex.Message}");
+            }
+            finally
+            {
+                ProxyTarget.Current.Value = null;
             }
 
             account.LastTestSuccess = success;
