@@ -317,7 +317,7 @@ public class ProxyServiceTests : IDisposable
             .SingleAsync(p => p.Id == providerId);
 
         Assert.Equal(ProxyMode.Fallback, provider.ProxyMode);
-        Assert.Equal(1, provider.ProviderProxies.Count);
+        Assert.Single(provider.ProviderProxies);
         Assert.Equal(proxy, provider.ProviderProxies.Single().ProxyId);
         // Mọi mutation phải Invalidate pool (spec §5) — delta thay vì absolute (FakePool dùng chung class).
         Assert.True(_pool.Invalidations > invalidationsBefore);
