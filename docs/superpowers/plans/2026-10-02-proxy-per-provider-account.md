@@ -1087,14 +1087,17 @@ public sealed record ProxyAssignment
 - [ ] **Step 3: Implement in `ProxyService.cs`** — thêm 3 method + helper. Pattern: load entity + validate proxy tồn tại & enabled → set junction (EF tự upsert/delete) + mode → save → `Invalidate()`.
 
 ```csharp
-    private async Task ValidateProxyIdsAsync(long[] ids, IDbContextFactory<RouterBalancingDbContext> db, CancellationToken ct)
+    private async Task ValidateProxyIdsAsync(IReadOnlyList<long> ids, IDbContextFactory<RouterBalancingDbContext> db, CancellationToken ct)
     {
-        var all = await db.CreateDbContext().OutboundProxies.AsNoTracking()
-            .Select(p => p.Id).ToHashSetAsync(ct);
+        // Validate proxy tồn tại & enabled (brief Step 3): rỗng = gỡ toàn bộ (không validate).
+        var existing = await db.CreateDbContext().OutboundProxies.AsNoTracking()
+            .ToDictionaryAsync(p => p.Id, ct);
         foreach (var id in ids)
         {
-            if (!all.Contains(id))
+            if (!existing.TryGetValue(id, out var proxy))
                 throw new KeyNotFoundException($"Proxy {id} not found.");
+            if (!proxy.Enabled)
+                throw new InvalidOperationException($"Proxy {id} is disabled.");
         }
     }
 

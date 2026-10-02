@@ -32,4 +32,22 @@ public interface IProxyService
     /// </remarks>
     /// <exception cref="KeyNotFoundException">Không có proxy với <paramref name="proxyId"/>.</exception>
     Task<ProxyTestResult> TestAsync(long proxyId, CancellationToken ct);
+
+    /// <summary>Gán proxy của provider (M2M) + mode. proxyIds rỗng = gỡ toàn bộ.</summary>
+    /// <param name="mode">Mode dùng tập proxy; null = kế thừa (account hoặc Robin).</param>
+    /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/> hoặc proxy không tồn tại.</exception>
+    /// <exception cref="InvalidOperationException">Proxy trong tập đang bị tắt.</exception>
+    Task AssignProviderProxiesAsync(long providerId, IReadOnlyList<long> proxyIds,
+        ProxyMode? mode, CancellationToken ct = default);
+
+    /// <summary>Gán proxy của account (override provider) + mode. proxyIds rỗng = gỡ toàn bộ.</summary>
+    /// <param name="mode">Mode dùng tập proxy; null = kế thừa provider.</param>
+    /// <exception cref="KeyNotFoundException">Không có account với <paramref name="accountId"/> hoặc proxy không tồn tại.</exception>
+    /// <exception cref="InvalidOperationException">Proxy trong tập đang bị tắt.</exception>
+    Task AssignAccountProxiesAsync(long accountId, IReadOnlyList<long> proxyIds,
+        ProxyMode? mode, CancellationToken ct = default);
+
+    /// <summary>Gán proxy hiện tại (provider + account) cho UI.</summary>
+    /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/>.</exception>
+    Task<IReadOnlyList<ProxyAssignment>> GetAssignmentsAsync(long providerId, CancellationToken ct = default);
 }

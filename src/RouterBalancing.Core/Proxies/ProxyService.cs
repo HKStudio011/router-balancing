@@ -161,6 +161,95 @@ public sealed class ProxyService : IProxyService
     }
 
     /// <summary>
+    /// Validate proxy tồn tại & enabled — tập rỗng = gỡ toàn bộ gán (không validate).
+    /// Proxy tắt vẫn là "đã gán" trong DB; pool tự lọc enabled nên request tự Direct (spec §8).
+    /// </summary>
+    private async Task ValidateProxyIdsAsync(IReadOnlyList<long> ids, IDbContextFactory<RouterBalancingDbContext> db, CancellationToken ct)
+    {
+        var existing = await db.CreateDbContext().OutboundProxies.AsNoTracking()
+            .ToDictionaryAsync(p => p.Id, ct);
+        foreach (var id in ids)
+        {
+            if (!existing.TryGetValue(id, out var proxy))
+                throw new KeyNotFoundException($"Proxy {id} not found.");
+            if (!proxy.Enabled)
+                throw new InvalidOperationException($"Proxy {id} is disabled.");
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task AssignProviderProxiesAsync(long providerId, IReadOnlyList<long> proxyIds,
+        ProxyMode? mode, CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+        // Gồm junction để thay thế tập (gán rỗng) có hàng để xoá; không include thì EF không
+        // biết remove gì khi gán tập mới (mỗi lần 1 DbContext riêng, không giữ state cũ).
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .FirstOrDefaultAsync(p => p.Id == providerId, ct)
+            ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
+        await ValidateProxyIdsAsync(proxyIds, _db, ct);
+
+        provider.ProviderProxies = proxyIds.Select(id => new ProviderProxy { ProviderId = provider.Id, ProxyId = id }).ToList();
+        provider.ProxyMode = mode;
+        provider.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        _pool.Invalidate();
+    }
+
+    /// <inheritdoc/>
+    public async Task AssignAccountProxiesAsync(long accountId, IReadOnlyList<long> proxyIds,
+        ProxyMode? mode, CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+        // Gồm junction để thay thế tập (gán rỗng) có hàng để xoá; không include thì EF không
+        // biết remove gì khi gán tập mới (mỗi lần 1 DbContext riêng, không giữ state cũ).
+        var account = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .FirstOrDefaultAsync(a => a.Id == accountId, ct)
+            ?? throw new KeyNotFoundException($"Account {accountId} not found.");
+        await ValidateProxyIdsAsync(proxyIds, _db, ct);
+
+        account.AccountProxies = proxyIds.Select(id => new ProviderAccountProxy { AccountId = accountId, ProxyId = id }).ToList();
+        account.ProxyMode = mode;
+        account.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        _pool.Invalidate();
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<ProxyAssignment>> GetAssignmentsAsync(long providerId, CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .Include(p => p.Accounts)
+                .ThenInclude(a => a.AccountProxies)
+            .FirstOrDefaultAsync(p => p.Id == providerId, ct)
+            ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
+
+        var result = new List<ProxyAssignment>
+        {
+            new()
+            {
+                Id = provider.Id, Name = provider.Name, IsProvider = true,
+                Mode = provider.ProxyMode,
+                ProxyIds = provider.ProviderProxies.Select(x => x.ProxyId).ToList(),
+            },
+        };
+        foreach (var acc in provider.Accounts)
+        {
+            result.Add(new ProxyAssignment
+            {
+                Id = acc.Id, Name = acc.Name, IsProvider = false,
+                Mode = acc.ProxyMode,
+                ProxyIds = acc.AccountProxies.Select(x => x.ProxyId).ToList(),
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Validate draft thuần (không DB) + chuẩn hóa (scheme lowercase, trim host/username) —
     /// ném ProxyValidationException với dict key i18n.
     /// </summary>

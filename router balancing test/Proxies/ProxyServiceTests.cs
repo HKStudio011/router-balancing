@@ -31,6 +31,43 @@ public class ProxyServiceTests : IDisposable
         string username = "", string? password = null) =>
         new() { Scheme = scheme, Host = host, Port = port, Username = username, Password = password };
 
+    /// <summary>Tạo proxy qua service, trả Id — port khác nhau mỗi test để tránh trùng endpoint.</summary>
+    private async Task<long> AddProxyAsync(int port)
+    {
+        var created = await CreateService().CreateAsync(Draft(host: "127.0.0.1", port: port));
+        return created.Id;
+    }
+
+    /// <summary>Gán provider vào DB (ProxyService không quản lý provider).</summary>
+    private async Task<long> AddProviderAsync()
+    {
+        using var db = _factory.CreateDbContext();
+        var provider = new Provider
+        {
+            Name = "Test",
+            Type = ProviderType.OpenAI,
+            BaseUrl = "https://api.example.com",
+        };
+        db.Providers.Add(provider);
+        await db.SaveChangesAsync();
+        return provider.Id;
+    }
+
+    /// <summary>Gán account vào DB cho provider (ProxyService không quản lý account).</summary>
+    private async Task<long> AddAccountAsync(long providerId)
+    {
+        using var db = _factory.CreateDbContext();
+        var account = new ProviderAccount
+        {
+            ProviderId = providerId,
+            Name = "Acc",
+            ApiKeyEncrypted = _protector.Protect("secret"),
+        };
+        db.ProviderAccounts.Add(account);
+        await db.SaveChangesAsync();
+        return account.Id;
+    }
+
     [Fact]
     public async Task CreateAsync_InvalidScheme_ThrowsValidationError()
     {
@@ -261,6 +298,113 @@ public class ProxyServiceTests : IDisposable
         Assert.False(row.LastTestSuccess);
         Assert.NotNull(row.LastTestAt);
         Assert.False(string.IsNullOrWhiteSpace(row.LastTestMessage));
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_PersistsAndInvalidate()
+    {
+        var service = CreateService();
+        var proxy = await AddProxyAsync(port: 9500);
+        var providerId = await AddProviderAsync();
+        var invalidationsBefore = _pool.Invalidations;
+
+        await service.AssignProviderProxiesAsync(providerId, new[] { proxy }, ProxyMode.Fallback);
+
+        // Reload từ DB (không có IProviderService.GetProviderAsync) — EF tự load junction.
+        using var db = _factory.CreateDbContext();
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .SingleAsync(p => p.Id == providerId);
+
+        Assert.Equal(ProxyMode.Fallback, provider.ProxyMode);
+        Assert.Equal(1, provider.ProviderProxies.Count);
+        Assert.Equal(proxy, provider.ProviderProxies.Single().ProxyId);
+        // Mọi mutation phải Invalidate pool (spec §5) — delta thay vì absolute (FakePool dùng chung class).
+        Assert.True(_pool.Invalidations > invalidationsBefore);
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_Empty_Clears()
+    {
+        var service = CreateService();
+        var proxy = await AddProxyAsync(port: 9501);
+        var providerId = await AddProviderAsync();
+
+        await service.AssignProviderProxiesAsync(providerId, new[] { proxy }, ProxyMode.Fallback);
+        // proxyIds rỗng = gỡ toàn bộ gán (không validate)
+        await service.AssignProviderProxiesAsync(providerId, [], ProxyMode.Fallback);
+
+        using var db = _factory.CreateDbContext();
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .SingleAsync(p => p.Id == providerId);
+
+        Assert.Empty(provider.ProviderProxies);
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_DisabledProxy_Throws()
+    {
+        var service = CreateService();
+        var created = await service.CreateAsync(Draft(port: 9502));
+        var providerId = await AddProviderAsync();
+
+        await service.SetEnabledAsync(created.Id, enabled: false);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.AssignProviderProxiesAsync(providerId, new[] { created.Id }, ProxyMode.Fallback));
+    }
+
+    [Fact]
+    public async Task AssignAccountProxies_OverridesProvider()
+    {
+        var service = CreateService();
+        var proxyA = await AddProxyAsync(port: 9503);
+        var proxyB = await AddProxyAsync(port: 9504);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+
+        await service.AssignProviderProxiesAsync(providerId, new[] { proxyA }, ProxyMode.RoundRobin);
+        // Account override provider (D1): gán account không xóa tập của provider.
+        await service.AssignAccountProxiesAsync(accountId, new[] { proxyB }, ProxyMode.Fallback);
+
+        var assignments = await service.GetAssignmentsAsync(providerId);
+
+        var account = assignments.Single(a => !a.IsProvider);
+
+        Assert.Equal(new[] { proxyB }, account.ProxyIds);
+        Assert.Equal(ProxyMode.Fallback, account.Mode);
+        Assert.False(account.IsProvider);
+    }
+
+    [Fact]
+    public async Task GetAssignments_ReturnsProviderAndAccounts()
+    {
+        var service = CreateService();
+        var proxy = await AddProxyAsync(port: 9505);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+
+        await service.AssignProviderProxiesAsync(providerId, new[] { proxy }, ProxyMode.Fallback);
+        await service.AssignAccountProxiesAsync(accountId, new[] { proxy }, ProxyMode.RoundRobin);
+
+        var assignments = await service.GetAssignmentsAsync(providerId);
+
+        Assert.Equal(2, assignments.Count);
+        var provider = assignments.Single(a => a.IsProvider);
+        var account = assignments.Single(a => !a.IsProvider);
+
+        Assert.Equal(providerId, provider.Id);
+        Assert.Equal("Test", provider.Name);
+        Assert.True(provider.IsProvider);
+        Assert.Equal(ProxyMode.Fallback, provider.Mode);
+        Assert.Equal(new[] { proxy }, provider.ProxyIds);
+
+        Assert.Equal(accountId, account.Id);
+        Assert.Equal("Acc", account.Name);
+        Assert.False(account.IsProvider);
+        Assert.Equal(ProxyMode.RoundRobin, account.Mode);
+        Assert.Equal(new[] { proxy }, account.ProxyIds);
     }
 
     /// <summary>Echo theo script — lambda throw được nên test giả lập được cả nhánh lỗi.</summary>
