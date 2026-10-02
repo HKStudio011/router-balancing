@@ -3,7 +3,6 @@ using System.Net.Sockets;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Proxies;
-using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 using router_balancing_test.Server;
 
@@ -13,7 +12,6 @@ public class ProxyEchoClientTests : IDisposable
 {
     private readonly TestDb _db = new();
     private readonly IDbContextFactory<RouterBalancingDbContext> _factory;
-    private readonly ISecretProtector _protector = new DpapiSecretProtector();
     private readonly LocalHttpServer _destination = new();
     private readonly List<IDisposable> _stubs = [];
 

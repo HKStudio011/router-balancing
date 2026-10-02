@@ -52,7 +52,10 @@ public sealed class ProxyEchoClient : IProxyEchoClient
         try
         {
             using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-            if (json.RootElement.TryGetProperty("ip", out var ipElement))
+            // Guard ValueKind: ipElement.GetString() ném InvalidOperationException với JSON
+            // không phải string (vd {"ip":123}) — giữ ip null, không fail chỉ vì thiếu IP.
+            if (json.RootElement.TryGetProperty("ip", out var ipElement)
+                && ipElement.ValueKind == JsonValueKind.String)
             {
                 ip = ipElement.GetString();
             }

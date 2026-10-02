@@ -62,6 +62,61 @@ public class ProxyHealthHandlerTests
     }
 
     [Fact]
+    // Pin classifier §4.4: HttpRequestException inner TimeoutException → proxy fail, failover
+    // (đủ chỉ inner timeout, không cần message "407").
+    public async Task SendAsync_TimeoutInnerHttpRequestException_Failover()
+    {
+        var pool = new FakePool().Add(Attempt(1, 8001), Attempt(2, 8002));
+        var stub = new StubHandler(call => call == 1
+            ? throw new HttpRequestException("timeout", new TimeoutException())
+            : Ok());
+        using var client = ClientFor(pool, stub);
+
+        var response = await client.GetAsync("http://upstream.example/v1/chat");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, stub.Calls);
+        Assert.Equal([1L], pool.Failures); // p1 timeout inner → đánh down, p2 thành công
+        Assert.Equal([2L], pool.Successes);
+    }
+
+    [Fact]
+    // Pin classifier §4.4: message chứa "407" (không inner) → proxy fail, failover
+    // (đủ chỉ message "407", không cần inner socket/timeout).
+    public async Task SendAsync_MessageContains407_Failover()
+    {
+        var pool = new FakePool().Add(Attempt(1, 8001), Attempt(2, 8002));
+        var stub = new StubHandler(call => call == 1
+            ? throw new HttpRequestException("HTTP 407 Proxy Authentication Required")
+            : Ok());
+        using var client = ClientFor(pool, stub);
+
+        var response = await client.GetAsync("http://upstream.example/v1/chat");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, stub.Calls);
+        Assert.Equal([1L], pool.Failures); // p1 message "407" → đánh down, p2 thành công
+        Assert.Equal([2L], pool.Successes);
+    }
+
+    [Fact]
+    // Pin classifier §4.4: HttpRequestException không inner socket/timeout, không "407"
+    // → KHÔNG phải proxy fail: ném nguyên ra caller, không đánh down (Failures rỗng).
+    public async Task SendAsync_NonProxyHttpRequestException_NoReportFailure()
+    {
+        var pool = new FakePool().Add(Attempt(1, 8001), Attempt(2, 8002));
+        var stub = new StubHandler(call => throw new HttpRequestException("boom"));
+        using var client = ClientFor(pool, stub);
+
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => client.GetAsync("http://upstream.example/v1/chat"));
+
+        Assert.Equal(1, stub.Calls); // không failover — p2 không được gọi
+        Assert.Empty(pool.Failures); // không phải proxy fail → không report
+        Assert.Empty(pool.Successes);
+    }
+
+    [Fact]
     public async Task SendAsync_AllProxiesFail_FallsBackToDirect()
     {
         var pool = new FakePool().Add(Attempt(1, 8001));

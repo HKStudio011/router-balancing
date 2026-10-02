@@ -28,6 +28,7 @@ else
             <thead>
                 <tr class="border-b border-border text-left text-xs uppercase opacity-70">
                     <th class="px-2 py-2">@L["proxies.col.endpoint"]</th>
+                    <th class="px-2 py-2">@L["proxies.col.scheme"]</th>
                     <th class="px-2 py-2">@L["proxies.col.auth"]</th>
                     <th class="px-2 py-2">@L["proxies.col.enabled"]</th>
                     <th class="px-2 py-2">@L["proxies.col.status"]</th>
@@ -41,22 +42,14 @@ else
                     @* @key để toggle/test không re-render cả bảng *@
                     <tr @key="row.Id" class="border-b border-border">
                         <td class="px-2 py-2 font-mono">@EndpointOf(row)</td>
-                        <td class="px-2 py-2">@(row.Username ?? L["proxies.auth.none"])</td>
+                        <td class="px-2 py-2 font-mono text-xs opacity-70">@row.Scheme</td>
+                        <td class="px-2 py-2">@(row.Username is null ? L["proxies.auth.none"] : "•••")</td>
                         <td class="px-2 py-2">
                             @* Toggle enable/disable theo đúng pattern Providers.razor (checkbox) *@
                             <input type="checkbox" checked="@row.Enabled" disabled="@_busy"
                                    @onchange="() => ToggleAsync(row)" />
                         </td>
-                        <td class="px-2 py-2">
-                            @if (_downIds.Contains(row.Id))
-                            {
-                                <span class="text-danger">@L["proxies.status.down"]</span>
-                            }
-                            else
-                            {
-                                <span>@L["proxies.status.ok"]</span>
-                            }
-                        </td>
+                        <td class="px-2 py-2">@StatusBadge(row)</td>
                         <td class="px-2 py-2">
                             @if (row.LastTestAt is null)
                             {
@@ -64,11 +57,20 @@ else
                             }
                             else
                             {
-                                <span>@row.LastTestAt.Value.ToLocalTime().ToString("g")</span>
                                 @if (row.LastTestSuccess == false)
                                 {
-                                    @* Message là dữ liệu HTTP hiển thị thẳng, không qua i18n *@
+                                    @* ✗ + message — message là dữ liệu HTTP, không qua i18n *@
+                                    <span class="text-danger">✗ <span class="font-mono">@row.LastTestAt.Value.ToLocalTime().ToString("g")</span></span>
                                     <div class="text-danger text-xs">@row.LastTestMessage</div>
+                                }
+                                else
+                                {
+                                    <span>✓</span>
+                                    @if (!string.IsNullOrWhiteSpace(row.LastTestIp))
+                                    {
+                                        <span class="font-mono">@row.LastTestIp</span>
+                                    }
+                                    <span class="font-mono">@row.LastTestAt.Value.ToLocalTime().ToString("g")</span>
                                 }
                             }
                         </td>
@@ -163,7 +165,7 @@ else
 
 @code {
     private List<OutboundProxy> _rows = [];
-    private HashSet<long> _downIds = [];
+    private List<ProxyRuntimeStatus> _downStatuses = [];
     private bool _loading = true;
     private bool _busy;
 
@@ -178,9 +180,6 @@ else
     private string _password = string.Empty; // rỗng = giữ mật khẩu cũ khi edit
     private OutboundProxy? _confirmDelete;
 
-    // Hủy refresh loop 30s khi rời trang
-    private readonly CancellationTokenSource _refreshCts = new();
-
     /// <summary>Chỉ hiện hint khi sửa — thêm mới để trống nghĩa là không đặt mật khẩu.</summary>
     private string? PasswordPlaceholder => _editing is { Id: > 0 } ? L["proxies.hint.password"] : null;
 
@@ -188,35 +187,19 @@ else
     {
         L.LanguageChanged += OnLanguageChanged;
         await ReloadAsync();
-        _ = RunRefreshLoopAsync(_refreshCts.Token);
     }
 
     /// <summary>
-    /// Refresh định kỳ 30s: cột Status lấy từ <see cref="IProxyPool.Snapshot"/> (in-memory,
-    /// đổi khi request khác fail/succeed) nên phải tự reload, không chờ hành động của người dùng.
+    /// Nạp lại danh sách proxy + snapshot trạng thái pool. Cột Status chỉ đọc lúc load
+    /// và sau hành động (Save/Toggle/Test/Delete) — spec §6.
     /// </summary>
-    private async Task RunRefreshLoopAsync(CancellationToken ct)
-    {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
-        try
-        {
-            while (await timer.WaitForNextTickAsync(ct))
-            {
-                await InvokeAsync(ReloadAsync);
-            }
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
-        {
-            // Rời trang: Cancel token / component đã dispose — không phải lỗi
-        }
-    }
-
     private async Task ReloadAsync()
     {
         try
         {
             _rows = (await ProxySvc.ListAsync()).ToList();
-            _downIds = ProxyPool.Snapshot().Where(s => s.IsDown).Select(s => s.Id).ToHashSet();
+            // Giữ toàn bộ snapshot để hiển thị "Down (còn Xs)" — DownUntil chỉ có ở đây.
+            _downStatuses = ProxyPool.Snapshot().ToList();
         }
         catch (Exception ex)
         {
@@ -229,6 +212,26 @@ else
         }
 
         StateHasChanged();
+    }
+
+    /// <summary>
+    /// Badge trạng thái: down → "Down (còn Xs)" (hoặc "Down" nếu hết cooldown); còn lại "Ready".
+    /// </summary>
+    private string StatusBadge(OutboundProxy row)
+    {
+        var status = _downStatuses.FirstOrDefault(s => s.Id == row.Id);
+        if (status is not { IsDown: true })
+        {
+            return L["proxies.status.ok"];
+        }
+
+        if (status.DownUntil is not { } until)
+        {
+            return L["proxies.status.down"];
+        }
+
+        var remaining = (int)Math.Max(0, (until - DateTimeOffset.UtcNow).TotalSeconds);
+        return $"{L["proxies.status.down"]} ({string.Format(L["proxies.status.downUntil"], remaining)})";
     }
 
     private static string EndpointOf(OutboundProxy row) =>
@@ -402,7 +405,5 @@ else
     public void Dispose()
     {
         L.LanguageChanged -= OnLanguageChanged;
-        // Không Dispose CTS: tránh race với waiter đang đăng ký tick — loop tự thoát khi Cancel
-        _refreshCts.Cancel();
     }
 }

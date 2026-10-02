@@ -884,7 +884,7 @@ dotnet build src/RouterBalancing.Core/RouterBalancing.Core.csproj
 dotnet test "router balancing test/router balancing test.csproj"
 ```
 
-Expected: 0 lỗi; toàn bộ pass (449 + 13 = 462).
+Expected: 0 lỗi; toàn bộ pass (449 + 14 = 463).
 
 ```powershell
 git add -A
@@ -1317,7 +1317,7 @@ dotnet build src/RouterBalancing.Core/RouterBalancing.Core.csproj
 dotnet test "router balancing test/router balancing test.csproj"
 ```
 
-Expected: 0 lỗi; toàn bộ pass (462 + 12 = 474).
+Expected: 0 lỗi; toàn bộ pass (463 + 14 = 477).
 
 ```powershell
 git add -A
@@ -1897,7 +1897,7 @@ dotnet build src/RouterBalancing.Core/RouterBalancing.Core.csproj
 dotnet test "router balancing test/router balancing test.csproj"
 ```
 
-Expected: 0 lỗi; toàn bộ pass (474 + 11 = 485). Nếu test nào fail do exception shape bất ngờ (đặc biệt cách .NET wrap lỗi) → soi lại `IsProxyConnectFailure` đúng intent §4.4 trước khi sửa assertion.
+Expected: 0 lỗi; toàn bộ pass (477 + 12 = 489). Nếu test nào fail do exception shape bất ngờ (đặc biệt cách .NET wrap lỗi) → soi lại `IsProxyConnectFailure` đúng intent §4.4 trước khi sửa assertion.
 
 ```powershell
 git add -A
@@ -2409,7 +2409,7 @@ dotnet build src/RouterBalancing.Core/RouterBalancing.Core.csproj
 dotnet test "router balancing test/router balancing test.csproj"
 ```
 
-Expected: 0 lỗi; toàn bộ pass (485 + 4 = 489). Lưu ý flakes đã biết: nếu `SendAsync_WithProxyCredentials_*` fail đúng ở assertion header → dừng, xem lại SocketsHttpHandler challenge retry (comment trong test) **trước** khi sửa assertion.
+Expected: 0 lỗi; toàn bộ pass (489 + 4 = 493). Lưu ý flakes đã biết: nếu `SendAsync_WithProxyCredentials_*` fail đúng ở assertion header → dừng, xem lại SocketsHttpHandler challenge retry (comment trong test) **trước** khi sửa assertion.
 
 ```powershell
 git add -A
@@ -2785,7 +2785,7 @@ dotnet test "router balancing test/router balancing test.csproj" --filter "Fully
 
 | Kết quả | Hành động |
 |---|---|
-| Xanh | Chạy full suite (`dotnet test ...` không filter, kỳ vọng 489 + 2 = 491) → commit. |
+| Xanh | Chạy full suite (`dotnet test ...` không filter, kỳ vọng 493 + 2 = 495) → commit. |
 | **Đỏ** | **STOP.** Không commit, không sửa test. Báo user: đúng risk §11.4 — `.NET 10 SOCKS5 handshake không gọi `ICredentials.GetCredential` (hay exception shape khác)`, kèm exception thật + log. Chờ user chọn phương án rồi mới tiếp. |
 
 ```powershell
@@ -3153,7 +3153,7 @@ dotnet build src/RouterBalancing.Core/RouterBalancing.Core.csproj
 dotnet test "router balancing test/router balancing test.csproj"
 ```
 
-Expected: 0 lỗi; toàn bộ pass (491 + 4 + 2 = **497**).
+Expected: 0 lỗi; toàn bộ pass (495 + 7 = **502**).
 
 ```powershell
 git add -A
@@ -3290,7 +3290,7 @@ dotnet test "router balancing test/router balancing test.csproj"
 dotnet build router-balancing/router-balancing.csproj -f net10.0-windows10.0.19041.0
 ```
 
-Expected: 0 lỗi (0 warning mới), toàn bộ test pass (**497**), app build OK. App phải **đóng** trước khi build Windows. Nếu thiếu đăng ký DI (lỗi runtime mới — ví dụ `IProxyEchoClient` chưa resolve) → fix trong task này, không dời sang T9.
+Expected: 0 lỗi (0 warning mới), toàn bộ test pass (**502**), app build OK. App phải **đóng** trước khi build Windows. Nếu thiếu đăng ký DI (lỗi runtime mới — ví dụ `IProxyEchoClient` chưa resolve) → fix trong task này, không dời sang T9.
 
 ```powershell
 git add -A
@@ -3600,7 +3600,7 @@ dotnet test "router balancing test/router balancing test.csproj"
 dotnet build router-balancing/router-balancing.csproj -f net10.0-windows10.0.19041.0
 ```
 
-Expected: 0 lỗi (kể cả RazorParameterEntityTests), toàn bộ test pass (**497**), app build OK (app đóng trước khi build).
+Expected: 0 lỗi (kể cả RazorParameterEntityTests), toàn bộ test pass (**502**), app build OK (app đóng trước khi build).
 
 ```powershell
 git add -A
@@ -3623,7 +3623,7 @@ dotnet test "router balancing test/router balancing test.csproj"
 dotnet build router-balancing/router-balancing.csproj -f net10.0-windows10.0.19041.0
 ```
 
-Expected: **0 lỗi, 0 warning mới, toàn bộ test pass (≈497 — nếu lệch thì đối chiếu task nào, không bịa số)**. App đóng trước khi build. Flakes đã biết (ProxyControlApiTests teardown IOException, ProxyRetry/QueueIntegration) → chạy lại lần 2 trước khi kết luận fail.
+Expected: **0 lỗi, 0 warning mới, toàn bộ test pass (≈505 — nếu lệch thì đối chiếu task nào, không bịa số)**. App đóng trước khi build. Flakes đã biết (ProxyControlApiTests teardown IOException, ProxyRetry/QueueIntegration) → chạy lại lần 2 trước khi kết luận fail.
 
 - [ ] **Step 2: Repo hygiene**
 
@@ -3671,6 +3671,6 @@ Ghi `.superpowers/sdd/progress.md`: item 5 = COMPLETE (hoặc BLOCKED + lý do),
 - [ ] Mọi path file trong plan tồn tại hoặc được tạo đúng chỗ (grep thử 10 path ngẫu nhiên).
 - [ ] Mọi lệnh `dotnet ...` trong plan chạy được từ repo root (cwd = `D:\Code\router-balancing`).
 - [ ] Test name trong plan khớp file/class thực sự được tạo ở task tương ứng.
-- [ ] Expected test count nhất quán giữa các task (449 → 462 → 474 → 485 → 489 → 491 → 497 → 497).
+- [ ] Expected test count nhất quán giữa các task (449 → 463 → 477 → 489 → 493 → 495 → 502 → 502).
 - [ ] STOP rules (T6 Gate B) và "đọc trước khi sửa" (T8 Step 1, T9 Step 0) còn nguyên vẹn.
 - [ ] Không commit/push trong lúc viết plan — commit `docs:` duy nhất cho chính plan này.

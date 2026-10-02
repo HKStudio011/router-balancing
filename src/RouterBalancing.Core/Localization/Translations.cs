@@ -299,6 +299,8 @@ public static class Translations
         ["proxies.msg.deleted"] = "Proxy deleted.",
         ["proxies.msg.testFailed"] = "Proxy test failed.",
         ["proxies.confirm.delete"] = "Delete this proxy?",
+        ["proxies.col.scheme"] = "Scheme",
+        ["proxies.status.downUntil"] = "{0}s left",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -593,6 +595,8 @@ public static class Translations
         ["proxies.msg.deleted"] = "Đã xóa proxy.",
         ["proxies.msg.testFailed"] = "Test proxy thất bại.",
         ["proxies.confirm.delete"] = "Xóa proxy này?",
+        ["proxies.col.scheme"] = "Scheme",
+        ["proxies.status.downUntil"] = "còn {0}s",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>

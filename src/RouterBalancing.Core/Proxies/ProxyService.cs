@@ -120,7 +120,7 @@ public sealed class ProxyService : IProxyService
     public async Task<ProxyTestResult> TestAsync(long proxyId, CancellationToken ct)
     {
         using var db = _db.CreateDbContext();
-        var row = await db.OutboundProxies.FirstOrDefaultAsync(p => p.Id == proxyId)
+        var row = await db.OutboundProxies.FirstOrDefaultAsync(p => p.Id == proxyId, ct)
             ?? throw new KeyNotFoundException($"Proxy {proxyId} not found."); // id không có thật → không persist
 
         try
@@ -140,7 +140,7 @@ public sealed class ProxyService : IProxyService
             row.LastTestSuccess = true;
             row.LastTestMessage = null;
             row.LastTestIp = result.Ip;
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(ct);
             return result;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -155,7 +155,7 @@ public sealed class ProxyService : IProxyService
             row.LastTestSuccess = false;
             row.LastTestMessage = ex.Message;
             row.LastTestIp = null; // không để IP cũ của lần test thành công trước hiển thị kèm lỗi mới
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(ct);
             return new ProxyTestResult(false, ex.Message, null, TimeSpan.Zero);
         }
     }
