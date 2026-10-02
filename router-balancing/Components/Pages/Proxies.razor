@@ -127,7 +127,8 @@ else
                 @foreach (var row in _rows)
                 {
                     <label class="flex items-center gap-2 text-sm">
-                        <input type="checkbox" disabled="@_busy || !row.Enabled"
+                        <input type="checkbox" checked="@(_selectedProxyIds.Contains(row.Id))"
+                               disabled="@_busy"
                                @onchange="() => ToggleProxySelection(row.Id)" />
                         <span class="font-mono">@EndpointOf(row)</span>
                     </label>
@@ -516,6 +517,9 @@ else
         {
             _selectedProxyIds.Add(id);
         }
+        // Blazor không tự re-render khi handler chỉ mutate danh sách trong chỗ
+        // (reference _selectedProxyIds không đổi) — ép render để checkbox cập nhật lại.
+        StateHasChanged();
     }
 
     /// <summary>Gán proxy cho provider (D1–D8) — single-flight qua _busy.</summary>

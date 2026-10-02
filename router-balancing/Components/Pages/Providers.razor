@@ -1488,8 +1488,10 @@ else
 
     /// <summary>
     /// Badge mode proxy của provider — đọc từ <c>Provider.ProxyMode</c> (đã load trong
-    /// ListAsync). null = Direct. ProviderProxies không được Include nên badge phản ánh
-    /// mode đã gán, không phải selection hiệu lực (spec proxy-per-provider).
+    /// ListAsync). Vì không Include ProviderProxies, badge chỉ phản ánh mode đã gán trên
+    /// provider, không phải selection hiệu lực: có giá trị → Robin/Fallback; null → "none".
+    /// (D6) "null" ≠ Direct: nếu provider đã gán proxy mà ProxyMode null, chế độ hiệu lực
+    /// là Robin (mặc định); nhãn "none/direct" chỉ chính xác khi provider không có proxy.
     /// </summary>
     private string ProxyModeBadgeText(Provider provider) =>
         provider.ProxyMode switch
