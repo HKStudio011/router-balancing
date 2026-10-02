@@ -40,6 +40,12 @@ public class Provider
 
     public List<Model> Models { get; set; } = [];
 
+    /// <summary>Proxy outbound gán cho provider (M2M). Rỗng = chưa gán → direct (D2).</summary>
+    public List<ProviderProxy> ProviderProxies { get; set; } = [];
+
+    /// <summary>Mode dùng tập proxy trên; null = kế thừa từ account (nếu có) hoặc RoundRobin.</summary>
+    public ProxyMode? ProxyMode { get; set; }
+
     /// <summary>Tài khoản (API key) thuộc provider — cascade khi xoá provider.</summary>
     public List<ProviderAccount> Accounts { get; set; } = [];
 }

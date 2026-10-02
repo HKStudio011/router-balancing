@@ -34,9 +34,10 @@ public class AddProviderAccountsMigrationTests : IDisposable
 
         db.GetService<IMigrator>().Migrate(TargetId);
 
-        var account = db.ProviderAccounts.Single(a => a.ProviderId == 1);
-        Assert.Equal("Default", account.Name);
-        Assert.Equal("enc-old", account.ApiKeyEncrypted);
+        // Dùng raw SQL thay vì EF query: state AddProviderAccounts chưa có cột ProxyMode
+        // (mô hình hiện tại đã thêm cột này ở AddProxyAssignments) — tránh mismatch schema.
+        Assert.Equal("Default", Scalar("SELECT Name FROM ProviderAccounts WHERE ProviderId = 1"));
+        Assert.Equal("enc-old", Scalar("SELECT ApiKeyEncrypted FROM ProviderAccounts WHERE ProviderId = 1"));
         // Cột cũ đã drop — SQLite không cho EF modelche, phải kiểm tra schema thật
         Assert.Equal(0L, Convert.ToInt64(Scalar(
             "SELECT COUNT(*) FROM pragma_table_info('Providers') WHERE name = 'ApiKeyEncrypted'")));

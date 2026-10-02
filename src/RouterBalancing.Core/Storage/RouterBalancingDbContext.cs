@@ -126,5 +126,37 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             // là chủ yếu (SQLite unique index không case-insensitive được, xem Design decision 6)
             e.HasIndex(x => new { x.Scheme, x.Host, x.Port }).IsUnique();
         });
+
+        // Provider ↔ proxy M2M: account override provider (D1) — account gán rỗng
+        // kế thừa provider, nên 2 junction độc lập, không shadow column.
+        // ToTable plural "ProviderProxies"/"ProviderAccountProxies" nhất quán
+        // với các bảng hiện hữu (OutboundProxies, Providers, ProviderAccounts).
+        modelBuilder.Entity<ProviderProxy>(e =>
+        {
+            e.ToTable("ProviderProxies");
+            e.HasKey(x => new { x.ProviderId, x.ProxyId });
+            e.HasOne(x => x.Provider)
+                .WithMany(p => p.ProviderProxies)
+                .HasForeignKey(x => x.ProviderId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Proxy)
+                .WithMany()
+                .HasForeignKey(x => x.ProxyId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ProviderAccountProxy>(e =>
+        {
+            e.ToTable("ProviderAccountProxies");
+            e.HasKey(x => new { x.AccountId, x.ProxyId });
+            e.HasOne(x => x.Account)
+                .WithMany(a => a.AccountProxies)
+                .HasForeignKey(x => x.AccountId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Proxy)
+                .WithMany()
+                .HasForeignKey(x => x.ProxyId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
     }
 }
