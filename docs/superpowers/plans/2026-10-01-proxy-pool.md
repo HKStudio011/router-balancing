@@ -2919,6 +2919,11 @@ public sealed class ProxyEchoClient : IProxyEchoClient
 
 ```csharp
     /// <summary>Test kết nối thủ công qua proxy — persist LastTest* (spec §5.4).</summary>
+    /// <remarks>
+    /// Lỗi decrypt password (CryptographicException) được implementation bắt và persist
+    /// thành LastTestSuccess = false — không ném ra caller.
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">Không có proxy với <paramref name="proxyId"/>.</exception>
     Task<ProxyTestResult> TestAsync(long proxyId, CancellationToken ct);
 ```
 
@@ -2934,17 +2939,20 @@ public sealed class ProxyEchoClient : IProxyEchoClient
     {
         using var db = _db.CreateDbContext();
         var row = await db.OutboundProxies.FirstOrDefaultAsync(p => p.Id == proxyId)
-            ?? throw new KeyNotFoundException($"Proxy {proxyId} not found.");
-
-        var attempt = new ProxyAttempt(
-            row.Id,
-            new Uri($"{row.Scheme}://{row.Host}:{row.Port}"),
-            row.Username,
-            row.PasswordEncrypted is null ? null : _protector.Unprotect(row.PasswordEncrypted),
-            $"{row.Scheme}://{row.Host}:{row.Port}");
+            ?? throw new KeyNotFoundException($"Proxy {proxyId} not found."); // id không có thật → không persist
 
         try
         {
+            // Build attempt (gồm Unprotect) PHẢI nằm trong try: DPAPI hỏng
+            // (CryptographicException) phải rơi vào catch dưới để persist LastTest* —
+            // để ngoài thì catch arm CryptographicException là dead code (spec §5.4).
+            var attempt = new ProxyAttempt(
+                row.Id,
+                new Uri($"{row.Scheme}://{row.Host}:{row.Port}"),
+                row.Username,
+                row.PasswordEncrypted is null ? null : _protector.Unprotect(row.PasswordEncrypted),
+                $"{row.Scheme}://{row.Host}:{row.Port}");
+
             var result = await _echo.EchoAsync(attempt, ct);
             row.LastTestAt = DateTimeOffset.UtcNow;
             row.LastTestSuccess = true;

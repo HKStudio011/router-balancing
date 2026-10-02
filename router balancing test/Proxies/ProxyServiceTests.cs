@@ -239,6 +239,30 @@ public class ProxyServiceTests : IDisposable
         Assert.NotNull(row.LastTestMessage);
     }
 
+    [Fact]
+    public async Task TestAsync_WhenPasswordDecryptFails_PersistsFailure()
+    {
+        var created = await CreateService().CreateAsync(Draft(username: "user", password: "secret"));
+        using (var seed = _factory.CreateDbContext())
+        {
+            var corrupt = await seed.OutboundProxies.SingleAsync(p => p.Id == created.Id);
+            // Base64 hợp lệ nhưng không phải DPAPI blob → Unprotect ném CryptographicException
+            // (bytes rác thô sẽ vấp FormatException ở FromBase64String — không phải lỗi decrypt)
+            corrupt.PasswordEncrypted = Convert.ToBase64String(new byte[] { 1, 2, 3 });
+            await seed.SaveChangesAsync();
+        }
+
+        var result = await CreateService().TestAsync(created.Id, CancellationToken.None);
+
+        Assert.False(result.Success); // không throw — đã persist
+        Assert.False(string.IsNullOrWhiteSpace(result.Error));
+        using var db = _factory.CreateDbContext();
+        var row = await db.OutboundProxies.AsNoTracking().SingleAsync(p => p.Id == created.Id);
+        Assert.False(row.LastTestSuccess);
+        Assert.NotNull(row.LastTestAt);
+        Assert.False(string.IsNullOrWhiteSpace(row.LastTestMessage));
+    }
+
     /// <summary>Echo theo script — lambda throw được nên test giả lập được cả nhánh lỗi.</summary>
     private sealed class StubEchoClient(Func<ProxyTestResult> script) : IProxyEchoClient
     {

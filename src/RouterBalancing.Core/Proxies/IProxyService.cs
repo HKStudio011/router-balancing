@@ -26,5 +26,10 @@ public interface IProxyService
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
 
     /// <summary>Test kết nối thủ công qua proxy — persist LastTest* (spec §5.4).</summary>
+    /// <remarks>
+    /// Lỗi decrypt password (CryptographicException) được implementation bắt và persist
+    /// thành LastTestSuccess = false — không ném ra caller.
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">Không có proxy với <paramref name="proxyId"/>.</exception>
     Task<ProxyTestResult> TestAsync(long proxyId, CancellationToken ct);
 }
