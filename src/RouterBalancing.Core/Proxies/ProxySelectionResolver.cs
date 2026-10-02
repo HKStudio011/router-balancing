@@ -9,6 +9,7 @@ namespace RouterBalancing.Core.Proxies;
 /// </summary>
 public sealed class ProxySelectionResolver : IProxySelectionResolver
 {
+    /// <inheritdoc />
     public ProxySelection Resolve(Provider provider, ProviderAccount? account)
     {
         var accountProxies = account?.AccountProxies;
