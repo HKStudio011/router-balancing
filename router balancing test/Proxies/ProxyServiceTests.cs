@@ -485,6 +485,46 @@ public class ProxyServiceTests : IDisposable
         Assert.Equal(new[] { proxy }, account.ProxyIds);
     }
 
+    [Fact]
+    public async Task GetReverseAssignments_ReturnsProvidersAndAccounts()
+    {
+        var service = CreateService();
+        var proxy = await AddProxyAsync(port: 9515);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+
+        await service.AssignProviderProxiesAsync(providerId, [proxy], ProxyMode.RoundRobin);
+        await service.AssignAccountProxiesAsync(accountId, [proxy], ProxyMode.Fallback);
+
+        var result = await service.GetReverseAssignmentsAsync();
+
+        var usages = result[proxy];
+        var providerUsage = usages.Single(u => u.IsProvider);
+        Assert.Equal(providerId, providerUsage.ScopeId);
+        Assert.Equal("Test", providerUsage.ScopeName);
+        Assert.Equal(ProxyMode.RoundRobin, providerUsage.Mode);
+
+        var accountUsage = usages.Single(u => !u.IsProvider);
+        Assert.Equal(accountId, accountUsage.ScopeId);
+        Assert.Equal("Acc", accountUsage.ScopeName);
+        Assert.Equal(ProxyMode.Fallback, accountUsage.Mode);
+    }
+
+    [Fact]
+    public async Task GetReverseAssignments_ProxyWithoutAssignment_NotPresent()
+    {
+        var service = CreateService();
+        var assigned = await AddProxyAsync(port: 9515);
+        var unassigned = await AddProxyAsync(port: 9516);
+        var providerId = await AddProviderAsync();
+        await service.AssignProviderProxiesAsync(providerId, [assigned], ProxyMode.RoundRobin);
+
+        var result = await service.GetReverseAssignmentsAsync();
+
+        Assert.True(result.ContainsKey(assigned));
+        Assert.False(result.ContainsKey(unassigned));
+    }
+
     /// <summary>Echo theo script — lambda throw được nên test giả lập được cả nhánh lỗi.</summary>
     private sealed class StubEchoClient(Func<ProxyTestResult> script) : IProxyEchoClient
     {

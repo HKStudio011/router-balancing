@@ -268,6 +268,54 @@ public sealed class ProxyService : IProxyService
         return result;
     }
 
+    /// <inheritdoc/>
+    public async Task<IReadOnlyDictionary<long, IReadOnlyList<ProxyUsage>>> GetReverseAssignmentsAsync(
+        CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+
+        // EF projection (không Include) — đúng 2 query tổng, không N+1 (D-A6)
+        var providerRows = await db.Providers.AsNoTracking()
+            .Where(p => p.ProviderProxies.Count > 0)
+            .Select(p => new
+            {
+                p.Id,
+                p.Name,
+                Mode = p.ProxyMode,
+                ProxyIds = p.ProviderProxies.Select(x => x.ProxyId).ToList(),
+            })
+            .ToListAsync(ct);
+        var accountRows = await db.ProviderAccounts.AsNoTracking()
+            .Where(a => a.AccountProxies.Count > 0)
+            .Select(a => new
+            {
+                a.Id,
+                a.Name,
+                Mode = a.ProxyMode,
+                ProxyIds = a.AccountProxies.Select(x => x.ProxyId).ToList(),
+            })
+            .ToListAsync(ct);
+
+        var map = new Dictionary<long, List<ProxyUsage>>();
+        foreach (var p in providerRows)
+            AddUsage(map, p.ProxyIds, new ProxyUsage(p.Id, p.Name, IsProvider: true, p.Mode));
+        foreach (var a in accountRows)
+            AddUsage(map, a.ProxyIds, new ProxyUsage(a.Id, a.Name, IsProvider: false, a.Mode));
+
+        return map.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<ProxyUsage>)kv.Value);
+    }
+
+    /// <summary>1 proxy có nhiều scope — cộng dồn usage thay vì ghi đè theo key proxy.</summary>
+    private static void AddUsage(Dictionary<long, List<ProxyUsage>> map, List<long> proxyIds, ProxyUsage usage)
+    {
+        foreach (var proxyId in proxyIds)
+        {
+            if (!map.TryGetValue(proxyId, out var list))
+                map[proxyId] = list = [];
+            list.Add(usage);
+        }
+    }
+
     /// <summary>
     /// Validate draft thuần (không DB) + chuẩn hóa (scheme lowercase, trim host/username) —
     /// ném ProxyValidationException với dict key i18n.

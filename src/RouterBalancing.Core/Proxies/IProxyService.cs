@@ -48,4 +48,11 @@ public interface IProxyService
     /// <summary>Gán proxy hiện tại (provider + account) cho UI.</summary>
     /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/>.</exception>
     Task<IReadOnlyList<ProxyAssignment>> GetAssignmentsAsync(long providerId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Tất cả provider/account đang gán cho mỗi proxy — đúng 2 query tổng (provider trước,
+    /// account sau), không N+1 (D-A6). Proxy chưa gán cho ai không xuất hiện trong map.
+    /// </summary>
+    Task<IReadOnlyDictionary<long, IReadOnlyList<ProxyUsage>>> GetReverseAssignmentsAsync(
+        CancellationToken ct = default);
 }
