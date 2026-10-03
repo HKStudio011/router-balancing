@@ -62,7 +62,8 @@ public sealed class ProviderAccountService : IProviderAccountService
         {
             ProviderId = draft.ProviderId,
             Name = name,
-            ApiKeyEncrypted = _protector.Protect(draft.ApiKey.Trim()),
+            // NoKey → cột rỗng (không Protect("")); có key → DPAPI như cũ
+            ApiKeyEncrypted = draft.NoKey ? string.Empty : _protector.Protect(draft.ApiKey.Trim()),
             Enabled = draft.Enabled,
             ModelPatterns = SerializePatterns(draft.ModelPatterns),
             Weight = draft.Weight,
@@ -94,8 +95,13 @@ public sealed class ProviderAccountService : IProviderAccountService
 
         account.Name = name;
         // Key rỗng (kể cả toàn khoảng trắng) khi sửa = giữ nguyên key cũ —
-        // nếu không, "   ".Trim() sẽ persist key rỗng và traffic 401 âm thầm
-        if (!string.IsNullOrWhiteSpace(draft.ApiKey))
+        // nếu không, "   ".Trim() sẽ persist key rỗng và traffic 401 âm thầm.
+        // NoKey=true = chủ động XÓA key → cột rỗng (spec free-account D5)
+        if (draft.NoKey)
+        {
+            account.ApiKeyEncrypted = string.Empty;
+        }
+        else if (!string.IsNullOrWhiteSpace(draft.ApiKey))
         {
             account.ApiKeyEncrypted = _protector.Protect(draft.ApiKey.Trim());
         }
@@ -170,7 +176,10 @@ public sealed class ProviderAccountService : IProviderAccountService
             ProxyTarget.Current.Value = new ProxyTarget(provider, account);
             try
             {
-                var key = _protector.Unprotect(account.ApiKeyEncrypted);
+                // No-key account (cột rỗng) → probe không header auth; Unprotect("") sẽ ném
+                var key = string.IsNullOrEmpty(account.ApiKeyEncrypted)
+                    ? string.Empty
+                    : _protector.Unprotect(account.ApiKeyEncrypted);
                 using var request = ProviderRequestFactory.Create(provider, key);
                 using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
                     .SendAsync(request, ct);

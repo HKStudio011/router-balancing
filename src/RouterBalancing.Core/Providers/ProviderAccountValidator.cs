@@ -8,7 +8,7 @@ public static class ProviderAccountValidator
 {
     /// <summary>Throw <see cref="ArgumentException"/> nếu draft vi phạm rule nào đó — chặn sớm ở service boundary.</summary>
     /// <param name="draft">Bản nháp form cần validate.</param>
-    /// <param name="requireApiKey">Create bắt buộc key; update rỗng = giữ key cũ.</param>
+    /// <param name="requireApiKey">Create bắt buộc key (trừ khi draft.NoKey); update rỗng = giữ key cũ.</param>
     /// <exception cref="ArgumentException">Khi draft vi phạm rule nào đó.</exception>
     public static void ValidateAndThrow(ProviderAccountDraft draft, bool requireApiKey)
     {
@@ -20,7 +20,7 @@ public static class ProviderAccountValidator
         {
             throw new ArgumentException("Name must be 100 characters or fewer.");
         }
-        if (requireApiKey && string.IsNullOrWhiteSpace(draft.ApiKey))
+        if (requireApiKey && !draft.NoKey && string.IsNullOrWhiteSpace(draft.ApiKey))
         {
             throw new ArgumentException("API key is required.");
         }

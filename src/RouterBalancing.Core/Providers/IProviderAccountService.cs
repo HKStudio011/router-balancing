@@ -8,13 +8,13 @@ public interface IProviderAccountService
     /// <summary>Accounts theo provider, sắp Priority tăng dần rồi Name — không trả plaintext key.</summary>
     Task<IReadOnlyList<ProviderAccount>> ListAsync(long providerId, CancellationToken ct = default);
 
-    /// <summary>Tạo account mới; <c>draft.ApiKey</c> bắt buộc.</summary>
+    /// <summary>Tạo account mới; <c>draft.ApiKey</c> bắt buộc trừ khi <c>draft.NoKey</c> (lưu key rỗng).</summary>
     /// <exception cref="KeyNotFoundException">Provider không tồn tại.</exception>
     /// <exception cref="InvalidOperationException">Trùng Name trong cùng provider.</exception>
     /// <exception cref="ArgumentException">Draft không hợp lệ (ProviderAccountValidator).</exception>
     Task<ProviderAccount> CreateAsync(ProviderAccountDraft draft, CancellationToken ct = default);
 
-    /// <summary>Cập nhật; <c>draft.ApiKey</c> rỗng hoặc toàn khoảng trắng = giữ nguyên key cũ.</summary>
+    /// <summary>Cập nhật; <c>draft.ApiKey</c> rỗng hoặc toàn khoảng trắng = giữ nguyên key cũ; <c>draft.NoKey</c> = true thì XÓA key đã lưu (cột rỗng).</summary>
     /// <exception cref="KeyNotFoundException">Account không tồn tại.</exception>
     /// <exception cref="InvalidOperationException">Trùng Name trong cùng provider (trừ chính nó).</exception>
     /// <exception cref="ArgumentException">Draft không hợp lệ.</exception>

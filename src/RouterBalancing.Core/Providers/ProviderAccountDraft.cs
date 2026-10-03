@@ -15,6 +15,10 @@ public sealed class ProviderAccountDraft
     /// <summary>Plaintext lúc nhập; rỗng hoặc toàn khoảng trắng khi update = giữ key đã lưu. Không bao giờ log/persist trực tiếp.</summary>
     public string ApiKey { get; set; } = string.Empty;
 
+    /// <summary>Không dùng API key (free endpoint): Create/Update ghi cột key rỗng,
+    /// bỏ qua <see cref="ApiKey"/> (spec free-account D5).</summary>
+    public bool NoKey { get; set; }
+
     /// <summary>Tắt = account bị loại khỏi chọn traffic và TestAll, không xoá key.</summary>
     public bool Enabled { get; set; } = true;
 

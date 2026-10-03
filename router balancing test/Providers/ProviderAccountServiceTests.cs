@@ -65,6 +65,18 @@ public class ProviderAccountServiceTests : IDisposable
             Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
     }
 
+    /// <summary>Trả status cố định cho mọi request + ghi request để assert header.</summary>
+    private sealed class CapturingHandler(HttpStatusCode status) : HttpMessageHandler
+    {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            LastRequest = request;
+            return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
+        }
+    }
+
     /// <summary>Seed provider + các account (tên/khối/ưu tiên) — trả ProviderId.</summary>
     private async Task<long> SeedProviderAsync(params (string Name, bool Enabled, int Priority)[] accounts)
     {
@@ -175,6 +187,35 @@ public class ProviderAccountServiceTests : IDisposable
         draft.ModelPatterns = ["ok", "   "];
 
         await Assert.ThrowsAsync<ArgumentException>(() => _service.CreateAsync(draft));
+    }
+
+    [Fact]
+    public async Task Create_NoKeyWithEmptyKey_SavesEmptyCiphertext()
+    {
+        var providerId = await SeedProviderAsync();
+        var draft = Draft(providerId, key: string.Empty);
+        draft.NoKey = true;
+
+        var account = await _service.CreateAsync(draft);
+
+        // No-key = cột rỗng — KHÔNG Protect("") (D1)
+        Assert.Equal(string.Empty, account.ApiKeyEncrypted);
+    }
+
+    [Fact]
+    public async Task Update_NoKeyTrue_ClearsSavedKey()
+    {
+        var providerId = await SeedProviderAsync();
+        var account = await _service.CreateAsync(Draft(providerId, key: "sk-old"));
+        var draft = Draft(providerId, name: "acct", key: string.Empty);
+        draft.NoKey = true;
+
+        await _service.UpdateAsync(account.Id, draft);
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.ProviderAccounts.SingleAsync(a => a.Id == account.Id);
+        // NoKey=true là hành động chủ động xóa key (D5) — khác key trống mặc định = giữ (đã có test pin)
+        Assert.Equal(string.Empty, saved.ApiKeyEncrypted);
     }
 
     /// <summary>Name > 100 ký tự → ArgumentException.</summary>
@@ -414,6 +455,26 @@ public class ProviderAccountServiceTests : IDisposable
         var provider = await db.Providers.SingleAsync(p => p.Id == providerId);
         Assert.Null(provider.LastTestSuccess);
         Assert.Null(provider.LastTestAt);
+    }
+
+    [Fact]
+    public async Task TestAllAsync_NoKeyAccount_ProbesWithoutAuthorization()
+    {
+        var providerId = await SeedProviderAsync(("free", true, 0)); // seed có key "sk-free"
+        using (var db = _db.CreateDbContext())
+        {
+            var account = await db.ProviderAccounts.SingleAsync(a => a.ProviderId == providerId);
+            account.ApiKeyEncrypted = string.Empty; // chuyển sang no-key
+            await db.SaveChangesAsync();
+        }
+        var handler = new CapturingHandler(HttpStatusCode.OK);
+        var service = ServiceWith(handler);
+
+        var results = await service.TestAllAsync(providerId);
+
+        // Trước khi fix: Unprotect("") ném CryptographicException → caught → success=false
+        Assert.True(Assert.Single(results).Success);
+        Assert.Null(handler.LastRequest!.Headers.Authorization);
     }
 
     /// <summary>Provider không tồn tại → KeyNotFoundException.</summary>
