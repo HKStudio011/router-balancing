@@ -14,7 +14,7 @@
 @inject ILogService Log
 @inject LogRetentionWorker Retention
 @inject IClientKeyService ClientKeys
-@inject IJSRuntime JS
+@inject IClipboardService Clipboard
 
 <h1 class="mb-4 text-xl font-semibold">@L["panel.settings.title"]</h1>
 
@@ -530,16 +530,14 @@
     private async Task CopyNewKeyAsync()
     {
         if (_newKeyPlaintext is null) return;
-        try
+        if (await Clipboard.CopyAsync(_newKeyPlaintext))
         {
-            // Không có clipboard pattern sẵn trong repo — navigator.clipboard qua IJSRuntime
-            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _newKeyPlaintext);
-            Toast.Show(L["clientKeys.msg.copied"], ToastSeverity.Success);
+            Toast.Show(L["common.copied"], ToastSeverity.Success);
         }
-        catch (Exception ex)
+        else
         {
-            // Clipboard reject khi document không focus (NotAllowedError) — hiện toast thay vì văng JSException
-            Log.Error("Sao chép plaintext client key thất bại.", ex);
+            // Clipboard reject khi document không focus (NotAllowedError) — hiện toast thay vì văng (D-D2)
+            Log.Error("Sao chép plaintext client key thất bại.", null);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
         }
     }

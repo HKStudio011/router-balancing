@@ -28,6 +28,7 @@ public static class Translations
         ["dashboard.msg.stopped"] = "Proxy stopped.",
         ["dashboard.msg.restarted"] = "Proxy restarted.",
         ["dashboard.msg.failed"] = "Action failed. See Logs for details.",
+        ["common.copied"] = "Copied",
 
         // Settings panel (Task 13)
         ["settings.group.general"] = "General",
@@ -347,6 +348,7 @@ public static class Translations
         ["dashboard.msg.stopped"] = "Đã dừng proxy.",
         ["dashboard.msg.restarted"] = "Đã khởi động lại proxy.",
         ["dashboard.msg.failed"] = "Thao tác thất bại. Xem Nhật ký để biết chi tiết.",
+        ["common.copied"] = "Đã sao chép",
 
         // Settings panel (Task 13)
         ["settings.group.general"] = "Chung",

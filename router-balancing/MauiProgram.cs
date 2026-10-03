@@ -62,6 +62,8 @@ namespace router_balancing
             // (singleton không được inject scoped service).
             builder.Services.AddScoped<ThemeService>();
             builder.Services.AddScoped<ToastService>();
+            // Scoped như ThemeService: ClipboardService phụ thuộc IJSRuntime scoped
+            builder.Services.AddScoped<IClipboardService, ClipboardService>();
             // Tray + tự khởi động cùng Windows: bản Windows thật, nền tảng khác là no-op
 #if WINDOWS
             builder.Services.AddSingleton<ITrayService, TrayService>();
