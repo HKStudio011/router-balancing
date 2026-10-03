@@ -185,7 +185,7 @@ public class ProviderTestConnectionTests : IDisposable
     }
 
     [Fact]
-    public async Task TestConnection_WhenNoEnabledAccounts_SendsEmptyKey()
+    public async Task TestConnection_WhenNoEnabledAccounts_SendsNoAuthorizationHeader()
     {
         var handler = new FakeHandler(HttpStatusCode.OK);
         var provider = await SavedProviderAsync();
@@ -194,8 +194,7 @@ public class ProviderTestConnectionTests : IDisposable
 
         await service.TestConnectionAsync(provider, apiKeyOverride: null);
 
-        var auth = handler.LastRequest!.Headers.Authorization;
-        Assert.NotNull(auth);
-        Assert.Equal("Bearer", auth.ToString()); // key rỗng → chỉ còn scheme, không kèm key nào
+        // Không có account enabled → key "" → factory bỏ hẳn header auth (D7)
+        Assert.Null(handler.LastRequest!.Headers.Authorization);
     }
 }

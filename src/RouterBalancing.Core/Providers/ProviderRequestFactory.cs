@@ -14,10 +14,11 @@ public static class ProviderRequestFactory
 
     /// <summary>
     /// Tạo request tới provider. Header theo Type:
-    /// OpenAI → <c>Authorization: Bearer</c>; Anthropic → <c>x-api-key</c> + <c>anthropic-version</c>.
+    /// OpenAI → <c>Authorization: Bearer</c>; Anthropic → <c>x-api-key</c> + <c>anthropic-version</c>
+    /// (key rỗng = bỏ header auth — no-key, vẫn giữ anthropic-version).
     /// </summary>
     /// <param name="provider">Provider đích.</param>
-    /// <param name="apiKey">Key plaintext sẽ gắn Authorization/x-api-key.</param>
+    /// <param name="apiKey">Key plaintext sẽ gắn Authorization/x-api-key; rỗng = không gắn header auth.</param>
     /// <param name="path">Path mặc định <c>/v1/models</c>.</param>
     /// <param name="method">HTTP method — mặc định GET (probe); POST cho chat completion.</param>
     /// <param name="content">Body request — chỉ dùng khi có <paramref name="method"/>.</param>
@@ -37,10 +38,19 @@ public static class ProviderRequestFactory
         switch (provider.Type)
         {
             case ProviderType.OpenAI:
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+                // Key rỗng = account no-key → bỏ hẳn Authorization (D7) — "Bearer" trần làm
+                // nhiều upstream trả 401 oan dù server không yêu cầu key
+                if (apiKey.Length > 0)
+                {
+                    request.Headers.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+                }
                 break;
             case ProviderType.Anthropic:
-                request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+                if (apiKey.Length > 0)
+                {
+                    request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+                }
                 request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
                 break;
             default:

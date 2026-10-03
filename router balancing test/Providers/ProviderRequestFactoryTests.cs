@@ -66,4 +66,26 @@ public class ProviderRequestFactoryTests
         Assert.Equal(HttpMethod.Get, request.Method);
         Assert.Null(request.Content);
     }
+
+    [Fact]
+    public void Create_WhenKeyEmpty_OpenAiOmitsAuthorizationHeader()
+    {
+        using var request = ProviderRequestFactory.Create(P("https://api.openai.com"), string.Empty);
+
+        // Key rỗng = free endpoint không auth — KHÔNG gửi "Bearer" trần (D7)
+        Assert.Null(request.Headers.Authorization);
+    }
+
+    [Fact]
+    public void Create_WhenKeyEmpty_AnthropicOmitsApiKeyButKeepsVersion()
+    {
+        var provider = P("https://api.anthropic.com");
+        provider.Type = ProviderType.Anthropic;
+
+        using var request = ProviderRequestFactory.Create(provider, string.Empty);
+
+        Assert.False(request.Headers.Contains("x-api-key"));
+        // anthropic-version bắt buộc kể cả không key
+        Assert.Equal("2023-06-01", request.Headers.GetValues("anthropic-version").Single());
+    }
 }
