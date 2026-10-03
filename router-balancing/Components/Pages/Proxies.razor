@@ -129,7 +129,7 @@ else
             </select>
 
             <button class="btn btn-primary" @onclick="SaveAssignment"
-                    disabled="@_busy || _assignProviderId is null">
+                    disabled="@(_busy || _assignProviderId is null || _assignmentLoading)">
                 @L["proxies.assign.save"]
             </button>
         </div>
@@ -139,12 +139,35 @@ else
             <div class="flex flex-col gap-1">
                 @foreach (var row in _rows)
                 {
-                    <label class="flex items-center gap-2 text-sm">
-                        <input type="checkbox" checked="@(_selectedProxyIds.Contains(row.Id))"
-                               disabled="@_busy"
-                               @onchange="() => ToggleProxySelection(row.Id)" />
-                        <span class="font-mono">@EndpointOf(row)</span>
-                    </label>
+                    <div class="flex items-center gap-2 text-sm">
+                        <label class="flex min-w-0 flex-1 items-center gap-2">
+                            <input type="checkbox" checked="@(_selectedProxyIds.Contains(row.Id))"
+                                   disabled="@_busy"
+                                   @onchange="() => ToggleProxySelection(row.Id)" />
+                            <span class="font-mono">@EndpointOf(row)</span>
+                            @if (!row.Enabled)
+                            {
+                                @* Hậu tố trạng thái — proxy tắt vẫn tick được, pool tự lọc (D-A2) *@
+                                <span class="text-xs opacity-70">@L["proxies.assign.disabledSuffix"]</span>
+                            }
+                        </label>
+                        @* Xem proxy đang gán cho ai (D-A6) — không thêm cột vào bảng chính *@
+                        <button type="button" class="btn btn-outline-secondary px-1.5"
+                                disabled="@_busy"
+                                aria-expanded="@(_expandedUsageProxyId == row.Id)"
+                                @onclick="() => ToggleUsageExpansion(row.Id)">
+                            @(_expandedUsageProxyId == row.Id ? "▾" : "▸")
+                        </button>
+                    </div>
+                    @if (_expandedUsageProxyId == row.Id)
+                    {
+                        var usages = UsagesOf(row.Id);
+                        <div class="pl-6 text-xs opacity-70" data-testid="proxy-usage">
+                            @(usages.Count == 0
+                                ? L["proxies.assign.reverseNone"]
+                                : string.Join(" · ", usages.Select(UsageLabel)))
+                        </div>
+                    }
                 }
             </div>
         }
@@ -247,6 +270,13 @@ else
     private List<long> _selectedProxyIds = [];
     // Cache toàn bộ hàng (provider + mọi account) của provider đang chọn — đổi scope không cần query lại
     private List<ProxyAssignment> _assignments = [];
+    // Reverse view: proxy-id → scope đang dùng (D-A6); không có key = chưa gán ai
+    private IReadOnlyDictionary<long, IReadOnlyList<ProxyUsage>> _reverseAssignments =
+        new Dictionary<long, IReadOnlyList<ProxyUsage>>();
+    // Race token: mỗi lần đổi scope tăng 1 — load của scope cũ về trễ bị discard (D-A3)
+    private int _assignLoadToken;
+    private bool _assignmentLoading;
+    private long? _expandedUsageProxyId;
 
     /// <summary>Account của provider đang chọn — options của select account (spec §7).</summary>
     private IReadOnlyList<ProviderAccount> SelectedProviderAccounts =>
@@ -299,6 +329,16 @@ else
         catch (Exception ex)
         {
             Log.Error("Không tải được danh sách provider.", ex);
+        }
+
+        // Reverse view (D-A6) — best-effort: lỗi không chặn load proxy chính
+        try
+        {
+            _reverseAssignments = await ProxySvc.GetReverseAssignmentsAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không tải được danh sách gán đảo.", ex);
         }
 
         StateHasChanged();
@@ -493,32 +533,48 @@ else
     /// <summary>
     /// Pre-fill form gán proxy khi đổi provider — đọc assignment hiện có (D1–D8):
     /// cache cả tập provider lẫn account rồi đổ vào form theo scope đang chọn.
+    /// Token: load của scope cũ về trễ bị discard, không áp dữ liệu lên scope mới (D-A3).
     /// </summary>
-    private async Task LoadAssignmentAsync()
+    private async Task LoadAssignmentAsync(int loadToken)
     {
-        if (_assignProviderId is null)
-        {
-            _assignments = [];
-            ApplyScopeToForm();
-            StateHasChanged();
-            return;
-        }
-
+        _assignmentLoading = true;
         try
         {
-            // GetAssignmentsAsync trả về hàng provider + mọi account của provider —
-            // 1 query duy nhất cho cả 2 scope, đổi scope account không tốn query thêm.
-            _assignments = (await ProxySvc.GetAssignmentsAsync(_assignProviderId.Value)).ToList();
-        }
-        catch (Exception ex)
-        {
-            _assignments = [];
-            Log.Error("Không tải được gán proxy cho provider.", ex);
-            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
-        }
+            if (_assignProviderId is null)
+            {
+                if (loadToken != _assignLoadToken) return;
+                _assignments = [];
+                ApplyScopeToForm();
+                StateHasChanged();
+                return;
+            }
 
-        ApplyScopeToForm();
-        StateHasChanged();
+            List<ProxyAssignment> assignments;
+            try
+            {
+                // GetAssignmentsAsync trả về hàng provider + mọi account của provider —
+                // 1 query duy nhất cho cả 2 scope, đổi scope account không tốn query thêm.
+                assignments = (await ProxySvc.GetAssignmentsAsync(_assignProviderId.Value)).ToList();
+            }
+            catch (Exception ex)
+            {
+                assignments = [];
+                Log.Error("Không tải được gán proxy cho provider.", ex);
+                Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            }
+
+            // Load cũ (token lệch) KHÔNG được áp dữ liệu lên scope mới (D-A3)
+            if (loadToken != _assignLoadToken) return;
+            _assignments = assignments;
+            ApplyScopeToForm();
+            StateHasChanged();
+        }
+        finally
+        {
+            // Chỉ owner của token hiện tại mới hạ cờ — load mồ côi không đụng trạng thái mới
+            if (loadToken == _assignLoadToken)
+                _assignmentLoading = false;
+        }
     }
 
     /// <summary>Đổ gán của scope đang chọn (checkbox + mode) vào form — account thắng provider (D1).</summary>
@@ -541,6 +597,29 @@ else
         };
     }
 
+    /// <summary>Các scope đang dùng proxy — thiếu key = chưa gán ai (D-A6).</summary>
+    private IReadOnlyList<ProxyUsage> UsagesOf(long proxyId) =>
+        _reverseAssignments.TryGetValue(proxyId, out var usages) ? usages : [];
+
+    /// <summary>Dòng mô tả 1 scope: "Provider OpenAI (rr)" / "Tài khoản acc-1 (fb)".</summary>
+    private string UsageLabel(ProxyUsage usage)
+    {
+        var scope = L[usage.IsProvider ? "proxies.assign.scopeProvider" : "proxies.assign.scopeAccount"];
+        var mode = usage.Mode switch
+        {
+            ProxyMode.RoundRobin => " (rr)",
+            ProxyMode.Fallback => " (fb)",
+            _ => string.Empty,
+        };
+        return $"{scope} {usage.ScopeName}{mode}";
+    }
+
+    private void ToggleUsageExpansion(long proxyId)
+    {
+        _expandedUsageProxyId = _expandedUsageProxyId == proxyId ? null : proxyId;
+        StateHasChanged();
+    }
+
     private void OnProviderSelected(ChangeEventArgs e)
     {
         _assignProviderId = long.TryParse(e.Value?.ToString(), out var id) && id > 0
@@ -548,7 +627,8 @@ else
             : null;
         // Đổi provider phải về scope provider — giữ account cũ sẽ map nhầm id sang provider khác
         _assignAccountId = null;
-        _ = LoadAssignmentAsync();
+        // Tăng token trước khi start: load của scope trước (nếu còn chạy) sẽ bị discard (D-A3)
+        _ = LoadAssignmentAsync(++_assignLoadToken);
     }
 
     private void OnAccountSelected(ChangeEventArgs e)
@@ -579,7 +659,7 @@ else
     /// <summary>Gán proxy cho scope đang chọn (D1–D8) — single-flight qua _busy.</summary>
     private async Task SaveAssignment()
     {
-        if (_busy || _assignProviderId is null) return;
+        if (_busy || _assignProviderId is null || _assignmentLoading) return;
 
         _busy = true;
         try
@@ -607,8 +687,14 @@ else
 
             Toast.Show(L[toastKey], ToastSeverity.Success);
             await ReloadAsync();
-            // Ghi xong → cache assignment cũ, nạp lại để form phản ánh đúng DB
-            await LoadAssignmentAsync();
+            // Ghi xong → nạp lại theo token mới để form phản ánh đúng DB (và bỏ loading cũ)
+            await LoadAssignmentAsync(++_assignLoadToken);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            // Proxy/provider bị xoá ở nơi khác giữa lúc load và lúc save — toast riêng (D-A4)
+            Log.Error("Không gán được proxy cho scope đang chọn.", ex);
+            Toast.Show(L["proxies.assign.error.scopeNotFound"], ToastSeverity.Error);
         }
         catch (Exception ex)
         {

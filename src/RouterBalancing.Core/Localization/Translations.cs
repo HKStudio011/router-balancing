@@ -319,6 +319,11 @@ public static class Translations
         ["proxies.assign.select_provider"] = "— Select provider —",
         ["proxies.assign.select_account"] = "— Select account —",
         ["proxies.assign.badge_count"] = "{0} proxy",
+        ["proxies.assign.disabledSuffix"] = "(disabled)",
+        ["proxies.assign.reverseNone"] = "Not assigned",
+        ["proxies.assign.scopeProvider"] = "Provider",
+        ["proxies.assign.scopeAccount"] = "Account",
+        ["proxies.assign.error.scopeNotFound"] = "Proxy or scope was deleted elsewhere — refresh and try again.",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -633,6 +638,11 @@ public static class Translations
         ["proxies.assign.select_provider"] = "— Chọn provider —",
         ["proxies.assign.select_account"] = "— Chọn tài khoản —",
         ["proxies.assign.badge_count"] = "{0} proxy",
+        ["proxies.assign.disabledSuffix"] = "(tắt)",
+        ["proxies.assign.reverseNone"] = "Chưa gán",
+        ["proxies.assign.scopeProvider"] = "Provider",
+        ["proxies.assign.scopeAccount"] = "Tài khoản",
+        ["proxies.assign.error.scopeNotFound"] = "Proxy hoặc đối tượng đã bị xóa ở nơi khác — tải lại và thử lại.",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>
