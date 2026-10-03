@@ -357,11 +357,17 @@ else
 
         @if (_editingId is null)
         {
+            <label class="flex items-center gap-1.5 text-sm sm:col-span-2">
+                <input type="checkbox" disabled="@_busy" @bind="_draft.NoKey" />
+                @L["accounts.field.noKey"]
+            </label>
             <label class="flex flex-col gap-1 text-sm sm:col-span-2">
                 @L["providers.field.apiKey"]
-                @* Key tạo account "Default" khi save (spec §4.2) — edit quản lý key ở section Tài khoản *@
+                @* Key tạo account "Default" khi save (spec §4.2) — NoKey = bỏ qua key, save bắt buộc test pass *@
                 <input type="password" class="rounded border border-border bg-surface px-2 py-1.5"
                        autocomplete="off" spellcheck="false"
+                       disabled="@(_busy || _draft.NoKey)"
+                       placeholder="@(_draft.NoKey ? L["accounts.placeholder.noKey"] : null)"
                        @bind="_draft.ApiKey" />
             </label>
         }
@@ -382,6 +388,10 @@ else
     @if (ModalError(nameof(ProviderDraft.Identifier)) is { } identifierError)
     {
         <div class="mt-1 text-sm text-danger">@L[identifierError]</div>
+    }
+    @if (ModalError(nameof(ProviderDraft.ApiKey)) is { } apiKeyError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[apiKeyError]</div>
     }
 
     @if (_editingId is not null)
@@ -441,6 +451,11 @@ else
                                     <td class="px-2 py-1.5 opacity-80">@PatternSummary(account)</td>
                                     <td class="px-2 py-1.5 opacity-80">
                                         W@(account.Weight) P@(account.Priority) · @UsageText(account)
+                                        @if (string.IsNullOrEmpty(account.ApiKeyEncrypted))
+                                        {
+                                            @* Nhãn language-neutral theo spec §5 — không cần i18n (xem comment dòng 425) *@
+                                            <span class="opacity-60"> · no key</span>
+                                        }
                                     </td>
                                     <td class="px-2 py-1.5">
                                         @if (account.LastTestSuccess is null)
@@ -482,9 +497,16 @@ else
                         <label class="flex flex-col gap-1">
                             @L["accounts.field.apiKey"]
                             <input type="password" class="rounded border border-border bg-surface px-2 py-1"
-                                   autocomplete="off" spellcheck="false" disabled="@_busy"
-                                   placeholder="@(accountForm.Id is null ? L["accounts.placeholder.key"] : L["accounts.placeholder.keySaved"])"
+                                   autocomplete="off" spellcheck="false"
+                                   disabled="@(_busy || accountForm.NoKey)"
+                                   placeholder="@(accountForm.NoKey
+                                       ? L["accounts.placeholder.noKey"]
+                                       : (accountForm.Id is null ? L["accounts.placeholder.key"] : L["accounts.placeholder.keySaved"]))"
                                    @bind="accountForm.ApiKey" @bind:event="oninput" />
+                        </label>
+                        <label class="flex items-center gap-1.5">
+                            <input type="checkbox" disabled="@_busy" @bind="accountForm.NoKey" />
+                            @L["accounts.field.noKey"]
                         </label>
                         <label class="flex items-center gap-1.5">
                             <input type="checkbox" disabled="@_busy" @bind="accountForm.Enabled" />
@@ -522,6 +544,20 @@ else
                         </label>
                     </div>
                     <div class="flex justify-end gap-2">
+                        @if (accountForm.NoKey)
+                        {
+                            @* Account no-key phải test pass mới được lưu (D6) — test result hiển thị cạnh nút *@
+                            <button type="button" class="btn btn-outline-info"
+                                    disabled="@(_busy || _saving || _testingAccountNoKey)"
+                                    @onclick="TestAccountNoKeyAsync">
+                                @(_testingAccountNoKey ? L["providers.testing"] : L["providers.action.test"])
+                            </button>
+                            @if (_accountTestResult is { } accountTestResult)
+                            {
+                                <Badge Variant="@(accountTestResult.Success ? BadgeVariant.Success : BadgeVariant.Danger)"
+                                       Text="@(accountTestResult.Success ? L["providers.lastTest.ok"] : L["providers.lastTest.fail"])" />
+                            }
+                        }
                         <button type="button" class="btn btn-outline-secondary" disabled="@_busy" @onclick="CancelAccountForm">
                             @L["confirm.cancel"]
                         </button>
@@ -662,6 +698,10 @@ else
     private bool _testingAccounts;
     private AccountForm? _accountForm;
     private ProviderAccount? _confirmDeleteAccount;
+    // Test "no-key" trong form account — signature pin Type|BaseUrl|NoKey, đổi form = test mất hiệu lực
+    private ProviderTestResult? _accountTestResult;
+    private string? _accountTestedSignature;
+    private bool _testingAccountNoKey;
 
     /// <summary>State form account add/edit — ApiKey chỉ tồn tại lúc nhập, không bao giờ hiển thị lại.</summary>
     private sealed class AccountForm
@@ -671,6 +711,9 @@ else
         public string Name { get; set; } = string.Empty;
 
         public string ApiKey { get; set; } = string.Empty;
+
+        /// <summary>Không dùng API key — input key bị disable, phải test pass mới save được.</summary>
+        public bool NoKey { get; set; }
 
         public bool Enabled { get; set; } = true;
 
@@ -1137,16 +1180,23 @@ else
     private string? ModalError(string field) =>
         _errors.TryGetValue(field, out var key) ? key : null;
 
+    // NoKey trong signature: test pass rồi mới bật/tắt toggle → test mất hiệu lực, phải test lại
     private string DraftSignature() =>
-        $"{_draft.Type}|{ProviderUrl.Canonicalize(_draft.BaseUrl)}|{_draft.ApiKey}";
+        $"{_draft.Type}|{ProviderUrl.Canonicalize(_draft.BaseUrl)}|{_draft.ApiKey}|{_draft.NoKey}";
+
+    /// <summary>Tạo mới mà chưa chọn NoKey lẫn chưa gõ key — chặn Save/Test với lỗi keyOrNoKey.</summary>
+    private bool CreateKeyMissing =>
+        _editingId is null && !_draft.NoKey && string.IsNullOrWhiteSpace(_draft.ApiKey);
 
     /// <summary>
-    /// Provider mới: chỉ Save khi test pass với đúng nội dung hiện tại của form;
-    /// provider đã lưu: Save luôn bật — test là tùy chọn (spec §4.2).
+    /// Provider mới: chỉ Save khi test pass với đúng nội dung hiện tại của form
+    /// và đã chọn key hoặc NoKey; provider đã lưu: Save luôn bật — test là tùy chọn (spec §4.2).
     /// </summary>
     private bool CanSave =>
         _editingId is not null
-        || (_testResult is { Success: true } && _testedSignature == DraftSignature());
+        || (_testResult is { Success: true }
+            && _testedSignature == DraftSignature()
+            && !CreateKeyMissing);
 
     private async Task TestDraftAsync()
     {
@@ -1154,6 +1204,10 @@ else
         // song song, _testedSignature/_testResult của lượt sau bị finally lượt trước xóa.
         if (_busy) return;
         _errors = ProviderValidator.Validate(_draft).ToDictionary(kv => kv.Key, kv => kv.Value);
+        if (CreateKeyMissing)
+        {
+            _errors[nameof(ProviderDraft.ApiKey)] = "accounts.error.keyOrNoKey";
+        }
         if (_errors.Count > 0) return;
 
         _busy = true;
@@ -1168,8 +1222,10 @@ else
             target.Type = _draft.Type;
             target.BaseUrl = ProviderUrl.Canonicalize(_draft.BaseUrl);
 
-            _testResult = await ProviderSvc.TestConnectionAsync(
-                target, string.IsNullOrEmpty(_draft.ApiKey) ? null : _draft.ApiKey);
+            // NoKey → override "" ép probe không key (D9); ngược lại giữ hành vi cũ
+            // (key đang gõ thì override, trống thì fallback account)
+            _testResult = await ProviderSvc.TestConnectionAsync(target,
+                _draft.NoKey ? "" : (string.IsNullOrEmpty(_draft.ApiKey) ? null : _draft.ApiKey));
             _testedSignature = DraftSignature();
 
             if (_editingId is not null)
@@ -1196,6 +1252,10 @@ else
     {
         if (_busy) return; // Single-flight — double-click vẫn tới được đây khi nút chưa re-render
         _errors = ProviderValidator.Validate(_draft).ToDictionary(kv => kv.Key, kv => kv.Value);
+        if (CreateKeyMissing)
+        {
+            _errors[nameof(ProviderDraft.ApiKey)] = "accounts.error.keyOrNoKey";
+        }
         if (_errors.Count > 0) return;
         if (!CanSave) return; // chặn cứng — nút đã disabled nhưng test chưa pass thì không được lưu
 
@@ -1250,12 +1310,25 @@ else
         }
     }
 
-    private void AddAccountRow() => _accountForm = new AccountForm();
+    private void ResetAccountTestState()
+    {
+        _accountTestResult = null;
+        _accountTestedSignature = null;
+    }
 
-    private void BeginEditAccount(ProviderAccount account) =>
+    private void AddAccountRow()
+    {
+        _accountForm = new AccountForm();
+        ResetAccountTestState();
+    }
+
+    private void BeginEditAccount(ProviderAccount account)
+    {
         _accountForm = new AccountForm
         {
             Id = account.Id,
+            // Account đang lưu không key = toggle NoKey được bật sẵn (D5)
+            NoKey = string.IsNullOrEmpty(account.ApiKeyEncrypted),
             Name = account.Name,
             Enabled = account.Enabled,
             PatternsText = DecodePatterns(account.ModelPatterns),
@@ -1264,8 +1337,14 @@ else
             DailyTokenLimit = account.DailyTokenLimit,
             DailyRequestLimit = account.DailyRequestLimit,
         };
+        ResetAccountTestState();
+    }
 
-    private void CancelAccountForm() => _accountForm = null;
+    private void CancelAccountForm()
+    {
+        _accountForm = null;
+        ResetAccountTestState();
+    }
 
     /// <summary>JSON array → textarea 1 pattern/dòng; null/empty hoặc JSON hỏng → chuỗi rỗng.</summary>
     private static string DecodePatterns(string? json)
@@ -1285,10 +1364,54 @@ else
         }
     }
 
+    /// <summary>Chữ ký test account no-key: Type|BaseUrl|NoKey của form — đổi bất kỳ field nào = phải test lại (D6).</summary>
+    private string AccountTestSignature(AccountForm form) =>
+        $"{_draft.Type}|{ProviderUrl.Canonicalize(_draft.BaseUrl)}|{form.NoKey}";
+
+    private bool AccountNoKeyTestPassed(AccountForm form) =>
+        _accountTestResult is { Success: true }
+        && _accountTestedSignature == AccountTestSignature(form);
+
+    private async Task TestAccountNoKeyAsync()
+    {
+        if (_busy || _editingId is not { } providerId || _accountForm is not { } form) return;
+
+        _busy = true;
+        _testingAccountNoKey = true;
+        try
+        {
+            // Lấy entity đã lưu (có Type/BaseUrl hiện tại từ modal) rồi vá theo form —
+            // TestConnectionAsync với override "" ép probe không key (D9)
+            var target = await ProviderSvc.GetAsync(providerId)
+                ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
+            target.Type = _draft.Type;
+            target.BaseUrl = ProviderUrl.Canonicalize(_draft.BaseUrl);
+
+            _accountTestResult = await ProviderSvc.TestConnectionAsync(target, apiKeyOverride: "");
+            _accountTestedSignature = AccountTestSignature(form);
+        }
+        catch (Exception ex)
+        {
+            // GetAsync/network lỗi hiển thị như test fail — không nuốt (pattern TestDraftAsync)
+            Log.Error("Không test được tài khoản không key.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            _accountTestResult = new ProviderTestResult(false, ex.Message, DateTimeOffset.UtcNow);
+            _accountTestedSignature = AccountTestSignature(form);
+        }
+        finally
+        {
+            _testingAccountNoKey = false;
+            _busy = false;
+        }
+    }
+
     private bool CanSaveAccount =>
         _accountForm is { } form
         && form.Name.Trim().Length > 0
-        && (form.Id is not null || form.ApiKey.Trim().Length > 0);
+        // Tạo: bắt buộc key hoặc NoKey; sửa: key tùy chọn (để trống = giữ)
+        && (form.Id is not null || form.NoKey || form.ApiKey.Trim().Length > 0)
+        // Account no-key: test pass với đúng Type|BaseUrl|NoKey hiện tại mới được lưu (D6)
+        && (!form.NoKey || AccountNoKeyTestPassed(form));
 
     private async Task SaveAccountAsync()
     {
@@ -1301,7 +1424,9 @@ else
         {
             ProviderId = providerId,
             Name = form.Name.Trim(),
-            ApiKey = form.ApiKey.Trim(),
+            // NoKey → không gửi key (dù ô disabled còn giữ chữ cũ) — service ghi cột rỗng (D5)
+            ApiKey = form.NoKey ? string.Empty : form.ApiKey.Trim(),
+            NoKey = form.NoKey,
             Enabled = form.Enabled,
             ModelPatterns = patterns,
             Weight = form.Weight,
