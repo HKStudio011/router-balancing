@@ -69,6 +69,14 @@ public class ModelHealthWatchdogTests : IDisposable
         return new ModelCandidate(provider, new Model { Id = 1, ModelId = "m1", Enabled = true });
     }
 
+    // Candidate có account no-key (cột rỗng) — pin D8: resolver "" → VẪN probe, không chặn
+    private ModelCandidate NoKeyCandidate()
+    {
+        var candidate = Candidate();
+        candidate.Provider.Accounts[0].ApiKeyEncrypted = string.Empty;
+        return candidate;
+    }
+
     [Fact]
     public async Task ProbeDueAsync_WhenNextProbeNotDue_DoesNotCallUpstream()
     {
@@ -178,6 +186,20 @@ public class ModelHealthWatchdogTests : IDisposable
     }
 
     [Fact]
+    public async Task ProbeDueAsync_WhenAccountHasNoKey_ProbesWithEmptyKey()
+    {
+        OpenFuse("m1");
+        var upstream = new ScriptedUpstream(() => Sse());
+        var sut = CreateWatchdog(upstream, new StubResolver(NoKeyCandidate()));
+
+        await sut.ProbeDueAsync(CancellationToken.None);
+
+        // "" ≠ null: probe CHẠY với key rỗng (không auth) — test chặn null mới vào nhánh fail
+        Assert.Equal(1, upstream.Calls);
+        Assert.Equal(string.Empty, upstream.LastApiKey);
+    }
+
+    [Fact]
     public async Task ProbeDueAsync_WhenUpstreamThrows_RecordsProbeFailureAndLogsWarn()
     {
         OpenFuse("m1");
@@ -233,12 +255,14 @@ public class ModelHealthWatchdogTests : IDisposable
 
         public int Calls => Volatile.Read(ref _calls);
         public byte[]? LastBody { get; private set; }
+        public string? LastApiKey { get; private set; }
 
         public Task<HttpResponseMessage> PostChatCompletionAsync(
             Provider provider, string apiKey, byte[] body, CancellationToken ct)
         {
             Interlocked.Increment(ref _calls);
             LastBody = body;
+            LastApiKey = apiKey;
             return Task.FromResult(factory());
         }
     }
