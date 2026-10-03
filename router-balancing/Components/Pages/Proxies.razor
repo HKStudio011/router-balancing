@@ -101,10 +101,23 @@ else
         <div class="flex flex-wrap items-center gap-2">
             <select class="rounded border border-border bg-surface px-2 py-1.5"
                     value="@_assignProviderId" @onchange="OnProviderSelected">
-                <option value="">— Chọn provider —</option>
+                <option value="">@L["proxies.assign.select_provider"]</option>
                 @foreach (var p in _providers)
                 {
                     <option value="@p.Id">@p.Name</option>
+                }
+            </select>
+
+            @* Scope account (spec §7): chỉ chọn được sau khi có provider; không có account
+               thì disable — không có option rỗng vô nghĩa *@
+            <span class="text-xs opacity-70">@L["proxies.assign.account"]</span>
+            <select class="rounded border border-border bg-surface px-2 py-1.5"
+                    value="@_assignAccountId" @onchange="OnAccountSelected"
+                    disabled="@(_busy || _assignProviderId is null || SelectedProviderAccounts.Count == 0)">
+                <option value="">@L["proxies.assign.select_account"]</option>
+                @foreach (var a in SelectedProviderAccounts)
+                {
+                    <option value="@a.Id">@a.Name</option>
                 }
             </select>
 
@@ -229,8 +242,23 @@ else
     // Section gán proxy cho provider
     private List<Provider> _providers = [];
     private long? _assignProviderId;
+    private long? _assignAccountId; // null = scope provider; có giá trị = override theo account (D1)
     private string? _assignMode;
     private List<long> _selectedProxyIds = [];
+    // Cache toàn bộ hàng (provider + mọi account) của provider đang chọn — đổi scope không cần query lại
+    private List<ProxyAssignment> _assignments = [];
+
+    /// <summary>Account của provider đang chọn — options của select account (spec §7).</summary>
+    private IReadOnlyList<ProviderAccount> SelectedProviderAccounts =>
+        _providers.FirstOrDefault(p => p.Id == _assignProviderId)?.Accounts is { } accounts
+            ? accounts
+            : [];
+
+    /// <summary>Hàng assignment của scope đang chọn — account thắng provider khi đang chọn account (D1).</summary>
+    private ProxyAssignment? SelectedScopeAssignment =>
+        _assignAccountId is { } accountId
+            ? _assignments.FirstOrDefault(a => !a.IsProvider && a.Id == accountId)
+            : _assignments.FirstOrDefault(a => a.IsProvider);
 
     /// <summary>Chỉ hiện hint khi sửa — thêm mới để trống nghĩa là không đặt mật khẩu.</summary>
     private string? PasswordPlaceholder => _editing is { Id: > 0 } ? L["proxies.hint.password"] : null;
@@ -464,39 +492,53 @@ else
 
     /// <summary>
     /// Pre-fill form gán proxy khi đổi provider — đọc assignment hiện có (D1–D8):
-    /// pre-check proxy đã gán (union provider + account) và pre-fill mode từ provider level.
+    /// cache cả tập provider lẫn account rồi đổ vào form theo scope đang chọn.
     /// </summary>
     private async Task LoadAssignmentAsync()
     {
         if (_assignProviderId is null)
+        {
+            _assignments = [];
+            ApplyScopeToForm();
+            StateHasChanged();
+            return;
+        }
+
+        try
+        {
+            // GetAssignmentsAsync trả về hàng provider + mọi account của provider —
+            // 1 query duy nhất cho cả 2 scope, đổi scope account không tốn query thêm.
+            _assignments = (await ProxySvc.GetAssignmentsAsync(_assignProviderId.Value)).ToList();
+        }
+        catch (Exception ex)
+        {
+            _assignments = [];
+            Log.Error("Không tải được gán proxy cho provider.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+
+        ApplyScopeToForm();
+        StateHasChanged();
+    }
+
+    /// <summary>Đổ gán của scope đang chọn (checkbox + mode) vào form — account thắng provider (D1).</summary>
+    private void ApplyScopeToForm()
+    {
+        var scope = SelectedScopeAssignment;
+        if (scope is null)
         {
             _selectedProxyIds = [];
             _assignMode = string.Empty;
             return;
         }
 
-        try
+        _selectedProxyIds = scope.ProxyIds.ToList();
+        _assignMode = scope.Mode switch
         {
-            var assignments = await ProxySvc.GetAssignmentsAsync(_assignProviderId.Value);
-            _selectedProxyIds = assignments
-                .SelectMany(a => a.ProxyIds)
-                .Distinct()
-                .ToList();
-            var providerAssignment = assignments.FirstOrDefault(a => a.IsProvider);
-            _assignMode = providerAssignment?.Mode switch
-            {
-                ProxyMode.RoundRobin => "rr",
-                ProxyMode.Fallback => "fb",
-                _ => string.Empty
-            };
-        }
-        catch (Exception ex)
-        {
-            Log.Error("Không tải được gán proxy cho provider.", ex);
-            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
-        }
-
-        StateHasChanged();
+            ProxyMode.RoundRobin => "rr",
+            ProxyMode.Fallback => "fb",
+            _ => string.Empty
+        };
     }
 
     private void OnProviderSelected(ChangeEventArgs e)
@@ -504,7 +546,19 @@ else
         _assignProviderId = long.TryParse(e.Value?.ToString(), out var id) && id > 0
             ? id
             : null;
+        // Đổi provider phải về scope provider — giữ account cũ sẽ map nhầm id sang provider khác
+        _assignAccountId = null;
         _ = LoadAssignmentAsync();
+    }
+
+    private void OnAccountSelected(ChangeEventArgs e)
+    {
+        _assignAccountId = long.TryParse(e.Value?.ToString(), out var id) && id > 0
+            ? id
+            : null;
+        // Đã cache assignment của provider này khi chọn provider — chỉ đổi scope, không query lại
+        ApplyScopeToForm();
+        StateHasChanged();
     }
 
     private void ToggleProxySelection(long id)
@@ -522,7 +576,7 @@ else
         StateHasChanged();
     }
 
-    /// <summary>Gán proxy cho provider (D1–D8) — single-flight qua _busy.</summary>
+    /// <summary>Gán proxy cho scope đang chọn (D1–D8) — single-flight qua _busy.</summary>
     private async Task SaveAssignment()
     {
         if (_busy || _assignProviderId is null) return;
@@ -537,10 +591,20 @@ else
                 _ => (ProxyMode?)null
             };
 
-            await ProxySvc.AssignProviderProxiesAsync(_assignProviderId.Value, _selectedProxyIds, mode);
+            // Chọn account = ghi hàng override của account; không chọn = ghi hàng provider
+            if (_assignAccountId is { } accountId)
+            {
+                await ProxySvc.AssignAccountProxiesAsync(accountId, _selectedProxyIds, mode);
+            }
+            else
+            {
+                await ProxySvc.AssignProviderProxiesAsync(_assignProviderId.Value, _selectedProxyIds, mode);
+            }
 
             Toast.Show(L["proxies.assign.message"], ToastSeverity.Success);
             await ReloadAsync();
+            // Ghi xong → cache assignment cũ, nạp lại để form phản ánh đúng DB
+            await LoadAssignmentAsync();
         }
         catch (Exception ex)
         {

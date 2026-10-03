@@ -1487,27 +1487,42 @@ else
     };
 
     /// <summary>
-    /// Badge mode proxy của provider — đọc từ <c>Provider.ProxyMode</c> (đã load trong
-    /// ListAsync). Vì không Include ProviderProxies, badge chỉ phản ánh mode đã gán trên
-    /// provider, không phải selection hiệu lực: có giá trị → Robin/Fallback; null → "none".
-    /// (D6) "null" ≠ Direct: nếu provider đã gán proxy mà ProxyMode null, chế độ hiệu lực
-    /// là Robin (mặc định); nhãn "none/direct" chỉ chính xác khi provider không có proxy.
+    /// Badge proxy của provider (spec §7) — "{count} · {mode}" khi có gán, "none" khi chưa (D2).
+    /// Đếm trực tiếp từ <c>Provider.ProviderProxies</c> do ListAsync đã Include junction.
+    /// (D6) mode hiệu lực: <c>ProxyMode</c> null nhưng có gán → RoundRobin (mặc định),
+    /// nên nhãn "none" chỉ hiện khi thực sự không gán proxy nào.
     /// </summary>
-    private string ProxyModeBadgeText(Provider provider) =>
-        provider.ProxyMode switch
+    private string ProxyModeBadgeText(Provider provider)
+    {
+        if (provider.ProviderProxies.Count == 0)
         {
-            ProxyMode.RoundRobin => L["proxies.assign.mode_rr"],
+            return L["proxies.assign.none"];
+        }
+
+        return string.Format(L["proxies.assign.badge_count"], provider.ProviderProxies.Count)
+            + $" · {ModeLabel(provider.ProxyMode)}";
+    }
+
+    /// <summary>Nhãn chế độ hiệu lực — null = RoundRobin (D6).</summary>
+    private string ModeLabel(ProxyMode? mode) =>
+        (mode ?? ProxyMode.RoundRobin) switch
+        {
             ProxyMode.Fallback => L["proxies.assign.mode_fallback"],
-            _ => L["proxies.assign.none"],
+            _ => L["proxies.assign.mode_rr"],
         };
 
-    private static BadgeVariant ProxyModeBadgeVariant(Provider provider) =>
-        provider.ProxyMode switch
+    private static BadgeVariant ProxyModeBadgeVariant(Provider provider)
+    {
+        // Chưa gán proxy → Neutral (không phải "đang RoundRobin"); có gán → Info/Warning theo mode
+        if (provider.ProviderProxies.Count == 0)
         {
-            ProxyMode.RoundRobin => BadgeVariant.Info,
-            ProxyMode.Fallback => BadgeVariant.Warning,
-            _ => BadgeVariant.Neutral,
-        };
+            return BadgeVariant.Neutral;
+        }
+
+        return (provider.ProxyMode ?? ProxyMode.RoundRobin) == ProxyMode.Fallback
+            ? BadgeVariant.Warning
+            : BadgeVariant.Info;
+    }
 
     /// <summary>128000 → "128k"; dưới 1000 giữ nguyên — badge ngắn gọn, không cần chính xác tuyệt đối.</summary>
     private static string FormatCtx(int contextWindow) =>

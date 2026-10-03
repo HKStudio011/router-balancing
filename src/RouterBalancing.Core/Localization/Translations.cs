@@ -312,6 +312,9 @@ public static class Translations
         ["proxies.assign.save"] = "Save",
         ["proxies.assign.message"] = "Proxy assigned to this provider.",
         ["proxies.assign.account"] = "Account override",
+        ["proxies.assign.select_provider"] = "— Select provider —",
+        ["proxies.assign.select_account"] = "— Select account —",
+        ["proxies.assign.badge_count"] = "{0} proxy",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -619,6 +622,9 @@ public static class Translations
         ["proxies.assign.save"] = "Lưu",
         ["proxies.assign.message"] = "Đã gán proxy cho provider này.",
         ["proxies.assign.account"] = "Override theo tài khoản",
+        ["proxies.assign.select_provider"] = "— Chọn provider —",
+        ["proxies.assign.select_account"] = "— Chọn tài khoản —",
+        ["proxies.assign.badge_count"] = "{0} proxy",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>
