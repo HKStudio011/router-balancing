@@ -75,6 +75,20 @@ public class ProxyHostTests : IDisposable
     }
 
     [Fact]
+    public async Task StartAsync_WhenLanAccessEnabled_RespondsOnNonLoopbackAddress()
+    {
+        _settings.Set(SettingsKeys.LanAccess, true);
+
+        await using var host = await StartHostAsync();
+
+        var lanUrls = LanUrlProvider.GetUrls(host.Port!.Value);
+        Assert.NotEmpty(lanUrls); // máy dev luôn có ≥1 NIC non-loopback (vEthernet/ Wi-Fi/ LAN)
+        using var lanClient = new HttpClient { BaseAddress = new Uri(lanUrls[0]) };
+        var response = await lanClient.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Health_WhenApiKeyEnabled_StillOpen()
     {
         await _clientKeys.CreateAsync(new ClientKeyDraft("health", null, null));

@@ -38,6 +38,8 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public int Port => Get(SettingsKeys.Port, 8317);
 
+    public bool LanAccess => Get(SettingsKeys.LanAccess, false);
+
     public bool CloseToTray => Get(SettingsKeys.CloseToTray, true);
 
     public bool StartWithWindows => Get(SettingsKeys.StartWithWindows, false);

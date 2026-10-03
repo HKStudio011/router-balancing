@@ -79,6 +79,13 @@
         <div class="mt-1 text-sm text-danger">@L[portError]</div>
     }
 
+    <label class="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" @bind="_draft.LanAccess" />
+        @L["settings.field.lanAccess"]
+    </label>
+    @* Hint LUÔN hiện (kể cả trước khi bật) — user tự đánh giá rủi ro trước khi mở endpoint (D-C4) *@
+    <div class="mt-1 text-xs opacity-70">@L["settings.hint.lanAccess"]</div>
+
     <button class="btn btn-primary mt-3" @onclick="SaveServerAsync">@L["settings.action.save"]</button>
 </section>
 
@@ -306,6 +313,7 @@
         Language = Settings.Language,
         Theme = Settings.Theme,
         Port = Settings.Port,
+        LanAccess = Settings.LanAccess,
         CloseToTray = Settings.CloseToTray,
         StartWithWindows = Settings.StartWithWindows,
         MaxRetry = Settings.MaxRetry,
@@ -373,21 +381,24 @@
     private async Task SaveServerAsync()
     {
         var portChanged = _draft.Port != Settings.Port;
+        var lanChanged = _draft.LanAccess != Settings.LanAccess;
         if (!ValidateFor(ServerFields)) return;
 
         Settings.Set(SettingsKeys.Port, _draft.Port);
+        Settings.Set(SettingsKeys.LanAccess, _draft.LanAccess);
 
-        if (portChanged && Proxy.IsRunning)
+        if ((portChanged || lanChanged) && Proxy.IsRunning)
         {
             try
             {
-                // Port chỉ có hiệu lực khi Kestrel bind lại — restart để áp dụng ngay
+                // Port/LAN chỉ có hiệu lực khi Kestrel bind lại — restart để áp dụng ngay (D-C1)
                 await Proxy.RestartAsync();
-                Toast.Show(L["settings.msg.portRestart"], ToastSeverity.Success);
+                Toast.Show(L[portChanged ? "settings.msg.portRestart" : "settings.msg.saved"],
+                    ToastSeverity.Success);
             }
             catch (Exception ex)
             {
-                Log.Error("Khởi động lại proxy sau khi đổi cổng thất bại.", ex);
+                Log.Error("Khởi động lại proxy sau khi đổi cài đặt máy chủ thất bại.", ex);
                 Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
             }
         }

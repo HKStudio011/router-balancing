@@ -1,9 +1,11 @@
 @page "/"
+@using RouterBalancing.Core.Settings
 @implements IDisposable
 @inject IProxyHost Proxy
 @inject ILogService Log
 @inject ToastService Toast
 @inject LocalizationService L
+@inject IAppSettingsService Settings
 
 <h1 class="mb-4 text-xl font-semibold">@L["dashboard.title"]</h1>
 
@@ -17,6 +19,14 @@
             @if (Proxy.IsRunning)
             {
                 <div class="mt-1 font-mono text-sm">http://127.0.0.1:@Proxy.Port</div>
+                @if (Settings.LanAccess)
+                {
+                    @* Render lúc truy vấn (không cache) — phản ánh ngay sau restart; loopback đã có dòng trên (D-C3) *@
+                    @foreach (var url in LanUrls)
+                    {
+                        <div class="mt-1 font-mono text-sm">@url</div>
+                    }
+                }
             }
         </div>
 
@@ -38,6 +48,10 @@
     protected override void OnInitialized() => Proxy.StateChanged += OnStateChanged;
 
     private void OnStateChanged() => _ = InvokeAsync(StateHasChanged);
+
+    /// <summary>URL LAN hiện tại — tính lúc render để không cần cache/refresh tay.</summary>
+    private IReadOnlyList<string> LanUrls =>
+        Proxy.Port is { } port ? LanUrlProvider.GetUrls(port) : [];
 
     private async Task StartAsync()
     {

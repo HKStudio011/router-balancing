@@ -13,6 +13,9 @@ public interface IAppSettingsService
     /// <summary>Port ưa thích — ProxyHost dùng làm mốc tìm port trống.</summary>
     int Port { get; }
 
+    /// <summary>Bật endpoint truy cập từ LAN — ProxyHost đọc mỗi lần Start (D-C1).</summary>
+    bool LanAccess { get; }
+
     bool CloseToTray { get; }
 
     bool StartWithWindows { get; }

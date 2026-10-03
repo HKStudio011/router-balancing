@@ -13,6 +13,8 @@ public sealed record SettingsDraft
 
     public int Port { get; set; } = 8317;
 
+    public bool LanAccess { get; set; }
+
     public bool CloseToTray { get; set; } = true;
 
     public bool StartWithWindows { get; set; }

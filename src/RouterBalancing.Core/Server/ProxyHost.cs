@@ -44,6 +44,13 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _pool = pool;
     }
 
+    /// <summary>
+    /// Bind Kestrel: LAN tắt → loopback (chỉ máy này); LAN bật → mọi interface (D-C2).
+    /// Tách static để unit test 2 nhánh không cần mở socket.
+    /// </summary>
+    public static IPAddress ResolveBindAddress(bool lanAccess) =>
+        lanAccess ? IPAddress.Any : IPAddress.Loopback;
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -64,7 +71,8 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_log);
             builder.Services.AddSingleton(_db);
             builder.Services.AddSingleton(_clientKeys);
-            builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
+            builder.WebHost.ConfigureKestrel(options =>
+                options.Listen(ResolveBindAddress(_settings.LanAccess), port));
 
             ProxyApp.ConfigureServices(builder, _protector, _pool);
             var app = builder.Build();
@@ -85,7 +93,10 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
 
             _app = app;
             Port = port;
-            _log.Info($"Proxy server đang chạy tại http://127.0.0.1:{port}/");
+            var lanUrls = _settings.LanAccess ? LanUrlProvider.GetUrls(port) : [];
+            _log.Info(lanUrls.Count == 0
+                ? $"Proxy server đang chạy tại http://127.0.0.1:{port}/"
+                : $"Proxy server đang chạy tại http://127.0.0.1:{port}/ — LAN: {string.Join(", ", lanUrls)}");
             StateChanged?.Invoke();
         }
         finally

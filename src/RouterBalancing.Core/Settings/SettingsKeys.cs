@@ -11,6 +11,9 @@ public static class SettingsKeys
 
     public const string Port = "port";
 
+    /// <summary>Bật bind Kestrel mọi interface (LAN) — mặc định false, chỉ loopback (D-C1).</summary>
+    public const string LanAccess = "lanAccess";
+
     public const string CloseToTray = "closeToTray";
 
     public const string StartWithWindows = "startWithWindows";
