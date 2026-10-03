@@ -30,7 +30,7 @@ public static partial class ProviderValidator
             errors[nameof(ProviderDraft.BaseUrl)] = "providers.error.baseUrl";
         }
 
-        if (draft.MaxConcurrent is < 1 or > 64)
+        if (draft.MaxConcurrent is < 0 or > 64)
         {
             errors[nameof(ProviderDraft.MaxConcurrent)] = "providers.error.maxConcurrent";
         }

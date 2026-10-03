@@ -46,11 +46,20 @@ public class ProviderValidatorTests
     [Fact]
     public void Validate_WhenMaxConcurrentOutOfRange_ReturnsMaxConcurrentError()
     {
-        var low = ProviderValidator.Validate(ValidDraft() with { MaxConcurrent = 0 });
+        var low = ProviderValidator.Validate(ValidDraft() with { MaxConcurrent = -1 });
         var high = ProviderValidator.Validate(ValidDraft() with { MaxConcurrent = 65 });
 
         Assert.Equal("providers.error.maxConcurrent", low[nameof(ProviderDraft.MaxConcurrent)]);
         Assert.Equal("providers.error.maxConcurrent", high[nameof(ProviderDraft.MaxConcurrent)]);
+    }
+
+    [Fact]
+    public void Validate_WhenMaxConcurrentZero_ReturnsNoError()
+    {
+        // 0 = không giới hạn đồng thời (D-B1) — hợp lệ
+        var errors = ProviderValidator.Validate(ValidDraft() with { MaxConcurrent = 0 });
+
+        Assert.False(errors.ContainsKey(nameof(ProviderDraft.MaxConcurrent)));
     }
 
     [Fact]
