@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
@@ -94,6 +95,59 @@ public class ProxyAssignmentIntegrationTests : IDisposable
             Assert.Equal(1, _destination.RequestsHandled);
             // dead không forward (connection refused) — proxy down passive
             Assert.True(pool.Snapshot().Single(s => s.Id == deadId).IsDown);
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
+        }
+    }
+
+    /// <summary>
+    /// Chuỗi đầy đủ: seed provider+model+junction vào DB → resolve qua ComboResolver thật →
+    /// lấy candidate làm ProxyTarget → traffic phải đi qua proxy đã gán. Đây là regression
+    /// gate cho Include junction trên đường query runtime (spec §6).
+    /// </summary>
+    [Fact]
+    public async Task ResolveAsync_DbAssignment_SendsThroughAssignedProxy()
+    {
+        var live = new LocalHttpProxyStub();
+        _stubs.Add(live);
+        var liveId = await AddRowAsync(live.Port);
+
+        long providerId;
+        using (var db = _factory.CreateDbContext())
+        {
+            var provider = new Provider
+            {
+                Name = "Chained",
+                Type = ProviderType.OpenAI,
+                BaseUrl = "https://api.example.com",
+            };
+            provider.Models.Add(new Model { ModelId = "chained-model", Enabled = true });
+            db.Providers.Add(provider);
+            await db.SaveChangesAsync();
+            providerId = provider.Id;
+        }
+        using (var db = _factory.CreateDbContext())
+        {
+            db.Set<ProviderProxy>().Add(new ProviderProxy { ProviderId = providerId, ProxyId = liveId });
+            await db.SaveChangesAsync();
+        }
+
+        var resolved = await new ComboResolver(_factory, new NullLog())
+            .ResolveAsync("chained-model", default);
+        var ok = Assert.IsType<SelectionSuccess>(resolved);
+        var candidate = Assert.Single(ok.Candidates);
+
+        var (client, _) = CreateClient();
+        ProxyTarget.Current.Value = new ProxyTarget(candidate.Provider, null);
+        try
+        {
+            var response = await client.GetAsync(new Uri($"http://127.0.0.1:{_destination.Port}/v1/chat/completions"));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            // Resolve ra Direct (junction không load) → request đi thẳng, không qua stub
+            Assert.Equal(1, live.RequestsHandled);
+            Assert.Equal(1, _destination.RequestsHandled);
         }
         finally
         {

@@ -356,6 +356,17 @@ public class ProxyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AssignProviderProxies_UnknownProxy_ThrowsKeyNotFound()
+    {
+        var service = CreateService();
+        var providerId = await AddProviderAsync();
+
+        // id không tồn tại ≠ proxy tắt — contract ValidateProxyIdsAsync là KeyNotFound
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => service.AssignProviderProxiesAsync(providerId, [999_999], ProxyMode.RoundRobin));
+    }
+
+    [Fact]
     public async Task AssignAccountProxies_OverridesProvider()
     {
         var service = CreateService();

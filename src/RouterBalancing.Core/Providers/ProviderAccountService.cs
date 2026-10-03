@@ -145,8 +145,12 @@ public sealed class ProviderAccountService : IProviderAccountService
     public async Task<IReadOnlyList<ProviderAccountTestResult>> TestAllAsync(long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        // TestAllAsync set ProxyTarget(provider, account) — resolver đọc junction từ entity
+        // đã load (spec §6), thiếu Include thì account test luôn đi Direct dù đã gán proxy.
         var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
             .Include(p => p.Accounts)
+                .ThenInclude(a => a.AccountProxies)
             .FirstOrDefaultAsync(p => p.Id == providerId, ct)
             ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
 

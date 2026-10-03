@@ -36,9 +36,12 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
     public async Task<int> SyncProviderAsync(long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        // Sync set ProxyTarget(provider, null) — resolver đọc junction từ entity đã load
+        // (spec §6), thiếu Include thì request sync luôn đi Direct dù đã gán proxy.
         var provider = await db.Providers
             .Include(p => p.Models)
             .Include(p => p.Accounts)
+            .Include(p => p.ProviderProxies)
             .FirstOrDefaultAsync(p => p.Id == providerId, ct)
             ?? throw new FreeModelSyncException($"Provider {providerId} not found.");
         if (!provider.IsPreset)

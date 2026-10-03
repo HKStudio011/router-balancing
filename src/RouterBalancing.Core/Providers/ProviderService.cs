@@ -35,6 +35,9 @@ public sealed class ProviderService : IProviderService
         return await db.Providers
             .Include(p => p.Models)
             .Include(p => p.Accounts)
+            // Junction proxy phải kèm theo: TestConnectionAsync (D4) dispatch theo entity
+            // đã load — thiếu thì provider Test luôn đi Direct dù đã gán proxy.
+            .Include(p => p.ProviderProxies)
             .OrderBy(p => p.Id)
             .ToListAsync(ct);
     }
@@ -46,6 +49,8 @@ public sealed class ProviderService : IProviderService
         return await db.Providers
             .Include(p => p.Models)
             .Include(p => p.Accounts)
+            // Cùng lý do với ListAsync — đường test connection đọc ProviderProxies đã load.
+            .Include(p => p.ProviderProxies)
             .FirstOrDefaultAsync(p => p.Id == id, ct);
     }
 

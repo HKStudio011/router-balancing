@@ -54,7 +54,10 @@ public sealed class ComboResolver(
         return await QueryCandidatesAsync(m => m.ModelId == model, ct);
     }
 
-    /// <summary>Query model enabled + provider enabled, Include Accounts — giống 3A nhưng trả tất cả candidate.</summary>
+    /// <summary>
+    /// Query model enabled + provider enabled, Include Accounts + junction proxy —
+    /// giống 3A nhưng trả tất cả candidate.
+    /// </summary>
     private async Task<List<ModelCandidate>> QueryCandidatesAsync(
         System.Linq.Expressions.Expression<Func<Model, bool>> predicate, CancellationToken ct)
     {
@@ -64,6 +67,11 @@ public sealed class ComboResolver(
             .Where(predicate)
             .Include(m => m.Provider!)
             .ThenInclude(p => p.Accounts)
+            .ThenInclude(a => a.AccountProxies)
+            // ProxySelectionResolver đọc từ entity đã load (spec §6) — thiếu junction
+            // thì ProviderProxies/AccountProxies luôn rỗng và mọi request resolve ra Direct.
+            .Include(m => m.Provider!)
+            .ThenInclude(p => p.ProviderProxies)
             .OrderBy(m => m.Provider!.Id)
             .ThenBy(m => m.ModelId)
             .ToListAsync(ct);

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Storage;
 
 namespace router_balancing_test.Engine;
@@ -85,6 +86,42 @@ public class ComboResolverTests : IDisposable
         using var db = _db.CreateFactory().CreateDbContext();
         db.Providers.Find(providerId)!.Identifier = identifier;
         db.SaveChanges();
+    }
+
+    /// <summary>Tạo OutboundProxy trần — port riêng mỗi test (unique index scheme+host+port).</summary>
+    private long SeedProxy(int port)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        var proxy = new OutboundProxy { Scheme = "http", Host = "127.0.0.1", Port = port };
+        db.OutboundProxies.Add(proxy);
+        db.SaveChanges();
+        return proxy.Id;
+    }
+
+    /// <summary>Gán thẳng hàng junction Provider↔Proxy (ProxyService không nằm trong scope test này).</summary>
+    private void AssignProviderProxy(long providerId, long proxyId)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        db.Set<ProviderProxy>().Add(new ProviderProxy { ProviderId = providerId, ProxyId = proxyId });
+        db.SaveChanges();
+    }
+
+    /// <summary>Tạo account + hàng junction Account↔Proxy — trả về account Id.</summary>
+    private long AddAccountWithProxy(long providerId, long proxyId)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        var account = new ProviderAccount
+        {
+            ProviderId = providerId,
+            Name = "a1",
+            ApiKeyEncrypted = "enc",
+            Enabled = true,
+        };
+        db.ProviderAccounts.Add(account);
+        db.SaveChanges();
+        db.Set<ProviderAccountProxy>().Add(new ProviderAccountProxy { AccountId = account.Id, ProxyId = proxyId });
+        db.SaveChanges();
+        return account.Id;
     }
 
     private ComboResolver CreateSut(out CapturingLog log)
@@ -315,6 +352,42 @@ public class ComboResolverTests : IDisposable
         var candidate = Assert.Single(ok.Candidates);
         // AsNoTracking vẫn phải materialize Accounts — ProviderKeyResolver cần (3A parity)
         Assert.Contains(candidate.Provider.Accounts, a => a.Name == "a1");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_WhenProviderHasAssignment_LoadsJunction()
+    {
+        var providerId = SeedProvider("proxied", modelIds: ["m-assigned"]);
+        var proxyId = SeedProxy(port: 9600);
+        AssignProviderProxy(providerId, proxyId);
+
+        var result = await CreateSut(out _).ResolveAsync("m-assigned", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        var candidate = Assert.Single(ok.Candidates);
+        // Include junction là regression gate: thiếu thì ProviderProxies rỗng và
+        // ProxySelectionResolver trả Direct cho mọi request (spec §6).
+        var junction = Assert.Single(candidate.Provider.ProviderProxies);
+        Assert.Equal(proxyId, junction.ProxyId);
+        Assert.False(new ProxySelectionResolver().Resolve(candidate.Provider, null).IsDirect);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_WhenAccountHasAssignment_LoadsAccountJunction()
+    {
+        var providerId = SeedProvider("with-account", modelIds: ["m-account"]);
+        var proxyId = SeedProxy(port: 9601);
+        AddAccountWithProxy(providerId, proxyId);
+
+        var result = await CreateSut(out _).ResolveAsync("m-account", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        var account = Assert.Single(ok.Candidates[0].Provider.Accounts);
+        // AccountProxies đi theo chain Include Accounts → ThenInclude — thiếu thì account
+        // override (D1) không bao giờ kích hoạt dù hàng junction có trong DB.
+        var junction = Assert.Single(account.AccountProxies);
+        Assert.Equal(proxyId, junction.ProxyId);
+        Assert.False(new ProxySelectionResolver().Resolve(ok.Candidates[0].Provider, account).IsDirect);
     }
 
     [Fact]
