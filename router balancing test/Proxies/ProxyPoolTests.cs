@@ -257,21 +257,22 @@ public class ProxyPoolTests : IDisposable
                 FailNext = false;
                 throw new InvalidOperationException("Simulated DB failure.");
             }
-        if (_failuresLeft > 0)
-        {
-            _failuresLeft--;
-            throw new InvalidOperationException("Simulated DB failure.");
+            if (_failuresLeft > 0)
+            {
+                _failuresLeft--;
+                throw new InvalidOperationException("Simulated DB failure.");
+            }
+            return inner.CreateDbContext();
         }
-        return inner.CreateDbContext();
-    }
     }
 
     [Fact]
     public async Task GetNext_NullAllowedId_MatchesGlobal()
     {
         var pool = CreatePool();
-        var a = await AddProxyAsync(port: 9000);
-        var b = await AddProxyAsync(port: 9001);
+        // Chỉ cần 2 hàng proxy tồn tại trong DB — id trả về không dùng ở test này
+        await AddProxyAsync(port: 9000);
+        await AddProxyAsync(port: 9001);
         pool.Invalidate();
         var first = pool.GetNext();
         Assert.NotNull(first);
