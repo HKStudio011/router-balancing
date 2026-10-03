@@ -33,8 +33,9 @@ public interface IProviderService
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
 
     /// <summary>
-    /// Test kết nối: GET {BaseUrl}/v1/models. <paramref name="apiKeyOverride"/> rỗng →
-    /// dùng key của account enabled đầu tiên. Provider đã lưu (Id != 0) → persist LastTest*.
+    /// Test kết nối: GET {BaseUrl}/v1/models.
+    /// <paramref name="apiKeyOverride"/> <see langword="null"/> = dùng key account enabled đầu tiên;
+    /// <c>""</c> = ép probe không key (no-key, không gửi header auth) — spec free-account D9.
     /// </summary>
     Task<ProviderTestResult> TestConnectionAsync(Provider provider, string? apiKeyOverride, CancellationToken ct = default);
 }

@@ -148,14 +148,25 @@ public sealed class ProviderService : IProviderService
         ProviderTestResult result;
         try
         {
-            // Override (key đang gõ trên form) ưu tiên; không có → account enabled đầu tiên.
-            // Unprotect PHẢI nằm trong try: key DPAPI hỏng (CryptographicException) rơi vào
+            // apiKeyOverride: null = fallback account enabled đầu tiên; "" = ÉP probe không key
+            // (spec free-account D9) — KHÔNG gộp 2 nhánh bằng string.IsNullOrEmpty(apiKeyOverride),
+            // vì "" chính là tín hiệu "force no-key" của UI test account.
+            // Unprotect PHẢI nằm trong đây: key DPAPI hỏng (CryptographicException) rơi vào
             // catch → fail với lý do, không ném ra UI.
             var account = ProviderKeyResolver.ResolveFirstEnabledAccount(provider);
-            var key = apiKeyOverride;
-            if (string.IsNullOrEmpty(key))
+            string key;
+            if (apiKeyOverride is not null)
             {
-                key = account is not null ? _protector.Unprotect(account.ApiKeyEncrypted) : string.Empty;
+                key = apiKeyOverride;
+            }
+            else if (account is not null && !string.IsNullOrEmpty(account.ApiKeyEncrypted))
+            {
+                key = _protector.Unprotect(account.ApiKeyEncrypted);
+            }
+            else
+            {
+                // Không có account, hoặc account no-key (cột rỗng)
+                key = string.Empty;
             }
 
             // Provider Test = test proxy của provider (spec §5.3/D4) — không để account

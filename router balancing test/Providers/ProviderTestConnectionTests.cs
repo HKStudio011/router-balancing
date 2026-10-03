@@ -164,6 +164,36 @@ public class ProviderTestConnectionTests : IDisposable
     }
 
     [Fact]
+    public async Task TestConnection_WhenOverrideEmpty_ForcesNoKeyProbe()
+    {
+        var handler = new FakeHandler(HttpStatusCode.OK);
+        var provider = await SavedProviderAsync(); // key đã lưu = "sk-saved"
+        var service = ServiceWith(handler);
+
+        // Override "" = ép probe không key dù account có key — UI test account no-key (D9);
+        // null mới là fallback account
+        var result = await service.TestConnectionAsync(provider, apiKeyOverride: "");
+
+        Assert.True(result.Success);
+        Assert.Null(handler.LastRequest!.Headers.Authorization);
+    }
+
+    [Fact]
+    public async Task TestConnection_WhenNoKeyAccount_SucceedsWithoutAuthorization()
+    {
+        var handler = new FakeHandler(HttpStatusCode.OK);
+        var provider = await SavedProviderAsync();
+        provider.Accounts[0].ApiKeyEncrypted = string.Empty; // account no-key
+        var service = ServiceWith(handler);
+
+        var result = await service.TestConnectionAsync(provider, apiKeyOverride: null);
+
+        // Trước khi fix: Unprotect("") ném → caught → Success=false
+        Assert.True(result.Success);
+        Assert.Null(handler.LastRequest!.Headers.Authorization);
+    }
+
+    [Fact]
     public async Task TestConnection_WhenNotSaved_DoesNotPersist()
     {
         // Provider chưa lưu (Id == 0) — result trả về nhưng không ghi DB
