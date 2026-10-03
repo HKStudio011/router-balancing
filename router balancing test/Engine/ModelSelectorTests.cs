@@ -28,6 +28,11 @@ public class ModelSelectorTests : IDisposable
             MaxConcurrent = maxConcurrent,
         };
         provider.Models.Add(new Model { ModelId = $"m-{name}", Enabled = true });
+        provider.Accounts.Add(new ProviderAccount
+        {
+            Name = $"{name}-acc",
+            Enabled = true,
+        });
         db.Providers.Add(provider);
         db.SaveChanges();
         return provider.Id;
@@ -46,7 +51,7 @@ public class ModelSelectorTests : IDisposable
         {
             var ok = await _executions.TryEnterAsync(providerId, $"req{providerId}-{i}",
                 "p", "m", RequestPriority.Normal, DateTimeOffset.UtcNow, default);
-            Assert.True(ok);
+            Assert.NotNull(ok); // TryEnter trả long? (accountId) — D-B6
         }
     }
 

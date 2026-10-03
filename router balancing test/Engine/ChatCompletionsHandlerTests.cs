@@ -37,6 +37,10 @@ public class ChatCompletionsHandlerTests
 
     private static Model ModelOf(Provider provider) => provider.Models[0];
 
+    // Entity in-memory (chưa SaveChanges) → Id = 0 khớp account duy nhất của test;
+    // withKey: false → không có account → -1 → handler không match → 503 như cũ.
+    private static long AccountIdOf(Provider provider) => provider.Accounts.FirstOrDefault()?.Id ?? -1;
+
     private static DefaultHttpContext Ctx(string? json = null)
     {
         var ctx = new DefaultHttpContext();
@@ -177,7 +181,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
         Assert.Equal(503, error.Status);
@@ -197,7 +201,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(upstream, log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(string.Empty, upstream.LastApiKey); // upstream không auth, không throw
@@ -211,7 +215,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new ThrowingUpstream(new HttpRequestException("connection refused")), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         // Lỗi mạng = retryable Status null — 502 chỉ sinh ở exhaustion (T5 convert, spec §2.2)
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
@@ -232,7 +236,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(429, upstreamBody)), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         // Handler KHÔNG ghi response 429 — dispatcher walk quyết định advance/passthrough (spec §2.2)
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
@@ -255,7 +259,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(500, upstreamBody)), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
         Assert.Equal(500, retryable.Status);
@@ -276,7 +280,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(400, upstreamBody)), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         // Non-retryable — endpoint ghi (quan sát client y hệt 3A), không advance
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
@@ -298,7 +302,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => response));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
         // Delta-seconds parse được → floor nextProbeAt khi exhaustion (§3.6)
@@ -313,7 +317,7 @@ public class ChatCompletionsHandlerTests
             "text/event-stream")));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var (status, contentType, body) = await ReadAsync(ctx);
@@ -330,7 +334,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Single(log.Infos);
@@ -375,7 +379,7 @@ public class ChatCompletionsHandlerTests
         var ctx = Ctx();
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), AccountIdOf(provider), default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.NotNull(upstream.LastBody);
@@ -397,7 +401,7 @@ public class ChatCompletionsHandlerTests
         ctx.Items[ClientKeyItems.Id] = 42L;
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var (_, _, body) = await ReadAsync(ctx);
@@ -415,7 +419,7 @@ public class ChatCompletionsHandlerTests
         var ctx = Ctx();
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), AccountIdOf(provider), default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Single(log.Debugs);
@@ -431,7 +435,7 @@ public class ChatCompletionsHandlerTests
         var ctx = Ctx();
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Empty(log.Debugs);

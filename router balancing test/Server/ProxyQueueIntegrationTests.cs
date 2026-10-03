@@ -221,9 +221,12 @@ public class ProxyQueueIntegrationTests : IDisposable
     [Fact]
     public async Task Snapshot_ReflectsPriorityHeaderAndTiming()
     {
-        // MaxConcurrent=0 để request kẹt trong queue đủ lâu đọc snapshot
-        SeedProvider(maxConcurrent: 0, "m1");
-        var client = await StartAsync(new StubUpstream());
+        // max=0 giờ là unlimited — giữ request trong queue bằng holder chiếm slot (N=1)
+        SeedProvider(maxConcurrent: 1, "m1");
+        var upstream = new GatedUpstream();
+        var client = await StartAsync(upstream);
+        var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
         {
@@ -268,6 +271,11 @@ public class ProxyQueueIntegrationTests : IDisposable
         finally
         {
             _log.LogAdded -= OnLog;
+            upstream.Release(); // holder luôn được giải phóng — Dispose không treo
         }
+
+        upstream.Release();
+        var ok = await holding.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
     }
 }

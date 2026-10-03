@@ -125,10 +125,11 @@ public sealed class DispatcherLoop(
         if (candidate is null)
             return false; // park — item KHÔNG bị Take, chờ Changed|Exited
 
-        if (!await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
-                candidate.Provider.Name, candidate.Model.ModelId, request.Priority,
-                request.EnqueuedAt, ct))
-            return false; // capacity vừa hết — park, Exited sẽ đánh thức
+        var accountId = await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
+            candidate.Provider.Name, candidate.Model.ModelId, request.Priority,
+            request.EnqueuedAt, ct);
+        if (accountId is null)
+            return false; // capacity vừa hết (mọi TK đầy) — park, Exited sẽ đánh thức
 
         if (!queue.Take(request.Id, out var taken))
         {
@@ -137,7 +138,7 @@ public sealed class DispatcherLoop(
             return true;
         }
 
-        _ = ServeAsync(taken, candidate, remaining, success.Mode);
+        _ = ServeAsync(taken, candidate, remaining, success.Mode, accountId.Value);
         return true;
     }
 
@@ -147,7 +148,7 @@ public sealed class DispatcherLoop(
     /// <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
     /// </summary>
     private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
-        IReadOnlyList<ModelCandidate> remaining, ComboMode mode)
+        IReadOnlyList<ModelCandidate> remaining, ComboMode mode, long accountId)
     {
         while (true)
         {
@@ -156,7 +157,7 @@ public sealed class DispatcherLoop(
             {
                 // RequestAborted của client — disconnect giữa chừng cắt stream, không phải lỗi upstream (3A)
                 outcome = await handler.ForwardAsync(request.Context, candidate.Provider,
-                    candidate.Model, request.Body, request.Context.RequestAborted);
+                    candidate.Model, request.Body, accountId, request.Context.RequestAborted);
             }
             catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
             {
@@ -200,15 +201,18 @@ public sealed class DispatcherLoop(
                 executions.Exit(request.Id);
 
                 ModelCandidate? nextCandidate;
+                long? nextAccountId = null;
                 try
                 {
                     nextCandidate = await selector.TrySelectAsync(
                         new SelectionSuccess(next, mode), request.Context.RequestAborted);
-                    if (nextCandidate is not null
-                        && !await executions.TryEnterAsync(nextCandidate.Provider.Id, request.Id,
+                    nextAccountId = nextCandidate is null
+                        ? null
+                        : await executions.TryEnterAsync(nextCandidate.Provider.Id, request.Id,
                             nextCandidate.Provider.Name, nextCandidate.Model.ModelId,
-                            request.Priority, request.EnqueuedAt, request.Context.RequestAborted))
-                        nextCandidate = null; // capacity corner — park lại
+                            request.Priority, request.EnqueuedAt, request.Context.RequestAborted);
+                    if (nextCandidate is not null && nextAccountId is null)
+                        nextCandidate = null; // capacity corner — park lại, TK đã trả qua Exit
                 }
                 catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
                 {
@@ -241,6 +245,7 @@ public sealed class DispatcherLoop(
 
                 candidate = nextCandidate;
                 remaining = next;
+                accountId = nextAccountId!.Value; // nextCandidate != null ⇒ đã enter thành công (TK mới mỗi vòng — D-B6)
                 continue;
             }
 

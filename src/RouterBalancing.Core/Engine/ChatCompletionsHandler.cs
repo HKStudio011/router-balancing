@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
-using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 
@@ -80,11 +79,14 @@ public sealed class ChatCompletionsHandler(
     /// <param name="provider">Provider đã chọn.</param>
     /// <param name="model">Model đã chọn (log Info).</param>
     /// <param name="body">Body JSON gốc.</param>
+    /// <param name="accountId">TK đã chọn lúc TryEnter — dùng đúng id này, không resolve lại (D-B6).</param>
     /// <param name="ct">Token — dùng <c>ctx.RequestAborted</c> để disconnect cắt stream.</param>
     public async Task<DispatchOutcome> ForwardAsync(HttpContext ctx, Provider provider, Model model,
-        byte[] body, CancellationToken ct)
+        byte[] body, long accountId, CancellationToken ct)
     {
-        var account = ProviderKeyResolver.ResolveFirstEnabledAccount(provider);
+        // Đúng TK đã chọn bởi TryEnter — resolve "first enabled" tại đây sẽ lệch đếm (D-B6);
+        // id không khớp (TK bị xóa giữa chừng) → 503 cùng contract với nhánh không có key
+        var account = provider.Accounts.FirstOrDefault(a => a.Id == accountId);
         if (account is null)
         {
             log.Write(new LogEntry

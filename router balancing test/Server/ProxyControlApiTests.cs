@@ -243,10 +243,13 @@ public class ProxyControlApiTests : IDisposable
     [Fact]
     public async Task Cancel_WhenRequestIsQueued_Returns200AndOriginGets400()
     {
-        // MaxConcurrent=0: resolve được nhưng không bao giờ vào serve — request kẹt trong queue
-        SeedProvider(maxConcurrent: 0, "m1");
-        var client = await StartAsync(new StubUpstream());
+        // max=0 giờ nghĩa là unlimited (D-B1) — park bằng cách bão hòa 1 tài khoản với N=1
+        SeedProvider(maxConcurrent: 1, "m1");
+        var upstream = new GatedUpstream();
+        var client = await StartAsync(upstream);
 
+        var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // holder chiếm trọn slot
         var pending = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
         var queuedId = await WaitForQueuedIdAsync("m1");
 
@@ -262,5 +265,9 @@ public class ProxyControlApiTests : IDisposable
         var error = (await ReadJson(origin)).GetProperty("error");
         Assert.Equal("request_cancelled", error.GetProperty("code").GetString());
         Assert.Equal(queuedId, origin.Headers.GetValues("X-Request-Id").Single());
+
+        // Dọn có kiểm chứng: mở gate cho holder — không treo Dispose
+        upstream.Release();
+        Assert.Equal(HttpStatusCode.OK, (await holding).StatusCode);
     }
 }

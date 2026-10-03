@@ -8,6 +8,8 @@ namespace RouterBalancing.Core.Engine;
 /// <param name="Priority">Priority tại thời điểm enqueue.</param>
 /// <param name="EnqueuedAt">Thời điểm vào queue.</param>
 /// <param name="StartedAt">Thời điểm bắt đầu serve (lúc TryEnter thành công).</param>
+/// <param name="AccountId">TK giữ slot — 0 = sentinel khi provider không có TK enabled nào (D-B3, V1).</param>
+/// <param name="AccountName">Tên TK; chuỗi rỗng ở sentinel.</param>
 public sealed record ExecutionEntry(
     string RequestId,
     long ProviderId,
@@ -15,4 +17,6 @@ public sealed record ExecutionEntry(
     string Model,
     RequestPriority Priority,
     DateTimeOffset EnqueuedAt,
-    DateTimeOffset StartedAt);
+    DateTimeOffset StartedAt,
+    long AccountId,
+    string AccountName);
