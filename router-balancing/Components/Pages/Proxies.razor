@@ -591,24 +591,28 @@ else
                 _ => (ProxyMode?)null
             };
 
-            // Chọn account = ghi hàng override của account; không chọn = ghi hàng provider
+            // Chọn account = ghi hàng override của account; không chọn = ghi hàng provider.
+            // Toast đúng scope: gán cho account mà vẫn báo "provider" gây hiểu nhầm.
+            string toastKey;
             if (_assignAccountId is { } accountId)
             {
                 await ProxySvc.AssignAccountProxiesAsync(accountId, _selectedProxyIds, mode);
+                toastKey = "proxies.assign.message_account";
             }
             else
             {
                 await ProxySvc.AssignProviderProxiesAsync(_assignProviderId.Value, _selectedProxyIds, mode);
+                toastKey = "proxies.assign.message";
             }
 
-            Toast.Show(L["proxies.assign.message"], ToastSeverity.Success);
+            Toast.Show(L[toastKey], ToastSeverity.Success);
             await ReloadAsync();
             // Ghi xong → cache assignment cũ, nạp lại để form phản ánh đúng DB
             await LoadAssignmentAsync();
         }
         catch (Exception ex)
         {
-            Log.Error("Không gán được proxy cho provider.", ex);
+            Log.Error("Không gán được proxy cho scope đang chọn.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
         }
         finally
