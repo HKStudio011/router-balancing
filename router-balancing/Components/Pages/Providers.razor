@@ -11,6 +11,7 @@
 @inject LocalizationService L
 @inject ToastService Toast
 @inject ILogService Log
+@inject IClipboardService Clipboard
 
 <div class="mb-4 flex items-center justify-between gap-3">
     <h1 class="text-xl font-semibold">@L["panel.providers.title"]</h1>
@@ -217,7 +218,19 @@ else
                                                 {
                                                     <tr @key="m.Id" class="border-b border-border last:border-b-0">
                                                         <td class="px-2 py-1.5 font-mono">
-                                                            @(m.DisplayName is null ? m.ModelId : $"{m.DisplayName} ({m.ModelId})")
+                                                            <div>@(m.DisplayName is null ? m.ModelId : $"{m.DisplayName} ({m.ModelId})")</div>
+                                                            @* Pin {Identifier}/{ModelId} + copy — gửi request nhắm đúng provider (D-D1) *@
+                                                            @if (!string.IsNullOrEmpty(p.Identifier))
+                                                            {
+                                                                <div class="flex items-center gap-1 text-[11px] opacity-70">
+                                                                    <span>@p.Identifier/@m.ModelId</span>
+                                                                    <button type="button" class="btn btn-outline-secondary px-1"
+                                                                            disabled="@_busy" title="@L["clientKeys.action.copy"]"
+                                                                            @onclick="() => CopyModelPinAsync(p, m)">
+                                                                        &#128203;
+                                                                    </button>
+                                                                </div>
+                                                            }
                                                         </td>
                                                         <td class="px-2 py-1.5">
                                                             @if (_editingCapabilitiesId == m.Id)
@@ -1008,6 +1021,22 @@ else
         finally
         {
             _busy = false;
+        }
+    }
+
+    /// <summary>Copy {Identifier}/{ModelId} — pin provider chính xác trong trường model (D-D1).</summary>
+    private async Task CopyModelPinAsync(Provider provider, Model model)
+    {
+        if (string.IsNullOrEmpty(provider.Identifier))
+            return; // nút không render khi thiếu Identifier — guard dư phòng
+        if (await Clipboard.CopyAsync($"{provider.Identifier}/{model.ModelId}"))
+        {
+            Toast.Show(L["common.copied"], ToastSeverity.Success);
+        }
+        else
+        {
+            Log.Error("Sao chép model pin thất bại.", null);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
         }
     }
 
