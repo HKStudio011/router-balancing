@@ -30,4 +30,53 @@ public class ProviderKeyResolverTests
     {
         Assert.Null(ProviderKeyResolver.ResolveFirstEnabledKey(new Provider(), _protector));
     }
+
+    [Fact]
+    public void ResolveFirstEnabledKey_WhenEnabledAccountHasNoKey_ReturnsEmptyString()
+    {
+        var provider = new Provider
+        {
+            Accounts =
+            [
+                new ProviderAccount { Id = 1, Name = "free", Enabled = true, ApiKeyEncrypted = string.Empty },
+            ],
+        };
+
+        // "" ≠ null: "" = account no-key (probe/forward KHÔNG auth), null = không có account (chặn)
+        Assert.Equal(string.Empty, ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector));
+    }
+
+    [Fact]
+    public void ResolveFirstEnabledKey_WhenFirstEnabledIsNoKey_DoesNotSkipToNextAccount()
+    {
+        var provider = new Provider
+        {
+            Accounts =
+            [
+                new ProviderAccount { Id = 1, Name = "free", Enabled = true, Priority = 0, ApiKeyEncrypted = string.Empty },
+                new ProviderAccount { Id = 2, Name = "paid", Enabled = true, Priority = 5, ApiKeyEncrypted = _protector.Protect("sk-paid") },
+            ],
+        };
+
+        // Chọn theo Priority trên tập Enabled — account no-key đứng trước thì trả "" chứ
+        // không nhảy sang account có key (spec D2: không hidden failover ở tầng resolver)
+        Assert.Equal(string.Empty, ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector));
+    }
+
+    [Fact]
+    public void ResolveFirstEnabledAccount_WhenFirstEnabledHasNoKey_ReturnsThatAccount()
+    {
+        var provider = new Provider
+        {
+            Accounts =
+            [
+                new ProviderAccount { Id = 1, Name = "free", Enabled = true, ApiKeyEncrypted = string.Empty },
+            ],
+        };
+
+        var account = ProviderKeyResolver.ResolveFirstEnabledAccount(provider);
+
+        Assert.NotNull(account);
+        Assert.Equal("free", account.Name);
+    }
 }

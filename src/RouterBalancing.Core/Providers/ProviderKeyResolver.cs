@@ -7,21 +7,29 @@ namespace RouterBalancing.Core.Providers;
 public static class ProviderKeyResolver
 {
     /// <summary>
-    /// Key của account enabled đầu tiên (Priority tăng dần, tie-break Id tăng dần);
-    /// <see langword="null"/> nếu provider không có account khả dụng hoặc nav Accounts chưa load.
+    /// Key plaintext của account enabled đầu tiên (Priority tăng dần, tie-break Id tăng dần):
+    /// <see langword="null"/> nếu không có account khả dụng hoặc nav Accounts chưa load;
+    /// <c>""</c> nếu account đó là no-key (spec free-account D2 — khác null để caller
+    /// phân biệt "không probe/forward" vs "probe không auth").
     /// </summary>
     public static string? ResolveFirstEnabledKey(Provider provider, ISecretProtector protector)
     {
-        var account = provider.Accounts?
-            .Where(a => a.Enabled && !string.IsNullOrEmpty(a.ApiKeyEncrypted))
-            .OrderBy(a => a.Priority)
-            .ThenBy(a => a.Id)
-            .FirstOrDefault();
-        return account is null ? null : protector.Unprotect(account.ApiKeyEncrypted);
+        var account = ResolveFirstEnabledAccount(provider);
+        if (account is null)
+        {
+            return null;
+        }
+        // Không Unprotect("") — DPAPI ném CryptographicException; no-key lưu cột rỗng
+        return string.IsNullOrEmpty(account.ApiKeyEncrypted)
+            ? string.Empty
+            : protector.Unprotect(account.ApiKeyEncrypted);
     }
 
-    /// <summary>Tài khoản enabled đầu tiên (Priority tăng, tie-break Id) — null nếu không có.</summary>
+    /// <summary>
+    /// Account enabled đầu tiên (Priority tăng, tie-break Id) — null nếu không có.
+    /// Chỉ filter Enabled: account no-key (key rỗng) VẪN được chọn (spec free-account D2).
+    /// </summary>
     public static ProviderAccount? ResolveFirstEnabledAccount(Provider provider) =>
-        provider.Accounts?.Where(a => a.Enabled && !string.IsNullOrEmpty(a.ApiKeyEncrypted))
+        provider.Accounts?.Where(a => a.Enabled)
             .OrderBy(a => a.Priority).ThenBy(a => a.Id).FirstOrDefault();
 }
