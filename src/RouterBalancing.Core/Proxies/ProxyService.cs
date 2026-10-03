@@ -161,20 +161,23 @@ public sealed class ProxyService : IProxyService
     }
 
     /// <summary>
-    /// Validate proxy tồn tại & enabled — tập rỗng = gỡ toàn bộ gán (không validate).
-    /// Proxy tắt vẫn là "đã gán" trong DB; pool tự lọc enabled nên request tự Direct (spec §8).
+    /// Validate proxy tồn tại — tập rỗng = gỡ toàn bộ gán (không validate).
+    /// Proxy tắt vẫn là "đã gán" trong DB; pool tự lọc enabled nên request tự Direct (D-A2).
+    /// Dùng chung DbContext của caller, không tạo context riêng — tránh leak (D-A5).
     /// </summary>
-    private async Task ValidateProxyIdsAsync(IReadOnlyList<long> ids, IDbContextFactory<RouterBalancingDbContext> db, CancellationToken ct)
+    private static async Task ValidateProxyIdsAsync(RouterBalancingDbContext db,
+        IReadOnlyList<long> ids, CancellationToken ct)
     {
-        var existing = await db.CreateDbContext().OutboundProxies.AsNoTracking()
-            .ToDictionaryAsync(p => p.Id, ct);
-        foreach (var id in ids)
-        {
-            if (!existing.TryGetValue(id, out var proxy))
-                throw new KeyNotFoundException($"Proxy {id} not found.");
-            if (!proxy.Enabled)
-                throw new InvalidOperationException($"Proxy {id} is disabled.");
-        }
+        if (ids.Count == 0)
+            return;
+        var wanted = ids.ToHashSet();
+        var found = await db.OutboundProxies.AsNoTracking()
+            .Where(p => wanted.Contains(p.Id))
+            .Select(p => p.Id)
+            .ToListAsync(ct);
+        var missing = wanted.Except(found).ToList();
+        if (missing.Count > 0)
+            throw new KeyNotFoundException($"Proxy {missing[0]} not found.");
     }
 
     /// <inheritdoc/>
@@ -182,15 +185,23 @@ public sealed class ProxyService : IProxyService
         ProxyMode? mode, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
-        // Gồm junction để thay thế tập (gán rỗng) có hàng để xoá; không include thì EF không
-        // biết remove gì khi gán tập mới (mỗi lần 1 DbContext riêng, không giữ state cũ).
+        // Include junction: cần hàng cũ để diff (không include thì EF không biết remove gì)
         var provider = await db.Providers
             .Include(p => p.ProviderProxies)
             .FirstOrDefaultAsync(p => p.Id == providerId, ct)
             ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
-        await ValidateProxyIdsAsync(proxyIds, _db, ct);
+        await ValidateProxyIdsAsync(db, proxyIds, ct);
 
-        provider.ProviderProxies = proxyIds.Select(id => new ProviderProxy { ProviderId = provider.Id, ProxyId = id }).ToList();
+        // Diff-update thay whole-set replacement (D-A1): hàng cũ không trong tập mới → Remove,
+        // hàng mới → Add, hàng trùng → giữ nguyên. Re-save cùng tập = không thao tác → idempotent,
+        // không đụng hàng đang track nên không ném InvalidOperationException trùng PK.
+        var wanted = proxyIds.ToHashSet();
+        foreach (var row in provider.ProviderProxies.Where(r => !wanted.Contains(r.ProxyId)).ToList())
+            provider.ProviderProxies.Remove(row);
+        var existing = provider.ProviderProxies.Select(r => r.ProxyId).ToHashSet();
+        foreach (var id in wanted.Where(id => !existing.Contains(id)))
+            provider.ProviderProxies.Add(new ProviderProxy { ProviderId = provider.Id, ProxyId = id });
+
         provider.ProxyMode = mode;
         provider.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
@@ -202,15 +213,23 @@ public sealed class ProxyService : IProxyService
         ProxyMode? mode, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
-        // Gồm junction để thay thế tập (gán rỗng) có hàng để xoá; không include thì EF không
-        // biết remove gì khi gán tập mới (mỗi lần 1 DbContext riêng, không giữ state cũ).
+        // Include junction: cần hàng cũ để diff (không include thì EF không biết remove gì)
         var account = await db.ProviderAccounts
             .Include(a => a.AccountProxies)
             .FirstOrDefaultAsync(a => a.Id == accountId, ct)
             ?? throw new KeyNotFoundException($"Account {accountId} not found.");
-        await ValidateProxyIdsAsync(proxyIds, _db, ct);
+        await ValidateProxyIdsAsync(db, proxyIds, ct);
 
-        account.AccountProxies = proxyIds.Select(id => new ProviderAccountProxy { AccountId = accountId, ProxyId = id }).ToList();
+        // Diff-update thay whole-set replacement (D-A1): hàng cũ không trong tập mới → Remove,
+        // hàng mới → Add, hàng trùng → giữ nguyên. Re-save cùng tập = không thao tác → idempotent,
+        // không đụng hàng đang track nên không ném InvalidOperationException trùng PK.
+        var wanted = proxyIds.ToHashSet();
+        foreach (var row in account.AccountProxies.Where(r => !wanted.Contains(r.ProxyId)).ToList())
+            account.AccountProxies.Remove(row);
+        var existing = account.AccountProxies.Select(r => r.ProxyId).ToHashSet();
+        foreach (var id in wanted.Where(id => !existing.Contains(id)))
+            account.AccountProxies.Add(new ProviderAccountProxy { AccountId = account.Id, ProxyId = id });
+
         account.ProxyMode = mode;
         account.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);

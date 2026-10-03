@@ -343,7 +343,68 @@ public class ProxyServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task AssignProviderProxies_DisabledProxy_Throws()
+    public async Task AssignProviderProxies_IdempotentResave_SameSet_Succeeds()
+    {
+        var service = CreateService();
+        var proxy = await AddProxyAsync(port: 9510);
+        var providerId = await AddProviderAsync();
+
+        await service.AssignProviderProxiesAsync(providerId, [proxy], ProxyMode.Fallback);
+        // Re-save cùng tập không được đụng hàng junction cũ — idempotent (D-A1)
+        await service.AssignProviderProxiesAsync(providerId, [proxy], ProxyMode.Fallback);
+
+        using var db = _factory.CreateDbContext();
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .SingleAsync(p => p.Id == providerId);
+        Assert.Single(provider.ProviderProxies);
+        Assert.Equal(proxy, provider.ProviderProxies.Single().ProxyId);
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_OverlappingResave_ReplacesDifference()
+    {
+        var service = CreateService();
+        var proxyA = await AddProxyAsync(port: 9511);
+        var proxyB = await AddProxyAsync(port: 9512);
+        var providerId = await AddProviderAsync();
+
+        await service.AssignProviderProxiesAsync(providerId, [proxyA], ProxyMode.Fallback);
+        // Tập mới chồng lấp: giữ hàng A, thêm hàng B — không replace toàn bộ (D-A1)
+        await service.AssignProviderProxiesAsync(providerId, [proxyA, proxyB], ProxyMode.Fallback);
+
+        using var db = _factory.CreateDbContext();
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .SingleAsync(p => p.Id == providerId);
+        Assert.Equal(2, provider.ProviderProxies.Count);
+        Assert.Contains(provider.ProviderProxies, r => r.ProxyId == proxyA);
+        Assert.Contains(provider.ProviderProxies, r => r.ProxyId == proxyB);
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_SameProxySecondProvider_BothPersist()
+    {
+        var service = CreateService();
+        var proxy = await AddProxyAsync(port: 9513);
+        var providerA = await AddProviderAsync();
+        var providerB = await AddProviderAsync();
+
+        await service.AssignProviderProxiesAsync(providerA, [proxy], ProxyMode.RoundRobin);
+        // Triệu chứng user báo: cùng 1 proxy gán cho 2 provider phải có 2 hàng junction
+        await service.AssignProviderProxiesAsync(providerB, [proxy], ProxyMode.RoundRobin);
+
+        using var db = _factory.CreateDbContext();
+        var rows = await db.Set<ProviderProxy>().AsNoTracking()
+            .Where(r => r.ProxyId == proxy)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, r => r.ProviderId == providerA);
+        Assert.Contains(rows, r => r.ProviderId == providerB);
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_DisabledProxy_Allowed()
     {
         var service = CreateService();
         var created = await service.CreateAsync(Draft(port: 9502));
@@ -351,8 +412,14 @@ public class ProxyServiceTests : IDisposable
 
         await service.SetEnabledAsync(created.Id, enabled: false);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => service.AssignProviderProxiesAsync(providerId, new[] { created.Id }, ProxyMode.Fallback));
+        // Proxy tắt vẫn gán được — pool tự lọc, request tự Direct (D-A2)
+        await service.AssignProviderProxiesAsync(providerId, [created.Id], ProxyMode.Fallback);
+
+        using var db = _factory.CreateDbContext();
+        var provider = await db.Providers
+            .Include(p => p.ProviderProxies)
+            .SingleAsync(p => p.Id == providerId);
+        Assert.Contains(provider.ProviderProxies, r => r.ProxyId == created.Id);
     }
 
     [Fact]
