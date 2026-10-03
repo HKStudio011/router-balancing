@@ -27,9 +27,6 @@ public static class SettingsValidator
         if (draft.WatchdogIntervalSec is < 10 or > 86400)
             errors[nameof(SettingsDraft.WatchdogIntervalSec)] = "settings.error.watchdog";
 
-        if (draft.DefaultMaxConcurrent is < 1 or > 64)
-            errors[nameof(SettingsDraft.DefaultMaxConcurrent)] = "settings.error.maxConcurrent";
-
         if (draft.LogRetentionDays is < 1 or > 3650)
             errors[nameof(SettingsDraft.LogRetentionDays)] = "settings.error.retention";
 

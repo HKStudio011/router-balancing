@@ -21,8 +21,6 @@ public interface IAppSettingsService
 
     int WatchdogIntervalSec { get; }
 
-    int DefaultMaxConcurrent { get; }
-
     int LogRetentionDays { get; }
 
     int StatsErrorRateThreshold { get; }

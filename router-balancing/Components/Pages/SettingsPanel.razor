@@ -157,7 +157,7 @@
 <section class="mb-4 rounded border border-border bg-surface p-4">
     <h2 class="mb-3 text-base font-semibold">@L["settings.group.engine"]</h2>
 
-    <div class="grid gap-3 sm:grid-cols-3">
+    <div class="grid gap-3 sm:grid-cols-2">
         <label class="flex flex-col gap-1 text-sm">
             @L["settings.field.maxRetry"]
             <input class="rounded border border-border bg-surface px-2 py-1.5"
@@ -168,11 +168,6 @@
             <input class="rounded border border-border bg-surface px-2 py-1.5"
                    type="number" @bind="_draft.WatchdogIntervalSec" />
         </label>
-        <label class="flex flex-col gap-1 text-sm">
-            @L["settings.field.maxConcurrent"]
-            <input class="rounded border border-border bg-surface px-2 py-1.5"
-                   type="number" @bind="_draft.DefaultMaxConcurrent" />
-        </label>
     </div>
 
     @if (Error(nameof(SettingsDraft.MaxRetry)) is { } maxRetryError)
@@ -182,10 +177,6 @@
     @if (Error(nameof(SettingsDraft.WatchdogIntervalSec)) is { } watchdogError)
     {
         <div class="mt-1 text-sm text-danger">@L[watchdogError]</div>
-    }
-    @if (Error(nameof(SettingsDraft.DefaultMaxConcurrent)) is { } concurrentError)
-    {
-        <div class="mt-1 text-sm text-danger">@L[concurrentError]</div>
     }
 
     <button class="btn btn-primary mt-3" @onclick="SaveEngine">@L["settings.action.save"]</button>
@@ -282,7 +273,6 @@
     [
         nameof(SettingsDraft.MaxRetry),
         nameof(SettingsDraft.WatchdogIntervalSec),
-        nameof(SettingsDraft.DefaultMaxConcurrent),
     ];
     private static readonly string[] DataFields =
     [
@@ -320,7 +310,6 @@
         StartWithWindows = Settings.StartWithWindows,
         MaxRetry = Settings.MaxRetry,
         WatchdogIntervalSec = Settings.WatchdogIntervalSec,
-        DefaultMaxConcurrent = Settings.DefaultMaxConcurrent,
         LogRetentionDays = Settings.LogRetentionDays,
         StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
     };
@@ -414,7 +403,6 @@
 
         Settings.Set(SettingsKeys.MaxRetry, _draft.MaxRetry);
         Settings.Set(SettingsKeys.WatchdogIntervalSec, _draft.WatchdogIntervalSec);
-        Settings.Set(SettingsKeys.DefaultMaxConcurrent, _draft.DefaultMaxConcurrent);
         // Engine đọc setting mỗi request qua SettingsChanged — giá trị mới áp dụng ngay
         Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
     }

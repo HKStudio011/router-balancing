@@ -2,7 +2,6 @@
 @using RouterBalancing.Core.Domain
 @using System.Text.Json
 @using RouterBalancing.Core.Providers
-@using RouterBalancing.Core.Settings
 @using System.Globalization
 @implements IDisposable
 @inject IProviderService ProviderSvc
@@ -12,7 +11,6 @@
 @inject LocalizationService L
 @inject ToastService Toast
 @inject ILogService Log
-@inject IAppSettingsService Settings
 
 <div class="mb-4 flex items-center justify-between gap-3">
     <h1 class="text-xl font-semibold">@L["panel.providers.title"]</h1>
@@ -1136,7 +1134,7 @@ else
     private void OpenAdd()
     {
         _editingId = null;
-        _draft = new ProviderDraft { MaxConcurrent = Settings.DefaultMaxConcurrent };
+        _draft = new ProviderDraft(); // MaxConcurrent = 4 là default của draft — không còn setting seed (D-B2)
         ResetModalState();
         _modalVisible = true;
     }

@@ -20,8 +20,6 @@ public static class SettingsKeys
 
     public const string WatchdogIntervalSec = "watchdogIntervalSec";
 
-    public const string DefaultMaxConcurrent = "defaultMaxConcurrent";
-
     public const string LogRetentionDays = "logRetentionDays";
 
     public const string StatsErrorRateThreshold = "statsErrorRateThreshold";

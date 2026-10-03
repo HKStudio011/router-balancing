@@ -11,7 +11,6 @@ public class SettingsValidatorTests
         Port = 8317,
         MaxRetry = 3,
         WatchdogIntervalSec = 60,
-        DefaultMaxConcurrent = 4,
         LogRetentionDays = 90,
         StatsErrorRateThreshold = 10,
     };
@@ -57,15 +56,13 @@ public class SettingsValidatorTests
         {
             MaxRetry = 0,
             WatchdogIntervalSec = 5,
-            DefaultMaxConcurrent = 65,
             LogRetentionDays = 0,
             StatsErrorRateThreshold = 101,
         });
 
-        Assert.Equal(5, errors.Count);
+        Assert.Equal(4, errors.Count);
         Assert.Equal("settings.error.maxRetry", errors[nameof(SettingsDraft.MaxRetry)]);
         Assert.Equal("settings.error.watchdog", errors[nameof(SettingsDraft.WatchdogIntervalSec)]);
-        Assert.Equal("settings.error.maxConcurrent", errors[nameof(SettingsDraft.DefaultMaxConcurrent)]);
         Assert.Equal("settings.error.retention", errors[nameof(SettingsDraft.LogRetentionDays)]);
         Assert.Equal("settings.error.threshold", errors[nameof(SettingsDraft.StatsErrorRateThreshold)]);
     }
