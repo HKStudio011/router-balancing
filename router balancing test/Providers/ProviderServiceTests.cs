@@ -58,12 +58,26 @@ public class ProviderServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Create_WhenKeyBlank_NoAccountCreated()
+    public async Task Create_WhenNoKeyFlag_CreatesDefaultAccountEmptyKey()
     {
-        var provider = await _service.CreateAsync(Draft(key: string.Empty));
+        var draft = Draft(key: string.Empty);
+        draft.NoKey = true;
+
+        var provider = await _service.CreateAsync(draft);
 
         using var db = _db.CreateDbContext();
-        Assert.False(await db.ProviderAccounts.AnyAsync(a => a.ProviderId == provider.Id));
+        var account = await db.ProviderAccounts.SingleAsync(a => a.ProviderId == provider.Id);
+        Assert.Equal("Default", account.Name);
+        // No-key = cột rỗng, KHÔNG Protect("") (D1) — resolver đọc cột rỗng = no-key
+        Assert.Equal(string.Empty, account.ApiKeyEncrypted);
+    }
+
+    [Fact]
+    public async Task Create_WhenKeyBlankWithoutNoKey_ThrowsArgumentException()
+    {
+        // UI chặn trước bằng lỗi keyOrNoKey; service boundary vẫn bắt buộc key hoặc NoKey (D4)
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _service.CreateAsync(Draft(key: string.Empty)));
     }
 
     [Theory]

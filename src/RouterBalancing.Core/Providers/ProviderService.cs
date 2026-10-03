@@ -58,6 +58,13 @@ public sealed class ProviderService : IProviderService
     public async Task<Provider> CreateAsync(ProviderDraft draft, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        // Không có cờ NoKey mà key trống = form chưa điền — chặn ở service boundary (D4);
+        // UI đã hiện lỗi accounts.error.keyOrNoKey trước đó
+        if (!draft.NoKey && string.IsNullOrWhiteSpace(draft.ApiKey))
+        {
+            throw new ArgumentException("API key is required unless NoKey is set.");
+        }
+
         var identifier = draft.Identifier.Trim();
         await EnsureIdentifierUsableAsync(db, identifier, excludeId: null, ct);
 
@@ -70,18 +77,16 @@ public sealed class ProviderService : IProviderService
             MaxConcurrent = draft.MaxConcurrent,
         };
 
-        // Key ở create = tạo kèm account "Default" — key sống hoàn toàn ở ProviderAccount (spec §4.2)
-        if (!string.IsNullOrEmpty(draft.ApiKey))
+        // Key ở create = tạo kèm account "Default" — key sống hoàn toàn ở ProviderAccount (spec §4.2).
+        // Luôn tạo đúng 1 account: có key → mã hóa DPAPI; NoKey → cột rỗng (free endpoint, D1/D4)
+        provider.Accounts.Add(new ProviderAccount
         {
-            provider.Accounts.Add(new ProviderAccount
-            {
-                Name = "Default",
-                ApiKeyEncrypted = _protector.Protect(draft.ApiKey),
-                Enabled = true,
-                Weight = 100,
-                Priority = 0,
-            });
-        }
+            Name = "Default",
+            ApiKeyEncrypted = draft.NoKey ? string.Empty : _protector.Protect(draft.ApiKey),
+            Enabled = true,
+            Weight = 100,
+            Priority = 0,
+        });
 
         db.Providers.Add(provider);
         await db.SaveChangesAsync(ct);

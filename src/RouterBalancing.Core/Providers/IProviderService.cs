@@ -11,7 +11,9 @@ public interface IProviderService
     /// <summary>Provider theo id kèm Models + Accounts; <see langword="null"/> nếu không tồn tại.</summary>
     Task<Provider?> GetAsync(long id, CancellationToken ct = default);
 
-    /// <summary>Tạo provider mới từ bản nháp. <c>draft.ApiKey</c> không rỗng → tạo kèm account "Default".</summary>
+    /// <summary>Tạo provider mới từ bản nháp. Luôn tạo kèm account "Default":
+    /// <c>draft.NoKey</c> = true → cột key rỗng (no-key); ngược lại <c>draft.ApiKey</c> bắt buộc
+    /// (rỗng mà không NoKey → <see cref="ArgumentException"/>; spec free-account D4).</summary>
     /// <exception cref="ProviderValidationException">Identifier trùng hoặc xung đột segment model id.</exception>
     Task<Provider> CreateAsync(ProviderDraft draft, CancellationToken ct = default);
 

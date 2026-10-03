@@ -21,5 +21,9 @@ public sealed record ProviderDraft
     /// Chỉ có nghĩa khi <c>CreateAsync</c> (tạo account "Default"); <c>UpdateAsync</c> bỏ qua.</summary>
     public string ApiKey { get; set; } = string.Empty;
 
+    /// <summary>Tạo account "Default" không key (free endpoint) — true thì <see cref="ApiKey"/> bị bỏ qua
+    /// và cột key lưu rỗng (spec free-account D4).</summary>
+    public bool NoKey { get; set; }
+
     public int MaxConcurrent { get; set; } = 4;
 }
