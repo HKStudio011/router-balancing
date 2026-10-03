@@ -99,7 +99,11 @@ public sealed class ChatCompletionsHandler(
                 $"No enabled API key for provider '{provider.Name}'", "server_error", null, null);
         }
 
-        var key = protector.Unprotect(account.ApiKeyEncrypted);
+        // No-key account: cột key rỗng → gửi "" (upstream không auth) — Unprotect("") ném
+        // CryptographicException nên phải rẽ nhánh tường minh (spec free-account D7)
+        var key = string.IsNullOrEmpty(account.ApiKeyEncrypted)
+            ? string.Empty
+            : protector.Unprotect(account.ApiKeyEncrypted);
 
         // Đặt context proxy TRƯỚC khi gọi handler (upstream.PostChatCompletionAsync) —
         // ProxyHealthHandler đọc ProxyTarget.Current để dispatch theo assignment.

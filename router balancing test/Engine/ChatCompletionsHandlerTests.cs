@@ -57,9 +57,14 @@ public class ChatCompletionsHandlerTests
 
     private sealed class StubUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
     {
+        public string? LastApiKey { get; private set; }
+
         public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct) =>
-            Task.FromResult(factory());
+            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        {
+            LastApiKey = apiKey;
+            return Task.FromResult(factory());
+        }
     }
 
     private sealed class ThrowingUpstream(Exception ex) : IUpstreamClient
@@ -180,6 +185,22 @@ public class ChatCompletionsHandlerTests
         Assert.Single(log.Warns);
         // Handler không tự ghi response lỗi — endpoint ghi theo outcome (spec §2.1)
         Assert.Equal(200, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenNoKeyAccount_SendsEmptyKeyAndHandles()
+    {
+        var log = new CapturingLog();
+        var provider = SeedProvider();
+        provider.Accounts[0].ApiKeyEncrypted = string.Empty; // account no-key đã lưu
+        var upstream = new StubUpstream(() => Upstream(200, "{}"));
+        var sut = Create(upstream, log);
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(string.Empty, upstream.LastApiKey); // upstream không auth, không throw
     }
 
     [Fact]
