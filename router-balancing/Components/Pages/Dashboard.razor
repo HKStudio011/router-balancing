@@ -18,13 +18,13 @@
             </div>
             @if (Proxy.IsRunning)
             {
-                <div class="mt-1 font-mono text-sm">http://127.0.0.1:@Proxy.Port</div>
+                <div class="mt-1 font-mono text-sm">http://127.0.0.1:@Proxy.Port/v1</div>
                 @if (Settings.LanAccess)
                 {
                     @* Render lúc truy vấn (không cache) — phản ánh ngay sau restart; loopback đã có dòng trên (D-C3) *@
                     @foreach (var url in LanUrls)
                     {
-                        <div class="mt-1 font-mono text-sm">@url</div>
+                        <div class="mt-1 font-mono text-sm">@url/v1</div>
                     }
                 }
             }
