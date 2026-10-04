@@ -1,11 +1,15 @@
 @page "/"
 @using RouterBalancing.Core.Settings
+@using RouterBalancing.Core.Engine
+@using RouterBalancing.Core.Providers
 @implements IDisposable
 @inject IProxyHost Proxy
 @inject ILogService Log
 @inject ToastService Toast
 @inject LocalizationService L
 @inject IAppSettingsService Settings
+@inject IManualRetryStore RetryStore
+@inject IProviderService ProviderService
 
 <h1 class="mb-4 text-xl font-semibold">@L["dashboard.title"]</h1>
 
@@ -44,14 +48,75 @@
     </div>
 </div>
 
+@* Manual retry (spec §3.2): hiện provider/account/model đang park — nút Retry now unpark ngay *@
+@if (_retryEntries.Count > 0)
+{
+    <div class="mb-4 rounded border border-border bg-surface p-4" data-testid="manual-retry-list">
+        <div class="mb-2 text-sm opacity-70">@L["manualRetry.title"]</div>
+        @foreach (var entry in _retryEntries)
+        {
+            <div class="flex items-center gap-2 py-1" @key="entry">
+                @* min-width 76px: chừa chỗ cho label dài nhất (Provider/Account/Model) — spec §3.2 *@
+                <span class="whitespace-nowrap text-center" style="min-width:76px">@L[$"manualRetry.level.{entry.Level.ToString().ToLowerInvariant()}"]</span>
+                <span class="flex-1 truncate">@GetEntryDisplayName(entry)</span>
+                <span class="text-sm opacity-70">@L[$"manualRetry.reason.{entry.Reason.ToString().ToLowerInvariant()}"]</span>
+                <button class="btn btn-outline-info px-1.5" @onclick="() => RetryNowAsync(entry)">
+                    @L["manualRetry.action.retry"]
+                </button>
+            </div>
+        }
+    </div>
+}
+
 @code {
-    protected override void OnInitialized() => Proxy.StateChanged += OnStateChanged;
+    private IReadOnlyList<ManualRetryEntry> _retryEntries = [];
+    private Dictionary<long, string> _providerNames = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Proxy.StateChanged += OnStateChanged;
+        RetryStore.Changed += HandleRetryStoreChanged;
+        await ReloadEntriesAsync();
+    }
 
     private void OnStateChanged() => _ = InvokeAsync(StateHasChanged);
 
     /// <summary>URL LAN hiện tại — tính lúc render để không cần cache/refresh tay.</summary>
     private IReadOnlyList<string> LanUrls =>
         Proxy.Port is { } port ? LanUrlProvider.GetUrls(port) : [];
+
+    /// <summary>Tải danh sách retry thủ công + map providerId → tên để hiển thị trong card.</summary>
+    private async Task ReloadEntriesAsync()
+    {
+        var providers = await ProviderService.ListAsync();
+        // Key = provider Id để khớp entry.Id cấp Provider — không qua Accounts:
+        // provider có nhiều account sẽ cho tuple trùng, ToDictionary ném ArgumentException
+        _providerNames = providers.ToDictionary(p => p.Id, p => p.Name);
+        _retryEntries = RetryStore.GetEntries(); // gán CUỐI — tránh render dở dang
+    }
+
+    // Changed bắn từ background thread (Park trong request/ping loop) → marshal về UI thread
+    private void HandleRetryStoreChanged() =>
+        _ = InvokeAsync(async () => { await ReloadEntriesAsync(); StateHasChanged(); });
+
+    /// <summary>Tên hiển thị: provider theo tên (fallback #id), account #id, model = ModelId.</summary>
+    private string GetEntryDisplayName(ManualRetryEntry entry) => entry.Level switch
+    {
+        ManualRetryLevel.Provider when _providerNames.TryGetValue(entry.Id, out var n) => n,
+        ManualRetryLevel.Provider => $"#{entry.Id}",
+        ManualRetryLevel.Account => $"#{entry.Id}",
+        _ => entry.ModelId,
+    };
+
+    private async Task RetryNowAsync(ManualRetryEntry entry)
+    {
+        RetryStore.Unpark(entry.Level, entry.Id, entry.ModelId);
+        Log.Info($"'{GetEntryDisplayName(entry)}' được retry thủ công — trở lại vòng xoay");
+        // Bản dịch giữ placeholder {key} (exact theo spec §3.6) — thay tại chỗ, Toast.Show nhận text đã dịch
+        Toast.Show(L["manualRetry.msg.unparked"].Replace("{key}", GetEntryDisplayName(entry)), ToastSeverity.Success);
+        await ReloadEntriesAsync();
+        StateHasChanged();
+    }
 
     private async Task StartAsync()
     {
@@ -98,5 +163,9 @@
         }
     }
 
-    public void Dispose() => Proxy.StateChanged -= OnStateChanged;
+    public void Dispose()
+    {
+        Proxy.StateChanged -= OnStateChanged;
+        RetryStore.Changed -= HandleRetryStoreChanged;
+    }
 }
