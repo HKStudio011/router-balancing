@@ -85,7 +85,6 @@ public sealed class ProviderService : IProviderService
             ApiKeyEncrypted = draft.NoKey ? string.Empty : _protector.Protect(draft.ApiKey),
             Enabled = true,
             Weight = 100,
-            Priority = 0,
         });
 
         db.Providers.Add(provider);

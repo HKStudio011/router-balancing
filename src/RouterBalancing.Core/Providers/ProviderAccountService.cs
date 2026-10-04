@@ -36,8 +36,7 @@ public sealed class ProviderAccountService : IProviderAccountService
         using var db = _db.CreateDbContext();
         return await db.ProviderAccounts
             .Where(a => a.ProviderId == providerId)
-            .OrderBy(a => a.Priority)
-            .ThenBy(a => a.Name)
+            .OrderBy(a => a.Name)
             .ToListAsync(ct);
     }
 
@@ -67,7 +66,6 @@ public sealed class ProviderAccountService : IProviderAccountService
             Enabled = draft.Enabled,
             ModelPatterns = SerializePatterns(draft.ModelPatterns),
             Weight = draft.Weight,
-            Priority = draft.Priority,
             DailyTokenLimit = draft.DailyTokenLimit,
             DailyRequestLimit = draft.DailyRequestLimit,
         };
@@ -108,7 +106,6 @@ public sealed class ProviderAccountService : IProviderAccountService
         account.Enabled = draft.Enabled;
         account.ModelPatterns = SerializePatterns(draft.ModelPatterns);
         account.Weight = draft.Weight;
-        account.Priority = draft.Priority;
         account.DailyTokenLimit = draft.DailyTokenLimit;
         account.DailyRequestLimit = draft.DailyRequestLimit;
         account.UpdatedAt = DateTimeOffset.UtcNow;
@@ -163,8 +160,7 @@ public sealed class ProviderAccountService : IProviderAccountService
         var results = new List<ProviderAccountTestResult>();
         var enabled = provider.Accounts
             .Where(a => a.Enabled)
-            .OrderBy(a => a.Priority)
-            .ThenBy(a => a.Id)
+            .OrderBy(a => a.Id)
             .ToList();
 
         foreach (var account in enabled)

@@ -28,9 +28,6 @@ public sealed class ProviderAccountDraft
     /// <summary>Trọng số chia tải (0–10000); lớn = nhận nhiều request hơn khi bình đẳng.</summary>
     public int Weight { get; set; } = 100;
 
-    /// <summary>Thứ tự ưu tiên chọn (nhỏ trước, −1000–1000); độc lập với Weight.</summary>
-    public int Priority { get; set; }
-
     /// <summary>Giới hạn token/ngày; null = không giới hạn; phải &gt; 0 nếu đặt.</summary>
     public int? DailyTokenLimit { get; set; }
 

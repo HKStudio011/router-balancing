@@ -28,10 +28,6 @@ public static class ProviderAccountValidator
         {
             throw new ArgumentException("Weight must be between 0 and 10000.");
         }
-        if (draft.Priority is < -1000 or > 1000)
-        {
-            throw new ArgumentException("Priority must be between -1000 and 1000.");
-        }
         if (draft.DailyTokenLimit is <= 0)
         {
             throw new ArgumentException("Daily token limit must be greater than 0.");

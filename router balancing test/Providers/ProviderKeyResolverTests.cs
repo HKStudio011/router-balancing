@@ -9,20 +9,20 @@ public class ProviderKeyResolverTests
     private readonly ISecretProtector _protector = new DpapiSecretProtector();
 
     [Fact]
-    public void ResolveFirstEnabledKey_OrdersByPriority_SkipsDisabled()
+    public void ResolveFirstEnabledKey_OrdersById_SkipsDisabled()
     {
         var provider = new Provider
         {
             Accounts =
             [
-                new ProviderAccount { Id = 2, Name = "low", Enabled = true, Priority = 5, ApiKeyEncrypted = _protector.Protect("sk-low") },
-                new ProviderAccount { Id = 1, Name = "high", Enabled = true, Priority = 1, ApiKeyEncrypted = _protector.Protect("sk-high") },
-                new ProviderAccount { Id = 3, Name = "off", Enabled = false, Priority = 0, ApiKeyEncrypted = _protector.Protect("sk-off") },
+                new ProviderAccount { Id = 2, Name = "second", Enabled = true, ApiKeyEncrypted = _protector.Protect("sk-second") },
+                new ProviderAccount { Id = 1, Name = "first", Enabled = true, ApiKeyEncrypted = _protector.Protect("sk-first") },
+                new ProviderAccount { Id = 3, Name = "off", Enabled = false, ApiKeyEncrypted = _protector.Protect("sk-off") },
             ],
         };
 
-        // off có Priority 0 nhưng tắt → bỏ; high (1) đứng trước low (5)
-        Assert.Equal("sk-high", ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector));
+        // off tắt → bỏ; Id nhỏ nhất trong tập Enabled → "first"
+        Assert.Equal("sk-first", ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector));
     }
 
     [Fact]
@@ -53,12 +53,12 @@ public class ProviderKeyResolverTests
         {
             Accounts =
             [
-                new ProviderAccount { Id = 1, Name = "free", Enabled = true, Priority = 0, ApiKeyEncrypted = string.Empty },
-                new ProviderAccount { Id = 2, Name = "paid", Enabled = true, Priority = 5, ApiKeyEncrypted = _protector.Protect("sk-paid") },
+                new ProviderAccount { Id = 1, Name = "free", Enabled = true, ApiKeyEncrypted = string.Empty },
+                new ProviderAccount { Id = 2, Name = "paid", Enabled = true, ApiKeyEncrypted = _protector.Protect("sk-paid") },
             ],
         };
 
-        // Chọn theo Priority trên tập Enabled — account no-key đứng trước thì trả "" chứ
+        // Chọn theo Id tăng dần trên tập Enabled — account no-key đứng trước thì trả "" chứ
         // không nhảy sang account có key (spec D2: không hidden failover ở tầng resolver)
         Assert.Equal(string.Empty, ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector));
     }

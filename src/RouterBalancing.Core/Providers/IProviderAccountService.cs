@@ -5,7 +5,7 @@ namespace RouterBalancing.Core.Providers;
 /// <summary>CRUD + test connection cho các tài khoản (API key) của một provider — key luôn mã hoá DPAPI.</summary>
 public interface IProviderAccountService
 {
-    /// <summary>Accounts theo provider, sắp Priority tăng dần rồi Name — không trả plaintext key.</summary>
+    /// <summary>Accounts theo provider, sắp theo Name — không trả plaintext key.</summary>
     Task<IReadOnlyList<ProviderAccount>> ListAsync(long providerId, CancellationToken ct = default);
 
     /// <summary>Tạo account mới; <c>draft.ApiKey</c> bắt buộc trừ khi <c>draft.NoKey</c> (lưu key rỗng).</summary>

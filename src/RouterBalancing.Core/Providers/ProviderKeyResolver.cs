@@ -7,7 +7,7 @@ namespace RouterBalancing.Core.Providers;
 public static class ProviderKeyResolver
 {
     /// <summary>
-    /// Key plaintext của account enabled đầu tiên (Priority tăng dần, tie-break Id tăng dần):
+    /// Key plaintext của account enabled đầu tiên (Id tăng dần):
     /// <see langword="null"/> nếu không có account khả dụng hoặc nav Accounts chưa load;
     /// <c>""</c> nếu account đó là no-key (spec free-account D2 — khác null để caller
     /// phân biệt "không probe/forward" vs "probe không auth").
@@ -26,10 +26,10 @@ public static class ProviderKeyResolver
     }
 
     /// <summary>
-    /// Account enabled đầu tiên (Priority tăng, tie-break Id) — null nếu không có.
+    /// Account enabled đầu tiên (Id tăng dần) — null nếu không có.
     /// Chỉ filter Enabled: account no-key (key rỗng) VẪN được chọn (spec free-account D2).
     /// </summary>
     public static ProviderAccount? ResolveFirstEnabledAccount(Provider provider) =>
         provider.Accounts?.Where(a => a.Enabled)
-            .OrderBy(a => a.Priority).ThenBy(a => a.Id).FirstOrDefault();
+            .OrderBy(a => a.Id).FirstOrDefault();
 }

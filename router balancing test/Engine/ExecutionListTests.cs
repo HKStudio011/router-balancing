@@ -128,7 +128,7 @@ public class ExecutionListTests : IDisposable
     }
 
     [Fact]
-    public async Task TryEnter_TwoAccounts_BalancesLeastInFlight_TieBreaksById()
+    public async Task TryEnter_TwoAccounts_BalancesLeastInFlight_TieRotatesByCursor()
     {
         var pid = SeedProvider("p1", maxConcurrent: 2, accountCount: 2);
         var sut = CreateSut();
@@ -138,12 +138,57 @@ public class ExecutionListTests : IDisposable
         var third = await sut.TryEnterAsync(pid, "req00003", "p1", "m", RequestPriority.Normal, Enq, default);
 
         // Least-in-flight: req2 thấy TK1 (1) > TK2 (0) → TK2;
-        // req3 tie 1-1 → Id tăng dần → TK1 (D-B4.3)
+        // req3 tie 1-1 → xoay theo cursor → TK1
         Assert.NotNull(first);
         Assert.NotNull(second);
         Assert.NotNull(third);
         Assert.NotEqual(first, second);
         Assert.Equal(first, third);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task TryEnter_SequentialRequests_RotatesEvenlyAcrossAccounts(int maxConcurrent)
+    {
+        var pid = SeedProvider("p1", maxConcurrent, accountCount: 2);
+        var accounts = EnabledAccountIds(pid);
+        var sut = CreateSut();
+        var counts = new Dictionary<long, int>();
+
+        for (var i = 0; i < 20; i++)
+        {
+            var chosen = await sut.TryEnterAsync(pid, $"req{i:D2}", "p1", "m",
+                RequestPriority.Normal, Enq, default);
+            Assert.NotNull(chosen);
+            counts[chosen.Value] = counts.GetValueOrDefault(chosen.Value) + 1;
+            sut.Exit($"req{i:D2}");
+        }
+
+        // Request tuần tự (không chồng chéo) vẫn phải xoay đều — không dồn 1 TK
+        Assert.Equal(10, counts[accounts[0]]);
+        Assert.Equal(10, counts[accounts[1]]);
+    }
+
+    [Fact]
+    public async Task TryEnter_ConcurrentRequests_DistributeEvenlyAcrossAccounts()
+    {
+        var pid = SeedProvider("p1", maxConcurrent: 0, accountCount: 2);
+        var accounts = EnabledAccountIds(pid);
+        var sut = CreateSut();
+        var counts = new Dictionary<long, int>();
+
+        for (var i = 0; i < 6; i++)
+        {
+            var chosen = await sut.TryEnterAsync(pid, $"req{i}", "p1", "m",
+                RequestPriority.Normal, Enq, default);
+            Assert.NotNull(chosen);
+            counts[chosen.Value] = counts.GetValueOrDefault(chosen.Value) + 1;
+        }
+
+        // Đồng thời: ít in-flight thắng → chênh lệch tối đa 1 (Max=0 = unlimited/TK)
+        Assert.Equal(3, counts[accounts[0]]);
+        Assert.Equal(3, counts[accounts[1]]);
     }
 
     [Fact]

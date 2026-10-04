@@ -77,8 +77,8 @@ public class ProviderAccountServiceTests : IDisposable
         }
     }
 
-    /// <summary>Seed provider + các account (tên/khối/ưu tiên) — trả ProviderId.</summary>
-    private async Task<long> SeedProviderAsync(params (string Name, bool Enabled, int Priority)[] accounts)
+    /// <summary>Seed provider + các account (tên/bật-tắt) — trả ProviderId.</summary>
+    private async Task<long> SeedProviderAsync(params (string Name, bool Enabled)[] accounts)
     {
         using var db = _db.CreateDbContext();
         var provider = new Provider
@@ -88,13 +88,12 @@ public class ProviderAccountServiceTests : IDisposable
             BaseUrl = "https://api.example.com",
             MaxConcurrent = 4,
         };
-        foreach (var (name, enabled, priority) in accounts)
+        foreach (var (name, enabled) in accounts)
         {
             provider.Accounts.Add(new ProviderAccount
             {
                 Name = name,
                 Enabled = enabled,
-                Priority = priority,
                 ApiKeyEncrypted = _protector.Protect($"sk-{name}"),
             });
         }
@@ -111,7 +110,6 @@ public class ProviderAccountServiceTests : IDisposable
         ApiKey = key,
         Enabled = true,
         Weight = 100,
-        Priority = 0,
     };
 
     /// <summary>Key lưu xuống DB phải là ciphertext DPAPI, không plaintext.</summary>
@@ -228,23 +226,20 @@ public class ProviderAccountServiceTests : IDisposable
             () => _service.CreateAsync(Draft(providerId, name: new string('a', 101))));
     }
 
-    /// <summary>Lần lượt các rule Weight/Priority/limit vi phạm → ArgumentException.</summary>
+    /// <summary>Lần lượt các rule Weight/limit vi phạm → ArgumentException.</summary>
     [Theory]
-    [InlineData("", "sk", 100, 0, null, null)]   // name rỗng
-    [InlineData("A", "", 100, 0, null, null)]    // create bắt buộc key
-    [InlineData("A", "sk", -1, 0, null, null)]   // weight < 0
-    [InlineData("A", "sk", 10001, 0, null, null)] // weight > 10000
-    [InlineData("A", "sk", 100, -1001, null, null)] // priority < -1000
-    [InlineData("A", "sk", 100, 1001, null, null)]  // priority > 1000
-    [InlineData("A", "sk", 100, 0, 0, null)]     // token limit <= 0
-    [InlineData("A", "sk", 100, 0, null, -1)]    // request limit <= 0
+    [InlineData("", "sk", 100, null, null)]   // name rỗng
+    [InlineData("A", "", 100, null, null)]    // create bắt buộc key
+    [InlineData("A", "sk", -1, null, null)]   // weight < 0
+    [InlineData("A", "sk", 10001, null, null)] // weight > 10000
+    [InlineData("A", "sk", 100, 0, null)]     // token limit <= 0
+    [InlineData("A", "sk", 100, null, -1)]    // request limit <= 0
     public async Task Create_InvalidDraft_ThrowsArgument(
-        string name, string key, int weight, int priority, int? tokenLimit, int? requestLimit)
+        string name, string key, int weight, int? tokenLimit, int? requestLimit)
     {
         var providerId = await SeedProviderAsync();
         var draft = Draft(providerId, name, key);
         draft.Weight = weight;
-        draft.Priority = priority;
         draft.DailyTokenLimit = tokenLimit;
         draft.DailyRequestLimit = requestLimit;
 
@@ -337,7 +332,7 @@ public class ProviderAccountServiceTests : IDisposable
     [Fact]
     public async Task Delete_LastAccount_ThrowsInvalidOperation()
     {
-        var providerId = await SeedProviderAsync(("only", true, 0));
+        var providerId = await SeedProviderAsync(("only", true));
         using (var db = _db.CreateDbContext())
         {
             var id = await db.ProviderAccounts
@@ -352,7 +347,7 @@ public class ProviderAccountServiceTests : IDisposable
     [Fact]
     public async Task Delete_NotLast_Succeeds()
     {
-        var providerId = await SeedProviderAsync(("a", true, 0), ("b", true, 0));
+        var providerId = await SeedProviderAsync(("a", true), ("b", true));
         using (var db = _db.CreateDbContext())
         {
             var id = await db.ProviderAccounts
@@ -370,7 +365,7 @@ public class ProviderAccountServiceTests : IDisposable
     [Fact]
     public async Task SetEnabled_WhenToggled_FlipsAndPersists()
     {
-        var providerId = await SeedProviderAsync(("a1", true, 0));
+        var providerId = await SeedProviderAsync(("a1", true));
         var accountId = (await _service.ListAsync(providerId))[0].Id;
 
         await _service.SetEnabledAsync(accountId, false);
@@ -387,22 +382,22 @@ public class ProviderAccountServiceTests : IDisposable
         await Assert.ThrowsAsync<KeyNotFoundException>(() => _service.SetEnabledAsync(999, false));
     }
 
-    /// <summary>Thứ tự Priority tăng dần rồi Name.</summary>
+    /// <summary>Thứ tự theo Name.</summary>
     [Fact]
-    public async Task ListAsync_OrdersByPriorityThenName()
+    public async Task ListAsync_OrdersByName()
     {
-        var providerId = await SeedProviderAsync(("mid", true, 5), ("first", true, 0), ("last", true, 9));
+        var providerId = await SeedProviderAsync(("mid", true), ("first", true), ("last", true));
 
         var list = await _service.ListAsync(providerId);
 
-        Assert.Equal(new[] { "first", "mid", "last" }, list.Select(a => a.Name).ToArray());
+        Assert.Equal(new[] { "first", "last", "mid" }, list.Select(a => a.Name).ToArray());
     }
 
     /// <summary>Xoá provider cascade accounts (FK OnDelete).</summary>
     [Fact]
     public async Task DeleteProvider_CascadesToAccounts()
     {
-        var providerId = await SeedProviderAsync(("a", true, 0), ("b", true, 0));
+        var providerId = await SeedProviderAsync(("a", true), ("b", true));
 
         using (var db = _db.CreateDbContext())
         {
@@ -419,7 +414,7 @@ public class ProviderAccountServiceTests : IDisposable
     [Fact]
     public async Task TestAllAsync_MixedResults_WritesEachAndProviderAnd()
     {
-        var providerId = await SeedProviderAsync(("ok", true, 1), ("bad", true, 2));
+        var providerId = await SeedProviderAsync(("ok", true), ("bad", true));
         var service = ServiceWith(new KeyedHandler());
 
         var results = await service.TestAllAsync(providerId);
@@ -445,7 +440,7 @@ public class ProviderAccountServiceTests : IDisposable
     [Fact]
     public async Task TestAllAsync_NoEnabledAccounts_SetsProviderTestNull()
     {
-        var providerId = await SeedProviderAsync(("off", false, 0));
+        var providerId = await SeedProviderAsync(("off", false));
         var service = ServiceWith(new FixedHandler(HttpStatusCode.OK));
 
         var results = await service.TestAllAsync(providerId);
@@ -460,7 +455,7 @@ public class ProviderAccountServiceTests : IDisposable
     [Fact]
     public async Task TestAllAsync_NoKeyAccount_ProbesWithoutAuthorization()
     {
-        var providerId = await SeedProviderAsync(("free", true, 0)); // seed có key "sk-free"
+        var providerId = await SeedProviderAsync(("free", true)); // seed có key "sk-free"
         using (var db = _db.CreateDbContext())
         {
             var account = await db.ProviderAccounts.SingleAsync(a => a.ProviderId == providerId);

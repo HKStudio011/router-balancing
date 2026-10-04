@@ -13,6 +13,10 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
     private readonly object _lock = new();
     private readonly Dictionary<string, ExecutionEntry> _entries = new();
 
+    // Cursor round-robin per-provider cho nhóm TK cùng in-flight — tăng dưới _lock
+    // (TryEnter giữ lock trọn vòng chọn) nên không cần volatile/Interlocked.
+    private readonly Dictionary<long, long> _accountCursor = new();
+
     /// <inheritdoc/>
     public event Action? Exited;
 
@@ -50,21 +54,26 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
             {
                 // Sentinel (V1) — xem chú thích trong CanEnterAsync: 0 TK enabled hoặc
                 // mọi TK enabled đã parked → entry AccountId=0 forward 503, không treo
-                chosen = new AccountSlot(0, string.Empty, 0);
+                chosen = new AccountSlot(0, string.Empty);
             }
             else
             {
-                // Chọn TK least-in-flight; tie-break Priority tăng dần → Id tăng dần (D-B4.3)
+                // Chọn TK ít in-flight nhất; nhóm tie (cùng in-flight) xoay theo cursor
+                // per-provider — request tuần tự không chồng chéo (luôn thấy 0-0) vẫn
+                // dàn trải đều thay vì dồn vào 1 TK (bug tie-break Priority→Id cũ).
                 var candidates = capacity.Value.Accounts
                     .Where(a => HasCapacity(capacity.Value.Max, providerId, a.Id))
                     .ToList();
                 if (candidates.Count == 0)
                     return null; // mọi TK enabled đầy → park, chờ Exited (D-B4.4)
-                chosen = candidates
-                    .OrderBy(a => CountInFlight(providerId, a.Id))
-                    .ThenBy(a => a.Priority)
-                    .ThenBy(a => a.Id)
-                    .First();
+                var minInFlight = candidates.Min(a => CountInFlight(providerId, a.Id));
+                var tied = candidates
+                    .Where(a => CountInFlight(providerId, a.Id) == minInFlight)
+                    .OrderBy(a => a.Id)
+                    .ToList();
+                _accountCursor.TryGetValue(providerId, out var cursor);
+                chosen = tied[(int)(cursor % tied.Count)];
+                _accountCursor[providerId] = cursor + 1;
             }
 
             _entries[requestId] = new ExecutionEntry(
@@ -117,7 +126,7 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
         max <= 0 || CountInFlight(providerId, accountId) < max;
 
     /// <summary>
-    /// Query MaxConcurrent + TK enabled (Id, Name, Priority) mới nhất từ DB rồi loại TK
+    /// Query MaxConcurrent + TK enabled (Id, Name) mới nhất từ DB rồi loại TK
     /// đang parked (store in-memory — không dịch được sang SQL nên filter sau materialize);
     /// provider không tồn tại → null (D-B7 — không dùng FirstOrDefault = 0 vì 0 giờ là "không giới hạn").
     /// </summary>
@@ -132,7 +141,7 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
                 p.MaxConcurrent,
                 Accounts = p.Accounts
                     .Where(a => a.Enabled)
-                    .Select(a => new { a.Id, a.Name, a.Priority })
+                    .Select(a => new { a.Id, a.Name })
                     .ToList(),
             })
             .FirstOrDefaultAsync(ct);
@@ -140,9 +149,9 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
             ? null
             : (provider.MaxConcurrent, provider.Accounts
                 .Where(a => !store.IsAccountParked(a.Id))
-                .Select(a => new AccountSlot(a.Id, a.Name, a.Priority)).ToList());
+                .Select(a => new AccountSlot(a.Id, a.Name)).ToList());
     }
 
-    /// <summary>TK enabled trong capacity query — Id/Name cho entry, Priority cho tie-break (D-B4).</summary>
-    private sealed record AccountSlot(long Id, string Name, int Priority);
+    /// <summary>TK enabled trong capacity query — Id/Name cho entry (D-B4).</summary>
+    private sealed record AccountSlot(long Id, string Name);
 }

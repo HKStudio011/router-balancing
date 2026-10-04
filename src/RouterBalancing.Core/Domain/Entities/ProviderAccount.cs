@@ -27,9 +27,6 @@ public class ProviderAccount
     /// <summary>Trọng số chia tải khi nhiều key cùng match (Phase 3). 0–10000, mặc định 100.</summary>
     public int Weight { get; set; } = 100;
 
-    /// <summary>Thứ tự failover — nhỏ hơn = dùng trước; −1000–1000, mặc định 0 (Phase 3).</summary>
-    public int Priority { get; set; }
-
     /// <summary>Giới hạn token mỗi ngày UTC; <see langword="null"/> = không giới hạn (enforce Phase 3).</summary>
     public int? DailyTokenLimit { get; set; }
 
