@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
@@ -64,6 +65,24 @@ public static class ProxyApp
             })
             .AddHttpMessageHandler<ProxyHealthHandler>();
 
+        // AddHttpMessageHandler<THandler> chỉ resolve THandler từ DI, không tự đăng ký
+        // ("must be registered as a transient service") — thiếu dòng này thì lần gửi
+        // đầu của ProviderPingService ném InvalidOperationException lúc build pipeline
+        builder.Services.AddTransient<ProviderProbeTimeoutHandler>();
+        // provider-probe (spec manual-retry §3.5, V6): client cho ProviderPingService
+        // trong container proxy — connect 60s (G6), per-request timeout qua
+        // ProviderProbeTimeoutHandler (đổi setting có hiệu lực ngay), proxy pool y hệt MauiProgram
+        builder.Services.AddHttpClient(ProviderRequestFactory.HttpClientName,
+            client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                Proxy = new RoundRobinWebProxy(),
+                UseProxy = true,
+                ConnectTimeout = TimeSpan.FromSeconds(60),
+            })
+            .AddHttpMessageHandler<ProxyHealthHandler>()
+            .AddHttpMessageHandler<ProviderProbeTimeoutHandler>();
+
         // Queue-first 3B (spec §2.1): endpoint chỉ enqueue + chờ outcome;
         // DispatcherLoop (hosted service) resolve → chọn → serve.
         builder.Services.AddSingleton<IRequestQueue, RequestQueue>();
@@ -81,6 +100,10 @@ public static class ProxyApp
         builder.Services.AddSingleton<ClientKeyAuthCache>();
         builder.Services.AddSingleton<IClientKeyUsageSink, ClientKeyUsageSink>();
         builder.Services.AddHostedService<DispatcherLoop>();
+        // Ping định kỳ provider (spec manual-retry §3.5): singleton + hosted qua factory
+        // lấy ĐÚNG instance — integration test resolve được rồi gọi PingAllAsync trực tiếp
+        builder.Services.AddSingleton<ProviderPingService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderPingService>());
     }
 
     /// <summary>
