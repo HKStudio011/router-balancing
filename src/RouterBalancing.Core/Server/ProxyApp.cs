@@ -51,18 +51,15 @@ public static class ProxyApp
         // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
         builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
 
-        // Streaming SSE vô hạn — timeout (mặc định 100s) cắt giữa chừng là mất stream;
-        // fail kết nối do ConnectTimeout để không treo vô hạn khi upstream chết.
+        // Chính sách timeout đường forward chat (2026-10-04): app KHÔNG tự cắt request —
+        // client→app và app→provider không có timeout; client→provider do client quyết
+        // định qua disconnect (RequestAborted). Timeout 100s (default) cắt SSE giữa chừng,
+        // ConnectTimeout finite cắt kết nối đang mở tới provider — cả hai đặt vô hạn.
         // Proxy + health handler: outbound request qua pool (spec proxy-pool §4),
         // hết proxy sống thì handler tự attempt direct cuối.
         builder.Services.AddHttpClient(OpenAiUpstreamClient.HttpClientName,
             client => client.Timeout = Timeout.InfiniteTimeSpan)
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-            {
-                Proxy = new RoundRobinWebProxy(),
-                UseProxy = true,
-                ConnectTimeout = TimeSpan.FromSeconds(60),
-            })
+            .ConfigurePrimaryHttpMessageHandler(CreateUpstreamHandler)
             .AddHttpMessageHandler<ProxyHealthHandler>();
 
         // AddHttpMessageHandler<THandler> chỉ resolve THandler từ DI, không tự đăng ký
@@ -105,6 +102,19 @@ public static class ProxyApp
         builder.Services.AddSingleton<ProviderPingService>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderPingService>());
     }
+
+    /// <summary>
+    /// Primary handler cho client "upstream" (forward chat) — <see cref="SocketsHttpHandler.ConnectTimeout"/>
+    /// đặt vô hạn theo chính sách timeout (2026-10-04): app → provider không có timeout,
+    /// app không được tự cắt request; client ngắt thì <c>RequestAborted</c> cắt.
+    /// Tách thành factory để test lock policy này.
+    /// </summary>
+    internal static SocketsHttpHandler CreateUpstreamHandler() => new()
+    {
+        Proxy = new RoundRobinWebProxy(),
+        UseProxy = true,
+        ConnectTimeout = Timeout.InfiniteTimeSpan,
+    };
 
     /// <summary>
     /// Gắn pipeline: auth middleware + endpoint. Gọi NGAY SAU <c>Build()</c>, TRƯỚC <c>StartAsync</c>.

@@ -27,7 +27,7 @@ Ba vấn đề người dùng báo:
 | G3 | **Bỏ retry tự động**: không watchdog probe, không tích lũy `MaxRetry`. Lỗi không fatal → trả client như hiện tại (failover giữ nguyên). |
 | G4 | Phục hồi **thủ công** qua UI danh sách + nút [Retry now]; **tuỳ chọn** ping tự phục hồi provider qua setting (mặc định tắt). |
 | G5 | Ping định kỳ cấp **provider** phát hiện provider chết/sai auth/notfound → park provider. |
-| G6 | `ConnectTimeout` 10s → 60s; timeout `provider-probe` là setting (default 60s). |
+| G6 | `ConnectTimeout` 10s → 60s cho `provider-probe`/`free-model-sync`; upstream chat → `Timeout.InfiniteTimeSpan` (không timeout, chốt 2026-10-04); timeout `provider-probe` là setting (default 60s). |
 
 ### 1.2 Ngoài phạm vi (rõ ràng)
 
@@ -50,7 +50,7 @@ Ba vấn đề người dùng báo:
 7. Nguồn phát hiện: **request-time + ping định kỳ** (nút Test Connection chỉ hiện badge như hiện tại, không park).
 8. Phục hồi: **UI danh sách + nút Retry now**; ping provider đã park = **toggle Settings, mặc định tắt**.
 9. **Phương án 1**: store mới `ManualRetryStore` 3 cấp (in-memory) thay `ModelHealthStore`/`ModelHealthWatchdog`.
-10. **Timeout**: `ConnectTimeout` → 60s; `provider-probe` Timeout → setting default 60s.
+10. **Timeout**: `ConnectTimeout` probe/sync → 60s; upstream chat → `Timeout.InfiniteTimeSpan` (app không tự cắt request forward — hủy theo `RequestAborted` của client); `provider-probe` Timeout → setting default 60s.
 
 ## 2. Architecture
 
@@ -237,7 +237,7 @@ Bỏ key cũ: `settings.field.maxRetry`, `settings.field.watchdog`, `settings.er
 |---|---|---|
 | `ConnectTimeout` handler `provider-probe` (MauiProgram) | 10s | **60s** |
 | `ConnectTimeout` handler `free-model-sync` (MauiProgram) | 10s | **60s** |
-| `ConnectTimeout` handler upstream chat (ProxyApp) | 10s | **60s** |
+| `ConnectTimeout` handler upstream chat (ProxyApp) | 10s | **`Timeout.InfiniteTimeSpan`** — không timeout app→provider trên đường forward chat; hủy theo `RequestAborted` của client (chốt lại 2026-10-04, thay đề xuất 60s) |
 | `HttpClient.Timeout` client `provider-probe` | 10s hardcode | **setting `providerProbeTimeoutSec`, default 60s** — áp dụng per-request |
 | Client `free-model-sync` total (30s), `ProxyEchoClient` (10s) | — | **không đổi** |
 
