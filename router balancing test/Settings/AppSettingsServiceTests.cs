@@ -24,7 +24,8 @@ public class AppSettingsServiceTests : IDisposable
 
         Assert.Equal(8317, service.Get(SettingsKeys.Port, 8317));
         Assert.Equal("auto", service.Language);
-        Assert.Equal(3, service.MaxRetry);
+        Assert.Equal(60, service.PingIntervalSec);
+        Assert.False(service.PingParkedProviders);
         Assert.Equal(60, service.ProviderProbeTimeoutSec);
         Assert.Equal(90, service.LogRetentionDays);
         Assert.True(service.CloseToTray);
@@ -35,9 +36,9 @@ public class AppSettingsServiceTests : IDisposable
     {
         using var service = Create();
 
-        service.Set(SettingsKeys.MaxRetry, 5);
+        service.Set(SettingsKeys.PingIntervalSec, 30);
 
-        Assert.Equal(5, service.MaxRetry);
+        Assert.Equal(30, service.PingIntervalSec);
     }
 
     [Fact]

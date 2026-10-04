@@ -18,10 +18,11 @@ public static class SettingsKeys
 
     public const string StartWithWindows = "startWithWindows";
 
-    /// <summary>Dùng chung cho: số lần retry watchdog VÀ ngưỡng lỗi liên tiếp (spec Quyết định #11).</summary>
-    public const string MaxRetry = "maxRetry";
+    /// <summary>Chu kỳ ping provider của BackgroundService — 10..86400 giây.</summary>
+    public const string PingIntervalSec = "pingIntervalSec";
 
-    public const string WatchdogIntervalSec = "watchdogIntervalSec";
+    /// <summary>Ping cả provider đang parked để tự phục hồi — mặc định false.</summary>
+    public const string PingParkedProviders = "pingParkedProviders";
 
     /// <summary>Timeout per-request của client provider-probe (spec manual-retry §3.8) — 1..600 giây.</summary>
     public const string ProviderProbeTimeoutSec = "providerProbeTimeoutSec";

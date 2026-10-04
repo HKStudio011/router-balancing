@@ -21,11 +21,8 @@ public static class SettingsValidator
         if (draft.Port is < 1024 or > 65535)
             errors[nameof(SettingsDraft.Port)] = "settings.error.port";
 
-        if (draft.MaxRetry is < 1 or > 10)
-            errors[nameof(SettingsDraft.MaxRetry)] = "settings.error.maxRetry";
-
-        if (draft.WatchdogIntervalSec is < 10 or > 86400)
-            errors[nameof(SettingsDraft.WatchdogIntervalSec)] = "settings.error.watchdog";
+        if (draft.PingIntervalSec is < 10 or > 86400)
+            errors[nameof(SettingsDraft.PingIntervalSec)] = "settings.error.pingInterval";
 
         if (draft.ProviderProbeTimeoutSec is < 1 or > 600)
             errors[nameof(SettingsDraft.ProviderProbeTimeoutSec)] = "settings.error.probeTimeout";

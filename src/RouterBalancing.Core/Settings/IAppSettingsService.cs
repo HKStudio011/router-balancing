@@ -20,9 +20,11 @@ public interface IAppSettingsService
 
     bool StartWithWindows { get; }
 
-    int MaxRetry { get; }
+    /// <summary>Chu kỳ ping provider (BackgroundService) — đọc mỗi tick, đổi setting có hiệu lực ngay.</summary>
+    int PingIntervalSec { get; }
 
-    int WatchdogIntervalSec { get; }
+    /// <summary>Ping cả provider đang parked để tự phục hồi — mặc định false.</summary>
+    bool PingParkedProviders { get; }
 
     /// <summary>Timeout per-request của client provider-probe — đọc tại mỗi request (§3.8).</summary>
     int ProviderProbeTimeoutSec { get; }

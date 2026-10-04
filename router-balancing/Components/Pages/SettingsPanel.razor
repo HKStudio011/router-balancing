@@ -166,25 +166,30 @@
 
     <div class="grid gap-3 sm:grid-cols-2">
         <label class="flex flex-col gap-1 text-sm">
-            @L["settings.field.maxRetry"]
+            @L["settings.field.pingInterval"]
             <input class="rounded border border-border bg-surface px-2 py-1.5"
-                   type="number" @bind="_draft.MaxRetry" />
+                   type="number" @bind="_draft.PingIntervalSec" />
         </label>
         <label class="flex flex-col gap-1 text-sm">
-            @L["settings.field.watchdog"]
+            @L["settings.field.probeTimeout"]
             <input class="rounded border border-border bg-surface px-2 py-1.5"
-                   type="number" @bind="_draft.WatchdogIntervalSec" />
+                   type="number" @bind="_draft.ProviderProbeTimeoutSec" />
         </label>
     </div>
 
-    @if (Error(nameof(SettingsDraft.MaxRetry)) is { } maxRetryError)
+    @if (Error(nameof(SettingsDraft.PingIntervalSec)) is { } pingIntervalError)
     {
-        <div class="mt-1 text-sm text-danger">@L[maxRetryError]</div>
+        <div class="mt-1 text-sm text-danger">@L[pingIntervalError]</div>
     }
-    @if (Error(nameof(SettingsDraft.WatchdogIntervalSec)) is { } watchdogError)
+    @if (Error(nameof(SettingsDraft.ProviderProbeTimeoutSec)) is { } probeTimeoutError)
     {
-        <div class="mt-1 text-sm text-danger">@L[watchdogError]</div>
+        <div class="mt-1 text-sm text-danger">@L[probeTimeoutError]</div>
     }
+
+    <label class="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" @bind="_draft.PingParkedProviders" />
+        @L["settings.field.pingParked"]
+    </label>
 
     <button class="btn btn-primary mt-3" @onclick="SaveEngine">@L["settings.action.save"]</button>
 </section>
@@ -278,8 +283,8 @@
     ];
     private static readonly string[] EngineFields =
     [
-        nameof(SettingsDraft.MaxRetry),
-        nameof(SettingsDraft.WatchdogIntervalSec),
+        nameof(SettingsDraft.PingIntervalSec),
+        nameof(SettingsDraft.ProviderProbeTimeoutSec),
     ];
     private static readonly string[] DataFields =
     [
@@ -316,8 +321,9 @@
         LanAccess = Settings.LanAccess,
         CloseToTray = Settings.CloseToTray,
         StartWithWindows = Settings.StartWithWindows,
-        MaxRetry = Settings.MaxRetry,
-        WatchdogIntervalSec = Settings.WatchdogIntervalSec,
+        PingIntervalSec = Settings.PingIntervalSec,
+        PingParkedProviders = Settings.PingParkedProviders,
+        ProviderProbeTimeoutSec = Settings.ProviderProbeTimeoutSec,
         LogRetentionDays = Settings.LogRetentionDays,
         StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
     };
@@ -412,8 +418,9 @@
     {
         if (!ValidateFor(EngineFields)) return;
 
-        Settings.Set(SettingsKeys.MaxRetry, _draft.MaxRetry);
-        Settings.Set(SettingsKeys.WatchdogIntervalSec, _draft.WatchdogIntervalSec);
+        Settings.Set(SettingsKeys.PingIntervalSec, _draft.PingIntervalSec);
+        Settings.Set(SettingsKeys.PingParkedProviders, _draft.PingParkedProviders);
+        Settings.Set(SettingsKeys.ProviderProbeTimeoutSec, _draft.ProviderProbeTimeoutSec);
         // Engine đọc setting mỗi request qua SettingsChanged — giá trị mới áp dụng ngay
         Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
     }
