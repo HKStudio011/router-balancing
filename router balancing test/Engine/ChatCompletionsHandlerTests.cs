@@ -208,7 +208,7 @@ public class ChatCompletionsHandlerTests
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenUpstreamThrows_ReturnsNetworkRetryableAndLogsError()
+    public async Task ForwardAsync_WhenUpstreamThrows_ReturnsFatalProviderAndLogsError()
     {
         var log = new CapturingLog();
         var provider = SeedProvider();
@@ -217,12 +217,17 @@ public class ChatCompletionsHandlerTests
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
-        // Lỗi mạng = retryable Status null — 502 chỉ sinh ở exhaustion (T5 convert, spec §2.2)
-        var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
-        Assert.Null(retryable.Status);
-        Assert.Null(retryable.ContentType);
-        Assert.Empty(retryable.Body);
-        Assert.Null(retryable.RetryAfter);
+        // Mạng = Fatal(Provider, Status null) — dispatcher park + advance (spec §3.2);
+        // 502 chỉ sinh ở exhaustion khi attempt cuối là mạng (§4)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Provider, fatal.Level);
+        Assert.Equal(provider.Id, fatal.Id);
+        Assert.Equal("", fatal.ModelId);
+        Assert.Equal(ManualRetryReason.Unreachable, fatal.Reason);
+        Assert.Null(fatal.Status);
+        Assert.Null(fatal.ContentType);
+        Assert.Empty(fatal.Body);
+        Assert.Null(fatal.RetryAfter);
         Assert.Single(log.Errors); // giữ log Error 3A
         Assert.Empty(log.Infos);
     }
@@ -291,6 +296,133 @@ public class ChatCompletionsHandlerTests
         Assert.Equal(200, status);
         Assert.Equal(string.Empty, body);
         Assert.Single(log.Infos); // Info giữ nguyên cho passthrough (parity quen sát 3A)
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream401_ReturnsFatalAccountCarryingPayload()
+    {
+        var log = new CapturingLog();
+        var provider = SeedProvider();
+        var upstreamBody = """{"error":{"message":"invalid api key"}}""";
+        var sut = Create(new StubUpstream(() => Upstream(401, upstreamBody)), log);
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+
+        // 401 = auth sai ở account (spec §1.3 #6/§3.2) — payload giữ cho exhaustion passthrough (§4)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Account, fatal.Level);
+        Assert.Equal(AccountIdOf(provider), fatal.Id);
+        Assert.Equal("", fatal.ModelId);
+        Assert.Equal(ManualRetryReason.Unauthorized, fatal.Reason);
+        Assert.Equal(401, fatal.Status);
+        Assert.StartsWith("application/json", fatal.ContentType);
+        Assert.Equal(upstreamBody, Encoding.UTF8.GetString(fatal.Body));
+        // Handler không ghi response — dispatcher/endpoint quyết định (parity 3A)
+        var (status, _, body) = await ReadAsync(ctx);
+        Assert.Equal(200, status);
+        Assert.Equal(string.Empty, body);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream403_ReturnsFatalAccount()
+    {
+        var provider = SeedProvider();
+        var sut = Create(new StubUpstream(() => Upstream(403, """{"error":{"message":"forbidden"}}""")));
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+
+        // 403 cùng nhóm lỗi auth với 401 → account cấp (spec §3.2)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Account, fatal.Level);
+        Assert.Equal(ManualRetryReason.Unauthorized, fatal.Reason);
+        Assert.Equal(403, fatal.Status);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream404ModelNotFound_ReturnsFatalModel()
+    {
+        var provider = SeedProvider();
+        var upstreamBody =
+            """{"error":{"message":"The model does not exist","code":"model_not_found"}}""";
+        var sut = Create(new StubUpstream(() => Upstream(404, upstreamBody)));
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+
+        // 404 + error.code=model_not_found = model sai — park model cấp với exact ModelId (§3.2)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Model, fatal.Level);
+        Assert.Equal(0, fatal.Id);
+        Assert.Equal("gpt-4o-mini", fatal.ModelId);
+        Assert.Equal(ManualRetryReason.ModelNotFound, fatal.Reason);
+        Assert.Equal(404, fatal.Status);
+        Assert.Equal(upstreamBody, Encoding.UTF8.GetString(fatal.Body));
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream404CodeUppercase_MatchesCaseInsensitive()
+    {
+        var provider = SeedProvider();
+        var sut = Create(new StubUpstream(() => Upstream(404,
+            """{"error":{"message":"nope","code":"MODEL_NOT_FOUND"}}""")));
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+
+        // ordinal-ignore-case — provider code khác casing vẫn nhận diện (V2)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Model, fatal.Level);
+        Assert.Equal(ManualRetryReason.ModelNotFound, fatal.Reason);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream404PlainBody_ReturnsFatalProvider()
+    {
+        var provider = SeedProvider();
+        var sut = Create(new StubUpstream(() => Upstream(404,
+            """{"error":{"message":"not found"}}""")));
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+
+        // 404 thường = sai endpoint/provider chết — park provider cấp (§3.2)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Provider, fatal.Level);
+        Assert.Equal(provider.Id, fatal.Id);
+        Assert.Equal("", fatal.ModelId);
+        Assert.Equal(ManualRetryReason.NotFound, fatal.Reason);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream404BodyIsNotJson_ReturnsFatalProvider()
+    {
+        var provider = SeedProvider();
+        var sut = Create(new StubUpstream(() => Upstream(404, "<html>404</html>", "text/html")));
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+
+        // Body không parse được → coi 404 thường, không crash phân loại (V2)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Provider, fatal.Level);
+        Assert.Equal(ManualRetryReason.NotFound, fatal.Reason);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstream401BodyIsNotJson_StillReturnsFatalAccount()
+    {
+        var provider = SeedProvider();
+        var sut = Create(new StubUpstream(() => Upstream(401, "oops", "text/plain")));
+        var ctx = Ctx();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+
+        // 401 check theo TRẠNG THÁI trước, không parse body — body hỏng vẫn Fatal(Account)
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(ManualRetryLevel.Account, fatal.Level);
+        Assert.Equal(ManualRetryReason.Unauthorized, fatal.Reason);
     }
 
     [Fact]

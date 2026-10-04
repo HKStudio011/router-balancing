@@ -78,13 +78,22 @@ public class DispatcherLoopTests : IDisposable
     }
 
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
-        IUpstreamClient upstream, CapturingLog log, ModelHealthStore? health = null)
+        IUpstreamClient upstream, CapturingLog log, ModelHealthStore? health = null,
+        ManualRetryStore? store = null)
     {
         _settings ??= new AppSettingsService(_db.CreateFactory());
         health ??= new ModelHealthStore(_settings, log, TimeProvider.System);
+        store ??= new ManualRetryStore(log, TimeProvider.System);
         var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink());
-        _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log, health);
+        _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log, health, store);
         await _loop.StartAsync(CancellationToken.None);
+    }
+
+    private long AccountIdOf(long providerId)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        return db.Providers.Include(p => p.Accounts)
+            .First(p => p.Id == providerId).Accounts[0].Id;
     }
 
     // Test pre-seed fuse cần đúng instance store mà loop sẽ dùng
@@ -552,7 +561,8 @@ public class DispatcherLoopTests : IDisposable
         var selector = new CountingSelector(new ModelSelector(_executions));
         var upstream = new ScriptedUpstream(_ => throw new HttpRequestException("connection refused"));
         var log = new CapturingLog();
-        await StartAsync(resolver, selector, upstream, log);
+        var store = new ManualRetryStore(log, TimeProvider.System);
+        await StartAsync(resolver, selector, upstream, log, store: store);
 
         var request = Req("req00001");
         _queue.Enqueue(request);
@@ -567,6 +577,9 @@ public class DispatcherLoopTests : IDisposable
         // 2 lỗi mạng của handler + 1 exhaustion của dispatcher
         Assert.Equal(3, log.Errors.Count);
         Assert.Contains(log.Errors, e => e.Contains("thất bại sau 2 candidate"));
+        // Mạng = Fatal(Provider) — park cả 2 provider, request sau bị filter (spec §3.2)
+        Assert.True(store.IsProviderParked(p1));
+        Assert.True(store.IsProviderParked(p2));
     }
 
     [Fact]
@@ -621,6 +634,74 @@ public class DispatcherLoopTests : IDisposable
         Assert.Empty(log.Warns);
         Assert.Empty(log.Errors);
         Assert.Contains(log.Infos, i => i.Contains("HTTP 400")); // Info parity 3A
+    }
+
+    [Fact]
+    public async Task Loop_WhenFirstCandidate401_ParksAccountAndAdvancesToSecondProvider()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m1"); // cùng model 2 provider — RR sort (p1, p2)
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(p => p.Name == "p1"
+            ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent("""{"error":{"message":"invalid key"}}""",
+                    Encoding.UTF8, "application/json"),
+            }
+            : Sse());
+        var log = new CapturingLog();
+        var store = new ManualRetryStore(log, TimeProvider.System);
+        await StartAsync(resolver, selector, upstream, log, store: store);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Fatal 401 → park ĐÚNG cấp account rồi vẫn failover — client thấy 200 của p2 (§1.3 #4)
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls);
+        Assert.True(store.IsAccountParked(AccountIdOf(p1)));
+        Assert.False(store.IsAccountParked(AccountIdOf(p2)));
+        Assert.False(store.IsProviderParked(p1)); // 401 cấp account, không phải provider (§3.2)
+        Assert.Contains(log.Warns, w =>
+            w.Contains("Chuyển candidate kế") && w.Contains("'p1'/'m1'")
+            && w.Contains("HTTP 401") && w.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenAllCandidatesFatal404_CompletesPassthroughAndParksEachProvider()
+    {
+        var p1 = SeedProvider("p1", modelId: "m1");
+        var p2 = SeedProvider("p2", modelId: "m2");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(p => new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent(
+                $"{{\"error\":{{\"message\":\"from-{p.Name}\"}}}}", Encoding.UTF8, "application/json"),
+        });
+        var log = new CapturingLog();
+        var store = new ManualRetryStore(log, TimeProvider.System);
+        await StartAsync(resolver, selector, upstream, log, store: store);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 404 thường = provider sai endpoint — park từng provider, hết candidate
+        // passthrough nguyên response cuối (§4), có log Error exhaustion (§5)
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(404, passthrough.Status);
+        Assert.Contains("from-p2", Encoding.UTF8.GetString(passthrough.Body));
+        Assert.Equal(2, upstream.Calls);
+        Assert.True(store.IsProviderParked(p1));
+        Assert.True(store.IsProviderParked(p2));
+        Assert.Contains(log.Errors,
+            e => e.Contains("req00001") && e.Contains("thất bại sau 2 candidate"));
+        Assert.Contains(log.Warns, w => w.Contains("Chuyển candidate kế") && w.Contains("HTTP 404"));
     }
 
     [Fact]

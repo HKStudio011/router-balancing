@@ -11,8 +11,18 @@ public sealed class RetryState
 {
     private readonly HashSet<(long ProviderId, string ModelId)> _tried = [];
 
-    /// <summary>Lỗi retryable gần nhất của request — exhaustion convert thành Passthrough/Error(502).</summary>
-    public DispatchOutcome.Retryable? LastRetryable { get; set; }
+    /// <summary>Thất bại gần nhất của 1 attempt — exhaustion convert thành Passthrough/Error(502).</summary>
+    /// <param name="Status"><see langword="null"/> = lỗi mạng (không có HTTP response nào).</param>
+    /// <param name="ContentType">Content-Type upstream trả (null khi lỗi mạng).</param>
+    /// <param name="Body">Body đã buffer — response lỗi nhỏ, chưa commit (rỗng khi lỗi mạng).</param>
+    /// <param name="RetryAfter"><c>Retry-After</c> đã parse — format lại header khi passthrough.</param>
+    public sealed record Failure(int? Status, string? ContentType, byte[] Body, TimeSpan? RetryAfter);
+
+    /// <summary>
+    /// Thất bại gần nhất — nhận từ cả <see cref="DispatchOutcome.Retryable"/> lẫn
+    /// <see cref="DispatchOutcome.Fatal"/>; attempt cuối quyết định exhaustion (spec §2.2).
+    /// </summary>
+    public Failure? LastFailure { get; set; }
 
     /// <summary>Đã thử ít nhất 1 candidate chưa (phân biệt 503 walk-rỗng vs exhaustion).</summary>
     public bool HasTried => _tried.Count > 0;

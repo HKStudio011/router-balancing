@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
@@ -42,7 +43,7 @@ public class ProxyHostTests : IDisposable
     private async Task<ProxyHost> StartHostAsync()
     {
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool());
+            new DirectProxyPool(), new ManualRetryStore(_log, TimeProvider.System));
         await host.StartAsync();
         _client.BaseAddress = new Uri($"http://127.0.0.1:{host.Port}");
         return host;
@@ -168,7 +169,7 @@ public class ProxyHostTests : IDisposable
     public async Task StartAsync_WhenStarted_RaisesStateChanged()
     {
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool());
+            new DirectProxyPool(), new ManualRetryStore(_log, TimeProvider.System));
         var raised = 0;
         host.StateChanged += () => raised++;
 
@@ -183,7 +184,7 @@ public class ProxyHostTests : IDisposable
     public async Task StartAsync_WhenCalledTwice_IsIdempotent()
     {
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool());
+            new DirectProxyPool(), new ManualRetryStore(_log, TimeProvider.System));
         var raised = 0;
         host.StateChanged += () => raised++;
 

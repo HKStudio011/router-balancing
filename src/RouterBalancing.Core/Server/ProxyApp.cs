@@ -36,6 +36,16 @@ public static class ProxyApp
             builder.Services.AddSingleton(pool);
         }
 
+        // ManualRetryStore dùng chung 1 instance/proxy container (spec manual-retry §2.2):
+        // app container đã đăng ký (ProxyHost truyền singleton) → không ghi đè;
+        // test container gọi thẳng ConfigureServices → tự tạo từ log + TimeProvider đã đăng ký
+        if (!builder.Services.Any(d => d.ServiceType == typeof(IManualRetryStore)))
+        {
+            builder.Services.AddSingleton<IManualRetryStore>(
+                sp => new ManualRetryStore(sp.GetRequiredService<ILogService>(),
+                    sp.GetRequiredService<TimeProvider>()));
+        }
+
         builder.Services.AddTransient<ProxyHealthHandler>();
         // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
         builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
@@ -177,14 +187,14 @@ public static class ProxyApp
                     ctx.Response.Headers["Retry-After"] = passthrough.RetryAfterHeader;
                 await ctx.Response.Body.WriteAsync(passthrough.Body, ctx.RequestAborted);
             }
-            else if (outcome is DispatchOutcome.Retryable)
+            else if (outcome is DispatchOutcome.Retryable or DispatchOutcome.Fatal)
             {
-                // Dispatcher đã convert Retryable → Passthrough/Error (spec §2.2) — tới đây là bug
+                // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
                 log.Write(new LogEntry
                 {
                     Severity = LogSeverity.Error,
                     Category = LogCategory.Request,
-                    Message = $"Outcome Retryable lọt tới endpoint request {id}.",
+                    Message = $"Outcome nội bộ (Retryable/Fatal) lọt tới endpoint request {id}.",
                     RequestId = id,
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });

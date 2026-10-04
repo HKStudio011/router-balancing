@@ -17,7 +17,8 @@ public sealed class DispatcherLoop(
     IModelSelector selector,
     ChatCompletionsHandler handler,
     ILogService log,
-    IModelHealthStore health) : BackgroundService
+    IModelHealthStore health,
+    IManualRetryStore store) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
 
@@ -143,8 +144,8 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// Serve 1 request qua vòng walk: mỗi candidate 1 lần, Retryable → Exit + advance kế;
-    /// hết list → RecordExhaustion + Passthrough/Error502. Fire-and-forget từ
+    /// Serve 1 request qua vòng walk: mỗi candidate 1 lần, Retryable/Fatal → park (Fatal) +
+    /// Exit + advance kế; hết list → RecordExhaustion + Passthrough/Error502. Fire-and-forget từ
     /// <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
     /// </summary>
     private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
@@ -180,23 +181,50 @@ public sealed class DispatcherLoop(
                     : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
             }
 
-            if (outcome is DispatchOutcome.Retryable retryable)
+            if (outcome is DispatchOutcome.Retryable or DispatchOutcome.Fatal)
             {
                 request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
-                request.Retry.LastRetryable = retryable;
+                // LastFailure nhận từ CẢ 2 outcome — attempt cuối quyết định exhaustion (§2.2)
+                request.Retry.LastFailure = outcome switch
+                {
+                    DispatchOutcome.Retryable r =>
+                        new RetryState.Failure(r.Status, r.ContentType, r.Body, r.RetryAfter),
+                    DispatchOutcome.Fatal f =>
+                        new RetryState.Failure(f.Status, f.ContentType, f.Body, f.RetryAfter),
+                    _ => request.Retry.LastFailure,
+                };
+                if (outcome is DispatchOutcome.Fatal fatal)
+                {
+                    try
+                    {
+                        // Park TRƯỚC khi filter — request kế loại entity ngay (§3.3);
+                        // store KHÔNG được phá walk: lỗi log/lock chỉ nuốt (I2)
+                        store.Park(fatal.Level, fatal.Id, fatal.ModelId, fatal.Reason);
+                    }
+                    catch
+                    {
+                        // Nuốt chủ đích: store lỗi không được chặn failover
+                    }
+                }
 
                 var next = FilterRemaining(remaining, request);
                 if (next.Count == 0)
                 {
-                    // RecordExhaustion TRƯỚC Exit — fuse phải mở trước khi Exited wake dispatch
-                    // request đang queue, nếu không request kế sẽ gọi tiếp vào model vừa chết (§3.4)
+                    // RecordExhaustion TRƯỚC Exit — state phải xong trước khi Exited wake dispatch
+                    // request đang queue, nếu không request kế sẽ gọi tiếp vào entity vừa chết (§3.4)
                     var exhausted = CompleteExhaustion(request);
                     executions.Exit(request.Id);
                     request.Completion.TrySetResult(exhausted);
                     return;
                 }
 
-                LogAdvance(request, candidate, retryable);
+                var advanceStatus = outcome switch
+                {
+                    DispatchOutcome.Retryable r => r.Status,
+                    DispatchOutcome.Fatal f => f.Status,
+                    _ => null,
+                };
+                LogAdvance(request, candidate, advanceStatus);
                 // Exit TRƯỚC khi advance — trả slot ngay, không giữ trong lúc chọn candidate kế
                 executions.Exit(request.Id);
 
@@ -284,7 +312,7 @@ public sealed class DispatcherLoop(
                 LogCategory.Request);
     }
 
-    /// <summary>Candidate chưa thử + model chưa ManualRetry — dùng cho dispatch đầu và mỗi bước walk (§3.2/§3.4).</summary>
+    /// <summary>Candidate chưa thử + model chưa bị park — dùng cho dispatch đầu và mỗi bước walk (§3.2/§3.4).</summary>
     private IReadOnlyList<ModelCandidate> FilterRemaining(IReadOnlyList<ModelCandidate> candidates,
         ProxyRequest request) =>
         candidates
@@ -305,7 +333,7 @@ public sealed class DispatcherLoop(
     /// </summary>
     private void RecordExhaustion(ProxyRequest request)
     {
-        var retryAfter = request.Retry.LastRetryable?.RetryAfter;
+        var retryAfter = request.Retry.LastFailure?.RetryAfter;
         foreach (var modelId in request.Retry.TriedModels)
         {
             try
@@ -332,7 +360,7 @@ public sealed class DispatcherLoop(
     /// <summary>Exhaustion contract §3.3: attempt cuối có HTTP → Passthrough nguyên; mạng → Error 502 (y như 3A).</summary>
     private static DispatchOutcome ExhaustionOutcome(ProxyRequest request)
     {
-        var last = request.Retry.LastRetryable;
+        var last = request.Retry.LastFailure;
         return last?.Status is { } status
             ? new DispatchOutcome.Passthrough(status, last.ContentType, last.Body,
                 FormatRetryAfter(last.RetryAfter))
@@ -341,10 +369,9 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>Log Warn advance failover — chỉ khi thật sự còn candidate kế (spec §5); bọc nuốt (I2).</summary>
-    private void LogAdvance(ProxyRequest request, ModelCandidate failed,
-        DispatchOutcome.Retryable retryable)
+    private void LogAdvance(ProxyRequest request, ModelCandidate failed, int? status)
     {
-        var reason = retryable.Status is { } status ? $"HTTP {status}" : "lỗi mạng";
+        var reason = status is { } code ? $"HTTP {code}" : "lỗi mạng";
         try
         {
             log.Warn(
