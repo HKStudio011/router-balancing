@@ -35,13 +35,36 @@ public sealed class ProviderPingService(
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(settings.PingIntervalSec), stoppingToken);
-                await PingAllAsync(stoppingToken);
+                await PingTickAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break; // host stop — không phải lỗi
             }
+        }
+    }
+
+    /// <summary>
+    /// Một lượt delay + ping của vòng nền — tách từ <see cref="ExecuteAsync"/> để unit
+    /// test xác minh fault không thoát ra ngoài (InternalsVisibleTo, không fake timer).
+    /// </summary>
+    /// <param name="stoppingToken">Token hủy theo host stop.</param>
+    internal async Task PingTickAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(settings.PingIntervalSec), stoppingToken);
+            await PingAllAsync(stoppingToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Lỗi ngoài ping (EF/SQLite tạm thời, store, settings) KHÔNG được thoát
+            // ExecuteAsync: BackgroundServiceExceptionBehavior.StopHost (mặc định) sẽ
+            // dừng CẢ host proxy trong khi ProxyHost._app vẫn non-null → UI báo proxy
+            // sống nhưng đã chết. Log Error (kèm thông điệp gốc) rồi trả về để vòng
+            // lặp chạy lượt sau — delay vẫn giữ nguyên, host sống sót qua sự cố.
+            SafeLog(() => log.Error(
+                $"Lỗi lượt ping định kỳ, lượt sau sẽ thử lại: {ex.Message}", ex, LogCategory.App));
         }
     }
 
@@ -153,9 +176,15 @@ public sealed class ProviderPingService(
             // Store tự ghi Warn transition đúng 1 lần (đã SafeLog trong store)
             store.Park(ManualRetryLevel.Provider, provider.Id, "", reason);
         }
-        catch
+        catch (Exception ex)
         {
-            // Nuốt chủ đích: store lỗi không được phá vòng ping
+            // Nuốt chủ đích (store lỗi không được phá vòng ping) NHƯNG phải log Error —
+            // và tuyệt đối không Warn "đưa vào retry thủ công" cho một park chưa hề
+            // xảy ra: log phải truthful, operator phải thấy park đã thất bại ở đâu.
+            SafeLog(() => log.Error(
+                $"Không park được provider '{provider.Name}' khi ping thất bại ({reasonText}): {ex.Message}",
+                ex, LogCategory.App));
+            return;
         }
 
         // Chỉ log khi state đổi — đã parked thì store (cùng lý do) và ping cùng im lặng

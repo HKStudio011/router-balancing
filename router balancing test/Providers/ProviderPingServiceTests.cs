@@ -107,6 +107,51 @@ public class ProviderPingServiceTests : IDisposable
     private ProviderPingService CreateService(ProbeHandler handler) =>
         new(_db, new StubFactory(handler), _protector, _settings, _store, _log);
 
+    /// <summary>Stub settings — interval 0 (bypass validator) để tick chạy ngay, không sleep thật.</summary>
+    private sealed class StubSettings : IAppSettingsService
+    {
+        public event Action? SettingsChanged { add { } remove { } }
+        public string Language => "vi";
+        public string Theme => "dark";
+        public int Port => 0;
+        public bool LanAccess => false;
+        public bool CloseToTray => false;
+        public bool StartWithWindows => false;
+        public int PingIntervalSec => 0;
+        public bool PingParkedProviders => false;
+        public int ProviderProbeTimeoutSec => 60;
+        public int LogRetentionDays => 30;
+        public int StatsErrorRateThreshold => 50;
+        public T Get<T>(string key, T defaultValue) => defaultValue;
+        public void Set<T>(string key, T value) { }
+    }
+
+    /// <summary>Ném khi vòng ping đọc state (ngoài PingOneAsync) — mô phỏng SQLite fault tạm thời.</summary>
+    private sealed class ThrowingReadStore : IManualRetryStore
+    {
+        public event Action? Changed { add { } remove { } }
+        public void Park(ManualRetryLevel level, long id, string modelId, ManualRetryReason reason) { }
+        public void Unpark(ManualRetryLevel level, long id, string modelId) { }
+        public bool IsProviderParked(long providerId) =>
+            throw new InvalidOperationException("SQLite backend là transient fault");
+        public bool IsAccountParked(long accountId) => false;
+        public bool IsModelParked(string modelId) => false;
+        public IReadOnlyList<ManualRetryEntry> GetEntries() => [];
+    }
+
+    /// <summary>Ném đúng lúc Park — mô phỏng SQLite fault khi ghi danh sách retry.</summary>
+    private sealed class ThrowingParkStore : IManualRetryStore
+    {
+        public event Action? Changed { add { } remove { } }
+        public void Park(ManualRetryLevel level, long id, string modelId, ManualRetryReason reason) =>
+            throw new InvalidOperationException("SQLite busy khi ghi park");
+        public void Unpark(ManualRetryLevel level, long id, string modelId) { }
+        public bool IsProviderParked(long providerId) => false;
+        public bool IsAccountParked(long accountId) => false;
+        public bool IsModelParked(string modelId) => false;
+        public IReadOnlyList<ManualRetryEntry> GetEntries() => [];
+    }
+
     [Fact]
     public async Task PingAllAsync_WhenUpstream2xx_KeepsStateQuietAndSendsGetModels()
     {
@@ -299,5 +344,49 @@ public class ProviderPingServiceTests : IDisposable
         Assert.Empty(handler.SentUrls); // không còn TK hợp lệ → bỏ qua lượt ping
         Assert.False(_store.IsProviderParked(id));
         Assert.Empty(_log.Warns);
+    }
+
+    /// <summary>
+    /// Review Issue 1: fault ngoài ping (đọc state store/EF) KHÔNG được thoát khỏi tick —
+    /// nếu thoát thì BackgroundServiceExceptionBehavior.StopHost (mặc định) sẽ giết cả
+    /// host proxy trong khi UI vẫn coi proxy là sống.
+    /// </summary>
+    [Fact]
+    public async Task PingTickAsync_WhenStoreReadThrows_LogsErrorAndSurvivesTick()
+    {
+        SeedProvider("p1");
+        var service = new ProviderPingService(_db, new StubFactory(new ProbeHandler()),
+            _protector, new StubSettings(), new ThrowingReadStore(), _log);
+
+        // Lượt 1: nếu fault thoát ra ngoài thì test fail ngay tại đây
+        await service.PingTickAsync(CancellationToken.None);
+        // Lượt 2: vòng nền phải chạy tiếp được (không chết sau fault đầu tiên)
+        await service.PingTickAsync(CancellationToken.None);
+
+        Assert.True(_log.Errors.Count >= 2,
+            $"mong đợi ≥2 Error (mỗi lượt 1), nhận được {_log.Errors.Count}");
+        Assert.Contains(_log.Errors,
+            e => e.Contains("SQLite backend là transient fault")); // kèm thông điệp lỗi gốc
+        Assert.Empty(_log.Warns);
+    }
+
+    /// <summary>
+    /// Review Issue 2: Park thất bại thì log phải truthful — Error (park failed) và
+    /// TUYỆT ĐỐI không Warn "đưa vào retry thủ công" cho một park chưa hề xảy ra.
+    /// </summary>
+    [Fact]
+    public async Task PingAllAsync_WhenParkThrows_LogsErrorAndSkipsPingFailWarn()
+    {
+        var handler = new ProbeHandler { Status = HttpStatusCode.Unauthorized };
+        SeedProvider("p1");
+        var service = new ProviderPingService(_db, new StubFactory(handler), _protector,
+            _settings, new ThrowingParkStore(), _log);
+
+        await service.PingAllAsync(CancellationToken.None);
+
+        Assert.Contains(_log.Errors,
+            e => e.Contains("Không park được provider 'p1'"));
+        Assert.DoesNotContain(_log.Warns,
+            w => w.Contains("đưa vào danh sách retry thủ công"));
     }
 }
