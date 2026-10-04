@@ -70,6 +70,16 @@ public class ProxyAppChatIntegrationTests : IDisposable
         db.SaveChanges();
     }
 
+    private void SeedCombo(string name, string modelId)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        var modelKey = db.Models.Single(m => m.ModelId == modelId).Id;
+        var combo = new Combo { Name = name, Mode = ComboMode.RoundRobin };
+        combo.Items.Add(new ComboItem { Position = 0, TargetModelId = modelKey });
+        db.Combos.Add(combo);
+        db.SaveChanges();
+    }
+
     private sealed class StubUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostChatCompletionAsync(
@@ -228,5 +238,23 @@ public class ProxyAppChatIntegrationTests : IDisposable
         var data = json.GetProperty("data").EnumerateArray().ToList();
         Assert.Single(data);
         Assert.Equal("gpt-4o-mini", data[0].GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Models_ReturnsCombosAlongsideEnabledModels()
+    {
+        // Quyết định #10: client chọn combo qua trường model — combo phải xuất hiện
+        // trong /v1/models để client (opencode...) phát hiện được trước khi gọi chat.
+        SeedProvider("gpt-4o-mini");
+        SeedCombo("combo-fast", "gpt-4o-mini");
+        var client = await StartAsync(new StubUpstream(() => Sse()));
+
+        var response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var data = (await ReadJson(response)).GetProperty("data").EnumerateArray().ToList();
+        Assert.Equal(2, data.Count);
+        Assert.Contains(data, e => e.GetProperty("id").GetString() == "gpt-4o-mini");
+        Assert.Contains(data, e => e.GetProperty("id").GetString() == "combo-fast");
     }
 }

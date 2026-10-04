@@ -236,7 +236,21 @@ public static class ProxyApp
                 })
                 .ToListAsync(http.RequestAborted);
 
-            return Results.Json(new { @object = "list", data = models });
+            // Quyết định #10 (design 2026-09-25): client chọn combo qua trường `model` —
+            // combo phải có trong list để client (opencode...) phát hiện trước khi gọi chat.
+            // Combo không có cờ Enabled (khác Model) nên trả toàn bộ, xếp sau model trực tiếp.
+            var combos = await db.Combos.AsNoTracking()
+                .OrderBy(c => c.Id)
+                .Select(c => new
+                {
+                    id = c.Name,
+                    @object = "model",
+                    created = c.CreatedAt.ToUnixTimeSeconds(),
+                    owned_by = "combo",
+                })
+                .ToListAsync(http.RequestAborted);
+
+            return Results.Json(new { @object = "list", data = models.Concat(combos).ToList() });
         });
 
         // Snapshot request đang chờ + đang phục vụ (spec §3.5) — đọc 2 nguồn trong 1 lần,
