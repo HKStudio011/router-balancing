@@ -57,9 +57,9 @@
         {
             <div class="flex items-center gap-2 py-1" @key="entry">
                 @* min-width 76px: chừa chỗ cho label dài nhất (Provider/Account/Model) — spec §3.2 *@
-                <span class="whitespace-nowrap text-center" style="min-width:76px">@L[$"manualRetry.level.{entry.Level.ToString().ToLowerInvariant()}"]</span>
+                <span class="whitespace-nowrap text-center" style="min-width:76px">@L[ManualRetryI18n.LevelKey(entry.Level)]</span>
                 <span class="flex-1 truncate">@GetEntryDisplayName(entry)</span>
-                <span class="text-sm opacity-70">@L[$"manualRetry.reason.{entry.Reason.ToString().ToLowerInvariant()}"]</span>
+                <span class="text-sm opacity-70">@L[ManualRetryI18n.ReasonKey(entry.Reason)]</span>
                 <button class="btn btn-outline-info px-1.5" @onclick="() => RetryNowAsync(entry)">
                     @L["manualRetry.action.retry"]
                 </button>
@@ -76,7 +76,15 @@
     {
         Proxy.StateChanged += OnStateChanged;
         RetryStore.Changed += HandleRetryStoreChanged;
-        await ReloadEntriesAsync();
+        try
+        {
+            await ReloadEntriesAsync();
+        }
+        catch (Exception ex)
+        {
+            // Không để throw đánh sập pipeline init của Blazor (render trắng cả Dashboard)
+            Log.Error("Tải danh sách retry thủ công lúc khởi tạo Dashboard thất bại.", ex);
+        }
     }
 
     private void OnStateChanged() => _ = InvokeAsync(StateHasChanged);
@@ -97,7 +105,19 @@
 
     // Changed bắn từ background thread (Park trong request/ping loop) → marshal về UI thread
     private void HandleRetryStoreChanged() =>
-        _ = InvokeAsync(async () => { await ReloadEntriesAsync(); StateHasChanged(); });
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await ReloadEntriesAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                // Ném trong nền sẽ là unobserved exception — bắt NGAY trong lambda để log
+                Log.Error("Tải lại danh sách retry thủ công (nền) thất bại.", ex);
+            }
+        });
 
     /// <summary>Tên hiển thị: provider theo tên (fallback #id), account #id, model = ModelId.</summary>
     private string GetEntryDisplayName(ManualRetryEntry entry) => entry.Level switch
@@ -110,12 +130,21 @@
 
     private async Task RetryNowAsync(ManualRetryEntry entry)
     {
-        RetryStore.Unpark(entry.Level, entry.Id, entry.ModelId);
-        Log.Info($"'{GetEntryDisplayName(entry)}' được retry thủ công — trở lại vòng xoay");
-        // Bản dịch giữ placeholder {key} (exact theo spec §3.6) — thay tại chỗ, Toast.Show nhận text đã dịch
-        Toast.Show(L["manualRetry.msg.unparked"].Replace("{key}", GetEntryDisplayName(entry)), ToastSeverity.Success);
-        await ReloadEntriesAsync();
-        StateHasChanged();
+        try
+        {
+            RetryStore.Unpark(entry.Level, entry.Id, entry.ModelId);
+            Log.Info($"'{GetEntryDisplayName(entry)}' được retry thủ công — trở lại vòng xoay");
+            // Bản dịch giữ placeholder {key} (exact theo spec §3.6) — thay tại chỗ, Toast.Show nhận text đã dịch
+            Toast.Show(L["manualRetry.msg.unparked"].Replace("{key}", GetEntryDisplayName(entry)), ToastSeverity.Success);
+            await ReloadEntriesAsync();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            // SQLite ném từ ReloadEntriesAsync — cùng pattern Start/Stop/Restart ở trên
+            Log.Error($"Retry thủ công cho '{GetEntryDisplayName(entry)}' thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
     }
 
     private async Task StartAsync()
