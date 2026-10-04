@@ -24,6 +24,9 @@ public interface IAppSettingsService
 
     int WatchdogIntervalSec { get; }
 
+    /// <summary>Timeout per-request của client provider-probe — đọc tại mỗi request (§3.8).</summary>
+    int ProviderProbeTimeoutSec { get; }
+
     int LogRetentionDays { get; }
 
     int StatsErrorRateThreshold { get; }

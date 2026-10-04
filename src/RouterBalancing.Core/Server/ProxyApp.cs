@@ -50,7 +50,7 @@ public static class ProxyApp
             {
                 Proxy = new RoundRobinWebProxy(),
                 UseProxy = true,
-                ConnectTimeout = TimeSpan.FromSeconds(10),
+                ConnectTimeout = TimeSpan.FromSeconds(60),
             })
             .AddHttpMessageHandler<ProxyHealthHandler>();
 

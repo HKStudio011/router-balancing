@@ -23,6 +23,8 @@ public sealed record SettingsDraft
 
     public int WatchdogIntervalSec { get; set; } = 60;
 
+    public int ProviderProbeTimeoutSec { get; set; } = 60;
+
     public int LogRetentionDays { get; set; } = 90;
 
     public int StatsErrorRateThreshold { get; set; } = 10;

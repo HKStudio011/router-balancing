@@ -48,6 +48,8 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public int WatchdogIntervalSec => Get(SettingsKeys.WatchdogIntervalSec, 60);
 
+    public int ProviderProbeTimeoutSec => Get(SettingsKeys.ProviderProbeTimeoutSec, 60);
+
     public int LogRetentionDays => Get(SettingsKeys.LogRetentionDays, 90);
 
     public int StatsErrorRateThreshold => Get(SettingsKeys.StatsErrorRateThreshold, 10);

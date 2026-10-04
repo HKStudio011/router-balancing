@@ -77,6 +77,7 @@ namespace router_balancing
             builder.Services.AddSingleton<IProxyPool, ProxyPool>();       // singleton: giữ down-state + RR cursor
             builder.Services.AddSingleton<IProxyEchoClient, ProxyEchoClient>();
             builder.Services.AddTransient<ProxyHealthHandler>();          // transient per HttpClient pipeline
+            builder.Services.AddTransient<ProviderProbeTimeoutHandler>();  // probe timeout per request (settings.providerProbeTimeoutSec)
             // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
             builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
             // T9 (UI) inject IProxyService — đăng ký tại đây để DI tự resolve ctor 4 tham số
@@ -90,7 +91,7 @@ namespace router_balancing
                 {
                     Proxy = new RoundRobinWebProxy(),
                     UseProxy = true,
-                    ConnectTimeout = TimeSpan.FromSeconds(10),
+                    ConnectTimeout = TimeSpan.FromSeconds(60),
                 })
                 .AddHttpMessageHandler<ProxyHealthHandler>();
             builder.Services.AddHttpClient(FreeModelSyncService.HttpClientName)
@@ -98,12 +99,14 @@ namespace router_balancing
                 {
                     Proxy = new RoundRobinWebProxy(),
                     UseProxy = true,
-                    ConnectTimeout = TimeSpan.FromSeconds(10),
+                    ConnectTimeout = TimeSpan.FromSeconds(60),
                 })
                 .AddHttpMessageHandler<ProxyHealthHandler>();
-            // Named client cho test connection/fetch models/metadata — timeout 10s (spec §3.1)
+            // Named client cho test connection/fetch models/metadata — timeout per-request
+            // qua ProviderProbeTimeoutHandler (spec manual-retry §3.8): đổi setting có hiệu lực ngay
             builder.Services.AddHttpClient(ProviderRequestFactory.HttpClientName,
-                client => client.Timeout = TimeSpan.FromSeconds(10));
+                client => client.Timeout = Timeout.InfiniteTimeSpan)
+                .AddHttpMessageHandler<ProviderProbeTimeoutHandler>();
             builder.Services.AddSingleton<IProviderService, ProviderService>();
             builder.Services.AddSingleton<IModelService, ModelService>();
             builder.Services.AddSingleton<IFreeModelSyncService, FreeModelSyncService>();

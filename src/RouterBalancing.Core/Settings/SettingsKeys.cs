@@ -23,6 +23,9 @@ public static class SettingsKeys
 
     public const string WatchdogIntervalSec = "watchdogIntervalSec";
 
+    /// <summary>Timeout per-request của client provider-probe (spec manual-retry §3.8) — 1..600 giây.</summary>
+    public const string ProviderProbeTimeoutSec = "providerProbeTimeoutSec";
+
     public const string LogRetentionDays = "logRetentionDays";
 
     public const string StatsErrorRateThreshold = "statsErrorRateThreshold";

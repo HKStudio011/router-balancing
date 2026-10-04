@@ -27,6 +27,9 @@ public static class SettingsValidator
         if (draft.WatchdogIntervalSec is < 10 or > 86400)
             errors[nameof(SettingsDraft.WatchdogIntervalSec)] = "settings.error.watchdog";
 
+        if (draft.ProviderProbeTimeoutSec is < 1 or > 600)
+            errors[nameof(SettingsDraft.ProviderProbeTimeoutSec)] = "settings.error.probeTimeout";
+
         if (draft.LogRetentionDays is < 1 or > 3650)
             errors[nameof(SettingsDraft.LogRetentionDays)] = "settings.error.retention";
 
