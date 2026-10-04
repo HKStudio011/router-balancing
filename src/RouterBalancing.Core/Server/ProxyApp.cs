@@ -72,20 +72,15 @@ public static class ProxyApp
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
         builder.Services.AddSingleton<ChatCompletionsHandler>();
-        // Circuit per-model 3C: store singleton + đồng hồ system —
-        // DispatcherLoop (T5), gate endpoint (T6), watchdog (T7) dùng chung 1 instance
+        // Đồng hồ system — ManualRetryStore (if-absent factory phía trên) và service
+        // time-sensitive resolve cùng 1 instance
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IClientKeyRateLimiter, ClientKeyRateLimiter>();
         // Singleton (không factory): cache phải sống 1 lần/proxy container để event KeysChanged
         // attach đúng 1 lần; Dispose của container unsubscribe khi proxy dừng.
         builder.Services.AddSingleton<ClientKeyAuthCache>();
         builder.Services.AddSingleton<IClientKeyUsageSink, ClientKeyUsageSink>();
-        builder.Services.AddSingleton<IModelHealthStore, ModelHealthStore>();
         builder.Services.AddHostedService<DispatcherLoop>();
-        // Watchdog 3C (spec §2.1): singleton + hosted qua factory lấy ĐÚNG instance này —
-        // integration test resolve ModelHealthWatchdog từ Services rồi gọi ProbeDueAsync
-        builder.Services.AddSingleton<ModelHealthWatchdog>();
-        builder.Services.AddHostedService(sp => sp.GetRequiredService<ModelHealthWatchdog>());
     }
 
     /// <summary>
@@ -99,7 +94,7 @@ public static class ProxyApp
         // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
             async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
-                ChatCompletionsHandler handler, ILogService log, IModelHealthStore health) =>
+                ChatCompletionsHandler handler, ILogService log, IManualRetryStore store) =>
         {
             // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
             string id;
@@ -115,15 +110,15 @@ public static class ProxyApp
             if (prepared is null)
                 return; // validate fail — PrepareAsync đã ghi 400, chưa enqueue
 
-            // Gate 3C (spec §3.4): exact-id đang ManualRetry → 503 §4 TRƯỚC khi vào queue.
-            // Combo name chưa resolve lúc này — gate combo nằm ở walk (T5 filter bỏ candidate)
-            if (health.IsManualRetry(prepared.ModelId))
+            // Gate manual-retry (spec manual-retry §3.3): model đang parked → 503 §4 TRƯỚC khi vào queue.
+            // Combo name chưa resolve lúc này — gate cấp provider/account nằm ở walk (FilterRemaining)
+            if (store.IsModelParked(prepared.ModelId))
             {
                 log.Write(new LogEntry
                 {
                     Severity = LogSeverity.Warning,
                     Category = LogCategory.Request,
-                    Message = $"Từ chối request mới: model '{prepared.ModelId}' đang ManualRetry",
+                    Message = $"Từ chối request mới: model '{prepared.ModelId}' đang trong danh sách retry thủ công",
                     RequestId = id,
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });
@@ -224,7 +219,7 @@ public static class ProxyApp
 
     private static void MapEndpoints(WebApplication app)
     {
-        // /health mở luôn (middleware bỏ qua path này) — watchdog của Phase 2 dùng để ping
+        // /health mở luôn (middleware bỏ qua path này) — monitor/ping bên ngoài dùng
         app.MapGet("/health", () => Results.Json(new { status = "ok" }));
 
         // Danh sách model đã bật, đúng shape OpenAI /v1/models để client không cần phân biệt

@@ -437,7 +437,7 @@ public class ChatCompletionsHandlerTests
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
-        // Delta-seconds parse được → floor nextProbeAt khi exhaustion (§3.6)
+        // Delta-seconds parse được → giữ nguyên cho exhaustion passthrough (§3.6)
         Assert.Equal(TimeSpan.FromSeconds(30), retryable.RetryAfter);
     }
 

@@ -104,8 +104,9 @@ public class ProxyRetryIntegrationTests : IDisposable
         }
     }
 
-    // Call#1 giữ tới khi Release (request 2 kịp vào queue); call kế trả 429 ngay
-    private sealed class Gated429Upstream : IUpstreamClient
+    // Call#1 giữ tới khi Release (request 2 kịp vào queue); sau Release trả 404 model_not_found
+    // → Fatal cấp Model → park — model "tự chết" giữa 2 request
+    private sealed class GatedFatalUpstream : IUpstreamClient
     {
         private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -123,7 +124,7 @@ public class ProxyRetryIntegrationTests : IDisposable
                 _entered.TrySetResult();
                 await _release.Task;
             }
-            return Resp429();
+            return ModelNotFound404();
         }
     }
 
@@ -131,6 +132,13 @@ public class ProxyRetryIntegrationTests : IDisposable
     {
         Content = new StringContent("data: {\"x\":1}\n\ndata: [DONE]\n\n",
             Encoding.UTF8, "text/event-stream"),
+    };
+
+    private static HttpResponseMessage ModelNotFound404() => new(HttpStatusCode.NotFound)
+    {
+        Content = new StringContent(
+            """{"error":{"code":"model_not_found","message":"The model 'm1' does not exist"}}""",
+            Encoding.UTF8, "application/json"),
     };
 
     private static HttpResponseMessage Resp429(
@@ -246,20 +254,19 @@ public class ProxyRetryIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Chat_WhenModelExhaustsMaxRetry_RejectsNextRequestWith503BeforeQueue()
+    public async Task Chat_WhenModelParkedByFatal_RejectsNextRequestWith503BeforeQueue()
     {
-        _settings.Set(SettingsKeys.MaxRetry, 1); // 1 exhaustion = mở fuse
         SeedProvider("p1", maxConcurrent: 4, "m1");
-        var upstream = new ScriptedUpstream(_ => Resp429());
+        var upstream = new ScriptedUpstream(_ => ModelNotFound404());
         var client = await StartAsync(upstream);
 
         var first = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode); // passthrough attempt cuối
+        Assert.Equal(HttpStatusCode.NotFound, first.StatusCode); // Fatal → exhaustion passthrough attempt cuối
         Assert.Equal(1, upstream.Calls);
 
         var second = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
 
-        // Gate enqueue (§3.4/§4): 503 TRƯỚC khi vào queue — log Warn là assertion phân biệt
+        // Gate (§3.3): 503 TRƯỚC khi vào queue — log Warn là assertion phân biệt
         // với walk-rỗng 503 của dispatcher (status/message giống hệt, không log)
         Assert.Equal(HttpStatusCode.ServiceUnavailable, second.StatusCode);
         var error = (await ReadJson(second)).GetProperty("error");
@@ -269,10 +276,13 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Contains(_messages, m =>
             m.Contains("Từ chối request mới") && m.Contains("'m1'"));
         Assert.Empty(_app!.Services.GetRequiredService<IRequestQueue>().Snapshot());
+
+        // Model parked thật trong store share với UI/ping
+        Assert.True(_app.Services.GetRequiredService<IManualRetryStore>().IsModelParked("m1"));
     }
 
     [Fact]
-    public async Task Chat_WhenComboHasManualRetryModel_SkipsDeadModelAndServesHealthyOne()
+    public async Task Chat_WhenComboHasParkedModel_SkipsDeadModelAndServesHealthyOne()
     {
         SeedProvider("p1", maxConcurrent: 4, "mA");
         SeedProvider("p2", maxConcurrent: 4, "mB");
@@ -280,10 +290,9 @@ public class ProxyRetryIntegrationTests : IDisposable
         var upstream = new ScriptedUpstream(p => p.Name == "p1" ? Resp429() : Sse());
         var client = await StartAsync(upstream);
 
-        // Pre-seed fuse mA qua store singleton DI — dispatcher dùng đúng instance (T5)
-        var store = _app!.Services.GetRequiredService<IModelHealthStore>();
-        for (var i = 0; i < _settings.MaxRetry; i++)
-            store.RecordFailure("mA");
+        // Pre-park mA qua store singleton DI — dispatcher dùng đúng instance (Task 4 if-absent)
+        var store = _app!.Services.GetRequiredService<IManualRetryStore>();
+        store.Park(ManualRetryLevel.Model, 0, "mA", ManualRetryReason.ModelNotFound);
 
         var response = await client.PostAsync("/v1/chat/completions", ChatBody("combo-1"));
 
@@ -294,61 +303,124 @@ public class ProxyRetryIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Chat_WhenFuseOpensWhileRequestQueued_QueuedGets503AndNewRejectedAtGate()
+    public async Task Chat_WhenModelParksWhileRequestQueued_QueuedGets503AndNewRejectedAtGate()
     {
-        _settings.Set(SettingsKeys.MaxRetry, 1);
         SeedProvider("p1", maxConcurrent: 1, "m1");
-        var upstream = new Gated429Upstream();
+        var upstream = new GatedFatalUpstream();
         var client = await StartAsync(upstream);
 
         var serving = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
         await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // call#1 giữ trọn slot
         var queued = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await WaitForQueuedIdAsync("m1"); // request 2 nằm trong queue, chưa dispatch
+        await WaitForQueuedIdAsync("m1"); // request 2 nằm trong queue, chưa dispatch (slot kín)
 
         upstream.Release();
         var first = await serving.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode); // exhaustion → passthrough
+        Assert.Equal(HttpStatusCode.NotFound, first.StatusCode); // Fatal → exhaustion passthrough
 
-        // RecordExhaustion chạy TRƯỚC Exit (T5) → fuse mở trước khi wake dispatch request kế
+        // Park chạy TRƯỚC Exit (Task 4) → model parked trước khi wake dispatch request kế
+        var store = _app!.Services.GetRequiredService<IManualRetryStore>();
+        Assert.True(store.IsModelParked("m1"));
+
+        // Request 2 đi dispatcher: walk rỗng (chưa thử gì) → 503, không log gate
         var second = await queued.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, second.StatusCode);
         var walkError = (await ReadJson(second)).GetProperty("error");
         Assert.Equal("The model 'm1' is temporarily unavailable",
             walkError.GetProperty("message").GetString());
 
+        // Request 3 bị chặn tại endpoint gate (log Warn phân biệt với walk-rỗng)
         var third = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, third.StatusCode);
 
-        // Chỉ endpoint gate ghi dòng này — request 2 đi dispatcher walk (không log), request 3 bị chặn tại endpoint
         Assert.Contains(_messages, m =>
             m.Contains("Từ chối request mới") && m.Contains("'m1'"));
-        Assert.Equal(1, upstream.Calls); // không ai gọi upstream sau khi fuse mở
+        Assert.Equal(1, upstream.Calls); // không ai gọi upstream sau khi model parked
         Assert.Empty(_app!.Services.GetRequiredService<IRequestQueue>().Snapshot());
     }
 
     [Fact]
-    public async Task Chat_AfterProbeSucceeds_ModelServesRequestsAgain()
+    public async Task Chat_AfterManualUnpark_ServesRequestsAgain()
     {
-        _settings.Set(SettingsKeys.MaxRetry, 1); // 1 exhaustion = mở fuse
         SeedProvider("p1", maxConcurrent: 4, "m1");
         var failUpstream = true; // closure — đổi được giữa chừng (upstream "phục hồi")
-        var upstream = new ScriptedUpstream(_ => failUpstream ? Resp429() : Sse());
+        var upstream = new ScriptedUpstream(_ => failUpstream ? ModelNotFound404() : Sse());
         var client = await StartAsync(upstream);
 
         var first = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode);
-        var store = _app!.Services.GetRequiredService<IModelHealthStore>();
-        Assert.True(store.IsManualRetry("m1"));
+        Assert.Equal(HttpStatusCode.NotFound, first.StatusCode); // passthrough attempt cuối
+        var store = _app!.Services.GetRequiredService<IManualRetryStore>();
+        Assert.True(store.IsModelParked("m1"));
 
-        // Fuse mở, lịch probe = ngay → probe 2xx đóng fuse (§3.5)
+        // Model parked → request mới bị gate chặn
+        var blocked = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, blocked.StatusCode);
+        Assert.Equal(1, upstream.Calls);
+
+        // Upstream phục hồi + user bấm [Retry now] (Task 8) → Unpark → serve lại
         failUpstream = false;
-        var watchdog = _app.Services.GetRequiredService<ModelHealthWatchdog>();
-        await watchdog.ProbeDueAsync(CancellationToken.None);
-
-        Assert.False(store.IsManualRetry("m1"));
+        store.Unpark(ManualRetryLevel.Model, 0, "m1");
 
         var second = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        Assert.Equal(HttpStatusCode.OK, second.StatusCode); // model phục hồi — serve lại bình thường
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal(2, upstream.Calls);
+    }
+
+    [Fact]
+    public async Task Chat_WhenAccountParkedByFatal401_NextRequestFailsOverToOtherProvider()
+    {
+        SeedProvider("p1", maxConcurrent: 4, "m1");
+        SeedProvider("p2", maxConcurrent: 4, "m1");
+        var upstream = new ScriptedUpstream(p => p.Name == "p1"
+            ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent("""{"error":{"message":"Incorrect API key"}}""",
+                    Encoding.UTF8, "application/json"),
+            }
+            : Sse());
+        var client = await StartAsync(upstream);
+
+        var response = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+
+        // 401 @p1 → Fatal cấp Account → park account + advance p2 — client thấy 200 (§1.3 #4)
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, upstream.Calls);
+        Assert.Contains(_messages, m =>
+            m.Contains("Chuyển candidate kế") && m.Contains("HTTP 401"));
+        var store = _app!.Services.GetRequiredService<IManualRetryStore>();
+        Assert.Contains(store.GetEntries(), e =>
+            e.Level == ManualRetryLevel.Account && e.Reason == ManualRetryReason.Unauthorized);
+
+        // Request kế: p1 không còn TK dùng được → chỉ p2 serve (nếu p1 còn được chọn sẽ là 5 call)
+        var second = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal(3, upstream.Calls);
+    }
+
+    [Fact]
+    public async Task Chat_WhenNetworkErrorParksProvider_NextRequestFailsOverToOtherProvider()
+    {
+        SeedProvider("p1", maxConcurrent: 4, "m1");
+        SeedProvider("p2", maxConcurrent: 4, "m1");
+        var upstream = new ScriptedUpstream(p => p.Name == "p1"
+            ? throw new HttpRequestException("connection refused")
+            : Sse());
+        var client = await StartAsync(upstream);
+
+        var response = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+
+        // Mạng @p1 → Fatal(Provider) → park provider + advance p2 — client thấy 200 (§3.2)
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, upstream.Calls);
+        Assert.Contains(_messages, m =>
+            m.Contains("Chuyển candidate kế") && m.Contains("lỗi mạng"));
+        var store = _app!.Services.GetRequiredService<IManualRetryStore>();
+        Assert.Contains(store.GetEntries(), e =>
+            e.Level == ManualRetryLevel.Provider && e.Reason == ManualRetryReason.Unreachable);
+
+        // Request kế: p1 parked bị loại từ đầu → chỉ p2 (bug sẽ ra 5 call)
+        var second = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal(3, upstream.Calls);
     }
 }

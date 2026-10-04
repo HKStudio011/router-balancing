@@ -13,7 +13,8 @@ public class ModelSelectorTests : IDisposable
     public ModelSelectorTests()
     {
         DbInitializer.Initialize(_db.CreateFactory());
-        _executions = new ExecutionList(_db.CreateFactory());
+        _executions = new ExecutionList(_db.CreateFactory(),
+            new ManualRetryStore(new NullLog(), TimeProvider.System));
     }
 
     public void Dispose() => _db.Dispose();

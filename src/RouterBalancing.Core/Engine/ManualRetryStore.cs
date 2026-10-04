@@ -109,7 +109,7 @@ public sealed class ManualRetryStore(ILogService log, TimeProvider time) : IManu
         }
         catch
         {
-            // Nuốt chủ đích: backend log (SQLite) không được làm hỏng request path (xem ModelHealthStore)
+            // Nuốt chủ đích: backend log (SQLite) không được làm hỏng request path
         }
     }
 }

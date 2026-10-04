@@ -28,8 +28,8 @@ public sealed record ManualRetryEntry(
     ManualRetryReason Reason, DateTimeOffset ParkedAt);
 
 /// <summary>
-/// Danh sách retry thủ công 3 cấp (in-memory, spec manual-retry §2.1) — thay ModelHealthStore.
-/// Thread-safe; không persist DB (restart = danh sách sạch, request/ping park lại khi lỗi còn).
+/// Danh sách retry thủ công 3 cấp (in-memory, spec manual-retry §2.1) — thay vòng
+/// circuit per-model cũ. Thread-safe; không persist DB (restart = danh sách sạch, request/ping park lại khi lỗi còn).
 /// </summary>
 public interface IManualRetryStore
 {

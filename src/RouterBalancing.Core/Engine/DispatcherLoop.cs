@@ -17,7 +17,6 @@ public sealed class DispatcherLoop(
     IModelSelector selector,
     ChatCompletionsHandler handler,
     ILogService log,
-    IModelHealthStore health,
     IManualRetryStore store) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
@@ -144,8 +143,8 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// Serve 1 request qua vòng walk: mỗi candidate 1 lần, Retryable/Fatal → park (Fatal) +
-    /// Exit + advance kế; hết list → RecordExhaustion + Passthrough/Error502. Fire-and-forget từ
+    /// Serve 1 request qua vòng walk: mỗi candidate 1 lần, Retryable/Fatal → Exit + advance kế;
+    /// hết list → CompleteExhaustion (log Error) + Passthrough/Error502. Fire-and-forget từ
     /// <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
     /// </summary>
     private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
@@ -210,8 +209,8 @@ public sealed class DispatcherLoop(
                 var next = FilterRemaining(remaining, request);
                 if (next.Count == 0)
                 {
-                    // RecordExhaustion TRƯỚC Exit — state phải xong trước khi Exited wake dispatch
-                    // request đang queue, nếu không request kế sẽ gọi tiếp vào entity vừa chết (§3.4)
+                    // CompleteExhaustion TRƯỚC Exit — log exhaustion ghi xong trước khi Exited
+                    // wake dispatch request đang queue, nếu không log bị xót (I2)
                     var exhausted = CompleteExhaustion(request);
                     executions.Exit(request.Id);
                     request.Completion.TrySetResult(exhausted);
@@ -277,19 +276,8 @@ public sealed class DispatcherLoop(
                 continue;
             }
 
-            // Không phải Retryable: trả slot rồi complete (Handled/Passthrough/Error/Cancelled/Aborted)
+            // Không phải Retryable/Fatal: trả slot rồi complete (Handled/Passthrough/Error/Cancelled/Aborted)
             executions.Exit(request.Id);
-            if (outcome is DispatchOutcome.Handled)
-            {
-                try
-                {
-                    health.RecordSuccess(candidate.Model.ModelId); // 2xx reset counter (§3.4)
-                }
-                catch
-                {
-                    // Nuốt chủ đích: store lỗi không được chặn outcome (I2)
-                }
-            }
             request.Completion.TrySetResult(outcome);
             return;
         }
@@ -312,15 +300,28 @@ public sealed class DispatcherLoop(
                 LogCategory.Request);
     }
 
-    /// <summary>Candidate chưa thử + model chưa bị park — dùng cho dispatch đầu và mỗi bước walk (§3.2/§3.4).</summary>
+    /// <summary>
+    /// Candidate chưa thử + chưa parked (model/provider/account) — dùng cho dispatch đầu
+    /// và mỗi bước walk (§3.2/§3.4).
+    /// </summary>
     private IReadOnlyList<ModelCandidate> FilterRemaining(IReadOnlyList<ModelCandidate> candidates,
         ProxyRequest request) =>
         candidates
-            .Where(c => !health.IsManualRetry(c.Model.ModelId)
-                && !request.Retry.IsTried(c.Provider.Id, c.Model.ModelId))
+            .Where(c => !request.Retry.IsTried(c.Provider.Id, c.Model.ModelId)
+                && !store.IsModelParked(c.Model.ModelId)
+                && !store.IsProviderParked(c.Provider.Id)
+                && HasEnabledUnparkedAccount(c))
             .ToList();
 
-    /// <summary>Ghi failure từng distinct model đã thử rồi trả outcome exhaustion — gọi 2 nơi (§3.3/§3.4).</summary>
+    /// <summary>
+    /// Còn TK enabled chưa parked (V3): nav Accounts chưa load (null) → không loại ở đây —
+    /// ExecutionList tự filter sau materialize; mọi TK enabled parked → loại candidate
+    /// (giữ lại thì TryEnter tạo sentinel 0 forward 503 thay vì chọn TK healthy).
+    /// </summary>
+    private bool HasEnabledUnparkedAccount(ModelCandidate candidate) =>
+        candidate.Provider.Accounts?.Any(a => a.Enabled && !store.IsAccountParked(a.Id)) != false;
+
+    /// <summary>Ghi log Error exhaustion rồi trả outcome — gọi 2 nơi (§3.3/§3.4).</summary>
     private DispatchOutcome CompleteExhaustion(ProxyRequest request)
     {
         RecordExhaustion(request);
@@ -328,23 +329,11 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// +1/exhaustion cho từng distinct model đã thử (Quyết định #4) + log Error exhaustion.
-    /// Mọi chỗ gọi bọc try — log/store ném không được chặn TrySetResult (I2).
+    /// Log Error exhaustion (§5) — không còn record failure theo model (circuit đã bỏ,
+    /// ManualRetry do Fatal park chủ động). Bọc try: log ném không được chặn TrySetResult (I2).
     /// </summary>
     private void RecordExhaustion(ProxyRequest request)
     {
-        var retryAfter = request.Retry.LastFailure?.RetryAfter;
-        foreach (var modelId in request.Retry.TriedModels)
-        {
-            try
-            {
-                health.RecordFailure(modelId, retryAfter);
-            }
-            catch
-            {
-                // Nuốt chủ đích: store lỗi không được phá outcome
-            }
-        }
         try
         {
             log.Error(

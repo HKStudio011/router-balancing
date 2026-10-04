@@ -32,7 +32,7 @@ public abstract record DispatchOutcome
     /// <param name="Status"><see langword="null"/> = lỗi mạng (không có HTTP response nào).</param>
     /// <param name="ContentType">Content-Type upstream trả (<see langword="null"/> khi lỗi mạng).</param>
     /// <param name="Body">Body đã buffer — response lỗi nhỏ, chưa commit (rỗng khi lỗi mạng).</param>
-    /// <param name="RetryAfter"><c>Retry-After</c> đã parse — floor <c>nextProbeAt</c> khi exhaustion (§3.6).</param>
+    /// <param name="RetryAfter"><c>Retry-After</c> đã parse — forward vào <c>Passthrough.RetryAfterHeader</c> khi exhaustion (§3.3).</param>
     public sealed record Retryable(int? Status, string? ContentType, byte[] Body, TimeSpan? RetryAfter)
         : DispatchOutcome;
 

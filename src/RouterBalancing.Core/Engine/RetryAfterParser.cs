@@ -4,8 +4,8 @@ namespace RouterBalancing.Core.Engine;
 
 /// <summary>
 /// Parse header <c>Retry-After</c> (delta-seconds | HTTP-date), clamp 0..3600s —
-/// spec 3C §3.6. Dùng duy nhất làm floor <c>nextProbeAt</c> trong store/watchdog;
-/// request KHÔNG bao giờ chờ (đã chốt Phương án 1).
+/// spec 3C §3.6. Giá trị đi vào <c>DispatchOutcome.Retryable</c>, exhaustion forward lại
+/// client qua <c>Passthrough</c>; request KHÔNG bao giờ chờ (đã chốt Phương án 1).
 /// </summary>
 public static class RetryAfterParser
 {
