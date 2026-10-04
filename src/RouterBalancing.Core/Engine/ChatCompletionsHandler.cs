@@ -112,8 +112,11 @@ public sealed class ChatCompletionsHandler(
         ProxyTarget.Current.Value = new ProxyTarget(provider, account);
         try
         {
+            // Alias nội bộ (pin/combo) phải đổi về model id thật trước khi forward —
+            // upstream không biết pin/ten combo (bug client: gửi nguyên alias bị ModelError).
+            var upstreamBody = ChatBody.WithModel(body, model.ModelId);
             // Yêu cầu upstream trả usage cho stream OpenAI (spec §6) — body gốc giữ nguyên ở queue/prepare
-            var (requestBody, expectsUsage) = UsageCapture.WithIncludeUsage(body, provider.Type);
+            var (requestBody, expectsUsage) = UsageCapture.WithIncludeUsage(upstreamBody, provider.Type);
 
             var stopwatch = Stopwatch.StartNew();
             HttpResponseMessage response;

@@ -50,7 +50,8 @@ public class ProxyAppChatIntegrationTests : IDisposable
         _db.Dispose();
     }
 
-    private void SeedProvider(string modelId, ProviderType type = ProviderType.OpenAI)
+    private void SeedProvider(string modelId, ProviderType type = ProviderType.OpenAI,
+        string? identifier = null)
     {
         using var db = _db.CreateFactory().CreateDbContext();
         var provider = new Provider
@@ -58,6 +59,7 @@ public class ProxyAppChatIntegrationTests : IDisposable
             Name = $"p-{modelId}",
             BaseUrl = "https://api.openai.com",
             Type = type,
+            Identifier = identifier,
         };
         provider.Models.Add(new Model { ModelId = modelId, Enabled = true });
         provider.Accounts.Add(new ProviderAccount
@@ -82,9 +84,14 @@ public class ProxyAppChatIntegrationTests : IDisposable
 
     private sealed class StubUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
     {
+        public byte[]? LastBody { get; private set; }
+
         public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct) =>
-            Task.FromResult(factory());
+            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        {
+            LastBody = body;
+            return Task.FromResult(factory());
+        }
     }
 
     private static HttpResponseMessage Sse() => new(HttpStatusCode.OK)
@@ -256,5 +263,39 @@ public class ProxyAppChatIntegrationTests : IDisposable
         Assert.Equal(2, data.Count);
         Assert.Contains(data, e => e.GetProperty("id").GetString() == "gpt-4o-mini");
         Assert.Contains(data, e => e.GetProperty("id").GetString() == "combo-fast");
+    }
+
+    [Fact]
+    public async Task Chat_WhenModelPinned_ForwardsPlainModelIdToUpstream()
+    {
+        // Pin `{identifier}/{modelId}` là alias nội bộ — upstream chỉ hiểu model id thật,
+        // gửi nguyên pin lên provider sẽ bị từ chối (bug client báo).
+        SeedProvider("gpt-4o-mini", identifier: "openai-x");
+        var upstream = new StubUpstream(() => Sse());
+        var client = await StartAsync(upstream);
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"openai-x/gpt-4o-mini","messages":[{"role":"user"}],"stream":true}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var sent = JsonDocument.Parse(upstream.LastBody!).RootElement;
+        Assert.Equal("gpt-4o-mini", sent.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task Chat_WhenModelIsCombo_ForwardsResolvedModelIdToUpstream()
+    {
+        // Tên combo cũng là alias nội bộ — upstream phải nhận model id đã resolve từ combo.
+        SeedProvider("gpt-4o-mini");
+        SeedCombo("combo-fast", "gpt-4o-mini");
+        var upstream = new StubUpstream(() => Sse());
+        var client = await StartAsync(upstream);
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"combo-fast","messages":[{"role":"user"}],"stream":true}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var sent = JsonDocument.Parse(upstream.LastBody!).RootElement;
+        Assert.Equal("gpt-4o-mini", sent.GetProperty("model").GetString());
     }
 }
