@@ -57,6 +57,14 @@ public static class ProviderRequestFactory
                 throw new ArgumentOutOfRangeException(nameof(provider.Type), provider.Type, "Unsupported provider type.");
         }
 
+        // OpenCode: gắn fingerprint (UA/x-opencode-*/Accept + transform body quartet tools)
+        // — thiếu → 403 FreeTierError "within OpenCode", áp cho cả free và keyed lane.
+        // Chỉ POST có content (chat); GET probe đang chạy tốt nên không đụng tới.
+        if (content is not null && OpenCodeFreeFingerprint.IsApplicable(provider))
+        {
+            OpenCodeFreeFingerprint.Apply(request, provider, apiKey, content);
+        }
+
         return request;
     }
 }
