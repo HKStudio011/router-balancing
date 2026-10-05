@@ -58,6 +58,9 @@ namespace router_balancing
             builder.Services.AddSingleton<ISecretProtector, DpapiSecretProtector>();
             builder.Services.AddSingleton<IAppSettingsService, AppSettingsService>();
             builder.Services.AddSingleton<ILogService, LogService>();
+            // TraceFeed singleton của app — ProxyHost.StartAsync re-register ĐÚNG instance
+            // này vào container proxy, UI và pipeline cùng đọc 1 feed
+            builder.Services.AddSingleton<ITraceFeed, TraceFeed>();
             builder.Services.AddSingleton<LocalizationService>();
             // Scoped: ThemeService phụ thuộc IJSRuntime — lifetime scoped để Blazor resolve được
             // (singleton không được inject scoped service).

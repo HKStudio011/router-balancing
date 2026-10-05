@@ -37,6 +37,9 @@ public static class ProxyApp
             builder.Services.AddSingleton(pool);
         }
 
+        if (!builder.Services.Any(d => d.ServiceType == typeof(ITraceFeed)))
+            builder.Services.AddSingleton<ITraceFeed, TraceFeed>(); // fallback cho test harness; app đã đăng ký instance ở StartAsync
+
         builder.Services.AddTransient<ProxyHealthHandler>();
         // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
         builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
@@ -113,7 +116,7 @@ public static class ProxyApp
         // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
             async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
-                ChatCompletionsHandler handler, ILogService log) =>
+                ChatCompletionsHandler handler, ILogService log, ITraceFeed trace) =>
         {
             // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
             string id;
@@ -148,6 +151,9 @@ public static class ProxyApp
                 return;
             }
 
+            trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
+                null, null, null, null, null, DateTimeOffset.Now));
+
             // Đăng ký SAU Enqueue: dispatcher đã Take thì TryRemove false → serve tự cắt stream (spec §3.4)
             ctx.RequestAborted.Register(() =>
             {
@@ -166,6 +172,12 @@ public static class ProxyApp
             });
 
             var outcome = await request.Completion.Task;
+
+            // Publish tại đây (TRƯỚC khối ghi response): viết response có thể nổ
+            // (client ngắt giữa passthrough) — nếu publish sau thì circle terminal bị mồ côi.
+            var (stage, success, status) = ClassifyOutcome(outcome);
+            trace.Publish(new TraceEvent(id, stage, prepared.ModelId,
+                null, null, status, success, null, DateTimeOffset.Now));
 
             if (outcome is DispatchOutcome.Error error)
             {
@@ -319,6 +331,27 @@ public static class ProxyApp
                 "request_not_found");
         });
     }
+
+    /// <summary>
+    /// Chuyển outcome của endpoint sang (stage, success, status) cho trace event H4.
+    /// </summary>
+    internal static (TraceStage Stage, bool? Success, int? Status) ClassifyOutcome(DispatchOutcome outcome) =>
+        outcome switch
+        {
+            DispatchOutcome.Handled => (TraceStage.Finished, true, null),
+            DispatchOutcome.Passthrough p => (TraceStage.Finished, p.Status < 400, p.Status),
+            DispatchOutcome.Error e => (TraceStage.Finished, false, e.Status),
+            DispatchOutcome.Cancelled => (TraceStage.Canceled, null, null),
+            DispatchOutcome.Aborted => (TraceStage.Canceled, null, null),
+            // Retryable/Fatal là tín hiệu nội bộ — dispatcher đã convert trước khi outcome
+            // về endpoint, nên 2 nhánh này chỉ là bug-path defensive (không được nuốt im lặng
+            // nếu invariant vỡ): map theo status (null = lỗi mạng) để trace vẫn ghi được.
+            DispatchOutcome.Retryable r => (TraceStage.Finished, false, r.Status),
+            DispatchOutcome.Fatal f => (TraceStage.Finished, false, f.Status),
+            // DispatchOutcome public abstract — subclass thêm sau này (ngoài assembly) không
+            // cần sửa chỗ này: map an toàn là finished + failed + không status, không nuốt event
+            _ => (TraceStage.Finished, false, null),
+        };
 
     /// <summary>
     /// Snapshot map ngược vocab input: Highest → "max" (không phải "highest") để client

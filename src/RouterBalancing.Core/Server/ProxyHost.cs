@@ -24,6 +24,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly ISecretProtector _protector;
     private readonly IClientKeyService _clientKeys;
     private readonly IProxyPool _pool;
+    private readonly ITraceFeed _trace;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private WebApplication? _app;
     private bool _disposed;
@@ -35,7 +36,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     public event Action? StateChanged;
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
-        ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool)
+        ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool, ITraceFeed trace)
     {
         _settings = settings;
         _log = log;
@@ -43,6 +44,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _protector = protector;
         _clientKeys = clientKeys;
         _pool = pool;
+        _trace = trace;
     }
 
     /// <summary>
@@ -72,6 +74,8 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_log);
             builder.Services.AddSingleton(_db);
             builder.Services.AddSingleton(_clientKeys);
+            // Cùng instance với MAUI container — UI đọc đúng feed pipeline proxy đang ghi
+            builder.Services.AddSingleton(_trace);
             builder.WebHost.ConfigureKestrel(options =>
                 options.Listen(ResolveBindAddress(_settings.LanAccess), port));
 
@@ -128,6 +132,8 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             }
 
             await app.DisposeAsync();
+            // Proxy stop → purge feed: skeleton UI về idle, không giữ node của phiên đã dừng (spec §6)
+            _trace.PurgeAll();
             _app = null;
             Port = null;
             _log.Info("Proxy server đã dừng.");
@@ -148,6 +154,18 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     {
         await StopAsync(cancellationToken);
         await StartAsync(cancellationToken);
+    }
+
+    public IReadOnlyList<QueuedTraceItem> QueuedSnapshot()
+    {
+        // Capture local: StopAsync dispose + set null song song — đọc field 2 lần
+        // có thể vướng instance vừa bị dispose
+        var app = _app;
+        if (app is null)
+            return [];
+        return app.Services.GetRequiredService<IRequestQueue>().Snapshot()
+            .Select(r => new QueuedTraceItem(r.Id, r.Model))
+            .ToList();
     }
 
     public async ValueTask DisposeAsync()

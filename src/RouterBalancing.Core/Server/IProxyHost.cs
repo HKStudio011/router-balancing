@@ -17,4 +17,10 @@ public interface IProxyHost : IAsyncDisposable
 
     /// <summary>Dừng rồi chạy lại — dùng sau khi đổi port setting.</summary>
     Task RestartAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Snapshot id+model request còn trong queue — UI bù node trắng khi feed chưa có (spec trace §5.3).</summary>
+    IReadOnlyList<QueuedTraceItem> QueuedSnapshot();
 }
+
+/// <summary>Request còn trong queue — id + model để UI ghép node trace.</summary>
+public sealed record QueuedTraceItem(string Id, string Model);
