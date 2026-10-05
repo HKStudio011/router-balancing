@@ -19,10 +19,6 @@ public sealed record SettingsDraft
 
     public bool StartWithWindows { get; set; }
 
-    public int PingIntervalSec { get; set; } = 60;
-
-    public bool PingParkedProviders { get; set; }
-
     public int ProviderProbeTimeoutSec { get; set; } = 60;
 
     public int LogRetentionDays { get; set; } = 90;

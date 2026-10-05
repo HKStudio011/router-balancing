@@ -11,7 +11,7 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly Dictionary<string, string> _cache = new();
 
-    // ProviderPingService/ProxyHost đọc cache song song với thread gọi Set — Dictionary không
+    // ProxyHost đọc cache song song với thread gọi Set — Dictionary không
     // thread-safe, mọi truy cập _cache (kể cả nạp ở ctor) phải qua lock này.
     private readonly object _cacheLock = new();
 
@@ -43,10 +43,6 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
     public bool CloseToTray => Get(SettingsKeys.CloseToTray, true);
 
     public bool StartWithWindows => Get(SettingsKeys.StartWithWindows, false);
-
-    public int PingIntervalSec => Get(SettingsKeys.PingIntervalSec, 60);
-
-    public bool PingParkedProviders => Get(SettingsKeys.PingParkedProviders, false);
 
     public int ProviderProbeTimeoutSec => Get(SettingsKeys.ProviderProbeTimeoutSec, 60);
 

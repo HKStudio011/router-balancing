@@ -64,9 +64,9 @@ public static class ProxyApp
 
         // AddHttpMessageHandler<THandler> chỉ resolve THandler từ DI, không tự đăng ký
         // ("must be registered as a transient service") — thiếu dòng này thì lần gửi
-        // đầu của ProviderPingService ném InvalidOperationException lúc build pipeline
+        // đầu qua client provider-probe ném InvalidOperationException lúc build pipeline
         builder.Services.AddTransient<ProviderProbeTimeoutHandler>();
-        // provider-probe (spec manual-retry §3.5, V6): client cho ProviderPingService
+        // provider-probe (spec manual-retry §3.5, V6): client probe provider
         // trong container proxy — connect 60s (G6), per-request timeout qua
         // ProviderProbeTimeoutHandler (đổi setting có hiệu lực ngay), proxy pool y hệt MauiProgram
         builder.Services.AddHttpClient(ProviderRequestFactory.HttpClientName,
@@ -97,10 +97,6 @@ public static class ProxyApp
         builder.Services.AddSingleton<ClientKeyAuthCache>();
         builder.Services.AddSingleton<IClientKeyUsageSink, ClientKeyUsageSink>();
         builder.Services.AddHostedService<DispatcherLoop>();
-        // Ping định kỳ provider (spec manual-retry §3.5): singleton + hosted qua factory
-        // lấy ĐÚNG instance — integration test resolve được rồi gọi PingAllAsync trực tiếp
-        builder.Services.AddSingleton<ProviderPingService>();
-        builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderPingService>());
     }
 
     /// <summary>

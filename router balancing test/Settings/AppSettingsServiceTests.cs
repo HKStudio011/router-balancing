@@ -24,21 +24,9 @@ public class AppSettingsServiceTests : IDisposable
 
         Assert.Equal(8317, service.Get(SettingsKeys.Port, 8317));
         Assert.Equal("auto", service.Language);
-        Assert.Equal(60, service.PingIntervalSec);
-        Assert.False(service.PingParkedProviders);
         Assert.Equal(60, service.ProviderProbeTimeoutSec);
         Assert.Equal(90, service.LogRetentionDays);
         Assert.True(service.CloseToTray);
-    }
-
-    [Fact]
-    public void Set_ThenGet_ReturnsValue()
-    {
-        using var service = Create();
-
-        service.Set(SettingsKeys.PingIntervalSec, 30);
-
-        Assert.Equal(30, service.PingIntervalSec);
     }
 
     [Fact]

@@ -9,7 +9,6 @@ public class SettingsValidatorTests
         Language = "auto",
         Theme = "system",
         Port = 8317,
-        PingIntervalSec = 60,
         ProviderProbeTimeoutSec = 60,
         LogRetentionDays = 90,
         StatsErrorRateThreshold = 10,
@@ -54,14 +53,12 @@ public class SettingsValidatorTests
     {
         var errors = SettingsValidator.Validate(ValidDraft() with
         {
-            PingIntervalSec = 5,
             ProviderProbeTimeoutSec = 0,
             LogRetentionDays = 0,
             StatsErrorRateThreshold = 101,
         });
 
-        Assert.Equal(4, errors.Count);
-        Assert.Equal("settings.error.pingInterval", errors[nameof(SettingsDraft.PingIntervalSec)]);
+        Assert.Equal(3, errors.Count);
         Assert.Equal("settings.error.probeTimeout", errors[nameof(SettingsDraft.ProviderProbeTimeoutSec)]);
         Assert.Equal("settings.error.retention", errors[nameof(SettingsDraft.LogRetentionDays)]);
         Assert.Equal("settings.error.threshold", errors[nameof(SettingsDraft.StatsErrorRateThreshold)]);
