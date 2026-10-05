@@ -1,0 +1,500 @@
+@using System.Collections.Concurrent
+@using RouterBalancing.Core.Engine
+@inject ITraceFeed Feed
+@inject IProxyHost Proxy
+@inject ILogService Log
+@inject LocalizationService L
+@implements IAsyncDisposable
+
+<style>
+    /* CSS theo mockup trace-design-v2.html — priority 7 (style inline trong razor, xem style.css) */
+    .trace-wrap {
+        overflow-x: auto;
+        padding-bottom: 6px;
+    }
+
+    .trace-canvas {
+        position: relative;
+        width: 740px;
+        height: 415px;
+        font-size: 11px;
+    }
+
+    .trace-svg {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+    }
+
+    .trace-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+
+    .trace-title {
+        font-weight: 600;
+        font-size: 14px;
+    }
+
+    .trace-counts {
+        display: flex;
+        gap: 12px;
+        font-size: 11px;
+        opacity: .85;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .trace-count--ok { color: #22c55e; }
+    .trace-count--error { color: #ef4444; }
+    .trace-count--cancelled { color: #eab308; }
+
+    .trace-node {
+        position: absolute;
+        border: 1.5px solid #8b8fa3;
+        background: rgba(255, 255, 255, .055);
+        border-radius: 8px;
+        padding: 5px 8px;
+        text-align: center;
+        line-height: 1.35;
+    }
+
+    /* Node đang có request đi qua (mockup .n.act) */
+    .trace-node--act {
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 1px rgba(59, 130, 246, .4), 0 0 12px rgba(59, 130, 246, .18);
+    }
+
+    .trace-node .cap {
+        display: block;
+        font-size: 9px;
+        line-height: 12px;
+        opacity: .55;
+        text-transform: uppercase;
+        letter-spacing: .05em;
+        /* Cấm wrap: cap giữ đúng 1 dòng để dòng dot tuyệt đối (AnchorOf = top node + 17px)
+           luôn thẳng hàng với slot trong node */
+        white-space: nowrap;
+    }
+
+    /* Slot dành chỗ cho dot absolute — cao 12px bằng đúng kích thước dot */
+    .trace-node__slot {
+        height: 12px;
+    }
+
+    /* Circle = request: transition left/top tạo hiệu ứng di chuyển trên đường (không JS) */
+    .trace-dot {
+        position: absolute;
+        box-sizing: border-box;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        transition: left .35s ease, top .35s ease;
+    }
+
+    .trace-dot--white { background: #fff; border: 1.5px solid #9aa0aa; }
+    .trace-dot--blue { background: #3b82f6; }
+    .trace-dot--green { background: #22c55e; }
+    .trace-dot--red { background: #ef4444; }
+    .trace-dot--yellow { background: #eab308; }
+
+    .trace-badge {
+        font-size: 9.5px;
+        border: 1px solid rgba(139, 143, 163, .55);
+        border-radius: 999px;
+        padding: 0 6px;
+        opacity: .75;
+    }
+
+    .trace-badge--float {
+        position: absolute;
+        box-sizing: border-box;
+        height: 13px;
+        line-height: 11px;
+    }
+
+    .trace-legend {
+        display: flex;
+        gap: 10px;
+        font-size: 10.5px;
+        opacity: .8;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 8px;
+    }
+
+    .trace-legend__item {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .trace-legend__hint {
+        opacity: .65;
+    }
+
+    .trace-ldot {
+        display: inline-block;
+        box-sizing: border-box;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+    }
+</style>
+
+<div class="mb-4 rounded border border-border bg-surface p-4">
+    <div class="trace-head">
+        <span class="trace-title">📊 @L["trace.title"]</span>
+        <div class="trace-counts">
+            <span>◯ <b>@QueuedCount</b> @L["trace.count.queued"]</span>
+            <span>● <b>@RunningCount</b> @L["trace.count.running"]</span>
+            <span class="trace-count--ok">● <b>@OkCount</b> @L["trace.count.ok"]</span>
+            <span class="trace-count--error">● <b>@ErrorCount</b> @L["trace.count.error"]</span>
+            <span class="trace-count--cancelled">● <b>@CancelledCount</b> @L["trace.count.cancelled"]</span>
+            @* Badge node bị drop khi vượt cap 60 (khác badge +N theo anchor bên dưới) *@
+            @if (_overflow > 0)
+            {
+                <span class="trace-badge">@string.Format(L["trace.more"], _overflow)</span>
+            }
+        </div>
+    </div>
+
+    <div class="trace-wrap">
+        <div class="trace-canvas">
+            <svg class="trace-svg" width="740" height="415">
+                @* Đường nối spine — coords theo mockup; đoạn Thực thi→Client nối thêm cho đủ spine *@
+                <g fill="none" stroke="#8b8fa3" stroke-width="1.6" opacity=".55">
+                    <path d="M68,52 L68,96" />
+                    <path d="M68,152 L68,188" />
+                    <path d="M68,244 L68,336" />
+                </g>
+                @* Ornament trang trí (không gắn data): circle lặp vô hạn — coords mockup *@
+                <circle r="6.5" fill="#ffffff" stroke="#9aa0aa" stroke-width="1.5">
+                    <animateMotion dur="2.4s" repeatCount="indefinite" path="M68,46 L68,96" />
+                </circle>
+                <circle r="6.5" fill="#3b82f6">
+                    <animateMotion dur="2.8s" begin=".6s" repeatCount="indefinite" path="M68,244 L68,336" />
+                </circle>
+            </svg>
+
+            @* Skeleton spine — luôn vẽ kể cả khi idle (spec §5.1); tọa độ fixed theo mockup *@
+            <div class="trace-node" style="left:8px;top:8px;width:120px">
+                <span class="cap">📥 Input</span>
+                POST /v1/chat
+            </div>
+            <div class="trace-node" style="left:8px;top:96px;width:120px">
+                <span class="cap">⏳ Hàng đợi</span>
+                <div class="trace-node__slot"></div>
+                <span class="cap">@QueuedCount @L["trace.count.queued"]</span>
+            </div>
+            <div class="trace-node @(RunningCount > 0 ? "trace-node--act" : "")" style="left:8px;top:188px;width:120px">
+                <span class="cap">⚙️ Danh sách thực thi</span>
+                <div class="trace-node__slot"></div>
+                <span class="cap">@RunningCount @L["trace.count.running"]</span>
+            </div>
+            <div class="trace-node" style="left:8px;top:336px;width:120px">
+                <span class="cap">🖥 Client</span>
+                <div class="trace-node__slot"></div>
+            </div>
+
+            @* Circle = request: 1 dot tuyệt đối/node, stack ngang theo anchor của stage *@
+            @foreach (var group in BuildGroups())
+            {
+                for (var i = 0; i < group.Shown.Count; i++)
+                {
+                    var node = group.Shown[i];
+                    <div class="trace-dot @ColorClass(node)" @key="node.Id"
+                         style="left:@(group.X + i * DotStepX)px;top:@(group.Y)px"></div>
+                }
+                @if (group.Overflow > 0)
+                {
+                    <div class="trace-badge trace-badge--float"
+                         style="left:@(group.X + group.Shown.Count * DotStepX)px;top:@(group.Y)px">@string.Format(L["trace.more"], group.Overflow)</div>
+                }
+            }
+        </div>
+    </div>
+
+    <div class="trace-legend">
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--white"></i>@L["trace.legend.queued"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--blue"></i>@L["trace.legend.running"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--green"></i>@L["trace.legend.ok"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--red"></i>@L["trace.legend.error"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--yellow"></i>@L["trace.legend.cancelled"]</span>
+        <span class="trace-legend__hint">@L["trace.fadeHint"]</span>
+    </div>
+</div>
+
+@code {
+    private const int NodeCap = 60;
+    private const int MaxDotsPerAnchor = 6;
+    private const int DotStepX = 16;
+    private const int TickMs = 100;
+    private static readonly TimeSpan TerminalTtl = TimeSpan.FromSeconds(10);
+
+    // Tọa độ pixel spine theo mockup trace-design-v2.html — tính bằng C#, không JS interop
+    private const int DotStartX = 14;   // node left 8 + padding
+    private const int QueueTop = 96;
+    private const int DispatchTop = 188;
+    private const int ClientTop = 336;
+    // Dòng dot nằm ngay dưới cap đầu node: padding-top 5px + cap line-height 12px (xem CSS)
+    private const int DotRowOffsetY = 17;
+
+    private readonly ConcurrentQueue<TraceEvent> _inbox = new();
+    private readonly Dictionary<string, TraceNode> _nodes = new();
+    private readonly CancellationTokenSource _cts = new();
+
+    // Id từng bị drop do vượt cap 60 — cộng lại đúng khi node được dựng từ event mới,
+    // tránh badge +N bị cao dần vô hạn theo thời gian
+    private readonly HashSet<string> _droppedIds = new();
+    private int _overflow;
+
+    /// <summary>Trạng thái hiển thị của một request trên sơ đồ — Task 6/7 đọc các field này.</summary>
+    private sealed class TraceNode
+    {
+        /// <summary>Id request — khóa trong <c>_nodes</c>.</summary>
+        public required string Id { get; init; }
+
+        public string Model { get; set; } = string.Empty;
+        public TraceStage Stage { get; set; } = TraceStage.Received;
+        public TraceRoute? Route { get; set; }
+        public bool? Success { get; set; }
+        public int? Status { get; set; }
+        public string? Mode { get; set; }
+        public DateTimeOffset ReceivedAt { get; init; }
+        public DateTimeOffset? ExpiresAt { get; set; }
+    }
+
+    /// <summary>Nhóm dot cùng anchor: tối đa 6 dot vẽ ra, phần dư cộng vào badge +N.</summary>
+    private sealed record DotGroup(int X, int Y, List<TraceNode> Shown, int Overflow);
+
+    private int QueuedCount => _nodes.Values.Count(n => n.Stage == TraceStage.Received);
+    private int RunningCount => _nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
+    private int OkCount => _nodes.Values.Count(n => n.Stage == TraceStage.Finished && n.Success != false);
+    private int ErrorCount => _nodes.Values.Count(n => n.Stage == TraceStage.Finished && n.Success == false);
+    private int CancelledCount => _nodes.Values.Count(n => n.Stage == TraceStage.Canceled);
+
+    protected override Task OnInitializedAsync()
+    {
+        // Subscribe TRƯỚC khi đọc snapshot — event bắn giữa 2 bước không bị miss;
+        // apply trùng (event có cả trong snapshot lẫn inbox) là idempotent nên an toàn.
+        Feed.Published += OnPublished;
+
+        foreach (var e in Feed.Snapshot())
+            ApplyEvent(e);
+
+        try
+        {
+            // Bù node trắng tại Hàng đợi cho request đang chờ nhưng feed chưa từng thấy
+            // (mở app giữa chừng / ring eviction) — spec trace §5.3. Proxy dừng giữa chừng
+            // có thể ném khi đọc queue → coi như không có gì để bù.
+            var now = DateTimeOffset.UtcNow;
+            foreach (var q in Proxy.QueuedSnapshot())
+            {
+                if (!_nodes.ContainsKey(q.Id))
+                    _nodes[q.Id] = new TraceNode { Id = q.Id, Model = q.Model, ReceivedAt = now };
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("RequestTrace: đọc QueuedSnapshot thất bại.", ex);
+        }
+
+        EnforceCap();
+
+        _ = RunLoopAsync(_cts.Token);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Nhận event từ <see cref="ITraceFeed.Published"/> — chạy trên thread publish của Core.
+    /// </summary>
+    private void OnPublished(TraceEvent e)
+    {
+        // Handler tuyệt đối không được ném: Published là multicast delegate — subscriber
+        // ném sẽ chặn các subscriber phía sau. Enqueue vào ConcurrentQueue với T tham chiếu
+        // không ném exception → handler không có đường ném ra ngoài.
+        _inbox.Enqueue(e);
+
+        // Publish đến từ thread Kestrel/dispatcher — Blazor chỉ render an toàn trên
+        // dispatcher thread của component nên phải Marshal bằng InvokeAsync. Nội dung
+        // _nodes chỉ đổi trong Flush (loop 100ms, cũng chạy qua InvokeAsync) nên render
+        // ở đây là diff rỗng: không thrash, vẫn đảm bảo re-render đi qua đúng thread.
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>
+    /// Loop 100ms: drain inbox → áp event → dọn node hết hạn → render nếu có thay đổi.
+    /// </summary>
+    private async Task RunLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                // Tick 100ms — nhỏ hơn 500ms trong spec (§5.4): dọn node terminal sát giờ
+                // hơn, vô hại vì render tối đa 10 lần/s và chỉ khi thật sự có thay đổi.
+                await Task.Delay(TickMs, ct);
+
+                // Mọi thao tác trên _nodes đều qua InvokeAsync → chỉ chạy trên dispatcher
+                // thread, không race với render.
+                await InvokeAsync(Flush);
+            }
+            catch (OperationCanceledException)
+            {
+                // DisposeAsync đã cancel — dừng vòng lặp.
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Một tick lỗi không được giết vòng render trace — ghi log rồi tiếp tục.
+                Log.Error("RequestTrace: làm mới state thất bại.", ex);
+            }
+        }
+    }
+
+    /// <summary>Drain inbox, áp event, dọn node hết hạn, render khi có thay đổi — chỉ gọi trên dispatcher thread.</summary>
+    private void Flush()
+    {
+        var changed = false;
+        while (_inbox.TryDequeue(out var e))
+        {
+            ApplyEvent(e);
+            changed = true;
+        }
+
+        if (RemoveExpired())
+            changed = true;
+
+        if (!changed)
+            return;
+
+        EnforceCap();
+        StateHasChanged();
+    }
+
+    /// <summary>Áp một trace event vào node của request — idempotent, tái tạo node nếu đã bị drop.</summary>
+    private void ApplyEvent(TraceEvent e)
+    {
+        if (!_nodes.TryGetValue(e.RequestId, out var node))
+        {
+            node = new TraceNode
+            {
+                Id = e.RequestId,
+                Model = e.Model,
+                ReceivedAt = e.At,
+            };
+            _nodes[e.RequestId] = node;
+
+            // Node dựng lại từ id từng bị cap-drop → hoàn badge +N thay vì cộng dồn
+            if (_droppedIds.Remove(e.RequestId))
+                _overflow = Math.Max(0, _overflow - 1);
+        }
+
+        node.Model = e.Model;
+        node.Stage = e.Stage;
+
+        // Chỉ ghi field event mang giá trị: Received/DispatchStarted để Route null —
+        // không được xoá route đã biết từ attempt trước.
+        if (e.Route is not null)
+            node.Route = e.Route;
+        if (e.Status is not null)
+            node.Status = e.Status;
+        if (e.Success is not null)
+            node.Success = e.Success;
+        if (e.Mode is not null)
+            node.Mode = e.Mode;
+
+        // Terminal giữ 10s rồi fade (spec §5.4); event thường xoá hạn để node sống mãi
+        node.ExpiresAt = e.Stage is TraceStage.Finished or TraceStage.Canceled
+            ? e.At + TerminalTtl
+            : null;
+    }
+
+    /// <summary>Gỡ node đã qua <see cref="TraceNode.ExpiresAt"/>. Trả về <see langword="true"/> nếu có node bị gỡ.</summary>
+    private bool RemoveExpired()
+    {
+        var now = DateTimeOffset.UtcNow;
+        List<string>? expiredIds = null;
+        foreach (var (id, node) in _nodes)
+        {
+            if (node.ExpiresAt is { } expiresAt && expiresAt <= now)
+                (expiredIds ??= []).Add(id);
+        }
+
+        if (expiredIds is null)
+            return false;
+
+        foreach (var id in expiredIds)
+            _nodes.Remove(id);
+        return true;
+    }
+
+    /// <summary>Giới hạn 60 node hiển thị: drop terminal cũ nhất trước, vẫn vượt → giữ 60 mới nhất + đếm _overflow.</summary>
+    private void EnforceCap()
+    {
+        while (_nodes.Count > NodeCap)
+        {
+            var victim = _nodes.Values
+                .OrderBy(n => n.ExpiresAt is null ? 1 : 0)
+                .ThenBy(n => n.ReceivedAt)
+                .ThenBy(n => n.Id, StringComparer.Ordinal)
+                .First();
+            _nodes.Remove(victim.Id);
+            _droppedIds.Add(victim.Id);
+            _overflow++;
+        }
+    }
+
+    /// <summary>Tọa độ anchor của node theo stage hiện tại — Task 6 đổi nhánh Attempt sang chip Account.</summary>
+    private (int X, int Y) AnchorOf(TraceNode n) => n.Stage switch
+    {
+        TraceStage.Received => (DotStartX, QueueTop + DotRowOffsetY),
+        TraceStage.DispatchStarted or TraceStage.Attempt => (DotStartX, DispatchTop + DotRowOffsetY),
+        _ => (DotStartX, ClientTop + DotRowOffsetY),
+    };
+
+    /// <summary>Nhóm node theo anchor, tối đa 6 dot/nhóm + badge +N cho phần dư.</summary>
+    private List<DotGroup> BuildGroups() =>
+        _nodes.Values
+            .GroupBy(AnchorOf)
+            .Select(g =>
+            {
+                var ordered = g
+                    .OrderBy(n => n.ReceivedAt)
+                    .ThenBy(n => n.Id, StringComparer.Ordinal)
+                    .ToList();
+                var shown = ordered.Take(MaxDotsPerAnchor).ToList();
+                return new DotGroup(g.Key.X, g.Key.Y, shown, ordered.Count - shown.Count);
+            })
+            .OrderBy(g => g.Y)
+            .ThenBy(g => g.X)
+            .ToList();
+
+    /// <summary>Màu circle theo trạng thái — spec G2: trắng/xanh/đỏ/vàng/xanh lá.</summary>
+    private static string ColorClass(TraceNode n) => n.Stage switch
+    {
+        TraceStage.Received => "trace-dot--white",
+        TraceStage.DispatchStarted or TraceStage.Attempt => "trace-dot--blue",
+        TraceStage.Canceled => "trace-dot--yellow",
+        TraceStage.Finished => n.Success == false ? "trace-dot--red" : "trace-dot--green",
+        _ => "trace-dot--white",
+    };
+
+    /// <summary>Gỡ subscription và dừng vòng render — tránh leak delegate trên feed singleton.</summary>
+    public ValueTask DisposeAsync()
+    {
+        // Bắt buộc unsubscribe: feed là singleton, giữ delegate trỏ vào component đã
+        // dispose là leak + handler chạy vô ích cho mỗi event.
+        Feed.Published -= OnPublished;
+
+        // Chỉ Cancel, không Dispose: vòng lặp còn đăng ký Task.Delay trên token này;
+        // CTS không giữ tài nguyên native nên GC thu hồi an toàn.
+        _cts.Cancel();
+        return ValueTask.CompletedTask;
+    }
+}

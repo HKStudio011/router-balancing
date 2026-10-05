@@ -28,6 +28,22 @@ public static class Translations
         ["dashboard.msg.stopped"] = "Proxy stopped.",
         ["dashboard.msg.restarted"] = "Proxy restarted.",
         ["dashboard.msg.failed"] = "Action failed. See Logs for details.",
+
+        // Live Request Trace (Task 5)
+        ["trace.title"] = "Live Request Trace",
+        ["trace.legend.queued"] = "new/queue",
+        ["trace.legend.running"] = "running",
+        ["trace.legend.ok"] = "success",
+        ["trace.legend.error"] = "error",
+        ["trace.legend.cancelled"] = "cancel",
+        ["trace.count.queued"] = "queued",
+        ["trace.count.running"] = "running",
+        ["trace.count.ok"] = "OK",
+        ["trace.count.error"] = "error",
+        ["trace.count.cancelled"] = "cancel",
+        ["trace.more"] = "+{0}",
+        ["trace.idleAccounts"] = "+{0} idle",
+        ["trace.fadeHint"] = "terminal circle fades after ~10s",
         ["common.copied"] = "Copied",
 
         // Settings panel (Task 13)
@@ -347,6 +363,22 @@ public static class Translations
         ["dashboard.msg.stopped"] = "Đã dừng proxy.",
         ["dashboard.msg.restarted"] = "Đã khởi động lại proxy.",
         ["dashboard.msg.failed"] = "Thao tác thất bại. Xem Nhật ký để biết chi tiết.",
+
+        // Live Request Trace (Task 5)
+        ["trace.title"] = "Live Request Trace",
+        ["trace.legend.queued"] = "mới nhận/queue",
+        ["trace.legend.running"] = "đang thực thi",
+        ["trace.legend.ok"] = "thành công",
+        ["trace.legend.error"] = "lỗi",
+        ["trace.legend.cancelled"] = "cancel",
+        ["trace.count.queued"] = "chờ",
+        ["trace.count.running"] = "đang thực thi",
+        ["trace.count.ok"] = "OK",
+        ["trace.count.error"] = "lỗi",
+        ["trace.count.cancelled"] = "cancel",
+        ["trace.more"] = "+{0}",
+        ["trace.idleAccounts"] = "+{0} idle",
+        ["trace.fadeHint"] = "circle terminal fade sau ~10s",
         ["common.copied"] = "Đã sao chép",
 
         // Settings panel (Task 13)

@@ -1,4 +1,5 @@
 @page "/"
+@using RouterBalancing.Core.Engine
 @using RouterBalancing.Core.Settings
 @implements IDisposable
 @inject IProxyHost Proxy
@@ -43,6 +44,8 @@
         </div>
     </div>
 </div>
+
+<RequestTrace />
 
 @code {
     protected override void OnInitialized() => Proxy.StateChanged += OnStateChanged;
