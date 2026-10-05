@@ -20,6 +20,9 @@ public class DispatcherLoopTests : IDisposable
     private readonly ExecutionList _executions;
     private readonly DpapiSecretProtector _protector = new();
     private DispatcherLoop? _loop;
+    // Gán trong StartAsync cùng log của test — test mới subscribe Published để assert sequence;
+    // null! vì mọi test đều qua StartAsync trước khi đọc (tránh warning nullable)
+    private TraceFeed _trace = null!;
 
     public DispatcherLoopTests()
     {
@@ -114,7 +117,10 @@ public class DispatcherLoopTests : IDisposable
         IUpstreamClient upstream, CapturingLog log, IExecutionList? executions = null)
     {
         var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink());
-        _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler, log);
+        // Cùng log của test — TraceFeed ghi lỗi contract qua log này (Task 1)
+        _trace = new TraceFeed(log);
+        _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
+            log, _trace);
         await _loop.StartAsync(CancellationToken.None);
     }
 
@@ -447,6 +453,47 @@ public class DispatcherLoopTests : IDisposable
         Assert.Single(log.Infos);
         Assert.Contains("m1", log.Infos[0]);
         Assert.Contains("p1", log.Infos[0]);
+    }
+
+    [Fact]
+    public async Task Dispatch_PublishesTraceSequence_WithComboNameInRoute()
+    {
+        // Review Focus #2 — ComboName phải thread xuyên 2 site pass-through (re-select dòng 132
+        // và failover-advance trong ServeAsync) → Attempt.Route.Combo không được mất.
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin, "combo-x"));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new StubUpstream();
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var events = new List<TraceEvent>();
+        _trace.Published += e => events.Add(e);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+
+        // Dispatcher chỉ publish H2 + H3a/H3b — terminal (Finished) là H4 của endpoint (spec §4)
+        // nên request thành công đúng 2 event, theo thứ tự publish.
+        Assert.Equal(2, events.Count);
+        Assert.Equal(TraceStage.DispatchStarted, events[0].Stage);
+        Assert.Equal("req00001", events[0].RequestId);
+        Assert.Equal("RoundRobin", events[0].Mode);
+        Assert.Null(events[0].Route);
+
+        Assert.Equal(TraceStage.Attempt, events[1].Stage);
+        Assert.Equal("req00001", events[1].RequestId);
+        Assert.Equal(1, events[1].Attempt);
+        Assert.False(events[1].AttemptDone);
+        Assert.Null(events[1].Status);
+        var route = events[1].Route;
+        Assert.NotNull(route);
+        Assert.Equal("combo-x", route!.Combo);
+        Assert.Equal("p1", route.Provider);
+        Assert.Equal("a1", route.Account);
     }
 
     [Fact]

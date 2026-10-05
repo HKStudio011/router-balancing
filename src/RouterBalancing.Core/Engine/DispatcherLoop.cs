@@ -18,7 +18,8 @@ public sealed class DispatcherLoop(
     IComboResolver resolver,
     IModelSelector selector,
     ChatCompletionsHandler handler,
-    ILogService log) : BackgroundService
+    ILogService log,
+    ITraceFeed trace) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
 
@@ -156,7 +157,12 @@ public sealed class DispatcherLoop(
             return true;
         }
 
-        _ = ServeAsync(taken, candidate, remaining, success.Mode, accountId);
+        // H2: publish TRƯỚC khi fire ServeAsync để sequence luôn là
+        // DispatchStarted → Attempt (Route còn null — chưa chọn xong attempt, spec trace §4)
+        trace.Publish(new TraceEvent(request.Id, TraceStage.DispatchStarted, request.Model,
+            null, null, null, null, null, DateTimeOffset.Now, success.Mode.ToString()));
+
+        _ = ServeAsync(taken, candidate, remaining, success.Mode, accountId, success.ComboName);
         return true;
     }
 
@@ -168,7 +174,7 @@ public sealed class DispatcherLoop(
     /// Fire-and-forget từ <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
     /// </summary>
     private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
-        IReadOnlyList<ModelCandidate> remaining, ComboMode mode, long accountId)
+        IReadOnlyList<ModelCandidate> remaining, ComboMode mode, long accountId, string? comboName)
     {
         // Ước lượng N cho log "attempt k/N" (spec §5): Attempts đã có khi vào serve + tổng TK
         // enabled của snapshot remaining lúc này — chỉ phục vụ log, có thể lệch nhẹ khi park
@@ -178,6 +184,16 @@ public sealed class DispatcherLoop(
         while (true)
         {
             DispatchOutcome outcome;
+            // attemptNo/attemptRoute khai báo NGOÀI try để H3b (sau RecordAttempt, cùng ngoài try)
+            // dùng lại đúng attempt vừa chạy — attemptNo = Attempts đã journal + 1, không nhầm index
+            var attemptNo = request.Retry.Attempts + 1;
+            var attemptRoute = new TraceRoute(comboName, candidate.Provider.Name,
+                AccountNameOf(candidate, accountId));
+            // H3a: publish attempt start ngay trước lần gửi upstream, với route đủ combo/provider/
+            // account — UI vẽ circle vào nhánh ngay khi attempt đang chạy (spec trace §4).
+            // Đặt NGOÀI try: các catch bên dưới chỉ dành cho ForwardAsync — publish không đổi behavior.
+            trace.Publish(new TraceEvent(request.Id, TraceStage.Attempt, request.Model, attemptRoute,
+                attemptNo, null, null, null, DateTimeOffset.Now, null, AttemptDone: false));
             try
             {
                 // RequestAborted của client — disconnect giữa chừng cắt stream, không phải lỗi upstream (3A)
@@ -224,6 +240,11 @@ public sealed class DispatcherLoop(
             // accountName tra từ snapshot theo accountId, không có (sentinel 0/TK xóa) → "-"
             request.Retry.RecordAttempt(candidate.Provider.Name, candidate.Model.ModelId,
                 AccountNameOf(candidate, accountId), status);
+            // H3b: parity RetryState — status null = lỗi mạng (outcome không có HTTP status),
+            // có status = lỗi HTTP → UI phân loại FailureKind "network"/"http"
+            trace.Publish(new TraceEvent(request.Id, TraceStage.Attempt, request.Model, attemptRoute,
+                attemptNo, status, null, status is null ? "network" : "http", DateTimeOffset.Now,
+                null, AttemptDone: true));
             // LastFailure nhận từ CẢ 2 outcome — attempt cuối quyết định exhaustion (spec exhaustive-failover §2.3)
             request.Retry.LastFailure = outcome switch
             {
@@ -318,7 +339,7 @@ public sealed class DispatcherLoop(
                 try
                 {
                     nextCandidate = await selector.TrySelectAsync(
-                        new SelectionSuccess(next, mode), request.Context.RequestAborted);
+                        new SelectionSuccess(next, mode, comboName), request.Context.RequestAborted);
                     if (nextCandidate is not null)
                     {
                         var enter = await executions.TryEnterAsync(nextCandidate.Provider.Id,
