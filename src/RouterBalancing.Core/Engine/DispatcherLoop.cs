@@ -127,8 +127,10 @@ public sealed class DispatcherLoop(
         var enter = await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
             candidate.Provider.Name, candidate.Model.ModelId, request.Priority,
             request.EnqueuedAt, excludedAccounts: null, ct);
-        // Task 4: Entered → accountId; Full → park; NoAccountLeft → coi như Full (park) —
-        // exclude=null nên chỉ snapshot stale mới tới được nhánh NoAccountLeft (xem ParkUnlessEntered)
+        // Task 4: Entered → accountId; Full → park; NoAccountLeft → map tạm về park —
+        // với exclude=null ExecutionList không thể trả NoAccountLeft (nhánh return nằm trong
+        // else của `excludedAccounts is null`, không phụ thuộc snapshot stale — xem ParkUnlessEntered);
+        // Task 5 truyền exclude thật sẽ phân biệt advance vs park tại đây
         var accountId = ParkUnlessEntered(enter);
         if (accountId is null)
             return false; // capacity vừa hết (mọi TK đầy) — park, Exited sẽ đánh thức
@@ -282,10 +284,11 @@ public sealed class DispatcherLoop(
     /// <see langword="null"/> (coi như Full).
     /// </summary>
     /// <remarks>
-    /// NoAccountLeft với <c>excludedAccounts=null</c> là unreachable trong logic (0 TK enabled đã
-    /// trả sentinel Entered(0) trước) — chỉ snapshot stale (user tắt TK giữa load capacity và
-    /// enter) mới tới được nhánh này; map về park để giữ nguyên walk Task 4, Task 5 sẽ truyền
-    /// excludedAccounts thật và rẽ nhánh advance đúng.
+    /// Với <c>excludedAccounts=null</c> thì không thể trả <see cref="TryEnterResult.NoAccountLeft"/>:
+    /// nhánh return nằm trong nhánh <c>else</c> của phép kiểm tra <c>excludedAccounts is null</c>
+    /// (ExecutionList chỉ xét exclude, không phân biệt snapshot stale hay không). Map về park để
+    /// đầy đủ 3 trường hợp; Task 5 truyền exclude thật sẽ phân biệt NoAccountLeft (advance) với
+    /// Full (park) tại caller.
     /// </remarks>
     private static long? ParkUnlessEntered(TryEnterResult result) =>
         result is TryEnterResult.Entered entered ? entered.AccountId : null;
