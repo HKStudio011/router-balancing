@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
@@ -35,7 +36,8 @@ public class DispatcherLoopTests : IDisposable
         _db.Dispose();
     }
 
-    private long SeedProvider(string name, int maxConcurrent = 4, string modelId = "m1")
+    private long SeedProvider(string name, int maxConcurrent = 4, string modelId = "m1",
+        int accounts = 1)
     {
         using var db = _db.CreateFactory().CreateDbContext();
         var provider = new Provider
@@ -45,18 +47,22 @@ public class DispatcherLoopTests : IDisposable
             MaxConcurrent = maxConcurrent,
         };
         provider.Models.Add(new Model { ModelId = modelId, Enabled = true });
-        provider.Accounts.Add(new ProviderAccount
+        // Key distinct theo (provider, TK) — test walk nhận diện upstream nhận request trên TK nào
+        for (var i = 1; i <= accounts; i++)
         {
-            Name = "a1",
-            Enabled = true,
-            ApiKeyEncrypted = _protector.Protect("sk-live"),
-        });
+            provider.Accounts.Add(new ProviderAccount
+            {
+                Name = $"a{i}",
+                Enabled = true,
+                ApiKeyEncrypted = _protector.Protect($"sk-{name}-a{i}"),
+            });
+        }
         db.Providers.Add(provider);
         db.SaveChanges();
         return provider.Id;
     }
 
-    private ModelCandidate Candidate(long providerId)
+    private ModelCandidate Candidate(long providerId, string? modelId = null)
     {
         using var db = _db.CreateFactory().CreateDbContext();
         // Accounts bắt buộc: Handler.ResolveFirstEnabledKey đọc nav này để lấy key (như ComboResolver/ModelResolver)
@@ -64,7 +70,34 @@ public class DispatcherLoopTests : IDisposable
             .Include(p => p.Models)
             .Include(p => p.Accounts)
             .First(p => p.Id == providerId);
-        return new ModelCandidate(provider, provider.Models[0]);
+        return new ModelCandidate(provider, modelId is null
+            ? provider.Models[0]
+            : provider.Models.First(m => m.ModelId == modelId));
+    }
+
+    private void AddModel(long providerId, string modelId)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        var provider = db.Providers.Include(p => p.Models).First(p => p.Id == providerId);
+        provider.Models.Add(new Model { ModelId = modelId, Enabled = true });
+        db.SaveChanges();
+    }
+
+    /// <summary>Tắt/bật toàn bộ TK của provider — fixture đổi trạng thái giữa các lần dispatch (DB thật).</summary>
+    private void SetAccountsEnabled(long providerId, bool enabled)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        var provider = db.Providers.Include(p => p.Accounts).First(p => p.Id == providerId);
+        foreach (var account in provider.Accounts)
+            account.Enabled = enabled;
+        db.SaveChanges();
+    }
+
+    private long AccountIdOf(long providerId, string accountName)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        return db.Providers.Include(p => p.Accounts).First(p => p.Id == providerId)
+            .Accounts.First(a => a.Name == accountName).Id;
     }
 
     private static ProxyRequest Req(string id, string model = "m1")
@@ -75,10 +108,10 @@ public class DispatcherLoopTests : IDisposable
     }
 
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
-        IUpstreamClient upstream, CapturingLog log)
+        IUpstreamClient upstream, CapturingLog log, IExecutionList? executions = null)
     {
         var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink());
-        _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log);
+        _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler, log);
         await _loop.StartAsync(CancellationToken.None);
     }
 
@@ -128,6 +161,27 @@ public class DispatcherLoopTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Resolve đọc DB thật (phản ánh TK bị tắt giữa chừng) nhưng CÓ barrier: lần resolve
+    /// thứ <paramref name="blockAtCall"/> chặn TRƯỚC khi đọc — test tắt TK xong mới mở
+    /// barrier → snapshot LUÔN mới, không straddle với lúc disable (sentinel stale = 503 spec).
+    /// </summary>
+    private sealed class BarrierResolver(Func<SelectionResult> factory, int blockAtCall) : IComboResolver
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        /// <summary>Mở barrier — các lần resolve đến sau đi thẳng (đọc DB ngay).</summary>
+        public void Release() => _release.TrySetResult();
+
+        public async Task<SelectionResult> ResolveAsync(string model, CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _calls) == blockAtCall)
+                await _release.Task.WaitAsync(ct);
+            return factory();
+        }
+    }
+
     private sealed class CountingSelector(IModelSelector inner) : IModelSelector
     {
         public int Calls;
@@ -137,6 +191,42 @@ public class DispatcherLoopTests : IDisposable
             Interlocked.Increment(ref Calls);
             return inner.TrySelectAsync(selection, ct);
         }
+    }
+
+    /// <summary>
+    /// Double IExecutionList: trả <see cref="TryEnterResult.NoAccountLeft"/> cho lần TryEnter
+    /// THỨ 2 của 1 provider (lần 1 = dispatch đầu, lần 2 = account-advance) — test không phụ
+    /// thuộc nhánh reachability của <see cref="ExecutionList"/> thật.
+    /// </summary>
+    private sealed class NoAccountLeftOnSecondEnter(IExecutionList inner, long providerId)
+        : IExecutionList
+    {
+        private int _calls;
+
+        public event Action? Exited
+        {
+            add => inner.Exited += value;
+            remove => inner.Exited -= value;
+        }
+
+        public Task<bool> CanEnterAsync(long pid, CancellationToken ct) =>
+            inner.CanEnterAsync(pid, ct);
+
+        public Task<TryEnterResult> TryEnterAsync(long pid, string requestId, string providerName,
+            string modelId, RequestPriority priority, DateTimeOffset enqueuedAt,
+            IReadOnlySet<long>? excludedAccounts, CancellationToken ct) =>
+            pid == providerId && Interlocked.Increment(ref _calls) == 2
+                ? Task.FromResult<TryEnterResult>(new TryEnterResult.NoAccountLeft())
+                : inner.TryEnterAsync(pid, requestId, providerName, modelId, priority, enqueuedAt,
+                    excludedAccounts, ct);
+
+        public void Exit(string requestId) => inner.Exit(requestId);
+
+        public bool Contains(string requestId) => inner.Contains(requestId);
+
+        public int GetInFlight(long pid) => inner.GetInFlight(pid);
+
+        public IReadOnlyList<ExecutionEntry> Snapshot() => inner.Snapshot();
     }
 
     private sealed class StubUpstream : IUpstreamClient
@@ -185,6 +275,51 @@ public class DispatcherLoopTests : IDisposable
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
 
+    private static HttpResponseMessage Resp401() =>
+        new(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent("""{"error":{"message":"invalid key"}}""",
+                Encoding.UTF8, "application/json"),
+        };
+
+    private static HttpResponseMessage Resp403() =>
+        new(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent("""{"error":{"message":"forbidden"}}""",
+                Encoding.UTF8, "application/json"),
+        };
+
+    /// <summary>404 thường (không có error.code) — ClassifyFatal xếp cấp Provider.</summary>
+    private static HttpResponseMessage Resp404Other() =>
+        new(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent("""{"error":{"message":"no such endpoint"}}""",
+                Encoding.UTF8, "application/json"),
+        };
+
+    /// <summary>404 có error.code=model_not_found — ClassifyFatal xếp cấp Model.</summary>
+    private static HttpResponseMessage Resp404ModelNotFound() =>
+        new(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent(
+                """{"error":{"message":"The model does not exist","code":"model_not_found"}}""",
+                Encoding.UTF8, "application/json"),
+        };
+
+    private static HttpResponseMessage Resp429RetryAfter(string body, string retryAfter)
+    {
+        var response = Resp429(body);
+        response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
+        return response;
+    }
+
+    /// <summary>Đọc trường <c>model</c> trong body upstream — phân biệt attempt đi model nào.</summary>
+    private static string ModelOf(byte[] body)
+    {
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("model").GetString()!;
+    }
+
     private sealed class ScriptedUpstream(Func<Provider, HttpResponseMessage> factory) : IUpstreamClient
     {
         public int Calls;
@@ -220,6 +355,34 @@ public class DispatcherLoopTests : IDisposable
                 return Sse();
             }
             return call == 2 ? Resp429() : Sse();
+        }
+    }
+
+    /// <summary>
+    /// Upstream ghi nhận (provider, apiKey) mỗi lần gọi rồi ủy factory — test xác nhận đúng
+    /// TK/provider nào đã nhận request; factory throw được (mạng giả / OCE).
+    /// </summary>
+    private sealed class WalkUpstream(
+        Func<Provider, string, byte[], CancellationToken, Task<HttpResponseMessage>> factory)
+        : IUpstreamClient
+    {
+        private readonly List<(string Provider, string Key)> _calls = [];
+
+        public IReadOnlyList<(string Provider, string Key)> Calls
+        {
+            get
+            {
+                lock (_calls)
+                    return _calls.ToArray();
+            }
+        }
+
+        public Task<HttpResponseMessage> PostChatCompletionAsync(
+            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        {
+            lock (_calls)
+                _calls.Add((provider.Name, apiKey));
+            return factory(provider, apiKey, body, ct);
         }
     }
 
@@ -476,7 +639,7 @@ public class DispatcherLoopTests : IDisposable
 
         var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Exhaustion contract: attempt cuối (p2) quyết định — passthrough nguyên response đó (§3.3)
+        // Exhaustion contract: attempt cuối (p2) quyết định — passthrough nguyên response đó (§4)
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
         Assert.Equal(429, passthrough.Status);
         Assert.Equal("""{"error":{"message":"from-p2"}}""", Encoding.UTF8.GetString(passthrough.Body));
@@ -491,7 +654,7 @@ public class DispatcherLoopTests : IDisposable
     }
 
     [Fact]
-    public async Task Loop_WhenAllCandidatesFailWithNetworkError_CompletesError502()
+    public async Task ServeAsync_WhenExhaustedOnNetworkFailure_Returns502()
     {
         var p1 = SeedProvider("p1", modelId: "m1");
         var p2 = SeedProvider("p2", modelId: "m1");
@@ -506,7 +669,7 @@ public class DispatcherLoopTests : IDisposable
 
         var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Attempt cuối là mạng → 502 y như 3A, không passthrough body rỗng (§3.3)
+        // Attempt cuối là mạng → 502 y như 3A, không passthrough body rỗng (§4)
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
         Assert.Equal(502, error.Status);
         Assert.Equal("Upstream provider request failed", error.Message);
@@ -534,7 +697,7 @@ public class DispatcherLoopTests : IDisposable
 
         var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Attempt cuối (mạng) quyết định — không lấy response 429 của attempt đầu (§3.3)
+        // Attempt cuối (mạng) quyết định — không lấy response 429 của attempt đầu (§4)
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
         Assert.Equal(502, error.Status);
         Assert.Equal("Upstream provider request failed", error.Message);
@@ -561,7 +724,7 @@ public class DispatcherLoopTests : IDisposable
 
         var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // 4xx non-retryable: passthrough NGAY — không advance, không cộng counter (§1.4)
+        // 4xx non-retryable: passthrough NGAY — không advance, không cộng counter (spec exhaustive-failover §3.1)
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
         Assert.Equal(400, passthrough.Status);
         Assert.Equal(1, upstream.Calls);
@@ -592,7 +755,8 @@ public class DispatcherLoopTests : IDisposable
 
         var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Fatal 401 cấp Account vẫn failover — client thấy 200 của p2 (§1.3 #4)
+        // Fatal 401 cấp Account → TK kế cùng provider (p1 chỉ 1 TK → NoAccountLeft) rồi mới
+        // provider kế — client thấy 200 của p2 (spec exhaustive-failover §1.3 #2/§3.1)
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, upstream.Calls);
         Assert.Contains(log.Warns, w =>
@@ -661,5 +825,450 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(3, upstream.Calls);
         Assert.False(_queue.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task ServeAsync_When401_TriesNextAccountOfSameProvider_BeforeChangingProvider()
+    {
+        var pidA = SeedProvider("p1", accounts: 2);
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(
+            key == "sk-p1-a1" ? Resp401() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 401 cấp Account: thử TK kế cùng provider TRƯỚC khi đổi provider
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(("p1", "sk-p1-a1"), calls[0]);
+        Assert.Equal(("p1", "sk-p1-a2"), calls[1]);
+        Assert.DoesNotContain(calls, c => c.Provider == "p2"); // KHÔNG gửi sang provider B
+        Assert.False(_executions.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task ServeAsync_When429_TriesNextAccountOfSameProvider()
+    {
+        var pidA = SeedProvider("p1", accounts: 2);
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(
+            key == "sk-p1-a1" ? Resp429() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Retryable (429) dispatcher gán cấp Account — TK kế cùng provider trước provider kế
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(("p1", "sk-p1-a1"), calls[0]);
+        Assert.Equal(("p1", "sk-p1-a2"), calls[1]);
+        Assert.DoesNotContain(calls, c => c.Provider == "p2");
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenAllAccountsTried_MovesToNextProvider()
+    {
+        var pidA = SeedProvider("p1", accounts: 2);
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(key switch
+        {
+            "sk-p1-a1" => Resp401(),
+            "sk-p1-a2" => Resp403(),
+            _ => Sse(),
+        }));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Hết TK của p1 (401 + 403) → mới rơi xuống p2, client thấy 200
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(3, calls.Count);
+        Assert.Equal(("p1", "sk-p1-a1"), calls[0]);
+        Assert.Equal(("p1", "sk-p1-a2"), calls[1]);
+        Assert.Equal("p2", calls[2].Provider);
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenAllAccountsOfProviderAUnauthorized_MovesToProviderB()
+    {
+        // Review Focus #4 — exclude scope theo provider: tập TK đã thử của p1 KHÔNG loại p2
+        var pidA = SeedProvider("p1", accounts: 2);
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(
+            p.Name == "p1" ? Resp401() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(3, calls.Count);
+        Assert.Equal("sk-p1-a1", calls[0].Key);
+        Assert.Equal("sk-p1-a2", calls[1].Key);
+        Assert.Equal(("p2", "sk-p2-a1"), calls[2]); // TK của p2 vẫn được chọn
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenNetworkError_SkipsProvider_WithoutTryingOtherAccounts()
+    {
+        var pidA = SeedProvider("p1");
+        AddModel(pidA, "m2");
+        var pidB = SeedProvider("p2");
+        // Fallback để attempt theo thứ tự Position xác định: A/m1 → A/m2 → B/m1
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA, "m1"), Candidate(pidA, "m2"), Candidate(pidB, "m1")],
+            ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => p.Name == "p1"
+            ? throw new HttpRequestException("connection refused")
+            : Task.FromResult(Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Lỗi mạng = provider-wide: bỏ CẢ provider, không quét model/TK khác cùng provider
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls.Count);
+        Assert.Equal(1, upstream.Calls.Count(c => c.Provider == "p1")); // A/m2 không bao giờ được thử
+        Assert.Equal("p2", upstream.Calls[1].Provider);
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenModelNotFound_SkipsCandidate()
+    {
+        var pid = SeedProvider("p1");
+        AddModel(pid, "m2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pid, "m1"), Candidate(pid, "m2")], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var triedModels = new List<string>();
+        var upstream = new WalkUpstream((p, key, body, ct) =>
+        {
+            lock (triedModels)
+                triedModels.Add(ModelOf(body));
+            return Task.FromResult(ModelOf(body) == "m1" ? Resp404ModelNotFound() : Sse());
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 404 model_not_found = bỏ đúng cặp (provider, model) — model khác cùng provider vẫn thử
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls.Count);
+        Assert.Equal(new[] { "m1", "m2" }, triedModels);
+    }
+
+    [Fact]
+    public async Task ServeAsync_When404Other_SkipsProvider()
+    {
+        var pidA = SeedProvider("p1");
+        AddModel(pidA, "m2");
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA, "m1"), Candidate(pidA, "m2"), Candidate(pidB, "m1")],
+            ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(
+            p.Name == "p1" ? Resp404Other() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 404 thường = sai endpoint/provider — bỏ nguyên provider (model khác cùng provider cũng không thử)
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls.Count);
+        Assert.Equal(1, upstream.Calls.Count(c => c.Provider == "p1"));
+        Assert.Equal("p2", upstream.Calls[1].Provider);
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenNoAccountLeft_MarksPairAndAdvances()
+    {
+        // Review Focus #3 — TryEnter giả trả NoAccountLeft tại account-advance
+        var pidA = SeedProvider("p1");
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(
+            p.Name == "p1" ? Resp401() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log,
+            new NoAccountLeftOnSecondEnter(_executions, pidA));
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.True(request.Retry.IsTried(pidA, "m1")); // pair bị đánh dấu trước khi advance
+        Assert.True(request.Retry.IsAccountTried(pidA, AccountIdOf(pidA, "a1")));
+        Assert.Equal(2, upstream.Calls.Count); // p1 đúng 1 attempt — không loop
+        Assert.Equal("p2", upstream.Calls[1].Provider);
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenUntriedAccountsFull_Reenqueues_AndDoesNotRetryTriedAccounts()
+    {
+        // Review Focus #2 — park khi TK chưa thử đầy → Exited wake → chỉ thử TK chưa fail
+        var pid = SeedProvider("p1", maxConcurrent: 1, accounts: 2);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var a1Calls = 0;
+        var upstream = new WalkUpstream(async (p, key, body, ct) =>
+        {
+            // call đầu của a1 (r0) giữ slot tới khi release; mọi attempt khác → 401
+            if (key == "sk-p1-a1" && Interlocked.Increment(ref a1Calls) == 1)
+            {
+                await release.Task;
+                return Sse();
+            }
+            return Resp401();
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var r0 = Req("req00001");
+        _queue.Enqueue(r0);
+        await WaitUntilAsync(() => upstream.Calls.Count >= 1); // r0 giữ trọn a1 (gated)
+        await Task.Delay(200); // chắc loop đã chờ event — enqueue r1 để TryEnter thấy a1 đầy
+
+        var r1 = Req("req00002");
+        _queue.Enqueue(r1);
+        // r1 vào a2 → 401 → a2 đánh dấu, a1 đầy → park (KHÔNG đánh dấu pair)
+        await WaitUntilAsync(() => _queue.Contains("req00002") && upstream.Calls.Count == 2);
+        Assert.False(r1.Completion.Task.IsCompleted);
+
+        // r0 xong → Exited wake → dispatch lại: exclude={a2} → chỉ thử a1 (TK chưa fail)
+        release.SetResult();
+        Assert.IsType<DispatchOutcome.Handled>(await r0.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        var outcome = await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // a1 cũng 401 → NoAccountLeft → pair marked → exhaustion passthrough attempt cuối
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(401, passthrough.Status);
+        Assert.Equal(2, upstream.Calls.Count(c => c.Key == "sk-p1-a1")); // r0 (200) + r1 (401)
+        Assert.Equal(1, upstream.Calls.Count(c => c.Key == "sk-p1-a2")); // KHÔNG thử lại TK đã fail
+        Assert.False(_queue.Contains("req00002"));
+        Assert.False(_executions.Contains("req00002"));
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenExhausted_PassesThroughLastHttpResponse()
+    {
+        var pidA = SeedProvider("p1");
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(
+            p.Name == "p1" ? Resp429() : Resp429RetryAfter("""{"error":{"message":"final"}}""", "7")));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Exhaustion contract: attempt cuối có HTTP → passthrough nguyên status + body + Retry-After (§4)
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(429, passthrough.Status);
+        Assert.Equal("""{"error":{"message":"final"}}""", Encoding.UTF8.GetString(passthrough.Body));
+        Assert.Equal("7", passthrough.RetryAfterHeader);
+        Assert.Equal(2, upstream.Calls.Count);
+        Assert.Contains(log.Errors,
+            e => e.Contains("req00001") && e.Contains("thất bại sau 2 candidate"));
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenClientAbortsDuringAccountSwitch_ReturnsAborted()
+    {
+        var pid = SeedProvider("p1", accounts: 2);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        using var abort = new CancellationTokenSource();
+        var calls = 0;
+        var upstream = new WalkUpstream((p, key, body, ct) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                abort.Cancel(); // client ngắt NGAY sau fail đầu — giữa 2 lần thử TK
+                return Task.FromResult(Resp401());
+            }
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(Sse());
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        request.Context.RequestAborted = abort.Token;
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Aborted>(outcome);
+        // Aborted: endpoint không ghi JSON — stream untouched
+        Assert.Equal(0, ((MemoryStream)request.Context.Response.Body).Length);
+        Assert.Equal(200, request.Context.Response.StatusCode);
+        Assert.Equal("sk-p1-a1", upstream.Calls[0].Key); // fail đầu trên TK1, không serve tiếp
+    }
+
+    [Fact]
+    public async Task TryDispatch_WhenComboFallback_KeepsPositionalOrderAcrossProviders()
+    {
+        var pidA = SeedProvider("p1", accounts: 2);
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(key switch
+        {
+            "sk-p1-a1" => Resp401(),
+            "sk-p1-a2" => Resp403(),
+            _ => Sse(),
+        }));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Fallback: exhaust mọi TK của Position 1 (p1) theo thứ tự mới rơi xuống Position 2 (p2)
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(3, calls.Count);
+        Assert.Equal("sk-p1-a1", calls[0].Key);
+        Assert.Equal("sk-p1-a2", calls[1].Key);
+        Assert.Equal("p2", calls[2].Provider);
+    }
+
+    [Fact]
+    public async Task TryDispatch_WhenWalkEmptyAndNothingTried_Returns503()
+    {
+        var pid = SeedProvider("p1");
+        SetAccountsEnabled(pid, false); // walk rỗng ngay — mọi TK disabled, CHƯA thử ai
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new StubUpstream();
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Chưa thử ai → 503 tạm thời (không phải exhaustion passthrough/502)
+        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
+        Assert.Equal(503, error.Status);
+        Assert.Equal("The model 'm1' is temporarily unavailable", error.Message);
+        Assert.Equal("server_error", error.Type);
+        Assert.Equal(0, upstream.Calls);
+        Assert.False(_queue.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task Loop_WhenRequeuedRequestHasNoUntriedCandidates_CompletesExhaustionInsteadOfGate503()
+    {
+        // Re-dispatch với HasTried=true (p2 đã fail cấp Provider) + không còn candidate nào
+        // (tắt TK p1 qua DB giữa chừng) → exhaustion, KHÔNG phải 503 walk-rỗng.
+        var pidA = SeedProvider("p1", maxConcurrent: 1);
+        var pidB = SeedProvider("p2");
+        // Barrier ở resolve #3 = lần re-dispatch ĐẦU TIÊN sau khi r1 park (resolve #1 = r0,
+        // #2 = dispatch của r1): chặn trước khi đọc DB → test tắt TK rồi mới mở → không straddle.
+        var resolver = new BarrierResolver(() => new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin), blockAtCall: 3);
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var upstream = new WalkUpstream(async (p, key, body, ct) =>
+        {
+            if (p.Name == "p1")
+            {
+                await release.Task; // r0 giữ slot p1
+                return Sse();
+            }
+            throw new HttpRequestException("connection refused");
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var r0 = Req("req00001");
+        _queue.Enqueue(r0);
+        await WaitUntilAsync(() => upstream.Calls.Count >= 1); // r0 kẹt ở p1 (gated)
+        await Task.Delay(200);
+
+        var r1 = Req("req00002");
+        _queue.Enqueue(r1);
+        // r1 → p2 (p1 đầy) → lỗi mạng → MarkProviderFailed(p2) + MarkTried → p1 đầy → park
+        await WaitUntilAsync(() => _queue.Contains("req00002") && upstream.Calls.Count == 2);
+        Assert.False(r1.Completion.Task.IsCompleted);
+
+        // Tắt toàn bộ TK p1 — re-dispatch không còn candidate nào chưa thử. Resolve #3 đang
+        // chặn ở barrier (trước khi đọc DB) nên snapshot LUÔN đọc thấy TK đã tắt — không có
+        // snapshot stale → không đi nhánh sentinel Entered(0) forward 503 (spec §sentinel).
+        SetAccountsEnabled(pidA, false);
+        resolver.Release();
+
+        // HasTried → exhaustion theo contract: attempt cuối là mạng → 502 (không phải 503)
+        var outcome = await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
+        Assert.Equal(502, error.Status);
+        Assert.Equal("Upstream provider request failed", error.Message);
+        Assert.Equal(2, upstream.Calls.Count); // không attempt nào thêm sau khi park
+        Assert.False(_queue.Contains("req00002"));
+
+        // Dọn r0 cuối cùng: release để r0 thoát p1 (không tính vào Calls — cùng call đã gate)
+        release.SetResult();
+        Assert.IsType<DispatchOutcome.Handled>(await r0.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 }

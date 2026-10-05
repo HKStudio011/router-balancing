@@ -105,51 +105,65 @@ public sealed class DispatcherLoop(
 
         var success = (SelectionSuccess)selection;
 
-        // Walk 3C: bỏ candidate đã thử trong request này (§3.4)
-        var remaining = FilterRemaining(success.Candidates, request);
-        if (remaining.Count == 0)
+        // Walk exhaustive-failover §3.2: filter → select → TryEnter với exclude = TK đã thử
+        // của provider đang xét. NoAccountLeft (snapshot stale — TK bị tắt giữa chừng) →
+        // MarkTried(pair) rồi lọc lại; mỗi vòng đánh dấu 1 pair nên hữu hạn.
+        ModelCandidate? candidate = null;
+        IReadOnlyList<ModelCandidate> remaining = [];
+        long accountId;
+        while (true)
         {
-            if (!queue.TryRemove(request.Id, out _))
-                return true; // vừa bị cancel/abort gỡ — bên kia đã báo outcome rồi
-            request.Completion.TrySetResult(request.Retry.HasTried
-                ? CompleteExhaustion(request)
-                : new DispatchOutcome.Error(503,
-                    $"The model '{request.Model}' is temporarily unavailable",
-                    "server_error", null, null));
-            return true;
+            remaining = FilterRemaining(success.Candidates, request);
+            if (remaining.Count == 0)
+            {
+                if (!queue.TryRemove(request.Id, out _))
+                    return true; // vừa bị cancel/abort gỡ — bên kia đã báo outcome rồi
+                request.Completion.TrySetResult(request.Retry.HasTried
+                    ? CompleteExhaustion(request)
+                    : new DispatchOutcome.Error(503,
+                        $"The model '{request.Model}' is temporarily unavailable",
+                        "server_error", null, null));
+                return true;
+            }
+
+            candidate = await selector.TrySelectAsync(
+                new SelectionSuccess(remaining, success.Mode), ct);
+            if (candidate is null)
+                return false; // park — item KHÔNG bị Take, chờ Changed|Exited
+
+            var enter = await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
+                candidate.Provider.Name, candidate.Model.ModelId, request.Priority,
+                request.EnqueuedAt, TriedAccountsOf(candidate, request.Retry), ct);
+            if (enter is TryEnterResult.Entered entered)
+            {
+                accountId = entered.AccountId;
+                break;
+            }
+            if (enter is TryEnterResult.Full)
+                return false; // capacity hết → park, Exited/Changed đánh thức
+
+            // NoAccountLeft: mọi TK enabled của provider này đã thử nhưng snapshot còn ghi
+            // chưa (stale) — đánh dấu pair để filter loại, rồi chọn lại (hữu hạn)
+            request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
         }
-
-        var candidate = await selector.TrySelectAsync(
-            new SelectionSuccess(remaining, success.Mode), ct);
-        if (candidate is null)
-            return false; // park — item KHÔNG bị Take, chờ Changed|Exited
-
-        var enter = await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
-            candidate.Provider.Name, candidate.Model.ModelId, request.Priority,
-            request.EnqueuedAt, excludedAccounts: null, ct);
-        // Task 4: Entered → accountId; Full → park; NoAccountLeft → map tạm về park —
-        // với exclude=null ExecutionList không thể trả NoAccountLeft (nhánh return nằm trong
-        // else của `excludedAccounts is null`, không phụ thuộc snapshot stale — xem ParkUnlessEntered);
-        // Task 5 truyền exclude thật sẽ phân biệt advance vs park tại đây
-        var accountId = ParkUnlessEntered(enter);
-        if (accountId is null)
-            return false; // capacity vừa hết (mọi TK đầy) — park, Exited sẽ đánh thức
 
         if (!queue.Take(request.Id, out var taken))
         {
-            // Take fail = item vừa bị huỷ/abort giữa TryEnter và Take — trả slot ngay (spec §3.3)
+            // Take fail = item vừa bị huỷ/abort giữa TryEnter và Take — trả slot ngay (giữ hành vi 3B)
             executions.Exit(request.Id);
             return true;
         }
 
-        _ = ServeAsync(taken, candidate, remaining, success.Mode, accountId.Value);
+        _ = ServeAsync(taken, candidate, remaining, success.Mode, accountId);
         return true;
     }
 
     /// <summary>
-    /// Serve 1 request qua vòng walk: mỗi candidate 1 lần, Retryable/Fatal → Exit + advance kế;
-    /// hết list → CompleteExhaustion (log Error) + Passthrough/Error502. Fire-and-forget từ
-    /// <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
+    /// Serve 1 request qua vòng walk exhaustive (spec exhaustive-failover §2.4/§3.2): mỗi attempt
+    /// fail ghi journal rồi rẽ theo cấp — Account (Retryable 429/408/5xx + Fatal 401/403) →
+    /// <c>MarkAccountTried</c> + <c>TryEnter</c> TK kế cùng provider; Model/Provider → đánh dấu
+    /// rồi candidate-advance; hết list → <see cref="CompleteExhaustion"/> (Passthrough/Error502).
+    /// Fire-and-forget từ <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
     /// </summary>
     private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
         IReadOnlyList<ModelCandidate> remaining, ComboMode mode, long accountId)
@@ -184,56 +198,142 @@ public sealed class DispatcherLoop(
                     : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
             }
 
-            if (outcome is DispatchOutcome.Retryable or DispatchOutcome.Fatal)
+            if (outcome is not (DispatchOutcome.Retryable or DispatchOutcome.Fatal))
             {
-                request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
-                // LastFailure nhận từ CẢ 2 outcome — attempt cuối quyết định exhaustion (§2.2)
-                request.Retry.LastFailure = outcome switch
-                {
-                    DispatchOutcome.Retryable r =>
-                        new RetryState.Failure(r.Status, r.ContentType, r.Body, r.RetryAfter),
-                    DispatchOutcome.Fatal f =>
-                        new RetryState.Failure(f.Status, f.ContentType, f.Body, f.RetryAfter),
-                    _ => request.Retry.LastFailure,
-                };
+                // Không phải Retryable/Fatal: trả slot rồi complete (Handled/Passthrough/Error/Cancelled/Aborted)
+                executions.Exit(request.Id);
+                request.Completion.TrySetResult(outcome);
+                return;
+            }
 
-                var next = FilterRemaining(remaining, request);
-                if (next.Count == 0)
+            var status = outcome switch
+            {
+                DispatchOutcome.Retryable r => r.Status,
+                DispatchOutcome.Fatal f => f.Status,
+                _ => null,
+            };
+            // Journal attempt (spec exhaustive-failover §2.4) — Task 6 format log từ Attempts/Trail;
+            // accountName tra từ snapshot theo accountId, không có (sentinel 0/TK xóa) → "-"
+            request.Retry.RecordAttempt(candidate.Provider.Name, candidate.Model.ModelId,
+                AccountNameOf(candidate, accountId), status);
+            // LastFailure nhận từ CẢ 2 outcome — attempt cuối quyết định exhaustion (spec exhaustive-failover §2.3)
+            request.Retry.LastFailure = outcome switch
+            {
+                DispatchOutcome.Retryable r =>
+                    new RetryState.Failure(r.Status, r.ContentType, r.Body, r.RetryAfter),
+                DispatchOutcome.Fatal f =>
+                    new RetryState.Failure(f.Status, f.ContentType, f.Body, f.RetryAfter),
+                _ => request.Retry.LastFailure,
+            };
+
+            // Retryable (429/408/5xx) dispatcher gán cấp Account (spec exhaustive-failover §3.1)
+            var level = outcome is DispatchOutcome.Fatal fatal
+                ? fatal.Level
+                : FailoverLevel.Account;
+
+            if (level == FailoverLevel.Account)
+            {
+                request.Retry.MarkAccountTried(candidate.Provider.Id, accountId);
+                // Exit TRƯỚC TryEnter — trả slot TK cũ, TK kế reserve lại trong cùng request (§2.4)
+                executions.Exit(request.Id);
+                TryEnterResult enter;
+                try
                 {
-                    // CompleteExhaustion TRƯỚC Exit — log exhaustion ghi xong trước khi Exited
-                    // wake dispatch request đang queue, nếu không log bị xót (I2)
-                    var exhausted = CompleteExhaustion(request);
-                    executions.Exit(request.Id);
-                    request.Completion.TrySetResult(exhausted);
+                    enter = await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
+                        candidate.Provider.Name, candidate.Model.ModelId, request.Priority,
+                        request.EnqueuedAt, TriedAccountsOf(candidate, request.Retry),
+                        request.Context.RequestAborted);
+                }
+                catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
+                {
+                    // Slot đã trả — chỉ cần báo outcome (idempotent TCS)
+                    request.Completion.TrySetResult(new DispatchOutcome.Aborted());
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // Slot đã trả — lỗi enter phải thành outcome, không được nuốt (I2)
+                    request.Completion.TrySetResult(AdvanceFailureOutcome(request, ex));
                     return;
                 }
 
-                var advanceStatus = outcome switch
+                switch (enter)
                 {
-                    DispatchOutcome.Retryable r => r.Status,
-                    DispatchOutcome.Fatal f => f.Status,
-                    _ => null,
-                };
-                LogAdvance(request, candidate, advanceStatus);
-                // Exit TRƯỚC khi advance — trả slot ngay, không giữ trong lúc chọn candidate kế
+                    case TryEnterResult.Entered entered:
+                        accountId = entered.AccountId; // cùng candidate — tiếp vòng serve với TK kế
+                        continue;
+                    case TryEnterResult.Full:
+                        // TK chưa thử còn đó nhưng đầy → park chờ Exited; KHÔNG MarkTried pair
+                        ReenqueueForPark(request);
+                        return;
+                    default: // NoAccountLeft — mọi TK enabled của provider này đã thử
+                        request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
+                        break; // rơi xuống candidate-advance
+                }
+            }
+            else
+            {
+                if (level == FailoverLevel.Provider)
+                {
+                    // Lỗi provider-wide (mạng/404 khác) — filter loại MỌI candidate của provider,
+                    // kể cả model chưa thử (§2.3): dispatch lại không tốn timeout thử model khác
+                    request.Retry.MarkProviderFailed(candidate.Provider.Id);
+                }
+                request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
                 executions.Exit(request.Id);
+            }
 
+            // — Candidate-advance (spec exhaustive-failover §2.4) —
+            var next = FilterRemaining(remaining, request);
+            if (next.Count == 0)
+            {
+                // Exit đã làm ở nhánh trên (idempotent) — CompleteExhaustion TRƯỚC khi complete
+                // để log exhaustion ghi xong rồi mới endpoint nhận outcome (I2)
+                var exhausted = CompleteExhaustion(request);
+                executions.Exit(request.Id);
+                request.Completion.TrySetResult(exhausted);
+                return;
+            }
+            LogAdvance(request, candidate, status);
+
+            // Vòng trong: candidate kế trả NoAccountLeft (snapshot stale) → MarkTried(pair) →
+            // lọc lại; mỗi vòng 1 pair nên hữu hạn, không loop vô hạn
+            while (true)
+            {
                 ModelCandidate? nextCandidate;
                 long? nextAccountId = null;
                 try
                 {
                     nextCandidate = await selector.TrySelectAsync(
                         new SelectionSuccess(next, mode), request.Context.RequestAborted);
-                    nextAccountId = nextCandidate is null
-                        ? null
-                        // Task 4: map y hệt dispatch đầu (Full/NoAccountLeft → park) — exclude=null,
-                        // Task 5 sẽ truyền excludedAccounts thật khi account-advance
-                        : ParkUnlessEntered(await executions.TryEnterAsync(
-                            nextCandidate.Provider.Id, request.Id, nextCandidate.Provider.Name,
-                            nextCandidate.Model.ModelId, request.Priority, request.EnqueuedAt,
-                            excludedAccounts: null, request.Context.RequestAborted));
-                    if (nextCandidate is not null && nextAccountId is null)
-                        nextCandidate = null; // capacity corner — park lại, TK đã trả qua Exit
+                    if (nextCandidate is not null)
+                    {
+                        var enter = await executions.TryEnterAsync(nextCandidate.Provider.Id,
+                            request.Id, nextCandidate.Provider.Name, nextCandidate.Model.ModelId,
+                            request.Priority, request.EnqueuedAt,
+                            TriedAccountsOf(nextCandidate, request.Retry),
+                            request.Context.RequestAborted);
+                        switch (enter)
+                        {
+                            case TryEnterResult.Entered entered:
+                                nextAccountId = entered.AccountId;
+                                break;
+                            case TryEnterResult.Full:
+                                nextCandidate = null; // capacity corner — park (khối dưới)
+                                break;
+                            default: // NoAccountLeft — đánh dấu pair rồi lọc lại (hữu hạn)
+                                request.Retry.MarkTried(nextCandidate.Provider.Id,
+                                    nextCandidate.Model.ModelId);
+                                next = FilterRemaining(next, request);
+                                if (next.Count == 0)
+                                {
+                                    var exhaustedLoop = CompleteExhaustion(request);
+                                    request.Completion.TrySetResult(exhaustedLoop);
+                                    return;
+                                }
+                                continue; // vòng trong — chọn candidate khác
+                        }
+                    }
                 }
                 catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
                 {
@@ -244,54 +344,44 @@ public sealed class DispatcherLoop(
                 catch (Exception ex)
                 {
                     // Slot đã trả — lỗi select/enter phải thành outcome, không được nuốt (I2)
-                    try
-                    {
-                        log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
-                    }
-                    catch
-                    {
-                        // Nuốt chủ đích: "log không được làm hỏng request path"
-                    }
-                    request.Completion.TrySetResult(request.Context.Response.HasStarted
-                        ? new DispatchOutcome.Aborted()
-                        : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null));
+                    request.Completion.TrySetResult(AdvanceFailureOutcome(request, ex));
                     return;
                 }
 
                 if (nextCandidate is null)
                 {
+                    // Selector null (mọi candidate kẹt capacity) hoặc TryEnter Full — park lại,
+                    // TK đã trả qua Exit
                     ReenqueueForPark(request);
                     return;
                 }
 
                 candidate = nextCandidate;
                 remaining = next;
-                accountId = nextAccountId!.Value; // nextCandidate != null ⇒ đã enter thành công (TK mới mỗi vòng — D-B6)
-                continue;
+                accountId = nextAccountId!.Value; // Entered ⇒ nextAccountId gán (TK mới mỗi vòng — D-B6)
+                break; // ra vòng ngoài — forward attempt kế
             }
-
-            // Không phải Retryable/Fatal: trả slot rồi complete (Handled/Passthrough/Error/Cancelled/Aborted)
-            executions.Exit(request.Id);
-            request.Completion.TrySetResult(outcome);
-            return;
         }
     }
 
     /// <summary>
-    /// Map <see cref="TryEnterResult"/> về <c>long?</c> (Task 4 — walk chưa đổi semantics):
-    /// <see cref="TryEnterResult.Entered"/> → AccountId; <see cref="TryEnterResult.Full"/> →
-    /// <see langword="null"/> (park); <see cref="TryEnterResult.NoAccountLeft"/> →
-    /// <see langword="null"/> (coi như Full).
+    /// Lỗi exception giữa select/enter sau khi slot đã trả — log Error (bọc nuốt I2) rồi trả
+    /// outcome: response đã stream → <see cref="DispatchOutcome.Aborted"/>, chưa → Error 500.
     /// </summary>
-    /// <remarks>
-    /// Với <c>excludedAccounts=null</c> thì không thể trả <see cref="TryEnterResult.NoAccountLeft"/>:
-    /// nhánh return nằm trong nhánh <c>else</c> của phép kiểm tra <c>excludedAccounts is null</c>
-    /// (ExecutionList chỉ xét exclude, không phân biệt snapshot stale hay không). Map về park để
-    /// đầy đủ 3 trường hợp; Task 5 truyền exclude thật sẽ phân biệt NoAccountLeft (advance) với
-    /// Full (park) tại caller.
-    /// </remarks>
-    private static long? ParkUnlessEntered(TryEnterResult result) =>
-        result is TryEnterResult.Entered entered ? entered.AccountId : null;
+    private DispatchOutcome AdvanceFailureOutcome(ProxyRequest request, Exception ex)
+    {
+        try
+        {
+            log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
+        }
+        catch
+        {
+            // Nuốt chủ đích: "log không được làm hỏng request path"
+        }
+        return request.Context.Response.HasStarted
+            ? new DispatchOutcome.Aborted()
+            : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
+    }
 
     /// <summary>Payload lỗi resolve — GIỮ NGUYÊN message/type/param/code 3A, chỉ đổi nơi gọi (spec §4).</summary>
     private static DispatchOutcome.Error CreateResolveError(SelectionFailure failure) =>
@@ -311,25 +401,54 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// Candidate chưa thử trong request này + còn TK enabled — dùng cho dispatch đầu
-    /// và mỗi bước walk (§3.4).
+    /// Candidate chưa thử trong request này + chưa fail cấp Provider + còn TK enabled chưa thử
+    /// — dùng cho dispatch đầu và mỗi bước walk (spec exhaustive-failover §3.2).
     /// </summary>
     private IReadOnlyList<ModelCandidate> FilterRemaining(IReadOnlyList<ModelCandidate> candidates,
         ProxyRequest request) =>
         candidates
             .Where(c => !request.Retry.IsTried(c.Provider.Id, c.Model.ModelId)
-                && HasEnabledUntriedAccount(c))
+                && !request.Retry.IsProviderFailed(c.Provider.Id)
+                && HasEnabledUntriedAccount(c, request.Retry))
             .ToList();
 
     /// <summary>
-    /// Còn TK enabled (V3): nav Accounts chưa load (null) → không loại ở đây —
-    /// ExecutionList tự filter sau materialize; mọi TK disabled → loại candidate
-    /// (giữ lại thì TryEnter tạo sentinel 0 forward 503 thay vì chọn TK healthy).
+    /// Còn TK enabled CHƯA thử (spec exhaustive-failover §3.2): nav Accounts chưa load (null)
+    /// → không loại ở đây — ExecutionList tự filter sau materialize; mọi TK disabled hoặc đã
+    /// thử trong request này → loại candidate (giữ lại thì TryEnter tạo sentinel 0 forward 503
+    /// thay vì chọn TK healthy).
     /// </summary>
-    private bool HasEnabledUntriedAccount(ModelCandidate candidate) =>
-        candidate.Provider.Accounts?.Any(a => a.Enabled) != false;
+    private static bool HasEnabledUntriedAccount(ModelCandidate candidate, RetryState retry) =>
+        candidate.Provider.Accounts?
+            .Any(a => a.Enabled && !retry.IsAccountTried(candidate.Provider.Id, a.Id)) != false;
 
-    /// <summary>Ghi log Error exhaustion rồi trả outcome — gọi 2 nơi (§3.3/§3.4).</summary>
+    /// <summary>
+    /// Tên TK đã dùng cho journal attempt — tra từ snapshot theo <paramref name="accountId"/>;
+    /// không có (sentinel 0 / TK bị xóa giữa chừng) → "-".
+    /// </summary>
+    private static string AccountNameOf(ModelCandidate candidate, long accountId) =>
+        candidate.Provider.Accounts?.FirstOrDefault(a => a.Id == accountId)?.Name ?? "-";
+
+    /// <summary>
+    /// Tập TK của provider <paramref name="candidate"/> đã thử trong request — truyền vào
+    /// <c>TryEnter</c> làm exclude (spec exhaustive-failover §2.2): scope theo provider nên
+    /// TK của provider khác không bị loại oan.
+    /// </summary>
+    private static IReadOnlySet<long> TriedAccountsOf(ModelCandidate candidate, RetryState retry)
+    {
+        HashSet<long> tried = [];
+        if (candidate.Provider.Accounts is { } accounts)
+        {
+            foreach (var account in accounts)
+            {
+                if (retry.IsAccountTried(candidate.Provider.Id, account.Id))
+                    tried.Add(account.Id);
+            }
+        }
+        return tried;
+    }
+
+    /// <summary>Ghi log Error exhaustion rồi trả outcome — gọi 2 nơi (spec exhaustive-failover §4).</summary>
     private DispatchOutcome CompleteExhaustion(ProxyRequest request)
     {
         RecordExhaustion(request);
@@ -354,7 +473,7 @@ public sealed class DispatcherLoop(
         }
     }
 
-    /// <summary>Exhaustion contract §3.3: attempt cuối có HTTP → Passthrough nguyên; mạng → Error 502 (y như 3A).</summary>
+    /// <summary>Exhaustion contract (spec exhaustive-failover §4): attempt cuối có HTTP → Passthrough nguyên; mạng → Error 502 (y như 3A).</summary>
     private static DispatchOutcome ExhaustionOutcome(ProxyRequest request)
     {
         var last = request.Retry.LastFailure;
@@ -382,7 +501,7 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// Capacity corner sau advance: re-enqueue vào queue chờ <c>Exited</c>/<c>Changed</c> (park 3B)
+    /// Capacity corner (selector null / TryEnter Full): re-enqueue vào queue chờ <c>Exited</c>/<c>Changed</c>
     /// — KHÔNG phải requeue-vì-lỗi: candidate đã thử vẫn bị exclude qua <see cref="RetryState"/> (§3.2).
     /// </summary>
     private void ReenqueueForPark(ProxyRequest request)
@@ -409,7 +528,7 @@ public sealed class DispatcherLoop(
             return;
         }
         // Token cancel giữa check trên và Enqueue: callback Register (endpoint) đã lỡ fire khi
-        // item chưa trong queue → tự gỡ lại + Cancelled (spec §3.4); TrySetResult idempotent
+        // item chưa trong queue → tự gỡ lại + Cancelled (giữ hành vi cancel 3B); TrySetResult idempotent
         if (request.Context.RequestAborted.IsCancellationRequested
             && queue.TryRemove(request.Id, out _))
         {
