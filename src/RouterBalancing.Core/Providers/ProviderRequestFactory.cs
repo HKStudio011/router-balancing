@@ -65,6 +65,19 @@ public static class ProviderRequestFactory
             OpenCodeFreeFingerprint.Apply(request, provider, apiKey, content);
         }
 
+        // Attribution headers (HTTP-Referer/X-Title cho NIM + OpenRouter; billing origin
+        // chỉ NIM) — gắn theo provider kể cả GET probe, như opencode/hermes
+        if (ProviderAttribution.IsApplicable(provider))
+        {
+            ProviderAttribution.Apply(request, provider);
+        }
+
+        // NVIDIA NIM: bỏ name/tool_name khỏi role=tool (NIM ToolMessage schema hẹp hơn)
+        if (NvidiaRequestProfile.IsApplicable(provider))
+        {
+            NvidiaRequestProfile.Apply(request, content);
+        }
+
         return request;
     }
 }
