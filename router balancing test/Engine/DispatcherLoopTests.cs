@@ -37,7 +37,7 @@ public class DispatcherLoopTests : IDisposable
     }
 
     private long SeedProvider(string name, int maxConcurrent = 4, string modelId = "m1",
-        int accounts = 1)
+        int accounts = 1, string[]? accountNames = null)
     {
         using var db = _db.CreateFactory().CreateDbContext();
         var provider = new Provider
@@ -47,14 +47,17 @@ public class DispatcherLoopTests : IDisposable
             MaxConcurrent = maxConcurrent,
         };
         provider.Models.Add(new Model { ModelId = modelId, Enabled = true });
-        // Key distinct theo (provider, TK) — test walk nhận diện upstream nhận request trên TK nào
-        for (var i = 1; i <= accounts; i++)
+        // Key distinct theo (provider, TK) — test walk nhận diện upstream nhận request trên TK nào.
+        // accountNames: thứ tự insert tùy ý (Id = thứ tự insert) — test điều khiển tie-break
+        // RR theo Id của ExecutionList; không truyền → a1..a{n} như cũ.
+        var names = accountNames ?? Enumerable.Range(1, accounts).Select(i => $"a{i}").ToArray();
+        foreach (var accountName in names)
         {
             provider.Accounts.Add(new ProviderAccount
             {
-                Name = $"a{i}",
+                Name = accountName,
                 Enabled = true,
-                ApiKeyEncrypted = _protector.Protect($"sk-{name}-a{i}"),
+                ApiKeyEncrypted = _protector.Protect($"sk-{name}-{accountName}"),
             });
         }
         db.Providers.Add(provider);
@@ -393,12 +396,16 @@ public class DispatcherLoopTests : IDisposable
         public List<string> Errors { get; } = [];
         public List<string> Debugs { get; } = [];
 
+        /// <summary>Entry nguyên vẹn — assert cả <see cref="LogEntry.Details"/> (log walk §5).</summary>
+        public List<LogEntry> Entries { get; } = [];
+
         public event Action<LogEntry>? LogAdded { add { } remove { } }
 
         // ChatCompletionsHandler ghi journal qua Write (spec §7) — route theo Severity để các
         // assert Infos/Warns/Errors cũ (LogForwarded, lỗi upstream) vẫn bắt được dòng mới
         public void Write(LogEntry entry)
         {
+            Entries.Add(entry);
             switch (entry.Severity)
             {
                 case LogSeverity.Debug: Debugs.Add(entry.Message); break;
@@ -613,10 +620,11 @@ public class DispatcherLoopTests : IDisposable
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, upstream.Calls);
-        // Advance Warn nêu đúng provider/model/status/request rồi chuyển candidate kế (§5)
+        // Advance Warn nêu đúng request/attempt/provider/model/status + action theo nhánh rẽ (§5)
         Assert.Contains(log.Warns, w =>
-            w.Contains("Chuyển candidate kế") && w.Contains("'p1'/'m1'")
-            && w.Contains("HTTP 429") && w.Contains("req00001"));
+            w.Contains("attempt 1/") && w.Contains("'p1'/'m1'")
+            && w.Contains("HTTP 429") && w.Contains("req00001")
+            && w.Contains("chuyển provider kế"));
         Assert.Contains(log.Infos, i => i.Contains("m1") && i.Contains("p2")); // chỉ Info lần thành công
         Assert.False(_executions.Contains("req00001"));
     }
@@ -645,9 +653,11 @@ public class DispatcherLoopTests : IDisposable
         Assert.Equal("""{"error":{"message":"from-p2"}}""", Encoding.UTF8.GetString(passthrough.Body));
         Assert.Equal(2, upstream.Calls);
         Assert.Contains(log.Errors,
-            e => e.Contains("req00001") && e.Contains("thất bại sau 2 candidate"));
-        // Đúng 1 Warn advance (p1→p2) — hết candidate nên không log lần 2
-        Assert.Single(log.Warns);
+            e => e.Contains("req00001") && e.Contains("thất bại sau 2 attempt"));
+        // 2 attempt fail → 2 dòng Warn: advance (p1→p2) + attempt cuối "exhausted"
+        Assert.Equal(2, log.Warns.Count);
+        Assert.Contains(log.Warns, w => w.Contains("chuyển provider kế"));
+        Assert.Contains(log.Warns, w => w.Contains("→ exhausted"));
         // Handler không tự ghi response — ctx untouched cho endpoint ghi
         Assert.Equal(200, request.Context.Response.StatusCode);
         Assert.Equal(0, ((MemoryStream)request.Context.Response.Body).Length);
@@ -676,7 +686,7 @@ public class DispatcherLoopTests : IDisposable
         Assert.Equal(2, upstream.Calls);
         // 2 lỗi mạng của handler + 1 exhaustion của dispatcher
         Assert.Equal(3, log.Errors.Count);
-        Assert.Contains(log.Errors, e => e.Contains("thất bại sau 2 candidate"));
+        Assert.Contains(log.Errors, e => e.Contains("thất bại sau 2 attempt"));
     }
 
     [Fact]
@@ -760,8 +770,9 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, upstream.Calls);
         Assert.Contains(log.Warns, w =>
-            w.Contains("Chuyển candidate kế") && w.Contains("'p1'/'m1'")
-            && w.Contains("HTTP 401") && w.Contains("req00001"));
+            w.Contains("attempt 1/") && w.Contains("'p1'/'m1'")
+            && w.Contains("HTTP 401") && w.Contains("req00001")
+            && w.Contains("chuyển provider kế"));
     }
 
     [Fact]
@@ -791,8 +802,9 @@ public class DispatcherLoopTests : IDisposable
         Assert.Contains("from-p2", Encoding.UTF8.GetString(passthrough.Body));
         Assert.Equal(2, upstream.Calls);
         Assert.Contains(log.Errors,
-            e => e.Contains("req00001") && e.Contains("thất bại sau 2 candidate"));
-        Assert.Contains(log.Warns, w => w.Contains("Chuyển candidate kế") && w.Contains("HTTP 404"));
+            e => e.Contains("req00001") && e.Contains("thất bại sau 2 attempt"));
+        Assert.Contains(log.Warns,
+            w => w.Contains("HTTP 404") && w.Contains("chuyển provider kế"));
     }
 
     [Fact]
@@ -1124,7 +1136,81 @@ public class DispatcherLoopTests : IDisposable
         Assert.Equal("7", passthrough.RetryAfterHeader);
         Assert.Equal(2, upstream.Calls.Count);
         Assert.Contains(log.Errors,
-            e => e.Contains("req00001") && e.Contains("thất bại sau 2 candidate"));
+            e => e.Contains("req00001") && e.Contains("thất bại sau 2 attempt"));
+    }
+
+    [Fact]
+    public async Task ServeAsync_LogsWarnPerFailedAttempt_WithProviderAndAccountNames()
+    {
+        // Spec §5.1 — mỗi attempt fail = đúng 1 dòng Warn: provider/model/account/status + k/N + action.
+        // Thứ tự insert [tk-1, tk-3, tk-2] (Id tăng dần theo insert): tie-break RR của ExecutionList
+        // chọn theo Id + cursor → attempt đi đúng tk-1 → tk-2 → tk-3, nên attempt 2 luôn là tk-2
+        // và vẫn còn tk-3 chưa thử (action "chuyển TK kế").
+        var pid = SeedProvider("provider-a", accountNames: ["tk-1", "tk-3", "tk-2"]);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => Task.FromResult(
+            key is "sk-provider-a-tk-1" or "sk-provider-a-tk-2" ? Resp429() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(3, upstream.Calls.Count);
+        // 2 attempt fail → 2 dòng Warn; dòng "Chuyển candidate kế" cũ đã bị xoá
+        Assert.Equal(2, log.Warns.Count);
+        Assert.DoesNotContain(log.Warns, w => w.Contains("Chuyển candidate kế"));
+        // Attempt 2: nêu đúng provider/model/account/status, k/N và action theo nhánh rẽ
+        Assert.Contains("'provider-a'/'m1'", log.Warns[1]);
+        Assert.Contains("account 'tk-2'", log.Warns[1]);
+        Assert.Contains("HTTP 429", log.Warns[1]);
+        Assert.Contains("attempt 2/", log.Warns[1]);
+        Assert.Contains("chuyển TK kế", log.Warns[1]);
+        Assert.Contains("req00001", log.Warns[1]);
+        // Attempt 1 cùng định dạng với TK của chính nó
+        Assert.Contains("account 'tk-1'", log.Warns[0]);
+        Assert.Contains("attempt 1/", log.Warns[0]);
+        Assert.Contains("chuyển TK kế", log.Warns[0]);
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenExhausted_LogsErrorWithAttemptTrailInDetails()
+    {
+        // Spec §5.2 — log Error exhaustion: message nêu số attempt, Details = JSON mảng Trail {p,m,a,s}
+        var pidA = SeedProvider("p1");
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA), Candidate(pidB)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => Resp429());
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        var exhaustion = Assert.Single(log.Entries, e =>
+            e.Severity == LogSeverity.Error && e.Category == LogCategory.Request
+            && e.Message.Contains("req00001") && e.Message.Contains("attempt"));
+        Assert.Contains($"{request.Retry.Attempts} attempt", exhaustion.Message);
+        Assert.NotNull(exhaustion.Details);
+        using var doc = JsonDocument.Parse(exhaustion.Details!);
+        Assert.Equal(JsonValueKind.Array, doc.RootElement.ValueKind);
+        var last = doc.RootElement.EnumerateArray().Last();
+        // Khối cuối = attempt cuối (p2/m1/a1/HTTP 429)
+        Assert.Equal("p2", last.GetProperty("p").GetString());
+        Assert.Equal("m1", last.GetProperty("m").GetString());
+        Assert.Equal("a1", last.GetProperty("a").GetString());
+        Assert.Equal(429, last.GetProperty("s").GetInt32());
+        // Invariant bảo mật: trail không chứa API key/body request
+        Assert.DoesNotContain("sk-", exhaustion.Details);
     }
 
     [Fact]

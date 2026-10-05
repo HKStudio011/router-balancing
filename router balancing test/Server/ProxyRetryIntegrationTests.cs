@@ -151,7 +151,7 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Contains("data:", await response.Content.ReadAsStringAsync());
         Assert.Equal(2, upstream.Calls);
         Assert.Contains(_messages, m =>
-            m.Contains("Chuyển candidate kế") && m.Contains("HTTP 429")); // Warn §5
+            m.Contains("chuyển provider kế") && m.Contains("HTTP 429")); // Warn attempt fail §5
     }
 
     [Fact]

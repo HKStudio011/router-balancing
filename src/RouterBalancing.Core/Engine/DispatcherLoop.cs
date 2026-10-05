@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
@@ -168,6 +170,11 @@ public sealed class DispatcherLoop(
     private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
         IReadOnlyList<ModelCandidate> remaining, ComboMode mode, long accountId)
     {
+        // Ước lượng N cho log "attempt k/N" (spec §5): Attempts đã có khi vào serve + tổng TK
+        // enabled của snapshot remaining lúc này — chỉ phục vụ log, có thể lệch nhẹ khi park
+        // rồi dispatch lại (snapshot mới khi vào ServeAsync lần sau).
+        var attemptBudget = request.Retry.Attempts
+            + remaining.Sum(r => r.Provider.Accounts?.Count(a => a.Enabled) ?? 0);
         while (true)
         {
             DispatchOutcome outcome;
@@ -212,7 +219,8 @@ public sealed class DispatcherLoop(
                 DispatchOutcome.Fatal f => f.Status,
                 _ => null,
             };
-            // Journal attempt (spec exhaustive-failover §2.4) — Task 6 format log từ Attempts/Trail;
+            // Journal attempt (spec exhaustive-failover §2.4) — Warn attempt fail (§5) và
+            // Details JSON trail của log exhaustion đọc từ Attempts/Trail;
             // accountName tra từ snapshot theo accountId, không có (sentinel 0/TK xóa) → "-"
             request.Retry.RecordAttempt(candidate.Provider.Name, candidate.Model.ModelId,
                 AccountNameOf(candidate, accountId), status);
@@ -260,13 +268,18 @@ public sealed class DispatcherLoop(
                 switch (enter)
                 {
                     case TryEnterResult.Entered entered:
+                        // Warn TRƯỚC khi đổi accountId — mô tả TK VỪA fail (spec §5)
+                        LogAttemptFail(request, candidate, accountId, attemptBudget,
+                            "chuyển TK kế");
                         accountId = entered.AccountId; // cùng candidate — tiếp vòng serve với TK kế
                         continue;
                     case TryEnterResult.Full:
                         // TK chưa thử còn đó nhưng đầy → park chờ Exited; KHÔNG MarkTried pair
+                        LogAttemptFail(request, candidate, accountId, attemptBudget, "chờ slot");
                         ReenqueueForPark(request);
                         return;
                     default: // NoAccountLeft — mọi TK enabled của provider này đã thử
+                        // Warn hoãn đến khi biết action ở candidate-advance (chuyển * kế / exhausted)
                         request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
                         break; // rơi xuống candidate-advance
                 }
@@ -287,14 +300,14 @@ public sealed class DispatcherLoop(
             var next = FilterRemaining(remaining, request);
             if (next.Count == 0)
             {
-                // Exit đã làm ở nhánh trên (idempotent) — CompleteExhaustion TRƯỚC khi complete
-                // để log exhaustion ghi xong rồi mới endpoint nhận outcome (I2)
+                LogAttemptFail(request, candidate, accountId, attemptBudget, "exhausted");
+                // Exit đã làm ở nhánh trên (Account: trước TryEnter; Model/Provider: cùng MarkTried)
+                // — CompleteExhaustion TRƯỚC khi complete để log exhaustion ghi xong rồi mới
+                // endpoint nhận outcome (I2)
                 var exhausted = CompleteExhaustion(request);
-                executions.Exit(request.Id);
                 request.Completion.TrySetResult(exhausted);
                 return;
             }
-            LogAdvance(request, candidate, status);
 
             // Vòng trong: candidate kế trả NoAccountLeft (snapshot stale) → MarkTried(pair) →
             // lọc lại; mỗi vòng 1 pair nên hữu hạn, không loop vô hạn
@@ -327,6 +340,9 @@ public sealed class DispatcherLoop(
                                 next = FilterRemaining(next, request);
                                 if (next.Count == 0)
                                 {
+                                    // Vẫn mô tả attempt VỪA fail (candidate/account cũ) — action exhausted
+                                    LogAttemptFail(request, candidate, accountId, attemptBudget,
+                                        "exhausted");
                                     var exhaustedLoop = CompleteExhaustion(request);
                                     request.Completion.TrySetResult(exhaustedLoop);
                                     return;
@@ -352,10 +368,17 @@ public sealed class DispatcherLoop(
                 {
                     // Selector null (mọi candidate kẹt capacity) hoặc TryEnter Full — park lại,
                     // TK đã trả qua Exit
+                    LogAttemptFail(request, candidate, accountId, attemptBudget, "chờ slot");
                     ReenqueueForPark(request);
                     return;
                 }
 
+                // Action theo nhánh rẽ thực đi (spec §5): cùng provider → đổi candidate,
+                // khác provider (kể cả fail cấp Provider) → chuyển provider kế
+                LogAttemptFail(request, candidate, accountId, attemptBudget,
+                    nextCandidate.Provider.Id == candidate.Provider.Id
+                        ? "chuyển candidate kế"
+                        : "chuyển provider kế");
                 candidate = nextCandidate;
                 remaining = next;
                 accountId = nextAccountId!.Value; // Entered ⇒ nextAccountId gán (TK mới mỗi vòng — D-B6)
@@ -456,16 +479,23 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// Log Error exhaustion (§5) — không còn record failure theo model (circuit đã bỏ).
-    /// Bọc try: log ném không được chặn TrySetResult (I2).
+    /// Log Error exhaustion (§5) — message nêu số attempt, Details = JSON mảng lịch sử
+    /// attempt từ <see cref="RetryState.Trail"/> (khóa {p,m,a,s} — không body request, không
+    /// API key). Bọc try: log ném không được chặn TrySetResult (I2).
     /// </summary>
     private void RecordExhaustion(ProxyRequest request)
     {
         try
         {
-            log.Error(
-                $"Request {request.Id} thất bại sau {request.Retry.TriedCount} candidate — " +
-                "chuyển phản hồi cuối về client", category: LogCategory.Request);
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Error,
+                Category = LogCategory.Request,
+                Message = $"Request {request.Id} thất bại sau {request.Retry.Attempts} attempt — " +
+                    "chuyển phản hồi cuối về client",
+                Details = JsonSerializer.Serialize(request.Retry.Trail
+                    .Select(r => new { p = r.Provider, m = r.Model, a = r.Account, s = r.Status })),
+            });
         }
         catch
         {
@@ -484,19 +514,59 @@ public sealed class DispatcherLoop(
                 null, null);
     }
 
-    /// <summary>Log Warn advance failover — chỉ khi thật sự còn candidate kế (spec §5); bọc nuốt (I2).</summary>
-    private void LogAdvance(ProxyRequest request, ModelCandidate failed, int? status)
+    /// <summary>
+    /// Ghi 1 dòng Warn cho attempt fail (spec §5.1): message nêu request, k/N (ước lượng),
+    /// provider/model/account/status và action theo nhánh rẽ đã đi; Details = snippet lỗi
+    /// upstream (≤500 ký tự) hoặc "lỗi mạng" — không body request, không API key.
+    /// Bọc nuốt (I2): log không được chặn walk.
+    /// </summary>
+    /// <param name="request">Request đang serve — lấy id, <c>Attempts</c> (k) và <c>LastFailure</c>.</param>
+    /// <param name="candidate">Candidate VỪA fail (trước khi advance).</param>
+    /// <param name="accountId">TK VỪA fail (trước khi đổi sang TK/candidate kế).</param>
+    /// <param name="attemptBudget">N ước lượng — snapshot tại đầu <c>ServeAsync</c>.</param>
+    /// <param name="action">Action của nhánh rẽ: chuyển TK/provider/candidate kế, chờ slot, exhausted.</param>
+    private void LogAttemptFail(ProxyRequest request, ModelCandidate candidate, long accountId,
+        int attemptBudget, string action)
     {
-        var reason = status is { } code ? $"HTTP {code}" : "lỗi mạng";
+        var failure = request.Retry.LastFailure;
+        var statusText = failure?.Status is { } code ? $"HTTP {code}" : "lỗi mạng";
         try
         {
-            log.Warn(
-                $"Chuyển candidate kế: '{failed.Provider.Name}'/'{failed.Model.ModelId}' " +
-                $"lỗi retryable ({reason}) — request {request.Id}", LogCategory.Request);
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Warning,
+                Category = LogCategory.Request,
+                Message =
+                    $"Request {request.Id} — attempt {request.Retry.Attempts}/{attemptBudget} fail: " +
+                    $"provider '{candidate.Provider.Name}'/'{candidate.Model.ModelId}' " +
+                    $"account '{AccountNameOf(candidate, accountId)}' {statusText} → {action}",
+                Details = ErrorSnippet(failure),
+            });
         }
         catch
         {
             // Nuốt chủ đích: log không được chặn walk
+        }
+    }
+
+    /// <summary>
+    /// Snippet lỗi upstream cho <c>Details</c> log attempt (spec §5): body lỗi decode UTF-8,
+    /// cắt 500 ký tự (best-effort); lỗi mạng (<see cref="RetryState.Failure.Status"/> null)
+    /// → "lỗi mạng" — exception gốc đã có ở dòng Error của handler.
+    /// </summary>
+    private static string ErrorSnippet(RetryState.Failure? failure)
+    {
+        if (failure?.Status is null)
+            return "lỗi mạng";
+        try
+        {
+            var text = Encoding.UTF8.GetString(failure.Body);
+            return text.Length <= 500 ? text : text[..500];
+        }
+        catch
+        {
+            // Decode lỗi (best-effort) — bỏ snippet, Warn message vẫn đầy đủ
+            return string.Empty;
         }
     }
 
