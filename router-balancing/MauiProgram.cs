@@ -76,9 +76,6 @@ namespace router_balancing
             // Outbound proxy pool (spec proxy-pool §4)
             builder.Services.AddSingleton(TimeProvider.System);           // ProxyPool tính cooldown down theo system clock
             builder.Services.AddSingleton<IProxyPool, ProxyPool>();       // singleton: giữ down-state + RR cursor
-            // Danh sách retry thủ công 3 cấp (spec manual-retry §2.1) — ProxyHost chuyển
-            // đúng instance này sang proxy container
-            builder.Services.AddSingleton<IManualRetryStore, ManualRetryStore>();
             builder.Services.AddSingleton<IProxyEchoClient, ProxyEchoClient>();
             builder.Services.AddTransient<ProxyHealthHandler>();          // transient per HttpClient pipeline
             builder.Services.AddTransient<ProviderProbeTimeoutHandler>();  // probe timeout per request (settings.providerProbeTimeoutSec)

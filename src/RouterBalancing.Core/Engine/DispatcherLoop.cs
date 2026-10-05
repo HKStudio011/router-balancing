@@ -16,8 +16,7 @@ public sealed class DispatcherLoop(
     IComboResolver resolver,
     IModelSelector selector,
     ChatCompletionsHandler handler,
-    ILogService log,
-    IManualRetryStore store) : BackgroundService
+    ILogService log) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
 
@@ -106,7 +105,7 @@ public sealed class DispatcherLoop(
 
         var success = (SelectionSuccess)selection;
 
-        // Walk 3C: bỏ candidate model đang ManualRetry + candidate đã thử trong request này (§3.2/§3.4)
+        // Walk 3C: bỏ candidate đã thử trong request này (§3.4)
         var remaining = FilterRemaining(success.Candidates, request);
         if (remaining.Count == 0)
         {
@@ -192,19 +191,6 @@ public sealed class DispatcherLoop(
                         new RetryState.Failure(f.Status, f.ContentType, f.Body, f.RetryAfter),
                     _ => request.Retry.LastFailure,
                 };
-                if (outcome is DispatchOutcome.Fatal fatal)
-                {
-                    try
-                    {
-                        // Park TRƯỚC khi filter — request kế loại entity ngay (§3.3);
-                        // store KHÔNG được phá walk: lỗi log/lock chỉ nuốt (I2)
-                        store.Park(fatal.Level, fatal.Id, fatal.ModelId, fatal.Reason);
-                    }
-                    catch
-                    {
-                        // Nuốt chủ đích: store lỗi không được chặn failover
-                    }
-                }
 
                 var next = FilterRemaining(remaining, request);
                 if (next.Count == 0)
@@ -301,25 +287,23 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// Candidate chưa thử + chưa parked (model/provider/account) — dùng cho dispatch đầu
-    /// và mỗi bước walk (§3.2/§3.4).
+    /// Candidate chưa thử trong request này + còn TK enabled — dùng cho dispatch đầu
+    /// và mỗi bước walk (§3.4).
     /// </summary>
     private IReadOnlyList<ModelCandidate> FilterRemaining(IReadOnlyList<ModelCandidate> candidates,
         ProxyRequest request) =>
         candidates
             .Where(c => !request.Retry.IsTried(c.Provider.Id, c.Model.ModelId)
-                && !store.IsModelParked(c.Model.ModelId)
-                && !store.IsProviderParked(c.Provider.Id)
-                && HasEnabledUnparkedAccount(c))
+                && HasEnabledUntriedAccount(c))
             .ToList();
 
     /// <summary>
-    /// Còn TK enabled chưa parked (V3): nav Accounts chưa load (null) → không loại ở đây —
-    /// ExecutionList tự filter sau materialize; mọi TK enabled parked → loại candidate
+    /// Còn TK enabled (V3): nav Accounts chưa load (null) → không loại ở đây —
+    /// ExecutionList tự filter sau materialize; mọi TK disabled → loại candidate
     /// (giữ lại thì TryEnter tạo sentinel 0 forward 503 thay vì chọn TK healthy).
     /// </summary>
-    private bool HasEnabledUnparkedAccount(ModelCandidate candidate) =>
-        candidate.Provider.Accounts?.Any(a => a.Enabled && !store.IsAccountParked(a.Id)) != false;
+    private bool HasEnabledUntriedAccount(ModelCandidate candidate) =>
+        candidate.Provider.Accounts?.Any(a => a.Enabled) != false;
 
     /// <summary>Ghi log Error exhaustion rồi trả outcome — gọi 2 nơi (§3.3/§3.4).</summary>
     private DispatchOutcome CompleteExhaustion(ProxyRequest request)
@@ -329,8 +313,8 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// Log Error exhaustion (§5) — không còn record failure theo model (circuit đã bỏ,
-    /// ManualRetry do Fatal park chủ động). Bọc try: log ném không được chặn TrySetResult (I2).
+    /// Log Error exhaustion (§5) — không còn record failure theo model (circuit đã bỏ).
+    /// Bọc try: log ném không được chặn TrySetResult (I2).
     /// </summary>
     private void RecordExhaustion(ProxyRequest request)
     {

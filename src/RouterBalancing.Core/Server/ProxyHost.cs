@@ -24,7 +24,6 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly ISecretProtector _protector;
     private readonly IClientKeyService _clientKeys;
     private readonly IProxyPool _pool;
-    private readonly IManualRetryStore _manualRetryStore;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private WebApplication? _app;
     private bool _disposed;
@@ -36,8 +35,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     public event Action? StateChanged;
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
-        ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool,
-        IManualRetryStore manualRetryStore)
+        ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool)
     {
         _settings = settings;
         _log = log;
@@ -45,7 +43,6 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _protector = protector;
         _clientKeys = clientKeys;
         _pool = pool;
-        _manualRetryStore = manualRetryStore;
     }
 
     /// <summary>
@@ -75,8 +72,6 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_log);
             builder.Services.AddSingleton(_db);
             builder.Services.AddSingleton(_clientKeys);
-            // Danh sách retry thủ công — share đúng instance với UI (spec manual-retry §2.2)
-            builder.Services.AddSingleton(_manualRetryStore);
             builder.WebHost.ConfigureKestrel(options =>
                 options.Listen(ResolveBindAddress(_settings.LanAccess), port));
 

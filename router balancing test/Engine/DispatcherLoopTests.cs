@@ -23,8 +23,7 @@ public class DispatcherLoopTests : IDisposable
     public DispatcherLoopTests()
     {
         DbInitializer.Initialize(_db.CreateFactory());
-        _executions = new ExecutionList(_db.CreateFactory(),
-            new ManualRetryStore(new NullLog(), TimeProvider.System));
+        _executions = new ExecutionList(_db.CreateFactory());
     }
 
     public void Dispose()
@@ -76,19 +75,11 @@ public class DispatcherLoopTests : IDisposable
     }
 
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
-        IUpstreamClient upstream, CapturingLog log, ManualRetryStore? store = null)
+        IUpstreamClient upstream, CapturingLog log)
     {
-        store ??= new ManualRetryStore(log, TimeProvider.System);
         var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink());
-        _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log, store);
+        _loop = new DispatcherLoop(_queue, _executions, resolver, selector, handler, log);
         await _loop.StartAsync(CancellationToken.None);
-    }
-
-    private long AccountIdOf(long providerId)
-    {
-        using var db = _db.CreateFactory().CreateDbContext();
-        return db.Providers.Include(p => p.Accounts)
-            .First(p => p.Id == providerId).Accounts[0].Id;
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
@@ -114,15 +105,6 @@ public class DispatcherLoopTests : IDisposable
                 throw new InvalidOperationException("boom");
             return Task.FromResult(result);
         }
-    }
-
-    // Resolve theo model string của request — mỗi request một danh sách candidate khác nhau
-    // (test dispatch-time cần r1/r2 map sang combo khác nhau, StubResolver chỉ trả 1 kết quả)
-    private sealed class ModelMapResolver(IReadOnlyDictionary<string, SelectionResult> results)
-        : IComboResolver
-    {
-        public Task<SelectionResult> ResolveAsync(string model, CancellationToken ct) =>
-            Task.FromResult(results[model]);
     }
 
     private sealed class GatingResolver(SelectionResult result) : IComboResolver
@@ -238,38 +220,6 @@ public class DispatcherLoopTests : IDisposable
                 return Sse();
             }
             return call == 2 ? Resp429() : Sse();
-        }
-    }
-
-    // Call#1 (request giữ slot) kẹp tới Release rồi kết thúc 400 non-retryable —
-    // passthrough ngay, KHÔNG đụng manual-retry store (model test park giữa chừng giữ nguyên);
-    // call#2 (attempt đầu của request walk) lỗi 429; call#3+ không được gọi tới
-    // (exhaustion tại dispatch-time không được phép serve thêm).
-    private sealed class GatedBadRequestUpstream : IUpstreamClient
-    {
-        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int _calls;
-
-        public int Calls => Volatile.Read(ref _calls);
-        public Task Entered => _entered.Task;
-        public void Release() => _release.TrySetResult();
-
-        public async Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
-        {
-            var call = Interlocked.Increment(ref _calls);
-            if (call == 1)
-            {
-                _entered.TrySetResult();
-                await _release.Task;
-                return new HttpResponseMessage(HttpStatusCode.BadRequest)
-                {
-                    Content = new StringContent("""{"error":{"message":"bad"}}""", Encoding.UTF8,
-                        "application/json"),
-                };
-            }
-            return call == 2 ? Resp429("""{"error":{"message":"from-p2"}}""") : Sse();
         }
     }
 
@@ -549,8 +499,7 @@ public class DispatcherLoopTests : IDisposable
         var selector = new CountingSelector(new ModelSelector(_executions));
         var upstream = new ScriptedUpstream(_ => throw new HttpRequestException("connection refused"));
         var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        await StartAsync(resolver, selector, upstream, log, store: store);
+        await StartAsync(resolver, selector, upstream, log);
 
         var request = Req("req00001");
         _queue.Enqueue(request);
@@ -565,9 +514,6 @@ public class DispatcherLoopTests : IDisposable
         // 2 lỗi mạng của handler + 1 exhaustion của dispatcher
         Assert.Equal(3, log.Errors.Count);
         Assert.Contains(log.Errors, e => e.Contains("thất bại sau 2 candidate"));
-        // Mạng = Fatal(Provider) — park cả 2 provider, request sau bị filter (spec §3.2)
-        Assert.True(store.IsProviderParked(p1));
-        Assert.True(store.IsProviderParked(p2));
     }
 
     [Fact]
@@ -625,63 +571,7 @@ public class DispatcherLoopTests : IDisposable
     }
 
     [Fact]
-    public async Task Loop_WhenProviderParked_SkipsCandidateAndServesOtherProvider()
-    {
-        var p1 = SeedProvider("p1", modelId: "m1");
-        var p2 = SeedProvider("p2", modelId: "m1"); // cùng model 2 provider — RR sort (p1, p2)
-        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
-        var selector = new CountingSelector(new ModelSelector(_executions));
-        var upstream = new ScriptedUpstream(_ => Sse());
-        var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        store.Park(ManualRetryLevel.Provider, p1, "", ManualRetryReason.Unreachable);
-        await StartAsync(resolver, selector, upstream, log, store: store);
-
-        var request = Req("req00001");
-        _queue.Enqueue(request);
-
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Provider parked bị loại từ dispatch đầu — chỉ p2 serve, không advance (§3.3)
-        Assert.IsType<DispatchOutcome.Handled>(outcome);
-        Assert.Equal(1, upstream.Calls);
-        var info = Assert.Single(log.Infos);
-        Assert.Contains("m1", info);
-        Assert.Contains("p2", info);
-        Assert.DoesNotContain("p1", info);
-        Assert.DoesNotContain(log.Warns, w => w.Contains("Chuyển candidate kế"));
-    }
-
-    [Fact]
-    public async Task Loop_WhenAllAccountsParked_Completes503WithoutUpstreamCall()
-    {
-        var pid = SeedProvider("p1"); // 1 TK enabled "a1"
-        long accountId;
-        using (var db = _db.CreateFactory().CreateDbContext())
-            accountId = db.ProviderAccounts.Single(a => a.ProviderId == pid).Id;
-        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
-        var selector = new CountingSelector(new ModelSelector(_executions));
-        var upstream = new ScriptedUpstream(_ => Sse());
-        var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        store.Park(ManualRetryLevel.Account, accountId, "", ManualRetryReason.Unauthorized);
-        await StartAsync(resolver, selector, upstream, log, store: store);
-
-        var request = Req("req00001");
-        _queue.Enqueue(request);
-
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Provider/model còn sống nhưng mọi TK enabled đã parked → walk rỗng →
-        // 503 (chưa thử gì), KHÔNG gọi upstream (§3.3)
-        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
-        Assert.Equal(503, error.Status);
-        Assert.Equal("The model 'm1' is temporarily unavailable", error.Message);
-        Assert.Equal(0, upstream.Calls);
-    }
-
-    [Fact]
-    public async Task Loop_WhenFirstCandidate401_ParksAccountAndAdvancesToSecondProvider()
+    public async Task Loop_WhenFirstCandidate401_AdvancesToSecondProvider()
     {
         var p1 = SeedProvider("p1", modelId: "m1");
         var p2 = SeedProvider("p2", modelId: "m1"); // cùng model 2 provider — RR sort (p1, p2)
@@ -695,27 +585,23 @@ public class DispatcherLoopTests : IDisposable
             }
             : Sse());
         var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        await StartAsync(resolver, selector, upstream, log, store: store);
+        await StartAsync(resolver, selector, upstream, log);
 
         var request = Req("req00001");
         _queue.Enqueue(request);
 
         var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Fatal 401 → park ĐÚNG cấp account rồi vẫn failover — client thấy 200 của p2 (§1.3 #4)
+        // Fatal 401 cấp Account vẫn failover — client thấy 200 của p2 (§1.3 #4)
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, upstream.Calls);
-        Assert.True(store.IsAccountParked(AccountIdOf(p1)));
-        Assert.False(store.IsAccountParked(AccountIdOf(p2)));
-        Assert.False(store.IsProviderParked(p1)); // 401 cấp account, không phải provider (§3.2)
         Assert.Contains(log.Warns, w =>
             w.Contains("Chuyển candidate kế") && w.Contains("'p1'/'m1'")
             && w.Contains("HTTP 401") && w.Contains("req00001"));
     }
 
     [Fact]
-    public async Task Loop_WhenAllCandidatesFatal404_CompletesPassthroughAndParksEachProvider()
+    public async Task Loop_WhenAllCandidatesFatal404_CompletesPassthroughWithLastResponse()
     {
         var p1 = SeedProvider("p1", modelId: "m1");
         var p2 = SeedProvider("p2", modelId: "m2");
@@ -727,76 +613,22 @@ public class DispatcherLoopTests : IDisposable
                 $"{{\"error\":{{\"message\":\"from-{p.Name}\"}}}}", Encoding.UTF8, "application/json"),
         });
         var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        await StartAsync(resolver, selector, upstream, log, store: store);
+        await StartAsync(resolver, selector, upstream, log);
 
         var request = Req("req00001");
         _queue.Enqueue(request);
 
         var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // 404 thường = provider sai endpoint — park từng provider, hết candidate
+        // 404 thường = sai endpoint/provider — hết candidate
         // passthrough nguyên response cuối (§4), có log Error exhaustion (§5)
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
         Assert.Equal(404, passthrough.Status);
         Assert.Contains("from-p2", Encoding.UTF8.GetString(passthrough.Body));
         Assert.Equal(2, upstream.Calls);
-        Assert.True(store.IsProviderParked(p1));
-        Assert.True(store.IsProviderParked(p2));
         Assert.Contains(log.Errors,
             e => e.Contains("req00001") && e.Contains("thất bại sau 2 candidate"));
         Assert.Contains(log.Warns, w => w.Contains("Chuyển candidate kế") && w.Contains("HTTP 404"));
-    }
-
-    [Fact]
-    public async Task Loop_WhenAllModelsParked_CompletesError503WithoutUpstreamCall()
-    {
-        var p1 = SeedProvider("p1", modelId: "m1");
-        var p2 = SeedProvider("p2", modelId: "m2");
-        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.Fallback));
-        var selector = new CountingSelector(new ModelSelector(_executions));
-        var upstream = new ScriptedUpstream(_ => Sse());
-        var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        store.Park(ManualRetryLevel.Model, 0, "m1", ManualRetryReason.ModelNotFound);
-        store.Park(ManualRetryLevel.Model, 0, "m2", ManualRetryReason.ModelNotFound);
-        await StartAsync(resolver, selector, upstream, log, store: store);
-
-        var request = Req("req00001");
-        _queue.Enqueue(request);
-
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Walk rỗng ngay từ đầu (chưa thử gì) → 503, KHÔNG gọi upstream (§3.3)
-        var error = Assert.IsType<DispatchOutcome.Error>(outcome);
-        Assert.Equal(503, error.Status);
-        Assert.Equal("The model 'm1' is temporarily unavailable", error.Message);
-        Assert.Equal(0, upstream.Calls);
-    }
-
-    [Fact]
-    public async Task Loop_WhenSomeModelsParked_SkipsParkedModelAndServesHealthyOne()
-    {
-        var p1 = SeedProvider("p1", modelId: "m1");
-        var p2 = SeedProvider("p2", modelId: "m2");
-        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.Fallback));
-        var selector = new CountingSelector(new ModelSelector(_executions));
-        var upstream = new ScriptedUpstream(_ => Sse());
-        var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        store.Park(ManualRetryLevel.Model, 0, "m1", ManualRetryReason.ModelNotFound); // chỉ m1 parked
-        await StartAsync(resolver, selector, upstream, log, store: store);
-
-        var request = Req("req00001");
-        _queue.Enqueue(request);
-
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Walk filter: model parked bị loại từ đầu — không advance, không Warn "Chuyển candidate kế"
-        Assert.IsType<DispatchOutcome.Handled>(outcome);
-        Assert.Equal(1, upstream.Calls);
-        Assert.Contains(log.Infos, i => i.Contains("m2") && i.Contains("p2"));
-        Assert.DoesNotContain(log.Warns, w => w.Contains("Chuyển candidate kế"));
     }
 
     [Fact]
@@ -829,54 +661,5 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(3, upstream.Calls);
         Assert.False(_queue.Contains("req00001"));
-    }
-
-    [Fact]
-    public async Task Loop_WhenRequeuedRequestHasNoUntriedCandidates_CompletesExhaustionInsteadOfGate503()
-    {
-        // p1 giữ slot cho request kẹp (call#1); p2 là attempt đã thử của r1
-        var p1 = SeedProvider("p1", maxConcurrent: 1, modelId: "m1");
-        var p2 = SeedProvider("p2", modelId: "m2");
-        var resolver = new ModelMapResolver(new Dictionary<string, SelectionResult>
-        {
-            ["m1"] = new SelectionSuccess([Candidate(p1)], ComboMode.Fallback),
-            ["combo1"] = new SelectionSuccess([Candidate(p2), Candidate(p1)], ComboMode.Fallback),
-        });
-        var selector = new CountingSelector(new ModelSelector(_executions));
-        var upstream = new GatedBadRequestUpstream();
-        var log = new CapturingLog();
-        var store = new ManualRetryStore(log, TimeProvider.System);
-        await StartAsync(resolver, selector, upstream, log, store: store);
-
-        // r2 kẹt trên p1 (giữ trọn slot duy nhất của p1)
-        var r2 = Req("req00001", "m1");
-        _queue.Enqueue(r2);
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // r1: p2 lỗi 429 → advance p1 nhưng p1 hết slot → re-enqueue (HasTried = true)
-        var r1 = Req("req00002", "combo1");
-        _queue.Enqueue(r1);
-        await WaitUntilAsync(() => _queue.Contains("req00002") && upstream.Calls == 2);
-        await Task.Delay(200); // chắc chắn đã park — không còn call nào chạy dở
-        Assert.False(r1.Completion.Task.IsCompleted);
-
-        // Park model m1 (candidate còn lại của r1) trong lúc r1 đang park
-        store.Park(ManualRetryLevel.Model, 0, "m1", ManualRetryReason.ModelNotFound);
-        Assert.True(store.IsModelParked("m1"));
-
-        // r2 kết thúc 400 non-retryable → passthrough ngay (không đụng store)
-        upstream.Release();
-        var outcome2 = await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.IsType<DispatchOutcome.Passthrough>(outcome2);
-
-        // Dispatch lại: p2 đã tried + m1 đang parked → rỗng mà HasTried →
-        // CompleteExhaustion (log Error) + Passthrough attempt cuối — KHÔNG phải 503 gate
-        var outcome1 = await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome1);
-        Assert.Equal(429, passthrough.Status);
-        Assert.Equal("""{"error":{"message":"from-p2"}}""", Encoding.UTF8.GetString(passthrough.Body));
-        Assert.Equal(2, upstream.Calls); // nhánh này không serve thêm upstream
-        Assert.Contains(log.Errors,
-            e => e.Contains("req00002") && e.Contains("thất bại sau 1 candidate"));
     }
 }

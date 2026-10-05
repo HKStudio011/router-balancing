@@ -7,8 +7,7 @@ namespace RouterBalancing.Core.Engine;
 /// Dictionary id → entry dưới 1 lock (check-then-add atomic với Exit) —
 /// local app, contention thấp nên lock đơn giản hơn ConcurrentDictionary + Interlocked.
 /// </summary>
-public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db,
-    IManualRetryStore store) : IExecutionList
+public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db) : IExecutionList
 {
     private readonly object _lock = new();
     private readonly Dictionary<string, ExecutionEntry> _entries = new();
@@ -28,9 +27,8 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
             return false; // provider không tồn tại — không bao giờ enter (D-B7)
         if (capacity.Value.Accounts.Count == 0)
         {
-            // Sentinel (V1): 0 TK enabled hoặc mọi TK enabled đã parked → TryEnter vẫn tạo
-            // entry AccountId=0 để forward 503; park ở đây sẽ treo vĩnh viễn vì không có
-            // wake signal nào khi user bật lại TK / unpark (Unpark chỉ fire Changed)
+            // Sentinel (V1): 0 TK enabled → TryEnter vẫn tạo entry AccountId=0 để forward 503;
+            // reject ở đây sẽ treo vĩnh viễn vì không có wake signal nào khi user bật lại TK
             return true;
         }
         lock (_lock)
@@ -52,8 +50,8 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
             AccountSlot chosen;
             if (capacity.Value.Accounts.Count == 0)
             {
-                // Sentinel (V1) — xem chú thích trong CanEnterAsync: 0 TK enabled hoặc
-                // mọi TK enabled đã parked → entry AccountId=0 forward 503, không treo
+                // Sentinel (V1) — xem chú thích trong CanEnterAsync: 0 TK enabled
+                // → entry AccountId=0 forward 503, không treo
                 chosen = new AccountSlot(0, string.Empty);
             }
             else
@@ -126,8 +124,7 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
         max <= 0 || CountInFlight(providerId, accountId) < max;
 
     /// <summary>
-    /// Query MaxConcurrent + TK enabled (Id, Name) mới nhất từ DB rồi loại TK
-    /// đang parked (store in-memory — không dịch được sang SQL nên filter sau materialize);
+    /// Query MaxConcurrent + TK enabled (Id, Name) mới nhất từ DB;
     /// provider không tồn tại → null (D-B7 — không dùng FirstOrDefault = 0 vì 0 giờ là "không giới hạn").
     /// </summary>
     private async Task<(int Max, List<AccountSlot> Accounts)?> LoadCapacityAsync(
@@ -148,7 +145,6 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
         return provider is null
             ? null
             : (provider.MaxConcurrent, provider.Accounts
-                .Where(a => !store.IsAccountParked(a.Id))
                 .Select(a => new AccountSlot(a.Id, a.Name)).ToList());
     }
 

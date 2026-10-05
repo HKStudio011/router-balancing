@@ -217,13 +217,10 @@ public class ChatCompletionsHandlerTests
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
-        // Mạng = Fatal(Provider, Status null) — dispatcher park + advance (spec §3.2);
+        // Mạng = Fatal(Provider, Status null) — dispatcher advance candidate kế (spec §3.2);
         // 502 chỉ sinh ở exhaustion khi attempt cuối là mạng (§4)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Provider, fatal.Level);
-        Assert.Equal(provider.Id, fatal.Id);
-        Assert.Equal("", fatal.ModelId);
-        Assert.Equal(ManualRetryReason.Unreachable, fatal.Reason);
+        Assert.Equal(FailoverLevel.Provider, fatal.Level);
         Assert.Null(fatal.Status);
         Assert.Null(fatal.ContentType);
         Assert.Empty(fatal.Body);
@@ -311,10 +308,7 @@ public class ChatCompletionsHandlerTests
 
         // 401 = auth sai ở account (spec §1.3 #6/§3.2) — payload giữ cho exhaustion passthrough (§4)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Account, fatal.Level);
-        Assert.Equal(AccountIdOf(provider), fatal.Id);
-        Assert.Equal("", fatal.ModelId);
-        Assert.Equal(ManualRetryReason.Unauthorized, fatal.Reason);
+        Assert.Equal(FailoverLevel.Account, fatal.Level);
         Assert.Equal(401, fatal.Status);
         Assert.StartsWith("application/json", fatal.ContentType);
         Assert.Equal(upstreamBody, Encoding.UTF8.GetString(fatal.Body));
@@ -335,8 +329,7 @@ public class ChatCompletionsHandlerTests
 
         // 403 cùng nhóm lỗi auth với 401 → account cấp (spec §3.2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Account, fatal.Level);
-        Assert.Equal(ManualRetryReason.Unauthorized, fatal.Reason);
+        Assert.Equal(FailoverLevel.Account, fatal.Level);
         Assert.Equal(403, fatal.Status);
     }
 
@@ -351,12 +344,9 @@ public class ChatCompletionsHandlerTests
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
-        // 404 + error.code=model_not_found = model sai — park model cấp với exact ModelId (§3.2)
+        // 404 + error.code=model_not_found = model sai — Fatal cấp Model (§3.2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Model, fatal.Level);
-        Assert.Equal(0, fatal.Id);
-        Assert.Equal("gpt-4o-mini", fatal.ModelId);
-        Assert.Equal(ManualRetryReason.ModelNotFound, fatal.Reason);
+        Assert.Equal(FailoverLevel.Model, fatal.Level);
         Assert.Equal(404, fatal.Status);
         Assert.Equal(upstreamBody, Encoding.UTF8.GetString(fatal.Body));
     }
@@ -373,8 +363,7 @@ public class ChatCompletionsHandlerTests
 
         // ordinal-ignore-case — provider code khác casing vẫn nhận diện (V2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Model, fatal.Level);
-        Assert.Equal(ManualRetryReason.ModelNotFound, fatal.Reason);
+        Assert.Equal(FailoverLevel.Model, fatal.Level);
     }
 
     [Fact]
@@ -387,12 +376,9 @@ public class ChatCompletionsHandlerTests
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
 
-        // 404 thường = sai endpoint/provider chết — park provider cấp (§3.2)
+        // 404 thường = sai endpoint/provider chết — Fatal cấp Provider (§3.2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Provider, fatal.Level);
-        Assert.Equal(provider.Id, fatal.Id);
-        Assert.Equal("", fatal.ModelId);
-        Assert.Equal(ManualRetryReason.NotFound, fatal.Reason);
+        Assert.Equal(FailoverLevel.Provider, fatal.Level);
     }
 
     [Fact]
@@ -406,8 +392,7 @@ public class ChatCompletionsHandlerTests
 
         // Body không parse được → coi 404 thường, không crash phân loại (V2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Provider, fatal.Level);
-        Assert.Equal(ManualRetryReason.NotFound, fatal.Reason);
+        Assert.Equal(FailoverLevel.Provider, fatal.Level);
     }
 
     [Fact]
@@ -421,8 +406,7 @@ public class ChatCompletionsHandlerTests
 
         // 401 check theo TRẠNG THÁI trước, không parse body — body hỏng vẫn Fatal(Account)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
-        Assert.Equal(ManualRetryLevel.Account, fatal.Level);
-        Assert.Equal(ManualRetryReason.Unauthorized, fatal.Reason);
+        Assert.Equal(FailoverLevel.Account, fatal.Level);
     }
 
     [Fact]

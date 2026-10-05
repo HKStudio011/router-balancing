@@ -72,9 +72,9 @@ public sealed class ChatCompletionsHandler(
     /// Forward request đã resolve lên upstream. 2xx → stream + <see cref="DispatchOutcome.Handled"/>;
     /// lỗi retryable (429/408/5xx) → buffer + <see cref="DispatchOutcome.Retryable"/>
     /// (KHÔNG ghi response — dispatcher walk, spec §2.2); lỗi fatal (401/403/404/mạng) →
-    /// <see cref="DispatchOutcome.Fatal"/> (dispatcher park + advance, manual-retry §3.2);
-    /// 4xx còn lại → <see cref="DispatchOutcome.Passthrough"/> (endpoint ghi, quen sát 3A);
-    /// no-key → Error(503); client abort propagate.
+    /// <see cref="DispatchOutcome.Fatal"/> (dispatcher advance đúng cấp failover,
+    /// spec exhaustive-failover §3.1); 4xx còn lại → <see cref="DispatchOutcome.Passthrough"/>
+    /// (endpoint ghi, quen sát 3A); no-key → Error(503); client abort propagate.
     /// </summary>
     /// <param name="ctx">HttpContext gốc (ghi status/content-type/stream khi 2xx).</param>
     /// <param name="provider">Provider đã chọn.</param>
@@ -128,8 +128,8 @@ public sealed class ChatCompletionsHandler(
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                        && !ctx.RequestAborted.IsCancellationRequested)
             {
-                // Lỗi upstream thật → Fatal(Provider, Status null) — dispatcher park + advance
-                // (spec §3.2); client tự ngắt (RequestAborted) thì propagate (hành vi 3A)
+                // Lỗi upstream thật → Fatal(Provider, Status null) — dispatcher advance
+                // (spec exhaustive-failover §3.1); client tự ngắt (RequestAborted) thì propagate (hành vi 3A)
                 log.Write(new LogEntry
                 {
                     Severity = LogSeverity.Error,
@@ -140,8 +140,7 @@ public sealed class ChatCompletionsHandler(
                     RequestId = ClientKeyItems.RequestIdOf(ctx),
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });
-                return new DispatchOutcome.Fatal(ManualRetryLevel.Provider, provider.Id, "",
-                    ManualRetryReason.Unreachable, null, null, [], null);
+                return new DispatchOutcome.Fatal(FailoverLevel.Provider, null, null, [], null);
             }
 
             using (response)
@@ -189,9 +188,8 @@ public sealed class ChatCompletionsHandler(
 
                 // Journal Info chung cho Fatal lẫn Passthrough (parity quen sát 3A)
                 LogForwarded(ctx, provider, model, response, stopwatch);
-                return ClassifyFatal((int)response.StatusCode, provider, model, accountId,
-                    errorBody, contentType, retryAfterRaw,
-                    RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow));
+                return ClassifyFatal((int)response.StatusCode, errorBody, contentType,
+                    retryAfterRaw, RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow));
             }
             }
         finally
@@ -201,27 +199,25 @@ public sealed class ChatCompletionsHandler(
     }
 
     /// <summary>
-    /// Phân loại lỗi non-retryable (spec manual-retry §3.2): 401/403 → account (auth nằm ở
+    /// Phân loại lỗi non-retryable (spec exhaustive-failover §3.1): 401/403 → account (auth nằm ở
     /// account — §1.3 #6); 404 có <c>error.code=model_not_found</c> → model; 404 còn lại →
     /// provider; status khác (400/409/422...) → Passthrough giữ nguyên hành vi 3A.
     /// Payload giữ nguyên cho cả Fatal — exhaustion passthrough nguyên response cuối (§4).
     /// </summary>
-    private static DispatchOutcome ClassifyFatal(int status, Provider provider, Model model,
-        long accountId, byte[] body, string? contentType, string? retryAfterRaw, TimeSpan? retryAfter)
+    private static DispatchOutcome ClassifyFatal(int status, byte[] body, string? contentType,
+        string? retryAfterRaw, TimeSpan? retryAfter)
     {
         if (status is 401 or 403)
         {
-            return new DispatchOutcome.Fatal(ManualRetryLevel.Account, accountId, "",
-                ManualRetryReason.Unauthorized, status, contentType, body, retryAfter);
+            return new DispatchOutcome.Fatal(FailoverLevel.Account, status, contentType, body,
+                retryAfter);
         }
 
         if (status == 404)
         {
             return IsModelNotFound(body)
-                ? new DispatchOutcome.Fatal(ManualRetryLevel.Model, 0, model.ModelId,
-                    ManualRetryReason.ModelNotFound, status, contentType, body, retryAfter)
-                : new DispatchOutcome.Fatal(ManualRetryLevel.Provider, provider.Id, "",
-                    ManualRetryReason.NotFound, status, contentType, body, retryAfter);
+                ? new DispatchOutcome.Fatal(FailoverLevel.Model, status, contentType, body, retryAfter)
+                : new DispatchOutcome.Fatal(FailoverLevel.Provider, status, contentType, body, retryAfter);
         }
 
         return new DispatchOutcome.Passthrough(status, contentType, body, retryAfterRaw);
@@ -229,7 +225,7 @@ public sealed class ChatCompletionsHandler(
 
     /// <summary>
     /// Nhận diện <c>error.code == "model_not_found"</c> best-effort (V2): body hỏng/không phải
-    /// JSON → coi 404 thường (park provider); so sánh ordinal-ignore-case.
+    /// JSON → coi 404 thường (Fatal cấp Provider); so sánh ordinal-ignore-case.
     /// </summary>
     // Nhận byte[] chứ không ReadOnlySpan: JsonDocument.Parse chỉ có overload
     // string/ReadOnlyMemory/ReadOnlySequence — không có overload span để bind

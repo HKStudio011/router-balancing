@@ -39,8 +39,7 @@ public class ExecutionListTests : IDisposable
         return provider.Id;
     }
 
-    private ExecutionList CreateSut(ManualRetryStore? store = null) => new(
-        _db.CreateFactory(), store ?? new ManualRetryStore(new NullLog(), TimeProvider.System));
+    private ExecutionList CreateSut() => new(_db.CreateFactory());
 
     // static readonly (không phải property) — giá trị phải cố định giữa lúc Enter
     // và lúc assert, nếu re-evaluate UtcNow thì Assert.Equal(Enq, ...) luôn lệch.
@@ -326,39 +325,6 @@ public class ExecutionListTests : IDisposable
         Assert.Contains(snapshot, e => e.RequestId == "req00002" && e.Priority == RequestPriority.Highest);
         Assert.Equal(1, sut.GetInFlight(p1));
         Assert.Equal(1, sut.GetInFlight(p2));
-    }
-
-    [Fact]
-    public async Task TryEnter_WhenAccountParked_SkipsParkedAccount()
-    {
-        var pid = SeedProvider("p1", maxConcurrent: 4, accountCount: 2);
-        var accounts = EnabledAccountIds(pid); // Id tăng dần
-        var store = new ManualRetryStore(new NullLog(), TimeProvider.System);
-        store.Park(ManualRetryLevel.Account, accounts[0], "", ManualRetryReason.Unauthorized);
-        var sut = CreateSut(store);
-
-        var ok = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
-
-        Assert.Equal(accounts[1], ok); // TK parked không bao giờ được chọn (manual-retry §3.3)
-    }
-
-    [Fact]
-    public async Task TryEnter_WhenAllAccountsParked_ReturnsSentinelZeroAndCreatesEntry()
-    {
-        var pid = SeedProvider("p1", maxConcurrent: 4, accountCount: 2);
-        var store = new ManualRetryStore(new NullLog(), TimeProvider.System);
-        foreach (var id in EnabledAccountIds(pid))
-            store.Park(ManualRetryLevel.Account, id, "", ManualRetryReason.Unauthorized);
-        var sut = CreateSut(store);
-
-        var sentinel = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
-
-        // Mọi TK enabled parked → sentinel 0 (y như 0 TK enabled) — park vô hạn sẽ treo vĩnh viễn
-        // vì Unpark không fire Exited (không có wake signal) — V1 + manual-retry §3.3
-        Assert.Equal(0, sentinel);
-        var entry = Assert.Single(sut.Snapshot());
-        Assert.Equal(0, entry.AccountId);
-        Assert.Equal(string.Empty, entry.AccountName);
     }
 
     private List<long> EnabledAccountIds(long providerId)

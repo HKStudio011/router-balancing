@@ -37,20 +37,17 @@ public abstract record DispatchOutcome
         : DispatchOutcome;
 
     /// <summary>
-    /// Lỗi fatal (401/403/404/mạng) — tín hiệu NỘI BỘ: dispatcher park entity đúng cấp rồi
-    /// advance như <see cref="Retryable"/> (spec manual-retry §2.2/§3.3); chỉ dispatcher nhìn thấy.
+    /// Lỗi fatal (401/403/404/mạng) — tín hiệu NỘI BỘ: dispatcher advance như
+    /// <see cref="Retryable"/>, mang <see cref="Level"/> để failover theo đúng cấp
+    /// Account/Provider/Model (spec exhaustive-failover §3.1); chỉ dispatcher nhìn thấy.
     /// </summary>
-    /// <param name="Level">Cấp gây lỗi — quyết định entity nào vào danh sách retry.</param>
-    /// <param name="Id">providerId/accountId; luôn 0 với <see cref="ManualRetryLevel.Model"/>.</param>
-    /// <param name="ModelId">Model id với cấp <see cref="ManualRetryLevel.Model"/>; ngược lại "".</param>
-    /// <param name="Reason">Lý do — store log transition, UI hiển thị (D1).</param>
+    /// <param name="Level">Cấp failover — account/provider/model nào bị loại sau lỗi này.</param>
     /// <param name="Status"><see langword="null"/> = lỗi mạng (không có HTTP response nào).</param>
     /// <param name="ContentType">Content-Type upstream trả (<see langword="null"/> khi lỗi mạng).</param>
     /// <param name="Body">Body đã buffer — giữ nguyên cho exhaustion passthrough (§4).</param>
     /// <param name="RetryAfter"><c>Retry-After</c> đã parse (null khi không có).</param>
-    public sealed record Fatal(ManualRetryLevel Level, long Id, string ModelId,
-        ManualRetryReason Reason, int? Status, string? ContentType, byte[] Body,
-        TimeSpan? RetryAfter) : DispatchOutcome;
+    public sealed record Fatal(FailoverLevel Level, int? Status, string? ContentType,
+        byte[] Body, TimeSpan? RetryAfter) : DispatchOutcome;
 
     /// <summary>
     /// Response cần endpoint ghi NGUYÊN status + content-type + body (passthrough byte —

@@ -37,16 +37,6 @@ public static class ProxyApp
             builder.Services.AddSingleton(pool);
         }
 
-        // ManualRetryStore dùng chung 1 instance/proxy container (spec manual-retry §2.2):
-        // app container đã đăng ký (ProxyHost truyền singleton) → không ghi đè;
-        // test container gọi thẳng ConfigureServices → tự tạo từ log + TimeProvider đã đăng ký
-        if (!builder.Services.Any(d => d.ServiceType == typeof(IManualRetryStore)))
-        {
-            builder.Services.AddSingleton<IManualRetryStore>(
-                sp => new ManualRetryStore(sp.GetRequiredService<ILogService>(),
-                    sp.GetRequiredService<TimeProvider>()));
-        }
-
         builder.Services.AddTransient<ProxyHealthHandler>();
         // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
         builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
@@ -88,8 +78,8 @@ public static class ProxyApp
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
         builder.Services.AddSingleton<ChatCompletionsHandler>();
-        // Đồng hồ system — ManualRetryStore (if-absent factory phía trên) và service
-        // time-sensitive resolve cùng 1 instance
+        // Đồng hồ system — service time-sensitive trong proxy container
+        // (ClientKeyRateLimiter) resolve cùng 1 instance
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IClientKeyRateLimiter, ClientKeyRateLimiter>();
         // Singleton (không factory): cache phải sống 1 lần/proxy container để event KeysChanged
@@ -123,7 +113,7 @@ public static class ProxyApp
         // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
             async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
-                ChatCompletionsHandler handler, ILogService log, IManualRetryStore store) =>
+                ChatCompletionsHandler handler, ILogService log) =>
         {
             // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
             string id;
@@ -138,24 +128,6 @@ public static class ProxyApp
             var prepared = await handler.PrepareAsync(ctx);
             if (prepared is null)
                 return; // validate fail — PrepareAsync đã ghi 400, chưa enqueue
-
-            // Gate manual-retry (spec manual-retry §3.3): model đang parked → 503 §4 TRƯỚC khi vào queue.
-            // Combo name chưa resolve lúc này — gate cấp provider/account nằm ở walk (FilterRemaining)
-            if (store.IsModelParked(prepared.ModelId))
-            {
-                log.Write(new LogEntry
-                {
-                    Severity = LogSeverity.Warning,
-                    Category = LogCategory.Request,
-                    Message = $"Từ chối request mới: model '{prepared.ModelId}' đang trong danh sách retry thủ công",
-                    RequestId = id,
-                    ClientKeyId = ClientKeyItems.IdOf(ctx),
-                });
-                await ChatCompletionsHandler.WriteErrorAsync(ctx, 503,
-                    $"The model '{prepared.ModelId}' is temporarily unavailable",
-                    "server_error", null, null);
-                return;
-            }
 
             var priority = RequestPriorityParser.Parse(ctx.Request.Headers["X-Priority"].ToString());
             var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx);
