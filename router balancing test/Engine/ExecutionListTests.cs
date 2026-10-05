@@ -45,6 +45,10 @@ public class ExecutionListTests : IDisposable
     // và lúc assert, nếu re-evaluate UtcNow thì Assert.Equal(Enq, ...) luôn lệch.
     private static readonly DateTimeOffset Enq = DateTimeOffset.UtcNow.AddMinutes(-1);
 
+    /// <summary>Assert kết quả vào được và trả AccountId — thay pattern <c>Assert.NotNull</c> + <c>.Value</c> của <c>long?</c> cũ.</summary>
+    private static long EnteredId(TryEnterResult result) =>
+        Assert.IsType<TryEnterResult.Entered>(result).AccountId;
+
     [Fact]
     public async Task TryEnter_WhenBelowMax_ReturnsAccountIdAndTracksEntryWithAllFields()
     {
@@ -53,10 +57,10 @@ public class ExecutionListTests : IDisposable
         var accountId = EnabledAccountIds(pid).Single();
 
         var ok = await sut.TryEnterAsync(pid, "req00001", "p1", "gpt-4o-mini",
-            RequestPriority.High, Enq, default);
+            RequestPriority.High, Enq, null, default);
 
-        Assert.NotNull(ok);
-        Assert.Equal(accountId, ok); // trả đúng TK được chọn, không chỉ bool (D-B6)
+        var entered = Assert.IsType<TryEnterResult.Entered>(ok);
+        Assert.Equal(accountId, entered.AccountId); // trả đúng TK được chọn, không chỉ bool (D-B6)
         Assert.True(sut.Contains("req00001"));
         var entry = Assert.Single(sut.Snapshot());
         Assert.Equal("req00001", entry.RequestId);
@@ -71,23 +75,23 @@ public class ExecutionListTests : IDisposable
     }
 
     [Fact]
-    public async Task TryEnter_WhenAtMax_ReturnsNull()
+    public async Task TryEnter_WhenAtMax_ReturnsFull()
     {
         var pid = SeedProvider("p1", maxConcurrent: 1);
         var sut = CreateSut();
-        Assert.NotNull(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default));
+        Assert.IsType<TryEnterResult.Entered>(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default));
 
-        Assert.Null(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, default));
+        Assert.IsType<TryEnterResult.Full>(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, null, default));
         Assert.False(sut.Contains("req00002"));
     }
 
     [Fact]
-    public async Task TryEnter_WhenProviderMissing_ReturnsNull()
+    public async Task TryEnter_WhenProviderMissing_ReturnsFull()
     {
         var sut = CreateSut();
 
-        // Provider không tồn tại → không enter — 0 KHÔNG được làm sentinel vì 0 = unlimited (D-B7)
-        Assert.Null(await sut.TryEnterAsync(999, "req00001", "ghost", "m", RequestPriority.Normal, Enq, default));
+        // Provider không tồn tại → Full (park) — 0 KHÔNG được làm sentinel vì 0 = unlimited (D-B7)
+        Assert.IsType<TryEnterResult.Full>(await sut.TryEnterAsync(999, "req00001", "ghost", "m", RequestPriority.Normal, Enq, null, default));
         Assert.False(sut.Contains("req00001"));
     }
 
@@ -96,8 +100,8 @@ public class ExecutionListTests : IDisposable
     {
         var pid = SeedProvider("p1", maxConcurrent: 1);
         var sut = CreateSut();
-        Assert.NotNull(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default));
-        Assert.Null(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, default));
+        Assert.IsType<TryEnterResult.Entered>(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default));
+        Assert.IsType<TryEnterResult.Full>(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, null, default));
 
         using (var db = _db.CreateFactory().CreateDbContext())
         {
@@ -107,7 +111,7 @@ public class ExecutionListTests : IDisposable
         }
 
         // Không cache — giá trị mới nhất từ DB tại mỗi lần Enter (spec §2.1)
-        Assert.NotNull(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, default));
+        Assert.IsType<TryEnterResult.Entered>(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, null, default));
     }
 
     [Fact]
@@ -116,12 +120,10 @@ public class ExecutionListTests : IDisposable
         var pid = SeedProvider("p1", maxConcurrent: 1, accountCount: 2);
         var sut = CreateSut();
 
-        var first = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
-        var second = await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, default);
+        var first = EnteredId(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default));
+        var second = EnteredId(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, null, default));
 
         // TK1 đầy (N=1) → request 2 nhảy sang TK2, không bị chặn (D-B4.2)
-        Assert.NotNull(first);
-        Assert.NotNull(second);
         Assert.NotEqual(first, second);
         Assert.Equal(2, sut.Snapshot().Select(e => e.AccountId).Distinct().Count());
     }
@@ -132,15 +134,12 @@ public class ExecutionListTests : IDisposable
         var pid = SeedProvider("p1", maxConcurrent: 2, accountCount: 2);
         var sut = CreateSut();
 
-        var first = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
-        var second = await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, default);
-        var third = await sut.TryEnterAsync(pid, "req00003", "p1", "m", RequestPriority.Normal, Enq, default);
+        var first = EnteredId(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default));
+        var second = EnteredId(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, null, default));
+        var third = EnteredId(await sut.TryEnterAsync(pid, "req00003", "p1", "m", RequestPriority.Normal, Enq, null, default));
 
         // Least-in-flight: req2 thấy TK1 (1) > TK2 (0) → TK2;
         // req3 tie 1-1 → xoay theo cursor → TK1
-        Assert.NotNull(first);
-        Assert.NotNull(second);
-        Assert.NotNull(third);
         Assert.NotEqual(first, second);
         Assert.Equal(first, third);
     }
@@ -157,10 +156,9 @@ public class ExecutionListTests : IDisposable
 
         for (var i = 0; i < 20; i++)
         {
-            var chosen = await sut.TryEnterAsync(pid, $"req{i:D2}", "p1", "m",
-                RequestPriority.Normal, Enq, default);
-            Assert.NotNull(chosen);
-            counts[chosen.Value] = counts.GetValueOrDefault(chosen.Value) + 1;
+            var chosen = EnteredId(await sut.TryEnterAsync(pid, $"req{i:D2}", "p1", "m",
+                RequestPriority.Normal, Enq, null, default));
+            counts[chosen] = counts.GetValueOrDefault(chosen) + 1;
             sut.Exit($"req{i:D2}");
         }
 
@@ -179,10 +177,9 @@ public class ExecutionListTests : IDisposable
 
         for (var i = 0; i < 6; i++)
         {
-            var chosen = await sut.TryEnterAsync(pid, $"req{i}", "p1", "m",
-                RequestPriority.Normal, Enq, default);
-            Assert.NotNull(chosen);
-            counts[chosen.Value] = counts.GetValueOrDefault(chosen.Value) + 1;
+            var chosen = EnteredId(await sut.TryEnterAsync(pid, $"req{i}", "p1", "m",
+                RequestPriority.Normal, Enq, null, default));
+            counts[chosen] = counts.GetValueOrDefault(chosen) + 1;
         }
 
         // Đồng thời: ít in-flight thắng → chênh lệch tối đa 1 (Max=0 = unlimited/TK)
@@ -191,15 +188,15 @@ public class ExecutionListTests : IDisposable
     }
 
     [Fact]
-    public async Task TryEnter_AllAccountsFull_ReturnsNull()
+    public async Task TryEnter_AllAccountsFull_ReturnsFull()
     {
         var pid = SeedProvider("p1", maxConcurrent: 1, accountCount: 2);
         var sut = CreateSut();
-        Assert.NotNull(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default));
-        Assert.NotNull(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, default));
+        Assert.IsType<TryEnterResult.Entered>(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default));
+        Assert.IsType<TryEnterResult.Entered>(await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq, null, default));
 
-        // Mọi TK enabled đều đầy → park (null), không tạo entry (D-B4.4)
-        Assert.Null(await sut.TryEnterAsync(pid, "req00003", "p1", "m", RequestPriority.Normal, Enq, default));
+        // Mọi TK enabled đều đầy → park (Full), không tạo entry (D-B4.4)
+        Assert.IsType<TryEnterResult.Full>(await sut.TryEnterAsync(pid, "req00003", "p1", "m", RequestPriority.Normal, Enq, null, default));
         Assert.False(sut.Contains("req00003"));
     }
 
@@ -211,8 +208,8 @@ public class ExecutionListTests : IDisposable
 
         for (var i = 0; i < 5; i++)
         {
-            Assert.NotNull(await sut.TryEnterAsync(pid, $"req{i}", "p1", "m",
-                RequestPriority.Normal, Enq, default));
+            Assert.IsType<TryEnterResult.Entered>(await sut.TryEnterAsync(pid, $"req{i}", "p1", "m",
+                RequestPriority.Normal, Enq, null, default));
         }
 
         Assert.Equal(5, sut.GetInFlight(pid)); // 0 = không giới hạn (D-B1)
@@ -224,11 +221,12 @@ public class ExecutionListTests : IDisposable
         var pid = SeedProvider("p1", maxConcurrent: 4, accountCount: 0);
         var sut = CreateSut();
 
-        var sentinel = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
+        var sentinel = Assert.IsType<TryEnterResult.Entered>(
+            await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default));
 
         // Sentinel 0: provider OK nhưng 0 TK enabled → entry vẫn tạo để forward trả 503,
         // không park vô hạn khi user chưa bật TK nào (deviation V1 / D-B4+)
-        Assert.Equal(0, sentinel);
+        Assert.Equal(0, sentinel.AccountId);
         var entry = Assert.Single(sut.Snapshot());
         Assert.Equal(0, entry.AccountId);
         Assert.Equal(string.Empty, entry.AccountName);
@@ -250,9 +248,9 @@ public class ExecutionListTests : IDisposable
         var enabledId = EnabledAccountIds(pid).Single();
         var sut = CreateSut();
 
-        var ok = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
+        var ok = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default);
 
-        Assert.Equal(enabledId, ok); // TK tắt không bao giờ được chọn (D-B4.1)
+        Assert.Equal(enabledId, EnteredId(ok)); // TK tắt không bao giờ được chọn (D-B4.1)
     }
 
     [Fact]
@@ -260,7 +258,7 @@ public class ExecutionListTests : IDisposable
     {
         var pid = SeedProvider("p1");
         var sut = CreateSut();
-        await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
+        await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default);
         var fired = 0;
         sut.Exited += () => fired++;
 
@@ -276,7 +274,7 @@ public class ExecutionListTests : IDisposable
     {
         var pid = SeedProvider("p1");
         var sut = CreateSut();
-        await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default);
+        await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default);
         var fired = 0;
         sut.Exited += () => fired++;
 
@@ -295,7 +293,7 @@ public class ExecutionListTests : IDisposable
         Assert.True(await sut.CanEnterAsync(pid, default));
         Assert.Equal(0, sut.GetInFlight(pid)); // check không mutate — selector dùng được nhiều lần
 
-        Assert.NotNull(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, default));
+        Assert.IsType<TryEnterResult.Entered>(await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq, null, default));
         Assert.False(await sut.CanEnterAsync(pid, default));
     }
 
@@ -315,8 +313,8 @@ public class ExecutionListTests : IDisposable
         var p1 = SeedProvider("p1");
         var p2 = SeedProvider("p2");
         var sut = CreateSut();
-        await sut.TryEnterAsync(p1, "req00001", "p1", "m1", RequestPriority.Normal, Enq, default);
-        await sut.TryEnterAsync(p2, "req00002", "p2", "m2", RequestPriority.Highest, Enq, default);
+        await sut.TryEnterAsync(p1, "req00001", "p1", "m1", RequestPriority.Normal, Enq, null, default);
+        await sut.TryEnterAsync(p2, "req00002", "p2", "m2", RequestPriority.Highest, Enq, null, default);
 
         var snapshot = sut.Snapshot();
 
@@ -325,6 +323,101 @@ public class ExecutionListTests : IDisposable
         Assert.Contains(snapshot, e => e.RequestId == "req00002" && e.Priority == RequestPriority.Highest);
         Assert.Equal(1, sut.GetInFlight(p1));
         Assert.Equal(1, sut.GetInFlight(p2));
+    }
+
+    [Fact]
+    public async Task TryEnterAsync_WhenAccountExcluded_DoesNotPickItAgain()
+    {
+        var pid = SeedProvider("p1", maxConcurrent: 4, accountCount: 2);
+        var sut = CreateSut();
+        var first = EnteredId(await sut.TryEnterAsync(pid, "req00001", "p1", "m",
+            RequestPriority.Normal, Enq, null, default));
+
+        var second = await sut.TryEnterAsync(pid, "req00002", "p1", "m", RequestPriority.Normal, Enq,
+            new HashSet<long> { first }, default);
+
+        // TK đã exclude (đã thử trong request này) không được chọn lại — Account-advance (§2.2)
+        Assert.NotEqual(first, EnteredId(second));
+    }
+
+    [Fact]
+    public async Task TryEnterAsync_WhenUntriedAccountsAllFull_ReturnsFull()
+    {
+        var pid = SeedProvider("p1", maxConcurrent: 1, accountCount: 2);
+        var sut = CreateSut();
+        var excluded = EnteredId(await sut.TryEnterAsync(pid, "req00001", "p1", "m",
+            RequestPriority.Normal, Enq, null, default));
+        EnteredId(await sut.TryEnterAsync(pid, "req00002", "p1", "m",
+            RequestPriority.Normal, Enq, null, default)); // lấp TK còn lại
+
+        // Còn TK chưa thử (TK2) nhưng tất cả đầy → Full (park), KHÔNG phải NoAccountLeft
+        var result = await sut.TryEnterAsync(pid, "req00003", "p1", "m", RequestPriority.Normal, Enq,
+            new HashSet<long> { excluded }, default);
+
+        Assert.IsType<TryEnterResult.Full>(result);
+        Assert.False(sut.Contains("req00003")); // không tạo entry khi park
+    }
+
+    [Fact]
+    public async Task TryEnterAsync_WhenAllEnabledAccountsExcluded_ReturnsNoAccountLeft()
+    {
+        var pid = SeedProvider("p1", maxConcurrent: 4, accountCount: 2);
+        var allAccounts = EnabledAccountIds(pid).ToHashSet();
+        var sut = CreateSut();
+
+        var result = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq,
+            allAccounts, default);
+
+        // Mọi TK enabled đều đã thử → NoAccountLeft (advance candidate), không tạo entry (§2.2)
+        Assert.IsType<TryEnterResult.NoAccountLeft>(result);
+        Assert.False(sut.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task TryEnterAsync_WhenNoEnabledAccounts_ReturnsSentinelZero()
+    {
+        var pid = SeedProvider("p1", maxConcurrent: 4, accountCount: 0);
+        var sut = CreateSut();
+
+        var result = await sut.TryEnterAsync(pid, "req00001", "p1", "m", RequestPriority.Normal, Enq,
+            null, default);
+
+        var entered = Assert.IsType<TryEnterResult.Entered>(result);
+        Assert.Equal(0, entered.AccountId); // sentinel 0 = forward 503 (V1)
+        Assert.Single(sut.Snapshot());
+    }
+
+    [Fact]
+    public async Task TryEnterAsync_WhenProviderMissing_ReturnsFull()
+    {
+        var sut = CreateSut();
+
+        var result = await sut.TryEnterAsync(999, "req00001", "ghost", "m", RequestPriority.Normal,
+            Enq, null, default);
+
+        Assert.IsType<TryEnterResult.Full>(result);
+        Assert.False(sut.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task TryEnterAsync_WithoutExclusion_RoundRobinsAsBefore()
+    {
+        var pid = SeedProvider("p1", maxConcurrent: 2, accountCount: 2);
+        var accounts = EnabledAccountIds(pid);
+        var sut = CreateSut();
+        var counts = new Dictionary<long, int>();
+
+        for (var i = 0; i < 20; i++)
+        {
+            var chosen = EnteredId(await sut.TryEnterAsync(pid, $"req{i:D2}", "p1", "m",
+                RequestPriority.Normal, Enq, null, default));
+            counts[chosen] = counts.GetValueOrDefault(chosen) + 1;
+            sut.Exit($"req{i:D2}");
+        }
+
+        // exclude = null (dispatch đầu) → hành vi RR cũ giữ nguyên, không đổi Behavior
+        Assert.Equal(10, counts[accounts[0]]);
+        Assert.Equal(10, counts[accounts[1]]);
     }
 
     private List<long> EnabledAccountIds(long providerId)

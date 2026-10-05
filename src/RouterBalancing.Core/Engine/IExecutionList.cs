@@ -15,11 +15,14 @@ public interface IExecutionList
 
     /// <summary>
     /// Reserve 1 slot cho TK ít in-flight nhất nếu còn chỗ (query <c>MaxConcurrent</c> mới nhất từ DB).
-    /// Trả Id TK đã chọn; <see langword="null"/> = hết slot hoặc provider không tồn tại (park — D-B4/D-B7);
-    /// trả <c>0</c> = sentinel khi provider không có TK enabled nào (entry vẫn tạo để forward 503 — V1).
+    /// <see cref="TryEnterResult.Entered"/> = đã reserve, <c>AccountId</c> (0 = sentinel khi 0 TK enabled — V1);
+    /// <see cref="TryEnterResult.Full"/> = còn TK chưa thử nhưng hết slot hoặc provider không tồn tại (park — D-B4/D-B7);
+    /// <see cref="TryEnterResult.NoAccountLeft"/> = mọi TK enabled đều nằm trong <paramref name="excludedAccounts"/>
+    /// (advance candidate — spec §2.2). <paramref name="excludedAccounts"/> = null khi dispatch đầu.
     /// </summary>
-    Task<long?> TryEnterAsync(long providerId, string requestId, string providerName, string modelId,
-        RequestPriority priority, DateTimeOffset enqueuedAt, CancellationToken ct);
+    Task<TryEnterResult> TryEnterAsync(long providerId, string requestId, string providerName, string modelId,
+        RequestPriority priority, DateTimeOffset enqueuedAt, IReadOnlySet<long>? excludedAccounts,
+        CancellationToken ct);
 
     /// <summary>Trả slot + gỡ entry + bắn <see cref="Exited"/>. Idempotent: id không có thì không bắn event.</summary>
     void Exit(string requestId);

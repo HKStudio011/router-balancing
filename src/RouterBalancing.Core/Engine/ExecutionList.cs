@@ -37,13 +37,14 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
     }
 
     /// <inheritdoc/>
-    public async Task<long?> TryEnterAsync(long providerId, string requestId, string providerName,
-        string modelId, RequestPriority priority, DateTimeOffset enqueuedAt, CancellationToken ct)
+    public async Task<TryEnterResult> TryEnterAsync(long providerId, string requestId, string providerName,
+        string modelId, RequestPriority priority, DateTimeOffset enqueuedAt,
+        IReadOnlySet<long>? excludedAccounts, CancellationToken ct)
     {
         // Query tại mỗi lần Enter — chỉnh MaxConcurrent trong UI có hiệu lực ngay (spec §2.1)
         var capacity = await LoadCapacityAsync(providerId, ct);
         if (capacity is null)
-            return null; // provider không tồn tại — không serve (D-B7)
+            return new TryEnterResult.Full(); // provider không tồn tại — park, không serve (D-B7)
 
         lock (_lock)
         {
@@ -56,14 +57,31 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
             }
             else
             {
+                // Thứ tự 3 nhánh theo spec §2.2: hết TK chưa thử (advance) phân biệt
+                // đúng với TK đầy (park) — ExecutionList đọc DB mới nhất nên snapshot
+                // stale của dispatcher không thể đoán sai.
+                List<AccountSlot> available;
+                if (excludedAccounts is null)
+                {
+                    available = capacity.Value.Accounts;
+                }
+                else
+                {
+                    available = capacity.Value.Accounts
+                        .Where(a => !excludedAccounts.Contains(a.Id))
+                        .ToList();
+                    if (available.Count == 0)
+                        return new TryEnterResult.NoAccountLeft(); // mọi TK enabled đã thử (§2.2)
+                }
+
                 // Chọn TK ít in-flight nhất; nhóm tie (cùng in-flight) xoay theo cursor
                 // per-provider — request tuần tự không chồng chéo (luôn thấy 0-0) vẫn
                 // dàn trải đều thay vì dồn vào 1 TK (bug tie-break Priority→Id cũ).
-                var candidates = capacity.Value.Accounts
+                var candidates = available
                     .Where(a => HasCapacity(capacity.Value.Max, providerId, a.Id))
                     .ToList();
                 if (candidates.Count == 0)
-                    return null; // mọi TK enabled đầy → park, chờ Exited (D-B4.4)
+                    return new TryEnterResult.Full(); // TK chưa thử đầy → park, chờ Exited (D-B4.4)
                 var minInFlight = candidates.Min(a => CountInFlight(providerId, a.Id));
                 var tied = candidates
                     .Where(a => CountInFlight(providerId, a.Id) == minInFlight)
@@ -77,7 +95,7 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
             _entries[requestId] = new ExecutionEntry(
                 requestId, providerId, providerName, modelId, priority, enqueuedAt,
                 DateTimeOffset.UtcNow, chosen.Id, chosen.Name);
-            return chosen.Id;
+            return new TryEnterResult.Entered(chosen.Id);
         }
     }
 

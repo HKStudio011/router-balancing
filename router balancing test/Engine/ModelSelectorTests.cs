@@ -50,8 +50,8 @@ public class ModelSelectorTests : IDisposable
         for (var i = 0; i < times; i++)
         {
             var ok = await _executions.TryEnterAsync(providerId, $"req{providerId}-{i}",
-                "p", "m", RequestPriority.Normal, DateTimeOffset.UtcNow, default);
-            Assert.NotNull(ok); // TryEnter trả long? (accountId) — D-B6
+                "p", "m", RequestPriority.Normal, DateTimeOffset.UtcNow, null, default);
+            Assert.IsType<TryEnterResult.Entered>(ok); // TryEnter trả Entered (accountId) — D-B6
         }
     }
 

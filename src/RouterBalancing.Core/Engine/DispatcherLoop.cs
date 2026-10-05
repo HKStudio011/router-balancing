@@ -124,9 +124,12 @@ public sealed class DispatcherLoop(
         if (candidate is null)
             return false; // park — item KHÔNG bị Take, chờ Changed|Exited
 
-        var accountId = await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
+        var enter = await executions.TryEnterAsync(candidate.Provider.Id, request.Id,
             candidate.Provider.Name, candidate.Model.ModelId, request.Priority,
-            request.EnqueuedAt, ct);
+            request.EnqueuedAt, excludedAccounts: null, ct);
+        // Task 4: Entered → accountId; Full → park; NoAccountLeft → coi như Full (park) —
+        // exclude=null nên chỉ snapshot stale mới tới được nhánh NoAccountLeft (xem ParkUnlessEntered)
+        var accountId = ParkUnlessEntered(enter);
         if (accountId is null)
             return false; // capacity vừa hết (mọi TK đầy) — park, Exited sẽ đánh thức
 
@@ -221,9 +224,12 @@ public sealed class DispatcherLoop(
                         new SelectionSuccess(next, mode), request.Context.RequestAborted);
                     nextAccountId = nextCandidate is null
                         ? null
-                        : await executions.TryEnterAsync(nextCandidate.Provider.Id, request.Id,
-                            nextCandidate.Provider.Name, nextCandidate.Model.ModelId,
-                            request.Priority, request.EnqueuedAt, request.Context.RequestAborted);
+                        // Task 4: map y hệt dispatch đầu (Full/NoAccountLeft → park) — exclude=null,
+                        // Task 5 sẽ truyền excludedAccounts thật khi account-advance
+                        : ParkUnlessEntered(await executions.TryEnterAsync(
+                            nextCandidate.Provider.Id, request.Id, nextCandidate.Provider.Name,
+                            nextCandidate.Model.ModelId, request.Priority, request.EnqueuedAt,
+                            excludedAccounts: null, request.Context.RequestAborted));
                     if (nextCandidate is not null && nextAccountId is null)
                         nextCandidate = null; // capacity corner — park lại, TK đã trả qua Exit
                 }
@@ -268,6 +274,21 @@ public sealed class DispatcherLoop(
             return;
         }
     }
+
+    /// <summary>
+    /// Map <see cref="TryEnterResult"/> về <c>long?</c> (Task 4 — walk chưa đổi semantics):
+    /// <see cref="TryEnterResult.Entered"/> → AccountId; <see cref="TryEnterResult.Full"/> →
+    /// <see langword="null"/> (park); <see cref="TryEnterResult.NoAccountLeft"/> →
+    /// <see langword="null"/> (coi như Full).
+    /// </summary>
+    /// <remarks>
+    /// NoAccountLeft với <c>excludedAccounts=null</c> là unreachable trong logic (0 TK enabled đã
+    /// trả sentinel Entered(0) trước) — chỉ snapshot stale (user tắt TK giữa load capacity và
+    /// enter) mới tới được nhánh này; map về park để giữ nguyên walk Task 4, Task 5 sẽ truyền
+    /// excludedAccounts thật và rẽ nhánh advance đúng.
+    /// </remarks>
+    private static long? ParkUnlessEntered(TryEnterResult result) =>
+        result is TryEnterResult.Entered entered ? entered.AccountId : null;
 
     /// <summary>Payload lỗi resolve — GIỮ NGUYÊN message/type/param/code 3A, chỉ đổi nơi gọi (spec §4).</summary>
     private static DispatchOutcome.Error CreateResolveError(SelectionFailure failure) =>
