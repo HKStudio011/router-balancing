@@ -141,6 +141,13 @@ else
                                 <div class="mb-2 flex flex-wrap items-center gap-2">
                                     <span class="text-sm font-semibold">@L["models.section"]</span>
 
+                                    @* Search lọc bảng model theo ModelId/DisplayName — oninput lọc từng phím,
+                                       after về trang 1 vì tổng dòng của bảng đổi (pattern LogPanel) *@
+                                    <input class="w-44 rounded border border-border bg-surface px-2 py-1"
+                                           placeholder="@L["models.search.placeholder"]"
+                                           disabled="@_busy" @bind="_modelSearch" @bind:event="oninput"
+                                           @bind:after="ResetModelPage" />
+
                                     @* oninput thay vì default change: change chỉ fire khi blur → handler Enter và nút Add
                                        sẽ đọc giá trị cũ; oninput giữ field luôn khớp từng phím *@
                                     <input class="w-56 rounded border border-border bg-surface px-2 py-1"
@@ -200,6 +207,11 @@ else
                                 @if (p.Models.Count == 0)
                                 {
                                     <EmptyState Message="@L["models.empty"]" />
+                                }
+                                else if (FilteredModelCount(p) == 0)
+                                {
+                                    @* Khác models.empty: provider CÓ model nhưng không khớp search *@
+                                    <EmptyState Message="@L["models.search.noResults"]" />
                                 }
                                 else
                                 {
@@ -313,7 +325,7 @@ else
                                         </table>
                                     </div>
 
-                                    <Pager Total="p.Models.Count" @bind-Page="_modelPage" @bind-PageSize="_modelPageSize" />
+                                    <Pager Total="FilteredModelCount(p)" @bind-Page="_modelPage" @bind-PageSize="_modelPageSize" />
                                 }
                             </td>
                         </tr>
@@ -670,6 +682,8 @@ else
     private int _providerPageSize = 10;
     private int _modelPage = 1;
     private int _modelPageSize = 10;
+    // Search model trong panel đang expand — 1 state chung (chỉ 1 row mở tại 1 thời điểm)
+    private string _modelSearch = string.Empty;
 
     private long? _testingId;
     private long? _fetchingId;
@@ -779,6 +793,7 @@ else
         _modelPage = 1; // đổi provider đang expand → về trang 1 của bảng model
         _bulkOpen = false;
         _newModelId = string.Empty;
+        _modelSearch = string.Empty; // search của provider trước không được áp sang provider mới
     }
 
     private async Task ToggleProviderEnabledAsync(Provider provider)
@@ -1596,20 +1611,40 @@ else
         return string.Format(L["accounts.usage.noLimit"], tokens, requests);
     }
 
-    /// <summary>Tải lại danh sách nhưng giữ nguyên hàng đang expand + clamp trang model.</summary>
+    /// <summary>Tải lại danh sách nhưng giữ nguyên hàng đang expand + clamp trang model theo tập khớp search.</summary>
     private async Task ReloadKeepExpandAsync(long providerId)
     {
         await LoadAsync();
         _expandedId = providerId;
         if (_providers.FirstOrDefault(x => x.Id == providerId) is { } current)
         {
-            var pages = Math.Max(1, (current.Models.Count + _modelPageSize - 1) / _modelPageSize);
+            var pages = Math.Max(1, (FilteredModelCount(current) + _modelPageSize - 1) / _modelPageSize);
             _modelPage = Math.Clamp(_modelPage, 1, pages);
         }
     }
 
-    /// <summary>Model của trang hiện tại, sắp xếp ổn định theo ModelId (client-side).</summary>
-    private IEnumerable<Model> PagedModels(Provider provider) => provider.Models
+    /// <summary>Về trang 1 sau khi search đổi — tổng dòng đã đổi, tránh Skip ra trang trống.</summary>
+    private void ResetModelPage() => _modelPage = 1;
+
+    /// <summary>Số model khớp search hiện tại — dùng cho Pager + trạng thái "không khớp".</summary>
+    private int FilteredModelCount(Provider provider) => SearchModels(provider).Count();
+
+    /// <summary>Model khớp search (client-side, không phân biệt hoa thường), giữ nguyên thứ tự gốc.</summary>
+    private IEnumerable<Model> SearchModels(Provider provider)
+    {
+        if (string.IsNullOrWhiteSpace(_modelSearch))
+        {
+            return provider.Models;
+        }
+
+        var term = _modelSearch.Trim();
+        return provider.Models.Where(m =>
+            m.ModelId.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            (m.DisplayName?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
+    /// <summary>Model của trang hiện tại trong tập khớp search, sắp xếp ổn định theo ModelId (client-side).</summary>
+    private IEnumerable<Model> PagedModels(Provider provider) => SearchModels(provider)
         .OrderBy(m => m.ModelId, StringComparer.Ordinal)
         .Skip((_modelPage - 1) * _modelPageSize)
         .Take(_modelPageSize);

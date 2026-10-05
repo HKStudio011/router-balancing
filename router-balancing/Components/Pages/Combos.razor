@@ -84,19 +84,26 @@ else
         </fieldset>
 
         <div class="flex flex-col gap-2 text-sm">
-            <div class="flex items-center justify-between">
-                <span>@L["combos.form.items"]</span>
-                <div class="flex gap-2">
-                    <button type="button" class="btn btn-outline-secondary"
-                            @onclick="() => AddItemRow(ItemKind.Model)">
-                        + @L["combos.form.addModelItem"]
-                    </button>
-                    <button type="button" class="btn btn-outline-secondary"
-                            @onclick="() => AddItemRow(ItemKind.Combo)">
-                        + @L["combos.form.addComboItem"]
-                    </button>
+                <div class="flex items-center justify-between">
+                    <span>@L["combos.form.items"]</span>
+                    <div class="flex gap-2">
+                        @* Search chỉ hiện khi có dòng model — không có gì để filter thì ô trống gây hiểu nhầm *@
+                        @if (_rows.Any(r => r.Kind == ItemKind.Model))
+                        {
+                            <input class="w-44 rounded border border-border bg-surface px-1.5 py-1"
+                                   placeholder="@L["models.search.placeholder"]"
+                                   @bind="_modelSearch" @bind:event="oninput" />
+                        }
+                        <button type="button" class="btn btn-outline-secondary"
+                                @onclick="() => AddItemRow(ItemKind.Model)">
+                            + @L["combos.form.addModelItem"]
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary"
+                                @onclick="() => AddItemRow(ItemKind.Combo)">
+                            + @L["combos.form.addComboItem"]
+                        </button>
+                    </div>
                 </div>
-            </div>
 
             @for (var i = 0; i < _rows.Count; i++)
             {
@@ -107,13 +114,16 @@ else
                     @if (row.Kind == ItemKind.Model)
                     {
                         @* Đúng spec §4: 1 select, optgroup theo Provider, chỉ hiện model Enabled
-                           (giữ model đang chọn dù đã tắt — edit không âm thầm bỏ target) *@
+                           (giữ model đang chọn dù đã tắt — edit không âm thầm bỏ target);
+                           search chỉ lọc hiển thị option, option đang chọn luôn được giữ *@
                         <select class="min-w-64 flex-1 rounded border border-border bg-surface px-1.5 py-1"
                                 @bind="row.ModelId">
                             <option value="">—</option>
                             @foreach (var provider in _providers)
                             {
-                                var models = provider.Models.Where(m => m.Enabled || m.Id == row.ModelId).ToList();
+                                var models = provider.Models
+                                    .Where(m => (m.Enabled || m.Id == row.ModelId) && ModelMatchesSearch(m, row.ModelId))
+                                    .ToList();
                                 if (models.Count == 0)
                                 {
                                     continue;
@@ -210,6 +220,8 @@ else
     private long? _editingId;
     private ComboDraft _draft = new();
     private List<ItemRow> _rows = [];
+    // Search option model trong modal — 1 state chung cho mọi model row
+    private string _modelSearch = string.Empty;
     private Combo? _confirmDelete;
     private string? _deleteMessage;
 
@@ -246,6 +258,7 @@ else
         _editingId = null;
         _draft = new ComboDraft();
         _rows = [];
+        _modelSearch = string.Empty;
         _modalVisible = true;
     }
 
@@ -267,6 +280,7 @@ else
             }
         }
 
+        _modelSearch = string.Empty;
         _modalVisible = true;
     }
 
@@ -284,6 +298,21 @@ else
         }
 
         (_rows[index], _rows[target]) = (_rows[target], _rows[index]);
+    }
+
+    /// <summary>
+    /// Option đang chọn luôn vượt qua search — tránh làm select mất giá trị âm thầm khi gõ filter.
+    /// </summary>
+    private bool ModelMatchesSearch(Model model, long? selectedModelId)
+    {
+        if (model.Id == selectedModelId || string.IsNullOrWhiteSpace(_modelSearch))
+        {
+            return true;
+        }
+
+        var term = _modelSearch.Trim();
+        return model.ModelId.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+               (model.DisplayName?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false);
     }
 
     private bool IsAncestorOrSelf(long comboId, long self)
