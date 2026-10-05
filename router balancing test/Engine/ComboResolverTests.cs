@@ -190,6 +190,29 @@ public class ComboResolverTests : IDisposable
     }
 
     [Fact]
+    public async Task ComboResolver_ResolveByComboName_SetsComboNameOnSelection()
+    {
+        SeedProvider("p1", modelIds: ["m1"]);
+        SeedCombo("ai-fast", ComboMode.RoundRobin, (1, ModelKey("m1"), null));
+
+        var result = await CreateSut(out _).ResolveAsync("ai-fast", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        Assert.Equal("ai-fast", ok.ComboName);
+    }
+
+    [Fact]
+    public async Task ComboResolver_ResolveByModelId_ComboNameIsNull()
+    {
+        SeedProvider("p1", modelIds: ["m1"]);
+
+        var result = await CreateSut(out _).ResolveAsync("m1", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        Assert.Null(ok.ComboName);
+    }
+
+    [Fact]
     public async Task Resolve_WhenNothingMatches_ReturnsNotFoundWithOriginalModelId()
     {
         var result = await CreateSut(out _).ResolveAsync("ghost", default);

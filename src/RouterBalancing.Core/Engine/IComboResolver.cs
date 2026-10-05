@@ -11,7 +11,9 @@ public abstract record SelectionResult;
 /// <summary>Resolve thành công — danh sách candidate + mode để chọn (spec §3.3).</summary>
 /// <param name="Candidates">Đã dedup + filter OpenAI; RR sort (ProviderId, ModelId), Fallback giữ thứ tự Position.</param>
 /// <param name="Mode">RoundRobin với model id; combo mode khi resolve qua combo.</param>
-public sealed record SelectionSuccess(IReadOnlyList<ModelCandidate> Candidates, ComboMode Mode)
+/// <param name="ComboName">Tên combo đã resolve; <see langword="null"/> khi match model id.</param>
+public sealed record SelectionSuccess(
+    IReadOnlyList<ModelCandidate> Candidates, ComboMode Mode, string? ComboName = null)
     : SelectionResult;
 
 /// <summary>Resolve thất bại — endpoint/dispatcher ghi lỗi theo <paramref name="Reason"/>.</summary>

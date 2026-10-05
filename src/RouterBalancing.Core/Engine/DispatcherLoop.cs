@@ -129,7 +129,7 @@ public sealed class DispatcherLoop(
             }
 
             candidate = await selector.TrySelectAsync(
-                new SelectionSuccess(remaining, success.Mode), ct);
+                new SelectionSuccess(remaining, success.Mode, success.ComboName), ct);
             if (candidate is null)
                 return false; // park — item KHÔNG bị Take, chờ Changed|Exited
 

@@ -17,16 +17,19 @@ public sealed class ComboResolver(
     {
         var candidates = await QueryModelCandidatesAsync(model, ct);
         var mode = ComboMode.RoundRobin;
+        // Chỉ set khi đi nhánh combo — nhánh model id giữ null (trace phân biệt nguồn resolve)
+        string? comboName = null;
         if (candidates.Count == 0)
         {
             var combo = await LoadComboAsync(model, ct);
             if (combo is null)
                 return new SelectionFailure(model, ResolveFailure.NotFound);
             mode = combo.Mode;
+            comboName = combo.Name;
             candidates = await ResolveComboAsync(combo, [combo.Id], ct);
         }
 
-        return Finalize(model, candidates, mode);
+        return Finalize(model, candidates, mode, comboName);
     }
 
     /// <summary>
@@ -119,7 +122,8 @@ public sealed class ComboResolver(
         return result;
     }
 
-    private static SelectionResult Finalize(string model, List<ModelCandidate> candidates, ComboMode mode)
+    private static SelectionResult Finalize(
+        string model, List<ModelCandidate> candidates, ComboMode mode, string? comboName)
     {
         if (candidates.Count == 0)
             return new SelectionFailure(model, ResolveFailure.NotFound);
@@ -133,7 +137,7 @@ public sealed class ComboResolver(
 
         var openAi = deduped.Where(c => c.Provider.Type == ProviderType.OpenAI).ToList();
         if (openAi.Count > 0)
-            return new SelectionSuccess(openAi, mode);
+            return new SelectionSuccess(openAi, mode, comboName);
 
         // Chỉ còn candidate Anthropic → 503 (giữ semantics 3A, không rơi xuống 404)
         return new SelectionFailure(model, ResolveFailure.AnthropicNotSupported);
