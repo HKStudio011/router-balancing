@@ -1,7 +1,7 @@
 # Spec: Live Request Trace (sơ đồ động trace request trên Dashboard)
 
 - **Ngày:** 2026-10-05
-- **Trạng thái:** Draft — chờ user review spec
+- **Trạng thái:** Đã duyệt (commit `3a52615`); bổ sung amendment khi viết implementation plan (cùng ngày): H3 tách start/result, field `Mode`/`AttemptDone`, `IProxyHost.QueuedSnapshot()` — xem §2.1/§3/§4/§5.3.
 - **Spec liên quan:**
   - Roadmap #4 Dashboard (ledger `.superpowers/sdd/progress.md`) — spec này cover nửa **#4b (trace live)**; nửa #4a (sơ đồ tổng quan, UI hàng đợi/thực thi, thống kê) sẽ có spec riêng sau.
   - [2026-09-28-queue-selection-design.md](2026-09-28-queue-selection-design.md) — queue/`ExecutionList` là nguồn trạng thái; **giữ nguyên**, chỉ observe.
@@ -50,7 +50,9 @@ Dashboard hiện tại chỉ có card trạng thái + Start/Stop/Restart + URL (
 | Component | Vị trí | Vai trò |
 |---|---|---|
 | `ITraceFeed`, `TraceFeed`, `TraceEvent`, `TraceStage`, `TraceRoute` | `src/RouterBalancing.Core/Engine/` | Singleton in-process: nhận publish từ pipeline, trả snapshot, phát event cho UI (§3) |
-| DI đăng ký `ITraceFeed → TraceFeed` | `MauiProgram.cs` | singleton |
+| DI đăng ký `ITraceFeed → TraceFeed` | `MauiProgram.cs` | singleton MAUI — UI (`RequestTrace`) inject từ container này |
+| DI trong proxy container | `ProxyApp.ConfigureServices` + `ProxyHost.StartAsync` | ProxyHost **re-register cùng instance** vào proxy container (cùng pattern `_settings`/`_log`) để endpoint/dispatcher publish vào đúng feed UI đang đọc; `ConfigureServices` chỉ đăng ký fallback nếu vắng (test harness chưa đăng ký) |
+| `IProxyHost.QueuedSnapshot()` | `IProxyHost.cs` / `ProxyHost.cs` | Bù `Received` cho request đang chờ nhưng feed chưa có (§5.3) — UI không truy cập được `IRequestQueue` nằm trong proxy container |
 | `RequestTrace.razor` | `router-balancing/Components/Shared/` | Component section sơ đồ động (§5) |
 | `<RequestTrace />` | `Components/Pages/Dashboard.razor` | Chèn dưới status card |
 
@@ -88,10 +90,16 @@ public sealed record TraceEvent(
     string Model,              // ProxyRequest.Model
     TraceRoute? Route,         // null ở Received/DispatchStarted cho tới Attempt đầu tiên
     int? Attempt,              // số attempt (1-based) — chỉ ở Stage Attempt
-    int? Status,               // HTTP status — Attempt (response attempt) và Finished (nếu có)
+    int? Status,               // Finished (nếu có); Attempt-done: HTTP status (null = lỗi mạng)
     bool? Success,             // chỉ ở Finished — outcome cuối là thành công hay không
-    string? FailureKind,       // Attempt: "http" | "network" — phục vụ hiện icon trong trail
-    DateTimeOffset At);
+    string? FailureKind,       // Attempt-done: "http" | "network" — phục vụ hiện icon trong trail
+    DateTimeOffset At,
+    string? Mode = null,       // DispatchStarted: ComboMode.ToString() — hiển thị ở drill-down (§5.5)
+    bool? AttemptDone = null); // Attempt: false = attempt BẮT ĐẦU (chưa có kết quả), true = đã RecordAttempt
+
+// Amendment: Attempt sinh tối đa 2 event — start (H3a, route đầy đủ để vẽ circle vào
+// nhánh Provider/Account ngay khi attempt chạy) + done (H3b, sau RecordAttempt — có
+// Status/FailureKind). Attempt thành công cuối chỉ có event start, status lấy từ Finished.
 ```
 
 **API `ITraceFeed`:**
@@ -111,7 +119,8 @@ public sealed record TraceEvent(
 |---|---|---|---|---|
 | H1 | `ProxyApp` — endpoint tạo request | Ngay sau khi `queue.Enqueue(request)` thành công (khu vực tạo `ProxyRequest`, ~dòng 133) | `Received` | `request.Id`, `request.Model` |
 | H2 | `DispatcherLoop` | Sau khi `queue.Take` thành công, trước/đầu `ServeAsync` (~dòng 152–159) | `DispatchStarted` | `request.Id`, `request.Model`; `Route` = null (chưa chọn xong attempt) |
-| H3 | `DispatcherLoop` | Sau `request.Retry.RecordAttempt(provider, model, account, status)` (~dòng 225) — mỗi attempt 1 event | `Attempt` | Args của `RecordAttempt` đã có **tên** provider/model/account + status; `Route` = combo (từ `resolver.ResolveAsync` result) + provider + account |
+| H3a | `DispatcherLoop` | **Trước** `handler.ForwardAsync` trong `ServeAsync` (~dòng 184) — attempt vừa bắt đầu | `Attempt{AttemptDone=false}` | `Attempt` = `Retry.Attempts + 1`; `Route` = combo (`SelectionSuccess.ComboName`, amendment: field mới) + provider + account — **đủ dữ kiện vẽ circle vào nhánh ngay khi attempt đang chạy** |
+| H3b | `DispatcherLoop` | Sau `request.Retry.RecordAttempt(provider, model, account, status)` (~dòng 225) — attempt fail đã journal | `Attempt{AttemptDone=true}` | Args của `RecordAttempt` + `Status`; `FailureKind` = `status is null ? "network" : "http"` (parity `RetryState` — status null = lỗi mạng) |
 | H4 | `ProxyApp` | Sau khi outcome đã xử lý xong — client đã nhận response / error đã ghi / cancel xác định (khu vực await `request.Completion`, ~dòng 164–215) | `Finished` (outcome != Cancelled/Aborted, `Success` từ outcome) **hoặc** `Canceled` (outcome `Cancelled` hoặc `Aborted` — client ngắt) | `outcome` + thời điểm hiện tại |
 
 - **Resolve failure** (combo không resolve được) → `Finished{Success=false}` ở H4 — không cần hook riêng.
@@ -139,7 +148,7 @@ public sealed record TraceEvent(
 Khi component init (hoặc user mở lại Dashboard): dựng state từ `TraceFeed.Snapshot()`:
 
 - Group event theo `RequestId`; request **chưa có** `Finished`/`Canceled` = còn sống → render tại stage cuối cùng biết được.
-- Bù `Received` cho request đang chờ nhưng feed chưa có (mới mở app): `IRequestQueue.Snapshot()` — id chưa có trong feed → tạo node trắng tại Hàng đợi.
+- Bù `Received` cho request đang chờ nhưng feed chưa có (mới mở app / ring eviction): `IProxyHost.QueuedSnapshot()` (amendment — UI không inject được `IRequestQueue` thuộc proxy container) — id chưa có trong feed → tạo node trắng tại Hàng đợi.
 - Trail drill-down = toàn bộ event của `RequestId` (từ ring buffer), sắp theo `At`.
 
 ### 5.4 Fade, cap, throttle
@@ -168,7 +177,7 @@ Thêm key ×2 dict (`Translations.cs`): `trace.title`, `trace.legend.queued/runn
 | Request stream sống nhiều phút (SSE) | Circle xanh đến khi `Finished` — hành vi đúng |
 | Proxy stop/start giữa chừng | `PurgeAll()` khi stop → skeleton về idle |
 | Event đồng thời từ nhiều thread | `Publish` thread-safe (§3) + render throttle (§5.4) |
-| Attempt đầu chưa về → chưa có tên route | Circle xanh, route placeholder "—" cho tới khi `Attempt` đầu tiên |
+| Giữa `DispatchStarted` và `Attempt` start đầu tiên (cửa sổ rất ngắn) | Circle xanh ở Danh sách thực thi, route placeholder "—" cho tới khi H3a |
 | Feed lỗi (exception bên trong) | `Publish` không ném ra caller, ghi log — pipeline không bị ảnh hưởng (§3) |
 | Memory | Ring cap 200 + active map bị giới hạn bởi concurrency thực tế + cap UI 60 |
 
@@ -180,13 +189,15 @@ Thêm key ×2 dict (`Translations.cs`): `trace.title`, `trace.legend.queued/runn
 |---|---|
 | `TraceFeedTests.Publish_RaisesPublished_WithEvent` | Publish → event nhận đúng event |
 | `TraceFeedTests.Snapshot_LateSubscriber_GetsRecentEvents_ReturnsLast200` | Buffer cap 200, drop cũ nhất |
-| `TraceFeedTests.Snapshot_RequestWithoutTerminal_IsActive_RequestWithTerminal_IsDone` | Grouping theo `RequestId`: chưa có `Finished`/`Canceled` = còn sống (pin ngữ nghĩa §5.3) |
+| `TraceFeedTests.ActiveSnapshot_RequestWithoutTerminal_IncludesId_AfterTerminalRemovesIt` | Lifecycle active map: chưa có `Finished`/`Canceled` = còn sống (pin ngữ nghĩa §5.3; test qua `ActiveSnapshot()` internal — `InternalsVisibleTo`) |
 | `TraceFeedTests.Publish_DoesNotThrow_ToCaller` | Contract không ném ra caller |
 | `TraceFeedTests.PurgeAll_ClearsState` | Proxy stop |
+| `TraceFeedTests.Publish_FromManyThreads_PreservesAllEvents` | Publish đồng thời nhiều thread → không mất/duplicated event (§6) |
+| `ProxyApp.ClassifyOutcome` [Theory] (test trong test project) | H4 mapping: `Cancelled`/`Aborted` → Canceled; `Handled` → Finished{true}; `Passthrough`/`Error` → Finished theo status |
 
 ### 7.2 Integration test
 
-Dispatch full flow qua test harness có sẵn → sequence `Received → DispatchStarted → Attempt(+route) → Finished`; cancel case → `Canceled`. (Dùng pattern test dispatcher/exhaustive hiện có.)
+Dispatch full flow qua test harness có sẵn → sequence `Received → DispatchStarted → Attempt(start, có route) → Finished`; case 429 failover → thêm `Attempt{done, Status=429, FailureKind="http"}`; lỗi mạng → `FailureKind="network"`; cancel request đang chờ → `Canceled`. (Dùng pattern `ProxyQueueIntegrationTests`/`ProxyRetryIntegrationTests`.)
 
 ### 7.3 Manual checklist (chạy MAUI app thật)
 
