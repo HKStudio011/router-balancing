@@ -159,4 +159,18 @@ public class NvidiaRequestProfileTests
         // Header vẫn gắn — không phụ thuộc parse được body
         Assert.Equal("RouterBalancing", Header(request, "X-BILLING-INVOKE-ORIGIN"));
     }
+
+    [Fact]
+    public async Task Create_NvidiaChat_StripChangedBody_ContentLengthMatchesNewBytes()
+    {
+        // Content-Length copy từ body CŨ trong khi bytes đã bị strip ngắn hơn →
+        // HttpRequestException "Sent N bytes, but Content-Length promised M" lúc gửi thật
+        // (bắt thật qua harness gửi request 2026-10-05; unit test chỉ đọc content nên trước đây không thấy)
+        var body = """{"model":"m","messages":[{"role":"tool","tool_call_id":"c","name":"f","content":"x"}]}""";
+        using var request = ProviderRequestFactory.Create(Nvidia(), "nvapi-test",
+            "/v1/chat/completions", HttpMethod.Post, JsonBody(body));
+
+        var bytes = await request.Content!.ReadAsByteArrayAsync();
+        Assert.Equal(bytes.Length, request.Content.Headers.ContentLength);
+    }
 }

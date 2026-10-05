@@ -80,12 +80,6 @@ public static class NvidiaRequestProfile
 
         if (!changed) return;
 
-        var replacement = new ByteArrayContent(Encoding.UTF8.GetBytes(obj.ToJsonString()));
-        foreach (var header in content.Headers)
-        {
-            replacement.Headers.TryAddWithoutValidation(header.Key, header.Value);
-        }
-        request.Content = replacement;
-        content.Dispose();
+        ContentReplacer.Replace(request, content, obj.ToJsonString());
     }
 }

@@ -234,4 +234,17 @@ public class OpenCodeFreeFingerprintTests
         // Không đọc được user text → id ngẫu nhiên nhưng vẫn đúng format
         Assert.Matches(@"^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$", Header(request, "x-opencode-request")!);
     }
+
+    [Fact]
+    public async Task Create_OpenCodeFreeChat_TransformedBody_ContentLengthMatchesNewBytes()
+    {
+        // Content-Length copy từ body CŨ trong khi transform chèn decoy làm bytes dài hơn →
+        // HttpRequestException "Sent N bytes, but Content-Length promised M" lúc gửi thật
+        // (bắt thật qua harness gửi request 2026-10-05; unit test chỉ đọc content nên trước đây không thấy)
+        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
+            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
+
+        var bytes = await request.Content!.ReadAsByteArrayAsync();
+        Assert.Equal(bytes.Length, request.Content.Headers.ContentLength);
+    }
 }

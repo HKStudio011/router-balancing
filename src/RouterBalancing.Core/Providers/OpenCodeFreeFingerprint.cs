@@ -64,11 +64,7 @@ public static class OpenCodeFreeFingerprint
         var transformed = TransformBody(raw, out var isStream);
         if (!ReferenceEquals(raw, transformed))
         {
-            var replacement = new ByteArrayContent(transformed);
-            foreach (var header in content.Headers)
-                replacement.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            request.Content = replacement;
-            content.Dispose();
+            ContentReplacer.Replace(request, content, transformed);
         }
 
         if (apiKey.Length == 0)
