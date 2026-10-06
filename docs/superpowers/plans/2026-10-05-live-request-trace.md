@@ -43,7 +43,7 @@
 | Sửa | `router-balancing/MauiProgram.cs` | Đăng ký `ITraceFeed → TraceFeed` |
 | Tạo | `router-balancing/Components/Shared/RequestTrace.razor` | Section sơ đồ (state, render, modal) |
 | Sửa | `router-balancing/Components/Pages/Dashboard.razor` | Chèn `<RequestTrace />` |
-| Sửa | `src/RouterBalancing.Core/Localization/Translations.cs` | 28 key `trace.*` ×2 dict |
+| Sửa | `src/RouterBalancing.Core/Localization/Translations.cs` | 30 key `trace.*` ×2 dict |
 | Tạo | `router balancing test/Engine/TraceFeedTests.cs` | Feed unit tests |
 | Tạo | `router balancing test/Server/ClassifyOutcomeTests.cs` | H4 mapping |
 | Tạo | `router balancing test/Server/TraceIntegrationTests.cs` | Full-flow sequence |
@@ -420,20 +420,20 @@ git commit -m "feat: render active route tree with account chips in trace sectio
 
 **Files:**
 - Modify: `router-balancing/Components/Shared/RequestTrace.razor`
-- Modify: `src/RouterBalancing.Core/Localization/Translations.cs` (14 key ×2 dict)
+- Modify: `src/RouterBalancing.Core/Localization/Translations.cs` (16 key ×2 dict)
 
 **Interfaces:**
 - Consumes: `Modal` (`Visible`/`Title`/`OnClose`/`ChildContent` — mirror `ConfirmDialog.razor`), `Feed.Snapshot()` (ring = trail nguồn), `_nodes` (header modal).
 - Produces: `private void OpenDetail(string id)`, `CloseDetail()`; field `_selectedId`.
 
-- [ ] **Step 1: Thêm 14 key** → chạy `--filter TranslationParityTests` → PASS:
+- [ ] **Step 1: Thêm 16 key** → chạy `--filter TranslationParityTests` → PASS:
   `trace.detail.title`, `trace.detail.started`, `trace.detail.duration`, `trace.detail.received`, `trace.detail.dispatch`, `trace.detail.attempt`, `trace.detail.done`, `trace.detail.failed`, `trace.detail.cancelled`, `trace.detail.idle`.
-  + 4 key caption skeleton (amendment sau Task 5 — reviewer bắt caption hardcode tiếng Việt vi phạm rule i18n ở dòng 19; emoji giữ nguyên trong value để swap 1 literal, không sửa markup):
-  `trace.node.input` (`📥 Input` EN/VI), `trace.node.queue` (`⏳ Hàng đợi` VI / `⏳ Queue` EN), `trace.node.dispatch` (`⚙️ Danh sách thực thi` VI / `⚙️ Execution list` EN), `trace.node.client` (`🖥 Client` EN/VI).
+  + 6 key caption skeleton/nhánh (amendment sau Task 5+6 — reviewer Task 5 bắt 4 caption skeleton hardcode tiếng Việt, Task 6 thêm 2 caption nhánh; vi phạm rule i18n ở dòng 19; emoji giữ nguyên trong value để swap 1 literal, không sửa markup):
+  `trace.node.input` (`📥 Input` EN/VI), `trace.node.queue` (`⏳ Hàng đợi` VI / `⏳ Queue` EN), `trace.node.dispatch` (`⚙️ Danh sách thực thi` VI / `⚙️ Execution list` EN), `trace.node.client` (`🖥 Client` EN/VI), `trace.node.combo` (`🧩 Combo` EN/VI), `trace.node.provider` (`☁️ Provider` EN/VI).
 
 - [ ] **Step 2: Implement**
 
-- Swap 4 caption hardcode trong skeleton (Task 5 để lại vi phạm rule i18n dòng 19): `RequestTrace.razor` ~dòng 186/190/195/200 → `@L["trace.node.input"]`, `@L["trace.node.queue"]`, `@L["trace.node.dispatch"]`, `@L["trace.node.client"]`.
+- Swap 6 caption hardcode (Task 5 skeleton + Task 6 nhánh) vi phạm rule i18n dòng 19: `RequestTrace.razor` ~dòng 316/320/325/330/342/352 → `@L["trace.node.input"]`, `@L["trace.node.queue"]`, `@L["trace.node.dispatch"]`, `@L["trace.node.client"]`, `@L["trace.node.combo"]`, `@L["trace.node.provider"]`.
 - Circle `@onclick` → `OpenDetail(n.Id)` (Task 5 circle markup thêm handler).
 - `<Modal Visible="@(_selectedId is not null)" Title="@L["trace.detail.title"]" OnClose="CloseDetail">`:
   - Header: `req #{Id}` (font-mono, truncate), model, `trace.detail.started` + `HH:mm:ss.fff`, `trace.detail.duration` = `last.At − ReceivedAt` (định dạng ms/s).
