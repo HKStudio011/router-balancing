@@ -139,7 +139,7 @@ public sealed record TraceEvent(
 ### 5.2 Circle & di chuyển
 
 - Mỗi request sống = 1 circle, **absolutely positioned tại anchor của stage hiện tại**; đổi stage → đổi tọa độ → **CSS `transition` (transform/left/top ~0.35s ease)** tạo hiệu ứng circle chạy dọc đường nối (hình thật cần, không phải animation trang trí).
-- Ornament (chỉ trang trí, không gắn data): 1–2 circle lặp vô hạn trên path bằng SVG `animateMotion`; route active dùng stroke `stroke-dasharray` + `stroke-dashoffset` animation (marching-ants) như mockup v2.
+- Route active dùng stroke `stroke-dasharray` + `stroke-dashoffset` animation (marching-ants) như mockup v2. *(Amend 2026-10-06: bỏ ornament 1–2 circle `animateMotion` lặp vô hạn — user report khi chạy thật: bị hiểu nhầm là request đang chạy dù không có request nào; trái nguyên tắc dòng trên.)*
 - Trong node: xếp circle theo stack, **max 6 dot + chip `+N`**; account: **max 4 chip + chip `+N idle ▾`**.
 - Màu circle theo trạng thái (G2); dot tại account/provider node mang màu của request đang dùng node đó.
 

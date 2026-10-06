@@ -302,19 +302,19 @@
                         }
                     </g>
                 }
-                @* Ornament trang trí (không gắn data): circle lặp vô hạn — coords mockup *@
-                <circle r="6.5" fill="#ffffff" stroke="#9aa0aa" stroke-width="1.5">
-                    <animateMotion dur="2.4s" repeatCount="indefinite" path="M68,46 L68,96" />
-                </circle>
-                <circle r="6.5" fill="#3b82f6">
-                    <animateMotion dur="2.8s" begin=".6s" repeatCount="indefinite" path="M68,244 L68,336" />
-                </circle>
+                @* (Bỏ 2 circle ornament lặp vô hạn của mockup — user report: bị hiểu nhầm là request
+                   đang chạy khi không có request nào; trái nguyên tắc "hình thật cần, không phải
+                   animation trang trí" spec §5.1). marching-ants ở trên giữ vì nó GẮN DATA — chỉ vẽ
+                   khi có đường route thật. *@
             </svg>
 
             @* Skeleton spine — luôn vẽ kể cả khi idle (spec §5.1); tọa độ fixed theo mockup *@
             <div class="trace-node" style="left:8px;top:8px;width:120px">
                 <span class="cap">@L["trace.node.input"]</span>
-                POST /v1/chat
+                @* Path THẬT của endpoint (ProxyApp.cs:124) — không truncate "v1/chat" gây hiểu nhầm;
+                   endpoint tự wrap sau dấu '/'. /v1/responses (design 2026-09-25 mục 2) chưa implement —
+                   khi thêm endpoint mới thì cập nhật node này thành danh sách path. *@
+                POST /v1/chat/completions
             </div>
             <div class="trace-node" style="left:8px;top:96px;width:120px">
                 <span class="cap">@L["trace.node.queue"]</span>
