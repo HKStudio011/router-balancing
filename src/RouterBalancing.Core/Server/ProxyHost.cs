@@ -25,6 +25,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly IClientKeyService _clientKeys;
     private readonly IProxyPool _pool;
     private readonly ITraceFeed _trace;
+    private readonly IApiMonitorStore _monitor;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private WebApplication? _app;
     private bool _disposed;
@@ -36,7 +37,8 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     public event Action? StateChanged;
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
-        ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool, ITraceFeed trace)
+        ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool, ITraceFeed trace,
+        IApiMonitorStore monitor)
     {
         _settings = settings;
         _log = log;
@@ -45,6 +47,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _clientKeys = clientKeys;
         _pool = pool;
         _trace = trace;
+        _monitor = monitor;
     }
 
     /// <summary>
@@ -76,6 +79,8 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_clientKeys);
             // Cùng instance với MAUI container — UI đọc đúng feed pipeline proxy đang ghi
             builder.Services.AddSingleton(_trace);
+            // Cùng instance với MAUI container — panel API Monitor đọc đúng store hooks ghi vào
+            builder.Services.AddSingleton(_monitor);
             builder.WebHost.ConfigureKestrel(options =>
                 options.Listen(ResolveBindAddress(_settings.LanAccess), port));
 

@@ -40,6 +40,9 @@ public static class ProxyApp
         if (!builder.Services.Any(d => d.ServiceType == typeof(ITraceFeed)))
             builder.Services.AddSingleton<ITraceFeed, TraceFeed>(); // fallback cho test harness; app đã đăng ký instance ở StartAsync
 
+        if (!builder.Services.Any(d => d.ServiceType == typeof(IApiMonitorStore)))
+            builder.Services.AddSingleton<IApiMonitorStore, ApiMonitorStore>(); // fallback test harness; app đã đăng ký instance ở StartAsync
+
         builder.Services.AddTransient<ProxyHealthHandler>();
         // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
         builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
@@ -116,7 +119,8 @@ public static class ProxyApp
         // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
             async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
-                ChatCompletionsHandler handler, ILogService log, ITraceFeed trace) =>
+                ChatCompletionsHandler handler, ILogService log, ITraceFeed trace,
+                IApiMonitorStore monitor) =>
         {
             // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
             string id;
@@ -151,6 +155,9 @@ public static class ProxyApp
                 return;
             }
 
+            // H1 monitor: record vào ring tại đây (store fail-open — không try/catch ở call site);
+            // đồng bộ với trace — request không qua enqueue (validate 400) không hiện trong monitor
+            monitor.StartRequest(id, request.Model, prepared.Body);
             trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
                 null, null, null, null, null, DateTimeOffset.Now));
 
@@ -176,6 +183,11 @@ public static class ProxyApp
             // Publish tại đây (TRƯỚC khối ghi response): viết response có thể nổ
             // (client ngắt giữa passthrough) — nếu publish sau thì circle terminal bị mồ côi.
             var (stage, success, status) = ClassifyOutcome(outcome);
+            // Handled: status upstream thật đã ghi vào ctx.Response trước khi stream — H4 phải
+            // mang status cuối (spec api-monitor §3.1: Status = HTTP status trả về; monitor
+            // cần 200 cho record Done). ClassifyOutcome không nắm ctx nên trả null cho Handled.
+            if (outcome is DispatchOutcome.Handled)
+                status = ctx.Response.StatusCode;
             trace.Publish(new TraceEvent(id, stage, prepared.ModelId,
                 null, null, status, success, null, DateTimeOffset.Now));
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Domain;
@@ -18,7 +19,8 @@ public sealed class ChatCompletionsHandler(
     IUpstreamClient upstream,
     ISecretProtector protector,
     ILogService log,
-    IClientKeyUsageSink usageSink)
+    IClientKeyUsageSink usageSink,
+    IApiMonitorStore monitor)
 {
     /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
     public sealed record PreparedChatRequest(string ModelId, byte[] Body);
@@ -85,6 +87,9 @@ public sealed class ChatCompletionsHandler(
     public async Task<DispatchOutcome> ForwardAsync(HttpContext ctx, Provider provider, Model model,
         byte[] body, long accountId, CancellationToken ct)
     {
+        // `!`: endpoint set ctx.Items[RequestId] TRƯỚC enqueue (ProxyApp) — ForwardAsync chỉ
+        // chạy cho request đã qua endpoint nên id luôn có; hook monitor cần string không-null
+        var requestId = ClientKeyItems.RequestIdOf(ctx)!;
         // Đúng TK đã chọn bởi TryEnter — resolve "first enabled" tại đây sẽ lệch đếm (D-B6);
         // id không khớp (TK bị xóa giữa chừng) → 503 cùng contract với nhánh không có key
         var account = provider.Accounts.FirstOrDefault(a => a.Id == accountId);
@@ -140,6 +145,9 @@ public sealed class ChatCompletionsHandler(
                     RequestId = ClientKeyItems.RequestIdOf(ctx),
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });
+                // status 0 = không có HTTP status → store ghi FailureKind "network";
+                // State vẫn do feed H4 chốt (record có thể retry tiếp ở attempt/advance kế)
+                monitor.RecordError(requestId, 0, null);
                 return new DispatchOutcome.Fatal(FailoverLevel.Provider, null, null, [], null);
             }
 
@@ -152,6 +160,10 @@ public sealed class ChatCompletionsHandler(
                     if (response.Content.Headers.ContentType is { } okType)
                         ctx.Response.ContentType = okType.ToString();
                     var tee = await UsageCapture.TeeAsync(response.Content, ctx.Response.Body, ct);
+                    // Monitor ghi NGAY sau tee, KỂ CẢ khi upstream thiếu usage (token null) —
+                    // store fail-open nên không try/catch ở call site (contract IApiMonitorStore)
+                    monitor.RecordResponse(requestId, tee.Usage?.PromptTokens,
+                        tee.Usage?.CompletionTokens, tee.FirstTokenAt, tee.ResponseBody);
                     LogForwarded(ctx, provider, model, response, stopwatch);
 
                     if (tee.Usage is not null)
@@ -180,6 +192,10 @@ public sealed class ChatCompletionsHandler(
 
                 // Lỗi chưa commit (vừa nhận header) — buffer để dispatcher quyết định advance/passthrough
                 var errorBody = await response.Content.ReadAsByteArrayAsync(ct);
+                // Ghi cho MỌI nhánh non-2xx (retryable/fatal/passthrough) — việc monitor theo dõi
+                // lỗi không phụ thuộc quyết định retry; store tự truncate 64KB (fail-open)
+                monitor.RecordError(requestId, (int)response.StatusCode,
+                    Encoding.UTF8.GetString(errorBody));
                 var contentType = response.Content.Headers.ContentType?.ToString();
                 var retryAfterRaw = response.Headers.RetryAfter?.ToString();
                 if (RetryClassifier.IsRetryable(response.StatusCode))

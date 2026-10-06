@@ -61,6 +61,9 @@ namespace router_balancing
             // TraceFeed singleton của app — ProxyHost.StartAsync re-register ĐÚNG instance
             // này vào container proxy, UI và pipeline cùng đọc 1 feed
             builder.Services.AddSingleton<ITraceFeed, TraceFeed>();
+            // ApiMonitorStore singleton cùng pattern: ProxyHost.StartAsync re-register cùng
+            // instance vào container proxy — panel và hooks ghi/đọc 1 store
+            builder.Services.AddSingleton<IApiMonitorStore, ApiMonitorStore>();
             builder.Services.AddSingleton<LocalizationService>();
             // Scoped: ThemeService phụ thuộc IJSRuntime — lifetime scoped để Blazor resolve được
             // (singleton không được inject scoped service).

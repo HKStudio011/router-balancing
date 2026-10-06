@@ -115,8 +115,13 @@ public class ChatCompletionsHandlerTests
     }
 
     private ChatCompletionsHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
-        IClientKeyUsageSink? sink = null) =>
-        new(upstream, _protector, log ?? new CapturingLog(), sink ?? new NullUsageSink());
+        IClientKeyUsageSink? sink = null)
+    {
+        var effectiveLog = log ?? new CapturingLog();
+        // Store/feed thật tham gia DI — hook monitor không được đổi hành vi outcome/log đang test
+        return new(upstream, _protector, effectiveLog, sink ?? new NullUsageSink(),
+            new ApiMonitorStore(new TraceFeed(effectiveLog), effectiveLog, TimeProvider.System));
+    }
 
     [Fact]
     public async Task PrepareAsync_WhenJsonInvalid_Returns400OpenAiShapeAndSingleWarn()

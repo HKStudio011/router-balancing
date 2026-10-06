@@ -116,9 +116,11 @@ public class DispatcherLoopTests : IDisposable
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
         IUpstreamClient upstream, CapturingLog log, IExecutionList? executions = null)
     {
-        var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink());
-        // Cùng log của test — TraceFeed ghi lỗi contract qua log này (Task 1)
+        // Cùng log của test — TraceFeed ghi lỗi contract qua log này (Task 1);
+        // feed tạo TRƯỚC để monitor store subscribe đúng instance dispatcher publish vào
         _trace = new TraceFeed(log);
+        var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink(),
+            new ApiMonitorStore(_trace, log, TimeProvider.System));
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
             log, _trace);
         await _loop.StartAsync(CancellationToken.None);

@@ -42,8 +42,9 @@ public class ProxyHostTests : IDisposable
 
     private async Task<ProxyHost> StartHostAsync()
     {
+        var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), new TraceFeed(_log));
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System));
         await host.StartAsync();
         _client.BaseAddress = new Uri($"http://127.0.0.1:{host.Port}");
         return host;
@@ -168,8 +169,9 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task StartAsync_WhenStarted_RaisesStateChanged()
     {
+        var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), new TraceFeed(_log));
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System));
         var raised = 0;
         host.StateChanged += () => raised++;
 
@@ -183,8 +185,9 @@ public class ProxyHostTests : IDisposable
     [Fact]
     public async Task StartAsync_WhenCalledTwice_IsIdempotent()
     {
+        var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), new TraceFeed(_log));
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System));
         var raised = 0;
         host.StateChanged += () => raised++;
 
@@ -224,7 +227,7 @@ public class ProxyHostTests : IDisposable
     {
         var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed);
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System));
         feed.Publish(new TraceEvent("id1", TraceStage.Received, "m1", null, null, null, null, null,
             DateTimeOffset.Now));
         Assert.Single(feed.Snapshot());
