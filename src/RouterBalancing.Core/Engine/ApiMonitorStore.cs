@@ -100,7 +100,7 @@ public sealed class ApiMonitorStore : IApiMonitorStore
     {
         try
         {
-            var prompt = Truncate(Encoding.UTF8.GetString(promptBody));
+            var prompt = DecodeCapped(promptBody);
             lock (_gate)
             {
                 var index = _calls.FindIndex(c => c.RequestId == requestId);
@@ -294,10 +294,33 @@ public sealed class ApiMonitorStore : IApiMonitorStore
             Mode: null, PromptBody: promptBody, ResponseBody: null, ErrorBody: null);
 
     /// <summary>Cắt body vượt cap + marker — một helper chung cho prompt/response/error.</summary>
-    private static string? Truncate(string? value) =>
-        value is null || value.Length <= BodyCap
-            ? value
-            : value[..BodyCap] + TruncateMarker;
+    private static string? Truncate(string? value)
+    {
+        if (value is null || value.Length <= BodyCap)
+            return value;
+        // Đã qua DecodeCapped/tee (marker nằm cuối, tổng không vượt cap + marker) → giữ nguyên:
+        // cắt lần nữa sẽ cắt vào giữa marker sinh "[t[truncated]" (marker 2 phần) —
+        // điều phối với handler để marker xuất hiện đúng 1 lần
+        if (value.Length <= BodyCap + TruncateMarker.Length
+            && value.EndsWith(TruncateMarker, StringComparison.Ordinal))
+            return value;
+        return value[..BodyCap] + TruncateMarker;
+    }
+
+    /// <summary>
+    /// Decode UTF-8 TRƯỚC khi cap: chỉ đọc tối đa <see cref="BodyCap"/> byte đầu rồi mới
+    /// chuyển string — body nhiều MB không sinh string tạm ~2× kích thước (trước đây
+    /// GetString toàn bộ rồi mới cắt). Byte cắt rơi giữa chuỗi multi-byte → ký tự thay thế
+    /// U+FFFD (chấp nhận). Output ≤ <see cref="BodyCap"/> ký tự + marker; marker
+    /// <c>[truncated]</c> xuất hiện đúng 1 lần khi body bị cắt.
+    /// </summary>
+    /// <param name="body">Body UTF-8 thô (prompt/error) — có thể nhiều MB.</param>
+    internal static string DecodeCapped(byte[] body)
+    {
+        var cut = Math.Min(body.Length, BodyCap);
+        var text = Encoding.UTF8.GetString(body, 0, cut);
+        return body.Length > cut ? text + TruncateMarker : text;
+    }
 
     /// <summary>
     /// Fire <see cref="Changed"/> NGOÀI lock: subscriber (UI render) không được giữ lock —

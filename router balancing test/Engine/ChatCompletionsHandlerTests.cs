@@ -115,12 +115,13 @@ public class ChatCompletionsHandlerTests
     }
 
     private ChatCompletionsHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
-        IClientKeyUsageSink? sink = null)
+        IClientKeyUsageSink? sink = null, ApiMonitorStore? monitor = null)
     {
         var effectiveLog = log ?? new CapturingLog();
         // Store/feed thật tham gia DI — hook monitor không được đổi hành vi outcome/log đang test
         return new(upstream, _protector, effectiveLog, sink ?? new NullUsageSink(),
-            new ApiMonitorStore(new TraceFeed(effectiveLog), effectiveLog, TimeProvider.System));
+            monitor ?? new ApiMonitorStore(new TraceFeed(effectiveLog), effectiveLog,
+                TimeProvider.System));
     }
 
     [Fact]
@@ -562,5 +563,126 @@ public class ChatCompletionsHandlerTests
         Assert.Empty(log.Debugs);
         Assert.Empty(log.Usages);
         Assert.Single(log.Infos);
+    }
+
+    /// <summary>
+    /// Content SSE có stream nổ sau chunk đầu — mô phỏng upstream/client đứt giữa chừng
+    /// (spec api-monitor §7 "SSE lỗi giữa chừng").
+    /// </summary>
+    private sealed class BrokenSseContent : HttpContent
+    {
+        public BrokenSseContent() =>
+            Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+
+        // Đọc qua CreateContentReadStreamAsync (ReadAsStreamAsync) — trả thẳng stream hỏng,
+        // không buffer qua SerializeToStreamAsync (tránh nuốt lỗi vào LoadIntoBuffer)
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new BrokenSseStream());
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    private sealed class BrokenSseStream : Stream
+    {
+        private const string FirstChunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        private bool _delivered;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Deliver(buffer.AsSpan(offset, count));
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+            ValueTask.FromResult(Deliver(buffer.Span));
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+            CancellationToken ct) =>
+            Task.FromResult(Deliver(buffer.AsSpan(offset, count)));
+
+        private int Deliver(Span<byte> buffer)
+        {
+            // Chunk đầu forward được cho client (HasStarted = true), chunk kế nổ →
+            // dispatcher map Aborted (row vàng) đúng như runtime thật
+            if (_delivered)
+                throw new IOException("upstream stream broke mid-chunk");
+            _delivered = true;
+            var bytes = Encoding.UTF8.GetBytes(FirstChunk);
+            bytes.CopyTo(buffer);
+            return bytes.Length;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenTeeFailsMidStream_RethrowsAndRecordsNetworkKind()
+    {
+        var log = new CapturingLog();
+        var monitor = new ApiMonitorStore(new TraceFeed(log), log, TimeProvider.System);
+        var sut = Create(new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new BrokenSseContent(),
+        }), log, monitor: monitor);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-mid";
+        var provider = SeedProvider();
+
+        // Rethrow — không đổi hành vi pipeline: dispatcher vẫn map HasStarted → Aborted như cũ
+        await Assert.ThrowsAsync<IOException>(() =>
+            sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+                AccountIdOf(provider), default));
+
+        // RecordResponse chạy SAU tee nên TTFT/ResponseBody mất; RecordError(0) bọc quanh tee
+        // để popup có FailureKind=network thay vì trống (spec api-monitor §7)
+        var record = monitor.Find("req-mid");
+        Assert.NotNull(record);
+        Assert.Equal("network", record.FailureKind);
+        Assert.Null(record.Status);
+        Assert.Null(record.ResponseBody);
+        Assert.Null(record.FirstTokenAt);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenErrorBodyLongMultiByte_TruncatesBytesBeforeDecode()
+    {
+        var log = new CapturingLog();
+        var monitor = new ApiMonitorStore(new TraceFeed(log), log, TimeProvider.System);
+        // ~80KB bytes nhưng chỉ ~40k chars — cap phải tính theo BYTE trước khi decode
+        var longError = "{\"error\":{\"message\":\"" + new string('é', 40000) + "\"}}";
+        var sut = Create(new StubUpstream(() => Upstream(400, longError)), log, monitor: monitor);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-err";
+        var provider = SeedProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+            AccountIdOf(provider), default);
+
+        Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        var record = monitor.Find("req-err")!;
+        Assert.NotNull(record.ErrorBody);
+        Assert.EndsWith("[truncated]", record.ErrorBody);
+        Assert.Equal(1, record.ErrorBody.Split("[truncated]").Length - 1);
+        Assert.True(record.ErrorBody.Length <= 64 * 1024 + "[truncated]".Length,
+            $"ErrorBody.Length = {record.ErrorBody.Length} vượt cap 64KB + marker");
     }
 }

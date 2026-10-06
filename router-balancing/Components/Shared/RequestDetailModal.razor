@@ -194,7 +194,7 @@
                     <span class="trace-detail-metric">
                         <i class="trace-detail-dot @TraceColors.ForState(record.State)"></i>
                         <span class="trace-detail-metric__label">@L["detail.status"]</span>
-                        @StatusText(record)
+                        @StatusText(record).Text
                     </span>
                 </div>
             }
@@ -223,13 +223,10 @@
                 </ul>
             }
 
-            @* Prompt/Response collapse — body giữ trong RAM 50 request mới nhất; record
-               null (đã ra ring) → hiện fallback cho cả 2 mục *@
-            @if (record is null)
-            {
-                <p class="text-sm opacity-75">@L["detail.unavailable"]</p>
-            }
-            else
+            @* Prompt/Response collapse — body giữ trong RAM 50 request mới nhất; record null
+               (đã ra ring) → KHÔNG render: message "Không còn trong bộ nhớ" đã hiện đúng 1 lần
+               ở metrics strip phía trên (không lặp lại detail.unavailable) *@
+            @if (record is not null)
             {
                 <details class="trace-detail-body">
                     <summary>@L["detail.prompt"]</summary>
@@ -308,15 +305,17 @@
                 && i + 1 < events.Count && events[i + 1].Stage == TraceStage.Finished)
             {
                 var fin = events[i + 1];
+                var (finStatus, finBad) = StatusLabel(fin);
                 rows.Add(new TrailRow(
                     offset,
                     L["trace.detail.attempt"],
-                    $"{AttemptLabel(e)} · {RouteLabel(e)} · {StatusLabel(fin)}",
-                    fin.Status is >= 400 || fin.Success == false));
+                    $"{AttemptLabel(e)} · {RouteLabel(e)} · {finStatus}",
+                    finBad || fin.Success == false));
                 i++; // nuốt event Finished — status đã gộp vào dòng attempt
                 continue;
             }
 
+            var status = StatusLabel(e);
             rows.Add(e.Stage switch
             {
                 TraceStage.Received => new TrailRow(offset, L["trace.detail.received"],
@@ -324,13 +323,13 @@
                 TraceStage.DispatchStarted => new TrailRow(offset, L["trace.detail.dispatch"],
                     e.Mode ?? "—", false),
                 TraceStage.Attempt when e.AttemptDone == true => new TrailRow(offset,
-                    L["trace.detail.attempt"], $"{AttemptLabel(e)} · {StatusLabel(e)}",
-                    e.Status is >= 400),
+                    L["trace.detail.attempt"], $"{AttemptLabel(e)} · {status.Text}",
+                    status.IsBad),
                 TraceStage.Attempt => new TrailRow(offset, L["trace.detail.attempt"],
                     $"{AttemptLabel(e)} · {RouteLabel(e)}", false),
                 TraceStage.Finished => new TrailRow(offset,
                     e.Success == false ? L["trace.detail.failed"] : L["trace.detail.done"],
-                    StatusLabel(e), e.Success == false || e.Status is >= 400),
+                    status.Text, status.IsBad || e.Success == false),
                 TraceStage.Canceled => new TrailRow(offset, L["trace.detail.cancelled"],
                     string.Empty, false),
                 _ => new TrailRow(offset, string.Empty, string.Empty, false),
@@ -348,26 +347,30 @@
         e.Route?.Combo ?? "—", e.Route?.Provider ?? "—", e.Route?.Account ?? "—");
 
     /// <summary>
-    /// Status row: có HTTP status → số (≥400 tô đỏ ở nơi gọi); không có status nhưng
-    /// FailureKind = "network" → "network" (thuật ngữ kỹ thuật, không i18n — ruling Task 7);
-    /// thiếu cả hai → "—".
+    /// Quy tắc status/màu tag DÙNG CHUNG cho trail (<see cref="TraceEvent"/>) và metrics strip
+    /// (<see cref="ApiCallRecord"/>) — trước đây viết 2 lần và lệch nhau (strip hiện "502"
+    /// bỏ mất tag network): có HTTP status → số, kèm " · network" BÊN CẠNH số khi record cũng
+    /// bị gắn FailureKind = "network" (không thay thế số); không có status nhưng kind =
+    /// "network" → "network" (thuật ngữ kỹ thuật, không i18n — ruling Task 7); thiếu cả hai → "—".
     /// </summary>
-    private static string StatusLabel(TraceEvent e) =>
-        e.Status is { } status ? status.ToString()
-            : e.FailureKind == "network" ? "network"
-            : "—";
+    /// <param name="status">HTTP status — null khi chưa có response / lỗi mạng.</param>
+    /// <param name="failureKind">Nhóm lỗi do <c>RecordError</c> ghi ("http"/"network").</param>
+    /// <returns>(Text hiển thị, IsBad tô đỏ tag trail — status ≥ 400 hoặc lỗi mạng).</returns>
+    private static (string Text, bool IsBad) StatusDisplay(int? status, string? failureKind)
+    {
+        if (status is { } s)
+            return (failureKind == "network" ? $"{s} · network" : s.ToString(), s >= 400);
+        return failureKind == "network" ? ("network", true) : ("—", false);
+    }
 
-    /// <summary>
-    /// Status trong metrics strip: có HTTP status → số; lỗi mạng (record chưa có status,
-    /// FailureKind = "network") → "network" (thuật ngữ kỹ thuật, không i18n — ruling Task 7);
-    /// chưa có response → "—".
-    /// </summary>
+    /// <summary>Status của event trail — adapter sang <see cref="StatusDisplay"/>.</summary>
+    private static (string Text, bool IsBad) StatusLabel(TraceEvent e) =>
+        StatusDisplay(e.Status, e.FailureKind);
+
+    /// <summary>Status của metrics strip — adapter sang <see cref="StatusDisplay"/>.</summary>
     /// <param name="record">Record monitor của request đang xem.</param>
-    /// <returns>Chuỗi status hiển thị cạnh dot trạng thái.</returns>
-    private static string StatusText(ApiCallRecord record) =>
-        record.Status is { } status ? status.ToString()
-            : record.FailureKind == "network" ? "network"
-            : "—";
+    private static (string Text, bool IsBad) StatusText(ApiCallRecord record) =>
+        StatusDisplay(record.Status, record.FailureKind);
 
     /// <summary>
     /// Một dòng timeline trong modal chi tiết: Offset là "+Nms" đã tính từ event Received

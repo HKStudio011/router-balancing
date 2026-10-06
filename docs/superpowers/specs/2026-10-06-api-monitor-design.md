@@ -167,7 +167,8 @@ public sealed record TeeResult(Usage? Usage, DateTimeOffset? FirstTokenAt, strin
 | Proxy dừng giữa chừng | feed phát `Canceled` → row chuyển vàng tự nhiên; row đã xong giữ nguyên (lịch sử) |
 | Request chỉ đến H1 rồi client hủy trước dispatch | row trắng → vàng; **prompt body vẫn có** (bắt ở H1), response metrics thiếu (null → `—`) |
 | Upstream không trả usage (dù `include_usage`) | tokens null → cột `—`; log Debug hiện có giữ nguyên |
-| SSE lỗi giữa chừng | row lỗi (H4), `FirstTokenAt` giữ nếu đã có |
+| SSE lỗi giữa chừng | Row theo H4: `Canceled` → **Cancelled/vàng, khớp circle** (không phải đỏ — binding "State do H4 chốt"); `RecordResponse` chạy **sau** tee nên mid-stream fail **không ghi được TTFT/ResponseBody** (mất dữ liệu — chấp nhận); popup hiện tag `network` nhờ `RecordError(0)` bọc quanh tee |
+| Record bị evict giữa chừng rồi nhận event terminal | record tái tạo chỉ mang `StartedAt` = thời điểm tái tạo (không còn latency gốc) — chấp nhận, số thiếu tốt hơn số sai |
 | 2 ring lệch nhau (trace 60 vs monitor 50) | popup join theo từng nguồn, phần thiếu hiện fallback (§6.3) |
 | Body > 64KB | truncate + marker `[truncated]` |
 | App shutdown | singleton chết theo app — không cần persist |

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Domain;
@@ -159,7 +158,20 @@ public sealed class ChatCompletionsHandler(
                     ctx.Response.StatusCode = (int)response.StatusCode;
                     if (response.Content.Headers.ContentType is { } okType)
                         ctx.Response.ContentType = okType.ToString();
-                    var tee = await UsageCapture.TeeAsync(response.Content, ctx.Response.Body, ct);
+                    // Rethrow: KHÔNG đổi hành vi xử lý lỗi cho pipeline — dispatcher vẫn map
+                    // HasStarted → Aborted như cũ (row vàng khớp circle, spec api-monitor §7).
+                    // Nhưng RecordResponse chạy SAU tee nên mid-stream fail mất TTFT/ResponseBody —
+                    // ghi RecordError(0) để popup có FailureKind=network thay vì trống.
+                    UsageCapture.TeeResult tee;
+                    try
+                    {
+                        tee = await UsageCapture.TeeAsync(response.Content, ctx.Response.Body, ct);
+                    }
+                    catch
+                    {
+                        monitor.RecordError(requestId, 0, null);
+                        throw;
+                    }
                     // Monitor ghi NGAY sau tee, KỂ CẢ khi upstream thiếu usage (token null) —
                     // store fail-open nên không try/catch ở call site (contract IApiMonitorStore)
                     monitor.RecordResponse(requestId, tee.Usage?.PromptTokens,
@@ -193,9 +205,10 @@ public sealed class ChatCompletionsHandler(
                 // Lỗi chưa commit (vừa nhận header) — buffer để dispatcher quyết định advance/passthrough
                 var errorBody = await response.Content.ReadAsByteArrayAsync(ct);
                 // Ghi cho MỌI nhánh non-2xx (retryable/fatal/passthrough) — việc monitor theo dõi
-                // lỗi không phụ thuộc quyết định retry; store tự truncate 64KB (fail-open)
+                // lỗi không phụ thuộc quyết định retry; DecodeCapped truncate BYTE trước khi decode
+                // (chỉ đọc 64KB đầu, marker 1 lần — store không cắt lại, fail-open)
                 monitor.RecordError(requestId, (int)response.StatusCode,
-                    Encoding.UTF8.GetString(errorBody));
+                    ApiMonitorStore.DecodeCapped(errorBody));
                 var contentType = response.Content.Headers.ContentType?.ToString();
                 var retryAfterRaw = response.Headers.RetryAfter?.ToString();
                 if (RetryClassifier.IsRetryable(response.StatusCode))

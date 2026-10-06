@@ -61,6 +61,20 @@ public class ApiMonitorStoreTests
     }
 
     [Fact]
+    public void StartRequest_LongMultiBytePrompt_TruncatesAt64KBytesWithSingleMarker()
+    {
+        // ~80KB bytes nhưng chỉ ~40k chars — cap phải theo BYTE trước khi decode,
+        // nếu cắt theo char thì body này không bị cắt marker (test RED cho byte-truncate)
+        _store.StartRequest("r1", "m1", Bytes("{\"m\":\"" + new string('é', 40000) + "\"}"));
+
+        var prompt = _store.Find("r1")!.PromptBody!;
+        Assert.EndsWith("[truncated]", prompt);
+        Assert.Equal(1, prompt.Split("[truncated]").Length - 1);
+        Assert.True(prompt.Length <= 64 * 1024 + "[truncated]".Length,
+            $"PromptBody.Length = {prompt.Length} vượt cap 64KB + marker");
+    }
+
+    [Fact]
     public void StartBeyond50_EvictsOldest_NewestFirstInSnapshot()
     {
         for (var i = 1; i <= 51; i++)
