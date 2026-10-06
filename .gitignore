@@ -363,3 +363,4 @@ MigrationBackup/
 FodyWeavers.xsd
 # SDD working files (briefs, reports, review diffs, progress ledger)
 .superpowers/
+.worktrees/
