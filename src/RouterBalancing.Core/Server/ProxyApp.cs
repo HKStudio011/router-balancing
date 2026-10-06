@@ -122,236 +122,259 @@ public static class ProxyApp
 
         // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
-            async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
+            (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
                 ProxyRequestHandler handler, ILogService log, ITraceFeed trace,
                 IApiMonitorStore monitor) =>
+                RunQueueFirstAsync(ctx, queue, executions, handler, log, trace, monitor,
+                    ProxyProtocols.Chat, ProxyEndpoint.Chat));
+
+        // /v1/responses dùng chung runner — khác đúng protocol + endpoint flag (spec v1-responses §3.1)
+        app.MapPost("/v1/responses",
+            (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
+                ProxyRequestHandler handler, ILogService log, ITraceFeed trace,
+                IApiMonitorStore monitor) =>
+                RunQueueFirstAsync(ctx, queue, executions, handler, log, trace, monitor,
+                    ProxyProtocols.Responses, ProxyEndpoint.Responses));
+
+        MapEndpoints(app);
+    }
+
+    /// <summary>
+    /// Runner queue-first dùng chung cho mọi endpoint (spec v1-responses §3.1):
+    /// id → prepare (validate qua <paramref name="protocol"/>) → priority → pipe → enqueue →
+    /// H1+Received → abort-register → stream loop → outcome → H4 → ghi response.
+    /// Body là pure move của lambda chat Task 3B — hành vi chat không đổi, chat integration
+    /// tests là gate hồi quy.
+    /// </summary>
+    /// <param name="protocol">Protocol của endpoint — quyết định validate/path/tee.</param>
+    /// <param name="endpoint">Đích lưu trong <see cref="ProxyRequest"/> — dispatcher resolve protocol theo giá trị này.</param>
+    internal static async Task RunQueueFirstAsync(HttpContext ctx, IRequestQueue queue,
+        IExecutionList executions, ProxyRequestHandler handler, ILogService log, ITraceFeed trace,
+        IApiMonitorStore monitor, IProxyProtocol protocol, ProxyEndpoint endpoint)
+    {
+        // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
+        string id;
+        do
         {
-            // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
-            string id;
-            do
+            id = RequestId.New();
+        }
+        while (queue.Contains(id) || executions.Contains(id));
+        ctx.Response.Headers["X-Request-Id"] = id;
+        ctx.Items[ClientKeyItems.RequestId] = id;
+
+        var prepared = await handler.PrepareAsync(ctx, protocol);
+        if (prepared is null)
+            return; // validate fail — PrepareAsync đã ghi 400, chưa enqueue
+
+        var priority = RequestPriorityParser.Parse(ctx.Request.Headers["X-Priority"].ToString());
+        var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx,
+            endpoint);
+
+        // Pipe PHẢI vào Items TRƯỚC Enqueue (spec §2.3, two-writer): slot trống thì
+        // dispatcher có thể serve ngay — nếu key chưa publish, handler 2xx write thẳng
+        // Response.Body trong khi endpoint viết keep-alive = framing corruption, cộng
+        // Dictionary access không synchronized (happens-before qua lock của queue).
+        // Header commit vẫn giữ SAU enqueue (spec §4.1 — enqueue fail không được gửi 200).
+        Pipe? ssePipe = null;
+        if (prepared.IsStream)
+        {
+            ssePipe = new Pipe();
+            ctx.Items[SsePipeItems.Key] = ssePipe;
+        }
+
+        if (!queue.Enqueue(request))
+        {
+            // id vừa sinh nên gần như không xảy ra — không được nuốt im lặng
+            log.Write(new LogEntry
             {
-                id = RequestId.New();
-            }
-            while (queue.Contains(id) || executions.Contains(id));
-            ctx.Response.Headers["X-Request-Id"] = id;
-            ctx.Items[ClientKeyItems.RequestId] = id;
-
-            var prepared = await handler.PrepareAsync(ctx, ProxyProtocols.Chat);
-            if (prepared is null)
-                return; // validate fail — PrepareAsync đã ghi 400, chưa enqueue
-
-            var priority = RequestPriorityParser.Parse(ctx.Request.Headers["X-Priority"].ToString());
-            var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx,
-                ProxyEndpoint.Chat);
-
-            // Pipe PHẢI vào Items TRƯỚC Enqueue (spec §2.3, two-writer): slot trống thì
-            // dispatcher có thể serve ngay — nếu key chưa publish, handler 2xx write thẳng
-            // Response.Body trong khi endpoint viết keep-alive = framing corruption, cộng
-            // Dictionary access không synchronized (happens-before qua lock của queue).
-            // Header commit vẫn giữ SAU enqueue (spec §4.1 — enqueue fail không được gửi 200).
-            Pipe? ssePipe = null;
-            if (prepared.IsStream)
-            {
-                ssePipe = new Pipe();
-                ctx.Items[SsePipeItems.Key] = ssePipe;
-            }
-
-            if (!queue.Enqueue(request))
-            {
-                // id vừa sinh nên gần như không xảy ra — không được nuốt im lặng
-                log.Write(new LogEntry
-                {
-                    Severity = LogSeverity.Warning,
-                    Category = LogCategory.Request,
-                    Message = $"Không enqueue được request {id}.",
-                    RequestId = id,
-                    ClientKeyId = ClientKeyItems.IdOf(ctx),
-                });
-                await ProxyRequestHandler.WriteErrorAsync(ctx, 500, "Internal server error",
-                    "server_error", null, null);
-                return;
-            }
-
-            // H1 monitor: record vào ring tại đây (store fail-open — không try/catch ở call site);
-            // đồng bộ với trace — request không qua enqueue (validate 400) không hiện trong monitor
-            monitor.StartRequest(id, request.Model, prepared.Body);
-            trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
-                null, null, null, null, null, DateTimeOffset.Now));
-
-            // Đăng ký SAU Enqueue: dispatcher đã Take thì TryRemove false → serve tự cắt stream (spec §3.4)
-            ctx.RequestAborted.Register(() =>
-            {
-                if (queue.TryRemove(id, out var removed))
-                {
-                    log.Write(new LogEntry
-                    {
-                        Severity = LogSeverity.Info,
-                        Category = LogCategory.Request,
-                        Message = $"Request {id} bị client ngắt khi đang chờ.",
-                        RequestId = id,
-                        ClientKeyId = ClientKeyItems.IdOf(ctx),
-                    });
-                    removed.Completion.TrySetResult(new DispatchOutcome.Cancelled());
-                }
+                Severity = LogSeverity.Warning,
+                Category = LogCategory.Request,
+                Message = $"Không enqueue được request {id}.",
+                RequestId = id,
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
             });
+            await ProxyRequestHandler.WriteErrorAsync(ctx, 500, "Internal server error",
+                "server_error", null, null);
+            return;
+        }
 
-            // Stream (spec early-headers §3.2): commit 200+event-stream NGAY sau enqueue —
-            // client nhận head khi request còn trong queue; content/keep-alive/in-band error
-            // do loop phía dưới forward qua pipe. Non-stream giữ nguyên đường cũ.
-            DispatchOutcome outcome;
-            long contentBytes = 0;   // CHỈ byte từ pipe — keep-alive không đếm (phân loại #7/#8)
-            if (prepared.IsStream)
-            {
-                var pipe = ssePipe!; // đã publish vào Items TRƯỚC enqueue — xem comment trên
-                ctx.Response.StatusCode = 200;
-                ctx.Response.ContentType = "text/event-stream";
-                ctx.Response.Headers.CacheControl = "no-cache";
-                try
-                {
-                    await ctx.Response.StartAsync(ctx.RequestAborted);
-                    // StartAsync chỉ chạy OnStarting; head (Kestrel lẫn TestServer) chỉ thực sự
-                    // đi ở lần flush/complete đầu tiên — flush 0 byte tường minh để head tới
-                    // client khi request còn queued (đây là chính feature, không phải test-patch).
-                    await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
-                    (outcome, contentBytes) =
-                        await RunStreamLoopAsync(ctx, pipe, request.Completion.Task);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Client ngắt trước khi header commit — Register/Dispatcher đã set outcome;
-                    // bỏ pipe khỏi Items để nhánh ghi đi đường non-stream như cũ
-                    ctx.Items.Remove(SsePipeItems.Key);
-                    ssePipe = null;
-                    outcome = await request.Completion.Task;
-                }
-            }
-            else
-            {
-                outcome = await request.Completion.Task;
-            }
+        // H1 monitor: record vào ring tại đây (store fail-open — không try/catch ở call site);
+        // đồng bộ với trace — request không qua enqueue (validate 400) không hiện trong monitor
+        monitor.StartRequest(id, request.Model, prepared.Body);
+        trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
+            null, null, null, null, null, DateTimeOffset.Now));
 
-            // Publish tại đây (TRƯỚC khối ghi response): viết response có thể nổ
-            // (client ngắt giữa passthrough) — nếu publish sau thì circle terminal bị mồ côi.
-            var (stage, success, status) = ClassifyOutcome(outcome);
-            // Handled: status upstream thật đã ghi vào ctx.Response trước khi stream — H4 phải
-            // mang status cuối (spec api-monitor §3.1: Status = HTTP status trả về; monitor
-            // cần 200 cho record Done). ClassifyOutcome không nắm ctx nên trả null cho Handled.
-            if (outcome is DispatchOutcome.Handled)
-                status = ctx.Response.StatusCode;
-            // Override đỏ #7 (spec early-headers §4.3): stream chết TRƯỚC khi có byte content
-            // nào (Aborted, 0 contentBytes, client còn nối) = lỗi server, không phải client
-            // ngắt — row đỏ status 500 dù wire là 200.
-            if (prepared.IsStream && contentBytes == 0 && outcome is DispatchOutcome.Aborted
-                && !ctx.RequestAborted.IsCancellationRequested)
+        // Đăng ký SAU Enqueue: dispatcher đã Take thì TryRemove false → serve tự cắt stream (spec §3.4)
+        ctx.RequestAborted.Register(() =>
+        {
+            if (queue.TryRemove(id, out var removed))
             {
-                stage = TraceStage.Finished;
-                success = false;
-                status = 500;
-            }
-            trace.Publish(new TraceEvent(id, stage, prepared.ModelId,
-                null, null, status, success, null, DateTimeOffset.Now));
-
-            if (ssePipe is not null)
-            {
-                // Head đã commit 200 — lỗi sau đó là event in-band, không phải status HTTP
-                // (spec early-headers §3.5). OCE khi write (client vừa chết) được phép
-                // propagate: publish H4 đã chạy TRƯỚC write, giống hành vi passthrough cũ.
-                switch (outcome)
-                {
-                    case DispatchOutcome.Error inBandError:
-                        await WriteInBand(ctx, SseErrorEvent.Error(inBandError.Status,
-                            inBandError.Message, inBandError.Type, inBandError.Param,
-                            inBandError.Code));
-                        break;
-                    case DispatchOutcome.Passthrough inBandPassthrough:
-                        await WriteInBand(ctx, SseErrorEvent.Passthrough(inBandPassthrough.Status,
-                            inBandPassthrough.Body, inBandPassthrough.RetryAfterHeader));
-                        break;
-                    case DispatchOutcome.Retryable or DispatchOutcome.Fatal:
-                        // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
-                        log.Write(new LogEntry
-                        {
-                            Severity = LogSeverity.Error,
-                            Category = LogCategory.Request,
-                            Message = $"Outcome nội bộ (Retryable/Fatal) lọt tới endpoint request {id}.",
-                            RequestId = id,
-                            ClientKeyId = ClientKeyItems.IdOf(ctx),
-                        });
-                        await WriteInBand(ctx, SseErrorEvent.ServerFault());
-                        break;
-                    case DispatchOutcome.Cancelled when !ctx.RequestAborted.IsCancellationRequested:
-                        // Huỷ qua control API (client còn kết nối) — ghi log + event request_cancelled (spec §5)
-                        log.Write(new LogEntry
-                        {
-                            Severity = LogSeverity.Info,
-                            Category = LogCategory.Request,
-                            Message = $"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
-                            RequestId = id,
-                            ClientKeyId = ClientKeyItems.IdOf(ctx),
-                        });
-                        await WriteInBand(ctx, SseErrorEvent.Cancelled());
-                        break;
-                    case DispatchOutcome.Aborted when contentBytes == 0
-                        && !ctx.RequestAborted.IsCancellationRequested:
-                        // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
-                        await WriteInBand(ctx, SseErrorEvent.ServerFault());
-                        break;
-                    // Handled / Cancelled+client-abort / Aborted mid-content: không ghi gì —
-                    // content đã forward, hoặc kết nối đã đóng (row vàng Canceled qua H4)
-                }
-            }
-            else if (outcome is DispatchOutcome.Error error)
-            {
-                await ProxyRequestHandler.WriteErrorAsync(ctx, error.Status, error.Message,
-                    error.Type, error.Param, error.Code);
-            }
-            else if (outcome is DispatchOutcome.Passthrough passthrough)
-            {
-                // Ghi nguyên response cuối — byte passthrough không JSON wrap (spec 3C §3.3);
-                // Retry-After copy lại cho client (§3.6)
-                ctx.Response.StatusCode = passthrough.Status;
-                if (passthrough.ContentType is not null)
-                    ctx.Response.ContentType = passthrough.ContentType;
-                if (passthrough.RetryAfterHeader is not null)
-                    ctx.Response.Headers["Retry-After"] = passthrough.RetryAfterHeader;
-                await ctx.Response.Body.WriteAsync(passthrough.Body, ctx.RequestAborted);
-            }
-            else if (outcome is DispatchOutcome.Retryable or DispatchOutcome.Fatal)
-            {
-                // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
-                log.Write(new LogEntry
-                {
-                    Severity = LogSeverity.Error,
-                    Category = LogCategory.Request,
-                    Message = $"Outcome nội bộ (Retryable/Fatal) lọt tới endpoint request {id}.",
-                    RequestId = id,
-                    ClientKeyId = ClientKeyItems.IdOf(ctx),
-                });
-                await ProxyRequestHandler.WriteErrorAsync(ctx, 500, "Internal server error",
-                    "server_error", null, null);
-            }
-            else if (outcome is DispatchOutcome.Cancelled
-                     && !ctx.RequestAborted.IsCancellationRequested)
-            {
-                // Huỷ qua control API (client còn kết nối) — ghi log + 400 request_cancelled (spec §5)
                 log.Write(new LogEntry
                 {
                     Severity = LogSeverity.Info,
                     Category = LogCategory.Request,
-                    Message = $"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
+                    Message = $"Request {id} bị client ngắt khi đang chờ.",
                     RequestId = id,
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });
-                await ProxyRequestHandler.WriteErrorAsync(ctx, 400, "Request cancelled.",
-                    "invalid_request_error", null, "request_cancelled");
+                removed.Completion.TrySetResult(new DispatchOutcome.Cancelled());
             }
-            // Handled / Aborted / Cancelled do client ngắt: response đã ghi hoặc kết nối đã đóng
-
-            static Task WriteInBand(HttpContext ctx, byte[] evt) =>
-                ctx.Response.Body.WriteAsync(evt, ctx.RequestAborted).AsTask();
         });
 
-        MapEndpoints(app);
+        // Stream (spec early-headers §3.2): commit 200+event-stream NGAY sau enqueue —
+        // client nhận head khi request còn trong queue; content/keep-alive/in-band error
+        // do loop phía dưới forward qua pipe. Non-stream giữ nguyên đường cũ.
+        DispatchOutcome outcome;
+        long contentBytes = 0;   // CHỈ byte từ pipe — keep-alive không đếm (phân loại #7/#8)
+        if (prepared.IsStream)
+        {
+            var pipe = ssePipe!; // đã publish vào Items TRƯỚC enqueue — xem comment trên
+            ctx.Response.StatusCode = 200;
+            ctx.Response.ContentType = "text/event-stream";
+            ctx.Response.Headers.CacheControl = "no-cache";
+            try
+            {
+                await ctx.Response.StartAsync(ctx.RequestAborted);
+                // StartAsync chỉ chạy OnStarting; head (Kestrel lẫn TestServer) chỉ thực sự
+                // đi ở lần flush/complete đầu tiên — flush 0 byte tường minh để head tới
+                // client khi request còn queued (đây là chính feature, không phải test-patch).
+                await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+                (outcome, contentBytes) =
+                    await RunStreamLoopAsync(ctx, pipe, request.Completion.Task);
+            }
+            catch (OperationCanceledException)
+            {
+                // Client ngắt trước khi header commit — Register/Dispatcher đã set outcome;
+                // bỏ pipe khỏi Items để nhánh ghi đi đường non-stream như cũ
+                ctx.Items.Remove(SsePipeItems.Key);
+                ssePipe = null;
+                outcome = await request.Completion.Task;
+            }
+        }
+        else
+        {
+            outcome = await request.Completion.Task;
+        }
+
+        // Publish tại đây (TRƯỚC khối ghi response): viết response có thể nổ
+        // (client ngắt giữa passthrough) — nếu publish sau thì circle terminal bị mồ côi.
+        var (stage, success, status) = ClassifyOutcome(outcome);
+        // Handled: status upstream thật đã ghi vào ctx.Response trước khi stream — H4 phải
+        // mang status cuối (spec api-monitor §3.1: Status = HTTP status trả về; monitor
+        // cần 200 cho record Done). ClassifyOutcome không nắm ctx nên trả null cho Handled.
+        if (outcome is DispatchOutcome.Handled)
+            status = ctx.Response.StatusCode;
+        // Override đỏ #7 (spec early-headers §4.3): stream chết TRƯỚC khi có byte content
+        // nào (Aborted, 0 contentBytes, client còn nối) = lỗi server, không phải client
+        // ngắt — row đỏ status 500 dù wire là 200.
+        if (prepared.IsStream && contentBytes == 0 && outcome is DispatchOutcome.Aborted
+            && !ctx.RequestAborted.IsCancellationRequested)
+        {
+            stage = TraceStage.Finished;
+            success = false;
+            status = 500;
+        }
+        trace.Publish(new TraceEvent(id, stage, prepared.ModelId,
+            null, null, status, success, null, DateTimeOffset.Now));
+
+        if (ssePipe is not null)
+        {
+            // Head đã commit 200 — lỗi sau đó là event in-band, không phải status HTTP
+            // (spec early-headers §3.5). OCE khi write (client vừa chết) được phép
+            // propagate: publish H4 đã chạy TRƯỚC write, giống hành vi passthrough cũ.
+            switch (outcome)
+            {
+                case DispatchOutcome.Error inBandError:
+                    await WriteInBand(ctx, SseErrorEvent.Error(inBandError.Status,
+                        inBandError.Message, inBandError.Type, inBandError.Param,
+                        inBandError.Code));
+                    break;
+                case DispatchOutcome.Passthrough inBandPassthrough:
+                    await WriteInBand(ctx, SseErrorEvent.Passthrough(inBandPassthrough.Status,
+                        inBandPassthrough.Body, inBandPassthrough.RetryAfterHeader));
+                    break;
+                case DispatchOutcome.Retryable or DispatchOutcome.Fatal:
+                    // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
+                    log.Write(new LogEntry
+                    {
+                        Severity = LogSeverity.Error,
+                        Category = LogCategory.Request,
+                        Message = $"Outcome nội bộ (Retryable/Fatal) lọt tới endpoint request {id}.",
+                        RequestId = id,
+                        ClientKeyId = ClientKeyItems.IdOf(ctx),
+                    });
+                    await WriteInBand(ctx, SseErrorEvent.ServerFault());
+                    break;
+                case DispatchOutcome.Cancelled when !ctx.RequestAborted.IsCancellationRequested:
+                    // Huỷ qua control API (client còn kết nối) — ghi log + event request_cancelled (spec §5)
+                    log.Write(new LogEntry
+                    {
+                        Severity = LogSeverity.Info,
+                        Category = LogCategory.Request,
+                        Message = $"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
+                        RequestId = id,
+                        ClientKeyId = ClientKeyItems.IdOf(ctx),
+                    });
+                    await WriteInBand(ctx, SseErrorEvent.Cancelled());
+                    break;
+                case DispatchOutcome.Aborted when contentBytes == 0
+                    && !ctx.RequestAborted.IsCancellationRequested:
+                    // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
+                    await WriteInBand(ctx, SseErrorEvent.ServerFault());
+                    break;
+                // Handled / Cancelled+client-abort / Aborted mid-content: không ghi gì —
+                // content đã forward, hoặc kết nối đã đóng (row vàng Canceled qua H4)
+            }
+        }
+        else if (outcome is DispatchOutcome.Error error)
+        {
+            await ProxyRequestHandler.WriteErrorAsync(ctx, error.Status, error.Message,
+                error.Type, error.Param, error.Code);
+        }
+        else if (outcome is DispatchOutcome.Passthrough passthrough)
+        {
+            // Ghi nguyên response cuối — byte passthrough không JSON wrap (spec 3C §3.3);
+            // Retry-After copy lại cho client (§3.6)
+            ctx.Response.StatusCode = passthrough.Status;
+            if (passthrough.ContentType is not null)
+                ctx.Response.ContentType = passthrough.ContentType;
+            if (passthrough.RetryAfterHeader is not null)
+                ctx.Response.Headers["Retry-After"] = passthrough.RetryAfterHeader;
+            await ctx.Response.Body.WriteAsync(passthrough.Body, ctx.RequestAborted);
+        }
+        else if (outcome is DispatchOutcome.Retryable or DispatchOutcome.Fatal)
+        {
+            // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Error,
+                Category = LogCategory.Request,
+                Message = $"Outcome nội bộ (Retryable/Fatal) lọt tới endpoint request {id}.",
+                RequestId = id,
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
+            await ProxyRequestHandler.WriteErrorAsync(ctx, 500, "Internal server error",
+                "server_error", null, null);
+        }
+        else if (outcome is DispatchOutcome.Cancelled
+                 && !ctx.RequestAborted.IsCancellationRequested)
+        {
+            // Huỷ qua control API (client còn kết nối) — ghi log + 400 request_cancelled (spec §5)
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Info,
+                Category = LogCategory.Request,
+                Message = $"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
+                RequestId = id,
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
+            await ProxyRequestHandler.WriteErrorAsync(ctx, 400, "Request cancelled.",
+                "invalid_request_error", null, "request_cancelled");
+        }
+        // Handled / Aborted / Cancelled do client ngắt: response đã ghi hoặc kết nối đã đóng
+
+        static Task WriteInBand(HttpContext ctx, byte[] evt) =>
+            ctx.Response.Body.WriteAsync(evt, ctx.RequestAborted).AsTask();
     }
 
     private static void MapEndpoints(WebApplication app)
