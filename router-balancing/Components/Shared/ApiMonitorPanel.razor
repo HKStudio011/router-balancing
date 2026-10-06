@@ -65,6 +65,11 @@
         background: rgba(127, 127, 127, .07);
     }
 
+    /* Row bấm được → mở popup chi tiết dùng chung (Task 5) */
+    .monitor-body .monitor-row {
+        cursor: pointer;
+    }
+
     /* Cuộn trong vùng thay vì kéo panel cao vượt Live Trace (mockup "… cuộn …") */
     .monitor-body {
         max-height: 340px;
@@ -146,14 +151,15 @@
         }
         else
         {
-            @* Row display-only — click/modal do Task 5 bổ sung *@
+            @* Row click → popup chi tiết dùng chung (Task 5) — cùng popup với circle Live Trace *@
             @foreach (var record in _rows)
             {
                 @* Pulse chỉ thêm khi Running — tách biến để Razor khỏi parse string literal nhúng trong attribute *@
                 var dotClass = record.State == ApiCallState.Running
                     ? TraceColors.ForState(record.State) + " monitor-dot--pulse"
                     : TraceColors.ForState(record.State);
-                <div class="monitor-row" @key="record.RequestId">
+                <div class="monitor-row" @key="record.RequestId"
+                     @onclick="() => OpenDetail(record.RequestId)">
                     <i class="monitor-dot @dotClass"></i>
                     <span class="monitor-cell--route">@record.Model<span class="monitor-route"> · @RouteLabel(record)</span></span>
                     <span class="monitor-num">@MonitorFormat.Latency(record)</span>
@@ -165,9 +171,16 @@
     </div>
 </div>
 
+@* Modal chi tiết dùng chung (Task 5) — render fixed nên đặt ngoài block panel; đóng qua
+   Esc/backdrop/× → OnClose xóa selection *@
+<RequestDetailModal RequestId="_selectedId" OnClose="() => _selectedId = null" />
+
 @code {
     // Snapshot tối đa 50 record (mới nhất trước) — đọc lại từ store mỗi lần Changed
     private IReadOnlyList<ApiCallRecord> _rows = [];
+
+    // Id request đang mở modal chi tiết dùng chung — null = đóng; row click gán, OnClose xóa
+    private string? _selectedId;
 
     // Component đã gỡ — callback fire-and-forget không được StateHasChanged sau dispose
     private bool _disposed;
@@ -227,6 +240,9 @@
             Log.Error("ApiMonitorPanel: làm mới snapshot thất bại.", ex);
         }
     }
+
+    /// <summary>Mở modal chi tiết dùng chung — gọi từ onclick của row (mirror RequestTrace.OpenDetail).</summary>
+    private void OpenDetail(string id) => _selectedId = id;
 
     /// <summary>Route "Combo · Provider · Account" — thiếu hết → "—", thiếu từng phần → "—" tại chỗ.</summary>
     private static string RouteLabel(ApiCallRecord record) =>

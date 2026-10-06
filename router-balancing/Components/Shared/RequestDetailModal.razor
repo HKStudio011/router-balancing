@@ -1,0 +1,381 @@
+@using RouterBalancing.Core.Engine
+@inject ITraceFeed Feed
+@inject IApiMonitorStore Store
+@inject LocalizationService L
+
+<style>
+    /* CSS modal chi tiết — tách từ style block của RequestTrace.razor khi thành component
+       dùng chung cho cả Live Trace lẫn API Monitor (Task 5).
+       Màu tag vẫn kế thừa .trace-tag/.trace-tag--bad (và .trace-dot--* khi có metrics dot)
+       định nghĩa trong style block của RequestTrace — cả 2 panel cùng render trên Dashboard,
+       precedent ApiMonitorPanel. */
+    .trace-detail-head {
+        margin-bottom: 10px;
+        font-size: 12px;
+    }
+
+    .trace-detail-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .trace-detail-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        opacity: .8;
+    }
+
+    .trace-detail-trail {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .trace-detail-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-size: 12px;
+    }
+
+    .trace-detail-offset {
+        /* Cột +Nms cố định width để tag các dòng thẳng cột */
+        flex: 0 0 64px;
+        text-align: right;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        opacity: .7;
+    }
+
+    /* .trace-tag gốc 9px — quá nhỏ trong modal; override riêng size/padding,
+       màu/viền vẫn kế thừa .trace-tag + .trace-tag--bad (class này chỉ set font/padding) */
+    .trace-detail-tag {
+        flex: 0 0 auto;
+        font-size: 10.5px;
+        padding: 1px 6px;
+    }
+
+    .trace-detail-detail {
+        overflow-wrap: anywhere;
+    }
+
+    /* Metrics strip (mockup popup.html) — chip bo tròn, wrap khi chật */
+    .trace-detail-metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+
+    .trace-detail-metric {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        background: rgba(127, 127, 127, .1);
+        border-radius: 4px;
+        padding: 3px 8px;
+        font-size: 11px;
+    }
+
+    .trace-detail-metric__label {
+        opacity: .65;
+    }
+
+    /* Dot trạng thái trong strip — size như .monitor-dot; màu tới từ .trace-dot--*
+       (style block của RequestTrace — cùng render trên Dashboard) */
+    .trace-detail-dot {
+        box-sizing: border-box;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+    }
+
+    /* Prompt/Response collapse (mockup popup.html) — mặc định đóng, cuộn trong ô
+       thay vì kéo dialog cao vượt 90vh */
+    .trace-detail-body {
+        border: 1px solid rgba(139, 143, 163, .4);
+        border-radius: 4px;
+        padding: 5px 8px;
+        font-size: 11px;
+        margin-top: 6px;
+    }
+
+    .trace-detail-body summary {
+        cursor: pointer;
+    }
+
+    .trace-detail-body__content {
+        margin: 6px 0 0;
+        padding: 6px;
+        border-radius: 3px;
+        background: rgba(127, 127, 127, .08);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 240px;
+        overflow-y: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10.5px;
+    }
+</style>
+
+@* Modal chi tiết của 1 request — mở từ circle Live Trace hoặc row API Monitor (cùng 1 popup);
+   đóng qua Esc/backdrop/× (Modal tự bắt, gọi OnClose). Render fixed nên để ngoài block panel. *@
+<Modal Visible="@(RequestId is not null)" Title="@L["trace.detail.title"]" OnClose="OnClose">
+    @{ var detail = BuildDetail(); }
+    @{ var record = RequestId is { } rid ? Store.Find(rid) : null; }
+    @if (detail is null)
+    {
+        <p class="text-sm opacity-75">@L["trace.detail.idle"]</p>
+    }
+    else
+    {
+        <div class="trace-detail-head">
+            @* Id hiển thị raw (ruling Task 7 — không i18n), truncate thay wrap: id dài không đẩy vỡ dialog *@
+            <div class="trace-detail-id" title="@detail.Id">req #@detail.Id</div>
+            <div class="trace-detail-meta">
+                @if (!string.IsNullOrEmpty(detail.Model))
+                {
+                    <span>@detail.Model</span>
+                }
+                @if (detail.StartedAt is { } started)
+                {
+                    <span>@L["trace.detail.started"] @started.ToLocalTime().ToString("HH:mm:ss.fff")</span>
+                }
+                @if (detail.DurationText is { } duration)
+                {
+                    <span>@L["trace.detail.duration"] @duration</span>
+                }
+            </div>
+        </div>
+
+        @* Rule fallback join (spec §6.3): record null + trail rỗng → không nguồn nào còn
+           dữ liệu → idle (hành vi cũ, không phân biệt được với evicted — chấp nhận). *@
+        @if (record is null && detail.Rows.Count == 0)
+        {
+            <p class="text-sm opacity-75">@L["trace.detail.idle"]</p>
+        }
+        else
+        {
+            @* Metrics strip — record đã out-of-ring 50 → hiện fallback thay số *@
+            @if (record is null)
+            {
+                <p class="text-sm opacity-75">@L["detail.unavailable"]</p>
+            }
+            else
+            {
+                <div class="trace-detail-metrics">
+                    <span class="trace-detail-metric">
+                        <span class="trace-detail-metric__label">@L["detail.latency"]</span>
+                        @MonitorFormat.Latency(record)
+                    </span>
+                    <span class="trace-detail-metric">
+                        <span class="trace-detail-metric__label">@L["detail.ttft"]</span>
+                        @MonitorFormat.Ttft(record)
+                    </span>
+                    @* Token hiển thị số rời (không ↑↓) — chuỗi gộp của MonitorFormat.Tokens dành cho bảng *@
+                    <span class="trace-detail-metric">
+                        <span class="trace-detail-metric__label">@L["detail.promptTokens"]</span>
+                        @(record.PromptTokens?.ToString() ?? "—")
+                    </span>
+                    <span class="trace-detail-metric">
+                        <span class="trace-detail-metric__label">@L["detail.completionTokens"]</span>
+                        @(record.CompletionTokens?.ToString() ?? "—")
+                    </span>
+                    <span class="trace-detail-metric">
+                        <span class="trace-detail-metric__label">@L["detail.throughput"]</span>
+                        @MonitorFormat.Throughput(record)
+                    </span>
+                    <span class="trace-detail-metric">
+                        <i class="trace-detail-dot @TraceColors.ForState(record.State)"></i>
+                        <span class="trace-detail-metric__label">@L["detail.status"]</span>
+                        @StatusText(record)
+                    </span>
+                </div>
+            }
+
+            @* Trail — record có mà trail rỗng → ring 60 đã evicted; record null thì trail
+               từ feed vẫn render bình thường (join từng nguồn, spec §6.3) *@
+            @if (detail.Rows.Count == 0)
+            {
+                <p class="text-sm opacity-75">@L["detail.traceGone"]</p>
+            }
+            else
+            {
+                <ul class="trace-detail-trail">
+                    @for (var i = 0; i < detail.Rows.Count; i++)
+                    {
+                        var row = detail.Rows[i];
+                        <li class="trace-detail-row" @key="i">
+                            <span class="trace-detail-offset">@row.Offset</span>
+                            <span class="trace-tag trace-detail-tag @(row.Bad ? "trace-tag--bad" : "")">@row.Tag</span>
+                            @if (row.Detail.Length > 0)
+                            {
+                                <span class="trace-detail-detail">@row.Detail</span>
+                            }
+                        </li>
+                    }
+                </ul>
+            }
+
+            @* Prompt/Response collapse — body giữ trong RAM 50 request mới nhất; record
+               null (đã ra ring) → hiện fallback cho cả 2 mục *@
+            @if (record is null)
+            {
+                <p class="text-sm opacity-75">@L["detail.unavailable"]</p>
+            }
+            else
+            {
+                <details class="trace-detail-body">
+                    <summary>@L["detail.prompt"]</summary>
+                    <pre class="trace-detail-body__content">@(record.PromptBody ?? "—")</pre>
+                </details>
+                <details class="trace-detail-body">
+                    <summary>@L["detail.response"]</summary>
+                    <pre class="trace-detail-body__content">@(record.ResponseBody ?? "—")</pre>
+                </details>
+            }
+        }
+    }
+</Modal>
+
+@code {
+    /// <summary>Id request cần hiển thị — <see langword="null"/> = đóng modal.</summary>
+    [Parameter] public string? RequestId { get; set; }
+
+    /// <summary>Gọi khi người dùng đóng (Esc / backdrop / nút &times;) — panel tự xóa selection.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>
+    /// Gom dữ liệu render modal: header (suy từ event trong ring; record monitor dự phòng
+    /// khi trail đã evicted) + trail từ <c>Feed.Snapshot()</c> theo thứ tự publish.
+    /// </summary>
+    /// <returns>Null khi <see cref="RequestId"/> chưa gán.</returns>
+    private DetailView? BuildDetail()
+    {
+        if (RequestId is not { } id)
+            return null;
+
+        var events = Feed.Snapshot().Where(e => e.RequestId == id).ToList();
+        var record = Store.Find(id);
+
+        // ReceivedAt/Model: trước đây lấy từ node sống trong RequestTrace — component dùng
+        // chung không còn _nodes nên đọc từ event; trail đã bị ring evicted → fallback record
+        // (H1 ghi cùng thời điểm Received) để header không trống khi metrics vẫn còn.
+        var startedAt = events.FirstOrDefault(e => e.Stage == TraceStage.Received)?.At
+            ?? events.FirstOrDefault()?.At
+            ?? record?.StartedAt;
+
+        // Duration = last.At − ReceivedAt (brief); chưa có event nào → bỏ qua dòng duration
+        var durationText = startedAt is { } started && events.Count > 0
+            ? MonitorFormat.Duration(events[^1].At - started)
+            : null;
+
+        var model = events.FirstOrDefault()?.Model is { Length: > 0 } firstModel
+            ? firstModel
+            : record?.Model;
+        return new DetailView(id, model, startedAt, durationText, BuildTrailRows(events));
+    }
+
+    /// <summary>
+    /// Dựng các dòng timeline từ event của một request, giữ nguyên thứ tự publish.
+    /// Gộp (merge rule brief Task 7): attempt start không có attempt-done ngay trước
+    /// <see cref="TraceStage.Finished"/> → dòng attempt nhận status/success từ Finished
+    /// và event Finished bị nuốt — tránh hiện 2 dòng cùng hiển thị status.
+    /// </summary>
+    private List<TrailRow> BuildTrailRows(IReadOnlyList<TraceEvent> events)
+    {
+        var rows = new List<TrailRow>(events.Count);
+        if (events.Count == 0)
+            return rows;
+
+        // Mốc "+Nms": event Received đầu tiên; mất (ring eviction) → event đầu của trail
+        var baseAt = events.FirstOrDefault(e => e.Stage == TraceStage.Received)?.At ?? events[0].At;
+
+        for (var i = 0; i < events.Count; i++)
+        {
+            var e = events[i];
+            var offset = $"+{MonitorFormat.Duration(e.At - baseAt)}";
+
+            // Merge: attempt start chưa có done khi chạm Finished (stream thành công không
+            // publish attempt-done — DispatcherLoop thoát trước khi ghi done)
+            if (e.Stage == TraceStage.Attempt && e.AttemptDone != true
+                && i + 1 < events.Count && events[i + 1].Stage == TraceStage.Finished)
+            {
+                var fin = events[i + 1];
+                rows.Add(new TrailRow(
+                    offset,
+                    L["trace.detail.attempt"],
+                    $"{AttemptLabel(e)} · {RouteLabel(e)} · {StatusLabel(fin)}",
+                    fin.Status is >= 400 || fin.Success == false));
+                i++; // nuốt event Finished — status đã gộp vào dòng attempt
+                continue;
+            }
+
+            rows.Add(e.Stage switch
+            {
+                TraceStage.Received => new TrailRow(offset, L["trace.detail.received"],
+                    "Input → queue", false),
+                TraceStage.DispatchStarted => new TrailRow(offset, L["trace.detail.dispatch"],
+                    e.Mode ?? "—", false),
+                TraceStage.Attempt when e.AttemptDone == true => new TrailRow(offset,
+                    L["trace.detail.attempt"], $"{AttemptLabel(e)} · {StatusLabel(e)}",
+                    e.Status is >= 400),
+                TraceStage.Attempt => new TrailRow(offset, L["trace.detail.attempt"],
+                    $"{AttemptLabel(e)} · {RouteLabel(e)}", false),
+                TraceStage.Finished => new TrailRow(offset,
+                    e.Success == false ? L["trace.detail.failed"] : L["trace.detail.done"],
+                    StatusLabel(e), e.Success == false || e.Status is >= 400),
+                TraceStage.Canceled => new TrailRow(offset, L["trace.detail.cancelled"],
+                    string.Empty, false),
+                _ => new TrailRow(offset, string.Empty, string.Empty, false),
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>Nhãn số attempt dạng "#2"; thiếu số → "—".</summary>
+    private static string AttemptLabel(TraceEvent e) => $"#{e.Attempt?.ToString() ?? "—"}";
+
+    /// <summary>Route attempt: "Combo · Provider · Account" — từng field thiếu → "—".</summary>
+    private static string RouteLabel(TraceEvent e) => string.Join(" · ",
+        e.Route?.Combo ?? "—", e.Route?.Provider ?? "—", e.Route?.Account ?? "—");
+
+    /// <summary>
+    /// Status row: có HTTP status → số (≥400 tô đỏ ở nơi gọi); không có status nhưng
+    /// FailureKind = "network" → "network" (thuật ngữ kỹ thuật, không i18n — ruling Task 7);
+    /// thiếu cả hai → "—".
+    /// </summary>
+    private static string StatusLabel(TraceEvent e) =>
+        e.Status is { } status ? status.ToString()
+            : e.FailureKind == "network" ? "network"
+            : "—";
+
+    /// <summary>
+    /// Status trong metrics strip: có HTTP status → số; lỗi mạng (record chưa có status,
+    /// FailureKind = "network") → "network" (thuật ngữ kỹ thuật, không i18n — ruling Task 7);
+    /// chưa có response → "—".
+    /// </summary>
+    /// <param name="record">Record monitor của request đang xem.</param>
+    /// <returns>Chuỗi status hiển thị cạnh dot trạng thái.</returns>
+    private static string StatusText(ApiCallRecord record) =>
+        record.Status is { } status ? status.ToString()
+            : record.FailureKind == "network" ? "network"
+            : "—";
+
+    /// <summary>
+    /// Một dòng timeline trong modal chi tiết: Offset là "+Nms" đã tính từ event Received
+    /// đầu tiên; Bad = tag màu đỏ (status ≥ 400 / finished failed); Detail rỗng = không có nội dung.
+    /// </summary>
+    private sealed record TrailRow(string Offset, string Tag, string Detail, bool Bad);
+
+    /// <summary>Dữ liệu render modal chi tiết — null khi <see cref="RequestId"/> chưa gán.</summary>
+    private sealed record DetailView(string Id, string? Model, DateTimeOffset? StartedAt,
+        string? DurationText, IReadOnlyList<TrailRow> Rows);
+}

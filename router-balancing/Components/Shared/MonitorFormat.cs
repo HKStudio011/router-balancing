@@ -4,8 +4,8 @@ using RouterBalancing.Core.Engine;
 namespace router_balancing.Components.Shared;
 
 /// <summary>
-/// Định dạng số liệu cho API Monitor — dùng chung với Live Trace
-/// (<c>RequestTrace.FormatDuration</c> delegate sang <see cref="Duration"/>),
+/// Định dạng số liệu cho API Monitor — dùng chung với popup chi tiết
+/// (<c>RequestDetailModal</c> gọi <see cref="Duration"/> cho header/offset trail),
 /// thiếu dữ liệu luôn hiển thị "—" thay vì số sai.
 /// </summary>
 internal static class MonitorFormat

@@ -78,6 +78,18 @@ public static class Translations
         ["monitor.col.tokens"] = "Tokens",
         ["monitor.empty"] = "No requests yet.",
 
+        // Request detail popup — metrics strip + prompt/response (Task 5, dùng chung 2 panel)
+        ["detail.latency"] = "Latency",
+        ["detail.ttft"] = "TTFT",
+        ["detail.promptTokens"] = "Prompt tokens",
+        ["detail.completionTokens"] = "Completion tokens",
+        ["detail.throughput"] = "Throughput (tok/s)",
+        ["detail.status"] = "Status",
+        ["detail.prompt"] = "Prompt",
+        ["detail.response"] = "Response",
+        ["detail.unavailable"] = "No longer in memory.",
+        ["detail.traceGone"] = "Beyond trace history.",
+
         ["common.copied"] = "Copied",
 
         // Settings panel (Task 13)
@@ -446,6 +458,18 @@ public static class Translations
         ["monitor.col.ttft"] = "TTFT",
         ["monitor.col.tokens"] = "Tokens",
         ["monitor.empty"] = "Chưa có request nào.",
+
+        // Request detail popup — metrics strip + prompt/response (Task 5, dùng chung 2 panel)
+        ["detail.latency"] = "Latency",
+        ["detail.ttft"] = "TTFT",
+        ["detail.promptTokens"] = "Token prompt",
+        ["detail.completionTokens"] = "Token hoàn thành",
+        ["detail.throughput"] = "Tốc độ (tok/s)",
+        ["detail.status"] = "Trạng thái",
+        ["detail.prompt"] = "Prompt",
+        ["detail.response"] = "Response",
+        ["detail.unavailable"] = "Không còn trong bộ nhớ.",
+        ["detail.traceGone"] = "Đã vượt lịch sử trace.",
 
         ["common.copied"] = "Đã sao chép",
 
