@@ -143,6 +143,18 @@ public static class ProxyApp
             var priority = RequestPriorityParser.Parse(ctx.Request.Headers["X-Priority"].ToString());
             var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx);
 
+            // Pipe PHẢI vào Items TRƯỚC Enqueue (spec §2.3, two-writer): slot trống thì
+            // dispatcher có thể serve ngay — nếu key chưa publish, handler 2xx write thẳng
+            // Response.Body trong khi endpoint viết keep-alive = framing corruption, cộng
+            // Dictionary access không synchronized (happens-before qua lock của queue).
+            // Header commit vẫn giữ SAU enqueue (spec §4.1 — enqueue fail không được gửi 200).
+            Pipe? ssePipe = null;
+            if (prepared.IsStream)
+            {
+                ssePipe = new Pipe();
+                ctx.Items[SsePipeItems.Key] = ssePipe;
+            }
+
             if (!queue.Enqueue(request))
             {
                 // id vừa sinh nên gần như không xảy ra — không được nuốt im lặng
@@ -186,15 +198,13 @@ public static class ProxyApp
             // client nhận head khi request còn trong queue; content/keep-alive/in-band error
             // do loop phía dưới forward qua pipe. Non-stream giữ nguyên đường cũ.
             DispatchOutcome outcome;
-            Pipe? ssePipe = null;
             long contentBytes = 0;   // CHỈ byte từ pipe — keep-alive không đếm (phân loại #7/#8)
             if (prepared.IsStream)
             {
+                var pipe = ssePipe!; // đã publish vào Items TRƯỚC enqueue — xem comment trên
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "text/event-stream";
                 ctx.Response.Headers.CacheControl = "no-cache";
-                var pipe = new Pipe();
-                ctx.Items[SsePipeItems.Key] = pipe;
                 try
                 {
                     await ctx.Response.StartAsync(ctx.RequestAborted);
@@ -202,7 +212,6 @@ public static class ProxyApp
                     // đi ở lần flush/complete đầu tiên — flush 0 byte tường minh để head tới
                     // client khi request còn queued (đây là chính feature, không phải test-patch).
                     await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
-                    ssePipe = pipe;
                     (outcome, contentBytes) =
                         await RunStreamLoopAsync(ctx, pipe, request.Completion.Task);
                 }
