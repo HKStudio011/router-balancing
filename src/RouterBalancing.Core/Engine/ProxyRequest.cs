@@ -8,8 +8,10 @@ namespace RouterBalancing.Core.Engine;
 /// <param name="Model">Chuỗi <c>model</c> gốc client gửi (model id hoặc tên combo).</param>
 /// <param name="Body">Body JSON đã buffer — dispatcher truyền thẳng khi serve.</param>
 /// <param name="Context">HttpContext gốc — handler ghi response vào đây.</param>
+/// <param name="Endpoint">Đích protocol của request — default Chat, call site cũ không đổi (spec v1-responses §3.1).</param>
 public sealed class ProxyRequest(
-    string id, RequestPriority priority, string model, byte[] body, HttpContext context)
+    string id, RequestPriority priority, string model, byte[] body, HttpContext context,
+    ProxyEndpoint endpoint = ProxyEndpoint.Chat)
 {
     /// <summary>Mã request (8 ký tự base36).</summary>
     public string Id { get; } = id;
@@ -25,6 +27,9 @@ public sealed class ProxyRequest(
 
     /// <summary>HttpContext của client gọi tới.</summary>
     public HttpContext Context { get; } = context;
+
+    /// <summary>Đích protocol — dispatcher resolve <see cref="ProxyProtocols.For"/> theo giá trị này.</summary>
+    public ProxyEndpoint Endpoint { get; } = endpoint;
 
     /// <summary>Sequence tăng dần toàn cục — key thứ 2 trong bucket (FIFO theo mức).</summary>
     public long Sequence { get; internal set; }

@@ -9,7 +9,7 @@ using RouterBalancing.Core.Server;
 
 namespace router_balancing_test.Engine;
 
-public class ChatCompletionsHandlerTests
+public class ProxyRequestHandlerTests
 {
     private readonly DpapiSecretProtector _protector = new();
 
@@ -63,8 +63,8 @@ public class ChatCompletionsHandlerTests
     {
         public string? LastApiKey { get; private set; }
 
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             LastApiKey = apiKey;
             return Task.FromResult(factory());
@@ -73,8 +73,8 @@ public class ChatCompletionsHandlerTests
 
     private sealed class ThrowingUpstream(Exception ex) : IUpstreamClient
     {
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct) =>
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
             Task.FromException<HttpResponseMessage>(ex);
     }
 
@@ -114,7 +114,7 @@ public class ChatCompletionsHandlerTests
         public int Count(LogQuery query) => 0;
     }
 
-    private ChatCompletionsHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
+    private ProxyRequestHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
         IClientKeyUsageSink? sink = null, ApiMonitorStore? monitor = null)
     {
         var effectiveLog = log ?? new CapturingLog();
@@ -133,7 +133,7 @@ public class ChatCompletionsHandlerTests
         ctx.Items[ClientKeyItems.RequestId] = "req-42";
         ctx.Items[ClientKeyItems.Id] = 7L;
 
-        var prepared = await sut.PrepareAsync(ctx);
+        var prepared = await sut.PrepareAsync(ctx, ProxyProtocols.Chat);
 
         Assert.Null(prepared);
         var (status, contentType, body) = await ReadAsync(ctx);
@@ -155,7 +155,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")));
         var ctx = Ctx("""{"messages":[{"role":"user"}]}""");
 
-        var prepared = await sut.PrepareAsync(ctx);
+        var prepared = await sut.PrepareAsync(ctx, ProxyProtocols.Chat);
 
         Assert.Null(prepared);
         var (status, _, body) = await ReadAsync(ctx);
@@ -170,7 +170,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")));
         var ctx = Ctx("""{"model":"gpt-4o-mini"}""");
 
-        var prepared = await sut.PrepareAsync(ctx);
+        var prepared = await sut.PrepareAsync(ctx, ProxyProtocols.Chat);
 
         Assert.Null(prepared);
         var (status, _, body) = await ReadAsync(ctx);
@@ -187,7 +187,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
         Assert.Equal(503, error.Status);
@@ -207,7 +207,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(upstream, log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(string.Empty, upstream.LastApiKey); // upstream không auth, không throw
@@ -221,7 +221,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new ThrowingUpstream(new HttpRequestException("connection refused")), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // Mạng = Fatal(Provider, Status null) — dispatcher advance candidate kế (spec §3.2);
         // 502 chỉ sinh ở exhaustion khi attempt cuối là mạng (§4)
@@ -244,7 +244,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(429, upstreamBody)), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // Handler KHÔNG ghi response 429 — dispatcher walk quyết định advance/passthrough (spec §2.2)
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
@@ -267,7 +267,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(500, upstreamBody)), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
         Assert.Equal(500, retryable.Status);
@@ -288,7 +288,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(400, upstreamBody)), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // Non-retryable — endpoint ghi (quan sát client y hệt 3A), không advance
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
@@ -310,7 +310,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(401, upstreamBody)), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // 401 = auth sai ở account (spec §1.3 #6/§3.2) — payload giữ cho exhaustion passthrough (§4)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
@@ -331,7 +331,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(403, """{"error":{"message":"forbidden"}}""")));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // 403 cùng nhóm lỗi auth với 401 → account cấp (spec §3.2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
@@ -348,7 +348,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(404, upstreamBody)));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // 404 + error.code=model_not_found = model sai — Fatal cấp Model (§3.2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
@@ -365,7 +365,7 @@ public class ChatCompletionsHandlerTests
             """{"error":{"message":"nope","code":"MODEL_NOT_FOUND"}}""")));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // ordinal-ignore-case — provider code khác casing vẫn nhận diện (V2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
@@ -380,7 +380,7 @@ public class ChatCompletionsHandlerTests
             """{"error":{"message":"not found"}}""")));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // 404 thường = sai endpoint/provider chết — Fatal cấp Provider (§3.2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
@@ -394,7 +394,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(404, "<html>404</html>", "text/html")));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // Body không parse được → coi 404 thường, không crash phân loại (V2)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
@@ -408,7 +408,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(401, "oops", "text/plain")));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         // 401 check theo TRẠNG THÁI trước, không parse body — body hỏng vẫn Fatal(Account)
         var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
@@ -424,7 +424,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => response));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         var retryable = Assert.IsType<DispatchOutcome.Retryable>(outcome);
         // Delta-seconds parse được → giữ nguyên cho exhaustion passthrough (§3.6)
@@ -439,7 +439,7 @@ public class ChatCompletionsHandlerTests
             "text/event-stream")));
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var (status, contentType, body) = await ReadAsync(ctx);
@@ -456,7 +456,7 @@ public class ChatCompletionsHandlerTests
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Single(log.Infos);
@@ -473,8 +473,8 @@ public class ChatCompletionsHandlerTests
     private sealed class BodyCapturingUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
     {
         public byte[]? LastBody { get; private set; }
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             LastBody = body;
             return Task.FromResult(factory());
@@ -501,7 +501,7 @@ public class ChatCompletionsHandlerTests
         var ctx = Ctx();
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.NotNull(upstream.LastBody);
@@ -523,7 +523,7 @@ public class ChatCompletionsHandlerTests
         ctx.Items[ClientKeyItems.Id] = 42L;
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var (_, _, body) = await ReadAsync(ctx);
@@ -541,7 +541,7 @@ public class ChatCompletionsHandlerTests
         var ctx = Ctx();
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(StreamJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Single(log.Debugs);
@@ -557,7 +557,7 @@ public class ChatCompletionsHandlerTests
         var ctx = Ctx();
         var provider = SeedProvider();
 
-        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), default);
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Empty(log.Debugs);
@@ -650,7 +650,7 @@ public class ChatCompletionsHandlerTests
         // Rethrow — không đổi hành vi pipeline: dispatcher vẫn map HasStarted → Aborted như cũ
         await Assert.ThrowsAsync<IOException>(() =>
             sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
-                AccountIdOf(provider), default));
+                AccountIdOf(provider), ProxyProtocols.Chat, default));
 
         // RecordResponse chạy SAU tee nên TTFT/ResponseBody mất; RecordError(0) bọc quanh tee
         // để popup có FailureKind=network thay vì trống (spec api-monitor §7)
@@ -675,7 +675,7 @@ public class ChatCompletionsHandlerTests
         var provider = SeedProvider();
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
-            AccountIdOf(provider), default);
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Passthrough>(outcome);
         var record = monitor.Find("req-err")!;

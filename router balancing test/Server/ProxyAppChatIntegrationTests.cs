@@ -86,8 +86,8 @@ public class ProxyAppChatIntegrationTests : IDisposable
     {
         public byte[]? LastBody { get; private set; }
 
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             LastBody = body;
             return Task.FromResult(factory());

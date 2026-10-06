@@ -63,14 +63,14 @@ public class OpenAiUpstreamClientTests
     }
 
     [Fact]
-    public async Task PostChatCompletionAsync_SendsPostToChatPath_WithBearerAndJsonBody()
+    public async Task PostAsync_SendsPostToChatPath_WithBearerAndJsonBody()
     {
         CapturedRequest? captured = null;
         var client = new HttpClient(new FixedHandler(SseResponse(), c => captured = c));
         var sut = new OpenAiUpstreamClient(new FixedFactory(client));
         var body = Encoding.UTF8.GetBytes("""{"model":"m","messages":[]}""");
 
-        await sut.PostChatCompletionAsync(P(), "sk-live", body, CancellationToken.None);
+        await sut.PostAsync(P(), "sk-live", "/v1/chat/completions", body, CancellationToken.None);
 
         Assert.NotNull(captured);
         Assert.Equal(HttpMethod.Post, captured.Method);
@@ -83,12 +83,12 @@ public class OpenAiUpstreamClientTests
     }
 
     [Fact]
-    public async Task PostChatCompletionAsync_ReturnsUpstreamResponse_WithSseHeaders()
+    public async Task PostAsync_ReturnsUpstreamResponse_WithSseHeaders()
     {
         var client = new HttpClient(new FixedHandler(SseResponse(), _ => { }));
         var sut = new OpenAiUpstreamClient(new FixedFactory(client));
 
-        var response = await sut.PostChatCompletionAsync(P(), "k", [], CancellationToken.None);
+        var response = await sut.PostAsync(P(), "k", "/v1/chat/completions", [], CancellationToken.None);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("text/event-stream", response.Content.Headers.ContentType!.MediaType);
@@ -96,14 +96,14 @@ public class OpenAiUpstreamClientTests
     }
 
     [Fact]
-    public async Task PostChatCompletionAsync_WithDefaultCompletionOption_DoesNotBufferUpstreamBody()
+    public async Task PostAsync_WithDefaultCompletionOption_DoesNotBufferUpstreamBody()
     {
         var tracking = new TrackingContent();
         var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = tracking };
         var client = new HttpClient(new FixedHandler(response, _ => { }));
         var sut = new OpenAiUpstreamClient(new FixedFactory(client));
 
-        await sut.PostChatCompletionAsync(P(), "k", [], CancellationToken.None);
+        await sut.PostAsync(P(), "k", "/v1/chat/completions", [], CancellationToken.None);
 
         // ResponseContentRead sẽ load body vào bộ nhớ trước khi trả về (SerializeToStreamAsync chạy)
         Assert.False(tracking.WasRead);

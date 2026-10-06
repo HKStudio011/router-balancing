@@ -13,9 +13,11 @@ namespace RouterBalancing.Core.Engine;
 /// <summary>
 /// Phần handler của pipeline queue-first (3B): <see cref="PrepareAsync"/> (buffer + validate —
 /// endpoint gọi trước enqueue) và <see cref="ForwardAsync"/> (key → upstream → stream —
-/// dispatcher gọi khi đã giữ slot). Singleton, không giữ state per-request.
+/// dispatcher gọi khi đã giữ slot). Protocol-agnostic: 3 điểm protocol-specific (validate,
+/// path + rewrite body, tee) đi qua <see cref="IProxyProtocol"/> (spec v1-responses §3.2).
+/// Singleton, không giữ state per-request.
 /// </summary>
-public sealed class ChatCompletionsHandler(
+public sealed class ProxyRequestHandler(
     IUpstreamClient upstream,
     ISecretProtector protector,
     ILogService log,
@@ -26,15 +28,17 @@ public sealed class ChatCompletionsHandler(
     /// <param name="ModelId">Model id đã validate (resolve alias tại dispatcher).</param>
     /// <param name="Body">Body JSON gốc từng byte — forward nguyên vẹn.</param>
     /// <param name="IsStream">Body có <c>"stream": true</c> — cho phép flush header sớm (spec early-headers).</param>
-    public sealed record PreparedChatRequest(string ModelId, byte[] Body, bool IsStream);
+    public sealed record PreparedProxyRequest(string ModelId, byte[] Body, bool IsStream);
 
     /// <summary>
-    /// Buffer body rồi validate theo rule 3A. Lỗi validate → ghi 400 OpenAI-style NGAY
+    /// Buffer body rồi validate qua <paramref name="protocol"/> (rule 3A cho chat).
+    /// Lỗi validate → ghi 400 OpenAI-style NGAY từ message/param của protocol
     /// (không qua queue, header <c>X-Request-Id</c> đã được endpoint set trước đó) và trả
     /// <see langword="null"/>; hợp lệ → trả prepared request.
     /// </summary>
     /// <param name="ctx">HttpContext của request gốc.</param>
-    public async Task<PreparedChatRequest?> PrepareAsync(HttpContext ctx)
+    /// <param name="protocol">Protocol của endpoint đang xử lý.</param>
+    public async Task<PreparedProxyRequest?> PrepareAsync(HttpContext ctx, IProxyProtocol protocol)
     {
         var ct = ctx.RequestAborted;
 
@@ -45,32 +49,26 @@ public sealed class ChatCompletionsHandler(
             body = buffer.ToArray();
         }
 
-        var validation = ChatRequestValidator.Validate(body);
+        var validation = protocol.Validate(body);
         if (!validation.IsValid)
         {
-            var (message, param) = validation.Failure switch
-            {
-                ValidationFailure.MissingModel =>
-                    ("Missing required parameter: 'model'.", "model"),
-                ValidationFailure.MissingMessages =>
-                    ("Missing required parameter: 'messages'.", "messages"),
-                _ => ("Invalid JSON body", null),
-            };
             // Spec §7: row validate-fail vẫn phải correlate được request — middleware đã set
-            // Items vào ctx nên gắn RequestId/ClientKeyId như các row Write khác; Message giữ nguyên.
+            // Items vào ctx nên gắn RequestId/ClientKeyId như các row Write khác; Message dùng
+            // đúng ErrorMessage của protocol (switch map failure→text đã chuyển vào protocol).
             log.Write(new LogEntry
             {
                 Severity = LogSeverity.Warning,
                 Category = LogCategory.Request,
-                Message = $"Yêu cầu chat không hợp lệ: {validation.Failure}.",
+                Message = $"Yêu cầu không hợp lệ: {validation.ErrorMessage}",
                 RequestId = ClientKeyItems.RequestIdOf(ctx),
                 ClientKeyId = ClientKeyItems.IdOf(ctx),
             });
-            await WriteErrorAsync(ctx, 400, message, "invalid_request_error", param, null);
+            await WriteErrorAsync(ctx, 400, validation.ErrorMessage!, "invalid_request_error",
+                validation.ErrorParam, null);
             return null;
         }
 
-        return new PreparedChatRequest(validation.ModelId!, body, validation.IsStream);
+        return new PreparedProxyRequest(validation.ModelId!, body, validation.IsStream);
     }
 
     /// <summary>
@@ -86,9 +84,10 @@ public sealed class ChatCompletionsHandler(
     /// <param name="model">Model đã chọn (log Info).</param>
     /// <param name="body">Body JSON gốc.</param>
     /// <param name="accountId">TK đã chọn lúc TryEnter — dùng đúng id này, không resolve lại (D-B6).</param>
+    /// <param name="protocol">Protocol của endpoint — quyết định path/rewrite/tee (spec v1-responses §3.2).</param>
     /// <param name="ct">Token — dùng <c>ctx.RequestAborted</c> để disconnect cắt stream.</param>
     public async Task<DispatchOutcome> ForwardAsync(HttpContext ctx, Provider provider, Model model,
-        byte[] body, long accountId, CancellationToken ct)
+        byte[] body, long accountId, IProxyProtocol protocol, CancellationToken ct)
     {
         // `!`: endpoint set ctx.Items[RequestId] TRƯỚC enqueue (ProxyApp) — ForwardAsync chỉ
         // chạy cho request đã qua endpoint nên id luôn có; hook monitor cần string không-null
@@ -116,22 +115,21 @@ public sealed class ChatCompletionsHandler(
             ? string.Empty
             : protector.Unprotect(account.ApiKeyEncrypted);
 
-        // Đặt context proxy TRƯỚC khi gọi handler (upstream.PostChatCompletionAsync) —
+        // Đặt context proxy TRƯỚC khi gọi handler (upstream.PostAsync) —
         // ProxyHealthHandler đọc ProxyTarget.Current để dispatch theo assignment.
         ProxyTarget.Current.Value = new ProxyTarget(provider, account);
         try
         {
-            // Alias nội bộ (pin/combo) phải đổi về model id thật trước khi forward —
-            // upstream không biết pin/ten combo (bug client: gửi nguyên alias bị ModelError).
-            var upstreamBody = ChatBody.WithModel(body, model.ModelId);
-            // Yêu cầu upstream trả usage cho stream OpenAI (spec §6) — body gốc giữ nguyên ở queue/prepare
-            var (requestBody, expectsUsage) = UsageCapture.WithIncludeUsage(upstreamBody, provider.Type);
+            // Rewrite protocol-specific (alias→model id thật, inject usage flags cho chat) —
+            // body gốc giữ nguyên ở queue/prepare
+            var (requestBody, expectsUsage) = protocol.PrepareUpstreamBody(body, model.ModelId,
+                provider.Type);
 
             var stopwatch = Stopwatch.StartNew();
             HttpResponseMessage response;
             try
             {
-                response = await upstream.PostChatCompletionAsync(provider, key, requestBody, ct);
+                response = await upstream.PostAsync(provider, key, protocol.UpstreamPath, requestBody, ct);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                        && !ctx.RequestAborted.IsCancellationRequested)
@@ -180,7 +178,7 @@ public sealed class ChatCompletionsHandler(
                         Stream dest = ctx.Items.TryGetValue(SsePipeItems.Key, out var pipeObj)
                             ? ((Pipe)pipeObj!).Writer.AsStream()
                             : ctx.Response.Body;
-                        tee = await UsageCapture.TeeAsync(response.Content, dest, ct);
+                        tee = await protocol.TeeAsync(response.Content, dest, ct);
                     }
                     catch
                     {

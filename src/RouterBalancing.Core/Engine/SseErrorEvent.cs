@@ -15,7 +15,7 @@ internal static class SseErrorEvent
     private const string DataPrefix = "data: ";
 
     // Encoder relax giữ nguyên apostrophe (0x27) — default encoder escape thành
-    // \u0027, sai contract OpenAI (cùng lý do ChatCompletionsHandler.ErrorJsonOptions).
+    // \u0027, sai contract OpenAI (cùng lý do ProxyRequestHandler.ErrorJsonOptions).
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,

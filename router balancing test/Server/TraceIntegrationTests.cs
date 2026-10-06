@@ -78,8 +78,8 @@ public class TraceIntegrationTests : IDisposable
 
     private sealed class StubUpstream : IUpstreamClient
     {
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct) =>
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
             Task.FromResult(Sse());
     }
 
@@ -91,8 +91,8 @@ public class TraceIntegrationTests : IDisposable
         public Task Entered => _entered.Task;
         public void Release() => _release.TrySetResult();
 
-        public async Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public async Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             _entered.TrySetResult();
             await _release.Task;
@@ -103,8 +103,8 @@ public class TraceIntegrationTests : IDisposable
     /// <summary>Upstream theo script (mirror ProxyRetryIntegrationTests) — factory throw được (mạng giả).</summary>
     private sealed class ScriptedUpstream(Func<Provider, HttpResponseMessage> factory) : IUpstreamClient
     {
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct) =>
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
             Task.FromResult(factory(provider));
     }
 

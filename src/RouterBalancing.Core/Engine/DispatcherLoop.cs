@@ -17,7 +17,7 @@ public sealed class DispatcherLoop(
     IExecutionList executions,
     IComboResolver resolver,
     IModelSelector selector,
-    ChatCompletionsHandler handler,
+    ProxyRequestHandler handler,
     ILogService log,
     ITraceFeed trace) : BackgroundService
 {
@@ -198,7 +198,8 @@ public sealed class DispatcherLoop(
             {
                 // RequestAborted của client — disconnect giữa chừng cắt stream, không phải lỗi upstream (3A)
                 outcome = await handler.ForwardAsync(request.Context, candidate.Provider,
-                    candidate.Model, request.Body, accountId, request.Context.RequestAborted);
+                    candidate.Model, request.Body, accountId,
+                    ProxyProtocols.For(request.Endpoint), request.Context.RequestAborted);
             }
             catch (OperationCanceledException) when (request.Context.RequestAborted.IsCancellationRequested)
             {

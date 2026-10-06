@@ -121,8 +121,8 @@ public class ProxyRetryIntegrationTests : IDisposable
             get { lock (_gate) return _calls.ToArray(); }
         }
 
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             // Ghi TRƯỚC khi factory throw (mạng giả) — test vẫn đếm được attempt đó
             lock (_gate)

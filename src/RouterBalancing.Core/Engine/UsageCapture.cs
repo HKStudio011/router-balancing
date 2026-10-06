@@ -11,7 +11,9 @@ namespace RouterBalancing.Core.Engine;
 /// (1) <see cref="WithIncludeUsage"/> chèn <c>stream_options.include_usage=true</c> cho stream OpenAI;
 /// (2) <see cref="TeeAsync"/> copy body sang client MÀ không nuốt/chỉnh sửa byte — vừa forward vừa quét usage.
 /// </summary>
-internal static class UsageCapture
+// Public vì IProxyProtocol.TeeAsync (public seam, spec v1-responses §3.1) trả UsageCapture.TeeResult
+// — chữ ký public không được lộ type internal.
+public static class UsageCapture
 {
     // Cap ResponseBody monitor = 64KB — không cap thì row DB phình theo upstream (spec api-monitor §2)
     private const int BodyCapChars = 64 * 1024;

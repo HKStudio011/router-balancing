@@ -119,7 +119,7 @@ public class DispatcherLoopTests : IDisposable
         // Cùng log của test — TraceFeed ghi lỗi contract qua log này (Task 1);
         // feed tạo TRƯỚC để monitor store subscribe đúng instance dispatcher publish vào
         _trace = new TraceFeed(log);
-        var handler = new ChatCompletionsHandler(upstream, _protector, log, new NullUsageSink(),
+        var handler = new ProxyRequestHandler(upstream, _protector, log, new NullUsageSink(),
             new ApiMonitorStore(_trace, log, TimeProvider.System));
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
             log, _trace);
@@ -244,8 +244,8 @@ public class DispatcherLoopTests : IDisposable
     {
         public int Calls;
 
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             Interlocked.Increment(ref Calls);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -263,8 +263,8 @@ public class DispatcherLoopTests : IDisposable
         public Task Entered => _entered.Task;
         public void Release() => _release.TrySetResult();
 
-        public async Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public async Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             _entered.TrySetResult();
             await _release.Task;
@@ -335,8 +335,8 @@ public class DispatcherLoopTests : IDisposable
     {
         public int Calls;
 
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             Interlocked.Increment(ref Calls);
             // Factory throw được (mạng giả) — ném đồng bộ, handler bắt trong try có sẵn
@@ -355,8 +355,8 @@ public class DispatcherLoopTests : IDisposable
         public Task Entered => _entered.Task;
         public void Release() => _release.TrySetResult();
 
-        public async Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public async Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             var call = Interlocked.Increment(ref _calls);
             if (call == 1)
@@ -388,8 +388,8 @@ public class DispatcherLoopTests : IDisposable
             }
         }
 
-        public Task<HttpResponseMessage> PostChatCompletionAsync(
-            Provider provider, string apiKey, byte[] body, CancellationToken ct)
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
         {
             lock (_calls)
                 _calls.Add((provider.Name, apiKey));
@@ -409,7 +409,7 @@ public class DispatcherLoopTests : IDisposable
 
         public event Action<LogEntry>? LogAdded { add { } remove { } }
 
-        // ChatCompletionsHandler ghi journal qua Write (spec §7) — route theo Severity để các
+        // ProxyRequestHandler ghi journal qua Write (spec §7) — route theo Severity để các
         // assert Infos/Warns/Errors cũ (LogForwarded, lỗi upstream) vẫn bắt được dòng mới
         public void Write(LogEntry entry)
         {

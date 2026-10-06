@@ -93,5 +93,5 @@ public sealed class ApiKeyMiddleware(RequestDelegate next, ClientKeyAuthCache ke
 
     private static Task RejectAsync(HttpContext context, int status, string message, string type, string code) =>
         // Tái dùng WriteErrorAsync có sẵn: shape OpenAI + encoder relax qua ErrorJsonOptions (spec §10)
-        ChatCompletionsHandler.WriteErrorAsync(context, status, message, type, param: null, code);
+        ProxyRequestHandler.WriteErrorAsync(context, status, message, type, param: null, code);
 }

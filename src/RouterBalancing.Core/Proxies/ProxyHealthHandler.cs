@@ -31,7 +31,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        // Request có assignment (ChatCompletionsHandler / probe / sync set) → dispatch
+        // Request có assignment (ProxyRequestHandler / probe / sync set) → dispatch
         // Direct/RoundRobin/Fallback theo provider+account; null → behavior global pool (D7).
         var target = ProxyTarget.Current.Value;
         if (target is not null)

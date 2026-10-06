@@ -87,7 +87,7 @@ public static class ProxyApp
         builder.Services.AddSingleton<IComboResolver, ComboResolver>();
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
-        builder.Services.AddSingleton<ChatCompletionsHandler>();
+        builder.Services.AddSingleton<ProxyRequestHandler>();
         // Đồng hồ system — service time-sensitive trong proxy container
         // (ClientKeyRateLimiter) resolve cùng 1 instance
         builder.Services.AddSingleton(TimeProvider.System);
@@ -123,7 +123,7 @@ public static class ProxyApp
         // Queue-first 3B (spec §2.1): validate → enqueue → chờ dispatcher → ghi response theo outcome
         app.MapPost("/v1/chat/completions",
             async (HttpContext ctx, IRequestQueue queue, IExecutionList executions,
-                ChatCompletionsHandler handler, ILogService log, ITraceFeed trace,
+                ProxyRequestHandler handler, ILogService log, ITraceFeed trace,
                 IApiMonitorStore monitor) =>
         {
             // Sinh id TRƯỚC prepare — trả X-Request-Id để client đối chiếu với GET /v1/requests (spec §3.6)
@@ -136,12 +136,13 @@ public static class ProxyApp
             ctx.Response.Headers["X-Request-Id"] = id;
             ctx.Items[ClientKeyItems.RequestId] = id;
 
-            var prepared = await handler.PrepareAsync(ctx);
+            var prepared = await handler.PrepareAsync(ctx, ProxyProtocols.Chat);
             if (prepared is null)
                 return; // validate fail — PrepareAsync đã ghi 400, chưa enqueue
 
             var priority = RequestPriorityParser.Parse(ctx.Request.Headers["X-Priority"].ToString());
-            var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx);
+            var request = new ProxyRequest(id, priority, prepared.ModelId, prepared.Body, ctx,
+                ProxyEndpoint.Chat);
 
             // Pipe PHẢI vào Items TRƯỚC Enqueue (spec §2.3, two-writer): slot trống thì
             // dispatcher có thể serve ngay — nếu key chưa publish, handler 2xx write thẳng
@@ -166,7 +167,7 @@ public static class ProxyApp
                     RequestId = id,
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });
-                await ChatCompletionsHandler.WriteErrorAsync(ctx, 500, "Internal server error",
+                await ProxyRequestHandler.WriteErrorAsync(ctx, 500, "Internal server error",
                     "server_error", null, null);
                 return;
             }
@@ -301,7 +302,7 @@ public static class ProxyApp
             }
             else if (outcome is DispatchOutcome.Error error)
             {
-                await ChatCompletionsHandler.WriteErrorAsync(ctx, error.Status, error.Message,
+                await ProxyRequestHandler.WriteErrorAsync(ctx, error.Status, error.Message,
                     error.Type, error.Param, error.Code);
             }
             else if (outcome is DispatchOutcome.Passthrough passthrough)
@@ -326,7 +327,7 @@ public static class ProxyApp
                     RequestId = id,
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });
-                await ChatCompletionsHandler.WriteErrorAsync(ctx, 500, "Internal server error",
+                await ProxyRequestHandler.WriteErrorAsync(ctx, 500, "Internal server error",
                     "server_error", null, null);
             }
             else if (outcome is DispatchOutcome.Cancelled
@@ -341,7 +342,7 @@ public static class ProxyApp
                     RequestId = id,
                     ClientKeyId = ClientKeyItems.IdOf(ctx),
                 });
-                await ChatCompletionsHandler.WriteErrorAsync(ctx, 400, "Request cancelled.",
+                await ProxyRequestHandler.WriteErrorAsync(ctx, 400, "Request cancelled.",
                     "invalid_request_error", null, "request_cancelled");
             }
             // Handled / Aborted / Cancelled do client ngắt: response đã ghi hoặc kết nối đã đóng
@@ -441,7 +442,7 @@ public static class ProxyApp
                     await Results.Json(new { cancelled = true }).ExecuteAsync(ctx);
                     break;
                 case RequestCancelResult.NotCancellable:
-                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 409,
+                    await ProxyRequestHandler.WriteErrorAsync(ctx, 409,
                         $"The request '{id}' is not cancellable", "invalid_request_error", null,
                         "not_cancellable");
                     break;
@@ -449,7 +450,7 @@ public static class ProxyApp
                 // gộp NotFound để switch exhaustive, tránh rơi ra ngoài khi enum thêm giá trị
                 case RequestCancelResult.NotFound:
                 case RequestCancelResult.NotRunning:
-                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 404,
+                    await ProxyRequestHandler.WriteErrorAsync(ctx, 404,
                         $"The request '{id}' does not exist", "invalid_request_error", null,
                         "request_not_found");
                     break;
