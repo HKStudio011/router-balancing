@@ -331,9 +331,9 @@
                 <div class="trace-node__slot"></div>
             </div>
 
-            @* Caption nhánh hardcode (🧩 Combo / ☁️ Provider) — plan không phân bổ key cho caption
-               nhánh (Task 7 chỉ thêm 4 caption spine); cùng tiền lệ Task 5, emoji + tên riêng
-               không đổi giữa EN/VI. *@
+            @* Caption nhánh hardcode (🧩 Combo / ☁️ Provider) — Task 7 thêm 6 key `trace.node.*`
+               (gồm caption nhánh 🧩/☁️ theo plan đã amend) rồi thay 2 hardcode này; cùng tiền lệ
+               Task 5, emoji + tên riêng không đổi giữa EN/VI. *@
             @foreach (var combo in _layout.Combos)
             {
                 <div class="trace-node @(combo.Running ? "trace-node--act" : "")"
@@ -451,12 +451,12 @@
     private const int ComboStartY = 168;       // block Combo đầu tiên (mockup top 168)
     private const int ComboRowH = 128;         // giãn cách block Combo (mockup 168 → 296)
     private const int ProviderStartY = 76;     // đầu lane Provider/Account (mockup chip top 76)
-    private const int ProviderRowH = 110;      // giãn cách lane Provider (mockup 118 → 228 → 326)
+    private const int ProviderRowH = 98;       // giãn cách lane thưa tối thiểu (mockup lane2→lane3: 334 − 236 = 98); lane dày chạy theo 24 + n×ChipRowH
     private const int ChipRowH = 34;           // giãn cách chip (mockup 76 → 110 → 144 → 178)
-    private const int ChipProviderLift = 42;   // Provider block dưới đầu lane (mockup 118 − 76)
+    private const int ChipHeight = 25;         // cao thật của .trace-chip (padding 4×2 + border 1.5×2 + line 10.5×1.35 ≈ 14) — dùng tính tâm cụm chip
     private const int ChipLanePadY = 24;       // padding đáy lane — tránh chip đè lane kế
-    private const int NodeElbowOffsetY = 20;   // điểm rẽ trên block nhánh (mockup ~+20)
-    private const int ChipElbowOffsetY = 12;   // điểm rẽ trên chip (mockup 90 − 76)
+    private const int NodeElbowOffsetY = 20;   // tâm block nhánh (~39px: cap 12 + dòng tên 14 + padding 10 + border 3) — mockup nối connector ở +22
+    private const int ChipElbowOffsetY = 12;   // tâm dot request trong chip (dot top +6, bán kính 12/2 → 6 + 6) — mockup nối ở +14 (90 − 76)
     private const int DispatchExitX = 128;     // mép phải node Thực thi (mockup M128,210)
     private const int DispatchExitY = 210;
     private const int ChipDotOffsetX = 8;      // dot trong chip: border 1.5px + padding 7px
@@ -807,7 +807,11 @@
             .ThenBy(n => n.Id, StringComparer.Ordinal)
             .ToList();
         if (routed.Count == 0)
+        {
+            // Không còn node route → không còn provider nào trong layout → đóng panel expand
+            _expandedIdleProvider = null;
             return;
+        }
 
         var groups = routed
             .GroupBy(n => (Combo: n.Route!.Combo ?? string.Empty,
@@ -863,7 +867,11 @@
             var errorStatus = pGroups
                 .SelectMany(g => g.Nodes)
                 .FirstOrDefault(n => n.Status is >= 400)?.Status;
-            layout.Providers.Add(new ProviderBlock(providerName, laneTop + ChipProviderLift, running, hasError, errorStatus));
+            // Provider căn theo TÂM cụm chip của lane chứ không theo đầu lane — theo mockup
+            // 118/228/326 đều = tâm cụm chip − 20; căn theo đầu lane sẽ trệ ~50px ở lane2+
+            // và clip đáy canvas 415px ngay ở mật độ 3 provider của mockup.
+            var providerTop = laneTop + ((chipTotal - 1) * ChipRowH + ChipHeight) / 2 - NodeElbowOffsetY;
+            layout.Providers.Add(new ProviderBlock(providerName, providerTop, running, hasError, errorStatus));
 
             for (var k = 0; k < shown.Count; k++)
             {
@@ -893,6 +901,13 @@
             }
 
             laneTop += laneHeight;
+        }
+
+        // Panel expand không được "tự mở lại" khi provider biến mất khỏi layout (node expire) —
+        // flag là state component, layout tính lại mỗi render nên dọn ngay tại đây.
+        if (_expandedIdleProvider is not null && layout.FindProvider(_expandedIdleProvider) is null)
+        {
+            _expandedIdleProvider = null;
         }
 
         // Connector per group: Thực thi → Combo → Provider → Account (elbow ở trung điểm 2 cột).
