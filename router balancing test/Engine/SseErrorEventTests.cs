@@ -47,31 +47,25 @@ public class SseErrorEventTests
     [Fact]
     public void Cancelled_ProducesRequestCancelledEvent()
     {
-        var evt = ParseEvent(SseErrorEvent.Cancelled());
+        var bytes = SseErrorEvent.Cancelled();
 
-        // opencode parseStreamError đòi body.type === "error" — thiếu là client không nhận ra lỗi
-        Assert.Equal("error", evt["type"]!.GetValue<string>());
-        var error = evt["error"]!.AsObject();
-
-        // Shape tối giản đúng spec §3.5 — không status, không param
-        Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
-        Assert.Equal("Request cancelled.", error["message"]!.GetValue<string>());
-        Assert.Equal("invalid_request_error", error["type"]!.GetValue<string>());
-        Assert.Equal("request_cancelled", error["code"]!.GetValue<string>());
+        // So string chính xác từng byte (kể cả đuôi \n\n) — envelope = Error trừ status;
+        // param/code null như WriteErrorAsync (parity response 400 cancel non-stream)
+        const string expected =
+            "data: {\"type\":\"error\",\"error\":{\"message\":\"Request cancelled.\"," +
+            "\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"request_cancelled\"}}\n\n";
+        Assert.Equal(expected, AsText(bytes));
     }
 
     [Fact]
     public void ServerFault_ProducesServerErrorEvent()
     {
-        var evt = ParseEvent(SseErrorEvent.ServerFault());
+        var bytes = SseErrorEvent.ServerFault();
 
-        Assert.Equal("error", evt["type"]!.GetValue<string>());
-        var error = evt["error"]!.AsObject();
-
-        Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
-        Assert.Equal("Internal server error", error["message"]!.GetValue<string>());
-        Assert.Equal("server_error", error["type"]!.GetValue<string>());
-        Assert.Equal("server_error", error["code"]!.GetValue<string>());
+        const string expected =
+            "data: {\"type\":\"error\",\"error\":{\"message\":\"Internal server error\"," +
+            "\"type\":\"server_error\",\"param\":null,\"code\":\"server_error\"}}\n\n";
+        Assert.Equal(expected, AsText(bytes));
     }
 
     [Fact]
