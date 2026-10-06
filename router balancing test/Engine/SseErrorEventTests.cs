@@ -8,11 +8,11 @@ public class SseErrorEventTests
 {
     private const string DataPrefix = "data: ";
 
-    private static string Frame(byte[] bytes) => Encoding.UTF8.GetString(bytes);
+    private static string AsText(byte[] bytes) => Encoding.UTF8.GetString(bytes);
 
     private static JsonObject ParseEvent(byte[] bytes)
     {
-        var text = Frame(bytes);
+        var text = AsText(bytes);
         Assert.StartsWith(DataPrefix, text, StringComparison.Ordinal);
         Assert.EndsWith("\n\n", text, StringComparison.Ordinal);
         return JsonNode.Parse(text[DataPrefix.Length..^2])!.AsObject();
@@ -30,7 +30,7 @@ public class SseErrorEventTests
             "data: {\"type\":\"error\",\"error\":{\"message\":\"The model 'x' does not exist\"," +
             "\"type\":\"invalid_request_error\",\"param\":\"model\",\"code\":\"model_not_found\"," +
             "\"status\":404}}\n\n";
-        Assert.Equal(expected, Frame(bytes));
+        Assert.Equal(expected, AsText(bytes));
     }
 
     [Fact]
@@ -41,13 +41,17 @@ public class SseErrorEventTests
         const string expected =
             "data: {\"type\":\"error\",\"error\":{\"message\":\"Upstream provider request failed\"," +
             "\"type\":\"server_error\",\"param\":null,\"code\":null,\"status\":502}}\n\n";
-        Assert.Equal(expected, Frame(bytes));
+        Assert.Equal(expected, AsText(bytes));
     }
 
     [Fact]
     public void Cancelled_ProducesRequestCancelledEvent()
     {
-        var error = ParseEvent(SseErrorEvent.Cancelled())["error"]!.AsObject();
+        var evt = ParseEvent(SseErrorEvent.Cancelled());
+
+        // opencode parseStreamError đòi body.type === "error" — thiếu là client không nhận ra lỗi
+        Assert.Equal("error", evt["type"]!.GetValue<string>());
+        var error = evt["error"]!.AsObject();
 
         // Shape tối giản đúng spec §3.5 — không status, không param
         Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
@@ -59,7 +63,10 @@ public class SseErrorEventTests
     [Fact]
     public void ServerFault_ProducesServerErrorEvent()
     {
-        var error = ParseEvent(SseErrorEvent.ServerFault())["error"]!.AsObject();
+        var evt = ParseEvent(SseErrorEvent.ServerFault());
+
+        Assert.Equal("error", evt["type"]!.GetValue<string>());
+        var error = evt["error"]!.AsObject();
 
         Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
         Assert.Equal("Internal server error", error["message"]!.GetValue<string>());
