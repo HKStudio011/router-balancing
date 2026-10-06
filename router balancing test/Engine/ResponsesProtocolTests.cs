@@ -109,10 +109,12 @@ public class ResponsesProtocolTests
 
         var (rewritten, expectsUsage) = Protocol.PrepareUpstreamBody(body, "gpt-4o-real", ProviderType.OpenAI);
 
-        Assert.False(expectsUsage);
+        // Responses API LUÔN kèm usage ở object terminal → ExpectsUsage=true để caller
+        // log Debug khi 2xx không trích được usage (spec v1-responses §6)
+        Assert.True(expectsUsage);
         using var doc = JsonDocument.Parse(rewritten);
         Assert.Equal("gpt-4o-real", doc.RootElement.GetProperty("model").GetString());
-        // Responses API luôn kèm usage trong event terminal — cấm inject stream_options (spec §4.2)
+        // ...nhưng cấm inject stream_options — upstream không nhận field đó (spec §4.2)
         Assert.False(doc.RootElement.TryGetProperty("stream_options", out _));
         Assert.Equal("hi", doc.RootElement.GetProperty("input").GetString());
         Assert.True(doc.RootElement.GetProperty("stream").GetBoolean());
@@ -252,6 +254,48 @@ public class ResponsesProtocolTests
         Assert.NotNull(result.Usage);
         Assert.Equal(5, result.Usage.PromptTokens);
         Assert.Equal(3, result.Usage.CompletionTokens);
+    }
+
+    [Fact]
+    public async Task Tee_Stream_FailedEvent_UsageRead()
+    {
+        // response.failed (terminal do upstream báo lỗi) vẫn best-effort đọc usage — mirror
+        // case response.incomplete (spec §4.4)
+        const string sse =
+            "event: response.output_text.delta\n" +
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
+            "event: response.failed\n" +
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\"},\"usage\":{\"input_tokens\":6,\"output_tokens\":2}}}\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.NotNull(result.Usage);
+        Assert.Equal(6, result.Usage.PromptTokens);
+        Assert.Equal(2, result.Usage.CompletionTokens);
+    }
+
+    [Fact]
+    public async Task Tee_Stream_CrlfBlankLineEndsEvent()
+    {
+        // SSE CRLF: dòng trống tới parser là "\r" — phải reset event name, nếu không data:
+        // phía sau vẫn bị gán cho event terminal trước đó và ghi đè usage (regression)
+        const string sse =
+            "event: response.completed\r\n" +
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":11,\"output_tokens\":7}}}\r\n" +
+            "\r\n" +
+            "data: {\"response\":{\"usage\":{\"input_tokens\":99,\"output_tokens\":99}}}\r\n" +
+            "\r\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.NotNull(result.Usage);
+        Assert.Equal(11, result.Usage.PromptTokens);   // data sau dòng trống KHÔNG được parse cho response.completed
+        Assert.Equal(7, result.Usage.CompletionTokens);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
     }
 
     [Fact]

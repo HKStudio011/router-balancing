@@ -72,7 +72,9 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         // Chỉ đổi alias (pin/combo) về model id thật — không inject stream_options:
         // upstream /v1/responses không nhận field đó và usage đã có sẵn trong
         // response.completed (spec §4.2). providerType không cần cho rewrite này.
-        return (ChatBody.WithModel(body, realModelId), false);
+        // ExpectsUsage=true: Responses API LUÔN kèm usage trong object terminal nên upstream
+        // omit usage là bất thường — caller phải log Debug theo spec §6.
+        return (ChatBody.WithModel(body, realModelId), true);
     }
 
     /// <inheritdoc/>
@@ -160,6 +162,9 @@ internal sealed class ResponsesProtocol : IProxyProtocol
 
         public void HandleLine(ReadOnlySpan<byte> line)
         {
+            // SSE CRLF: dòng trống tới đây là "\r" (đã tách theo \n) — IsEmpty không bao giờ
+            // đúng; strip \r cuối trước khi xét boundary (event:/data: đã xử lý \r qua Trim)
+            if (line.Length > 0 && line[^1] == (byte)'\r') line = line[..^1];
             if (line.IsEmpty)
             {
                 _eventName = null;

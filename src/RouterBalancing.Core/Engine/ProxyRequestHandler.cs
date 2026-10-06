@@ -201,13 +201,15 @@ public sealed class ProxyRequestHandler(
                     }
                     else if (expectsUsage)
                     {
-                        // Đã yêu cầu include_usage mà không có usage — telemetry bất thường, không fail request;
-                        // gắn id để correlate row Debug với request khi upstream thiếu usage (spec §7)
+                        // Protocol khai báo usage luôn tồn tại (chat: inject include_usage; responses:
+                        // object terminal luôn kèm usage) — upstream không trả là telemetry bất thường,
+                        // không fail request; message protocol-neutral, gắn id để correlate row Debug
+                        // với request (spec client-keys §6, v1-responses §6/§7)
                         log.Write(new LogEntry
                         {
                             Severity = LogSeverity.Debug,
                             Category = LogCategory.App,
-                            Message = "Upstream không trả usage dù đã yêu cầu include_usage — counter token không tăng.",
+                            Message = "Upstream không trả usage — counter token không tăng.",
                             RequestId = ClientKeyItems.RequestIdOf(ctx),
                             ClientKeyId = ClientKeyItems.IdOf(ctx),
                         });

@@ -123,6 +123,16 @@ public class ResponsesEndpointIntegrationTests : IDisposable
         Content = new StringContent(CompletedSse, Encoding.UTF8, "text/event-stream"),
     };
 
+    // Gateway omit usage ở object terminal — dùng cho test Debug row (spec v1-responses §6)
+    private const string RespNoUsageJson = """
+        {"id":"resp_1","object":"response","status":"completed"}
+        """;
+
+    private static HttpResponseMessage RespNoUsageJsonOk() => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(RespNoUsageJson, Encoding.UTF8, "application/json"),
+    };
+
     private static HttpResponseMessage Resp429(
         string body = """{"error":{"message":"rate limited"}}""") =>
         new(HttpStatusCode.TooManyRequests)
@@ -235,6 +245,28 @@ public class ResponsesEndpointIntegrationTests : IDisposable
         Assert.Equal(11, record.PromptTokens);
         Assert.Equal(7, record.CompletionTokens);
         Assert.Equal(200, record.Status);
+    }
+
+    [Fact]
+    public async Task ResponsesTwoXxWithoutUsage_LogsDebugRowCorrelatedToRequest()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        var upstream = new ScriptedUpstream(_ => RespNoUsageJsonOk());
+        var client = await StartAsync(upstream);
+
+        var response = await client.PostAsync("/v1/responses", ResponsesBody("m1"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // Fail-open: upstream omit usage không được đụng tới response của client (spec §4.3)
+        Assert.Equal(RespNoUsageJson, await response.Content.ReadAsStringAsync());
+
+        var id = await SentIdAsync(response);
+        // Debug row ghi sau tee trên luồng dispatcher — poll như các assert monitor khác.
+        // Spec §6: responses 2xx hoàn tất mà không trích được usage → Debug correlate qua RequestId.
+        await WaitUntilAsync(
+            () => _log.Query(new LogQuery(Search: "Upstream không trả usage"))
+                .Any(e => e.Severity == LogSeverity.Debug && e.RequestId == id),
+            "responses 2xx không usage phải ghi row Debug với RequestId của request (spec §6)");
     }
 
     [Fact]
