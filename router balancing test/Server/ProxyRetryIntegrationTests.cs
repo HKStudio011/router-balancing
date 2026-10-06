@@ -555,4 +555,55 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal(ApiCallState.Cancelled, record!.State);
         Assert.Equal("network", record.FailureKind);
     }
+
+    [Fact]
+    public async Task Stream_WhenExhaustedWithRetryAfter_EmitsInBandRetryAfterWithoutDone()
+    {
+        // Clone setup của Chat_WhenAllProviders429_PassesLastResponseThroughWithRetryAfterHeader
+        // (dòng 210 — attempt cuối p2 có Retry-After "30"), đổi sang stream:true (spec §8.5)
+        SeedProvider("p1", maxConcurrent: 4, "m1");
+        SeedProvider("p2", maxConcurrent: 4, "m1");
+        var upstream = new ScriptedUpstream((p, _) => p.Name == "p1"
+            ? Resp429("""{"error":{"message":"from-p1"}}""")
+            : Resp429("""{"error":{"message":"from-p2"}}""", retryAfter: "30"));
+        var client = await StartAsync(upstream);
+
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("text/event-stream", resp.Content.Headers.ContentType!.MediaType);
+
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        // Passthrough in-band: error object cuối giữ nguyên + type:error + retry_after bù
+        // header đã mất trên wire (spec §3.5); wire status không mang 429
+        Assert.Contains("\"type\":\"error\"", body);
+        Assert.Contains("\"message\":\"from-p2\"", body);
+        Assert.Contains("\"retry_after\":\"30\"", body);
+        Assert.DoesNotContain("[DONE]", body);
+
+        // Status logical 429 qua monitor (frame merge không có field status — spec §3.5 row 3)
+        var id = resp.Headers.GetValues("X-Request-Id").Single();
+        var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
+        Assert.Equal(429, record!.Status);
+
+        Assert.Equal(2, upstream.Calls);
+    }
+
+    [Fact]
+    public async Task Stream_WhenModelNotFound_EmitsInBandResolveErrorWithoutDone()
+    {
+        // Resolve fail (dispatcher báo Error 404 model_not_found) tới SAU khi head 200 đã
+        // flush → lỗi phải là event in-band đúng shape SseErrorEvent.Error (spec §8.6/§3.5 row 1)
+        SeedProvider("p-main", maxConcurrent: 4, "m1");
+        var client = await StartAsync(new ScriptedUpstream((_, _) => Sse()));
+
+        var resp = await SendStreamAsync(client, "nope").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("text/event-stream", resp.Content.Headers.ContentType!.MediaType);
+
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("\"code\":\"model_not_found\"", body);
+        Assert.Contains("\"status\":404", body);
+        Assert.Contains("The model 'nope' does not exist", body);
+        Assert.DoesNotContain("[DONE]", body);
+    }
 }
