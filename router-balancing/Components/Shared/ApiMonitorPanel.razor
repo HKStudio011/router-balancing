@@ -173,7 +173,8 @@
 
 @* Modal chi tiết dùng chung (Task 5) — render fixed nên đặt ngoài block panel; đóng qua
    Esc/backdrop/× → OnClose xóa selection *@
-<RequestDetailModal RequestId="_selectedId" OnClose="() => _selectedId = null" />
+@* @() tường minh: param string bind bare-identifier = literal "_selectedId" (xem RequestTrace.razor) *@
+<RequestDetailModal RequestId="@(_selectedId)" OnClose="() => _selectedId = null" />
 
 @code {
     // Snapshot tối đa 50 record (mới nhất trước) — đọc lại từ store mỗi lần Changed

@@ -426,7 +426,9 @@
 
 @* Modal chi tiết — component dùng chung (Task 5): circle Live Trace và row API Monitor
    cùng mở popup này. Đặt ngoài block chính vì Modal render fixed. *@
-<RequestDetailModal RequestId="_selectedId" OnClose="CloseDetail" />
+@* @() tường minh: param kiểu string mà bind bare-identifier sẽ Razor hiểu là string literal
+   "_selectedId" → modal hiện từ startup và không bao giờ đóng được (bug runtime, không lỗi compile) *@
+<RequestDetailModal RequestId="@(_selectedId)" OnClose="CloseDetail" />
 
 @code {
     private const int NodeCap = 60;
