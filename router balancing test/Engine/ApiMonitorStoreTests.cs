@@ -233,6 +233,10 @@ public class ApiMonitorStoreTests
         Assert.Equal(40, _store.TodayTokens);
 
         _time.AdvanceDays(1);   // đổi ngày UTC → counter reset, chỉ tính record hôm sau
+
+        // Getter phải tự reset NGAY khi đọc sau ngày mới — chưa cần RecordResponse nào
+        Assert.Equal(0, _store.TodayTokens);
+
         _store.StartRequest("r3", "m1", Bytes(Prompt));
         _store.RecordResponse("r3", 1, 5, null, null);
 

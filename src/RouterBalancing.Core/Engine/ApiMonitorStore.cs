@@ -56,7 +56,20 @@ public sealed class ApiMonitorStore : IApiMonitorStore
         get
         {
             lock (_gate)
+            {
+                // Reset Ở CẢ GETTER: tile "Token hôm nay" phải đọc đúng ngày UTC hiện tại
+                // ngay sau nửa đêm, kể cả khi chưa có RecordResponse nào của ngày mới.
+                try
+                {
+                    RollToday();
+                }
+                catch (Exception ex)
+                {
+                    // Fail-open: TimeProvider nổ thì trả counter hiện có, không nổ UI
+                    SafeLog(nameof(TodayTokens), ex);
+                }
                 return _todayTokens;
+            }
         }
     }
 
@@ -139,12 +152,7 @@ public sealed class ApiMonitorStore : IApiMonitorStore
 
                 // "Token hôm nay" theo ngày UTC của TimeProvider — reset khi đổi ngày.
                 // Đếm riêng ring: record có thể bị evict nhưng token vẫn thuộc hôm nay.
-                var today = _time.GetUtcNow().Date;
-                if (today != _today)
-                {
-                    _today = today;
-                    _todayTokens = 0;
-                }
+                RollToday();
                 _todayTokens += (promptTokens ?? 0) + (completionTokens ?? 0);
             }
         }
@@ -260,6 +268,21 @@ public sealed class ApiMonitorStore : IApiMonitorStore
         // Cũ nhất luôn đứng đầu list → drop từ đầu cho tới khi về cap
         while (_calls.Count > RingCap)
             _calls.RemoveAt(0);
+    }
+
+    /// <summary>
+    /// Reset bộ đếm nếu đã sang ngày UTC mới — nguồn sự thật duy nhất cho quy tắc
+    /// "Token hôm nay"; gọi từ cả <see cref="TodayTokens"/> và <see cref="RecordResponse"/>
+    /// (getter phải tự reset để tile không hiển thị tổng của hôm qua). Gọi khi đang giữ <see cref="_gate"/>.
+    /// </summary>
+    private void RollToday()
+    {
+        var today = _time.GetUtcNow().Date;
+        if (today != _today)
+        {
+            _today = today;
+            _todayTokens = 0;
+        }
     }
 
     /// <summary>Record mới ở trạng thái Queued — khung dùng chung cho StartRequest/feed/upsert.</summary>
