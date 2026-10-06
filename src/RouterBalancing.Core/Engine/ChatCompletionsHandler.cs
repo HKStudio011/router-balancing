@@ -151,16 +151,16 @@ public sealed class ChatCompletionsHandler(
                     ctx.Response.StatusCode = (int)response.StatusCode;
                     if (response.Content.Headers.ContentType is { } okType)
                         ctx.Response.ContentType = okType.ToString();
-                    var usage = await UsageCapture.TeeAsync(response.Content, ctx.Response.Body, ct);
+                    var tee = await UsageCapture.TeeAsync(response.Content, ctx.Response.Body, ct);
                     LogForwarded(ctx, provider, model, response, stopwatch);
 
-                    if (usage is not null)
+                    if (tee.Usage is not null)
                     {
                         log.LogRequestUsage(ClientKeyItems.RequestIdOf(ctx), ClientKeyItems.IdOf(ctx),
-                            usage.PromptTokens, usage.CompletionTokens);
+                            tee.Usage.PromptTokens, tee.Usage.CompletionTokens);
                         // Fail-open nằm trong sink: DB lỗi → log Error, không nổ sau khi đã stream (spec §10)
                         await usageSink.RecordAsync(ClientKeyItems.IdOf(ctx),
-                            usage.PromptTokens, usage.CompletionTokens, ct);
+                            tee.Usage.PromptTokens, tee.Usage.CompletionTokens, ct);
                     }
                     else if (expectsUsage)
                     {

@@ -71,12 +71,12 @@ public class UsageCaptureTests
         Assert.Same(body, result);
     }
 
-    private static async Task<(byte[] Dest, UsageCapture.Usage? Usage)> TeeJsonAsync(string json)
+    private static async Task<(byte[] Dest, UsageCapture.TeeResult Result)> TeeJsonAsync(string json)
     {
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
         using var dest = new MemoryStream();
-        var usage = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
-        return (dest.ToArray(), usage);
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+        return (dest.ToArray(), result);
     }
 
     [Fact]
@@ -84,12 +84,12 @@ public class UsageCaptureTests
     {
         const string json = """{"id":"x","usage":{"prompt_tokens":11,"completion_tokens":7}}""";
 
-        var (dest, usage) = await TeeJsonAsync(json);
+        var (dest, result) = await TeeJsonAsync(json);
 
         Assert.Equal(json, Encoding.UTF8.GetString(dest));
-        Assert.NotNull(usage);
-        Assert.Equal(11, usage.PromptTokens);
-        Assert.Equal(7, usage.CompletionTokens);
+        Assert.NotNull(result.Usage);
+        Assert.Equal(11, result.Usage.PromptTokens);
+        Assert.Equal(7, result.Usage.CompletionTokens);
     }
 
     [Fact]
@@ -97,9 +97,9 @@ public class UsageCaptureTests
     {
         const string json = """{"id":"x"}""";
 
-        var (dest, usage) = await TeeJsonAsync(json);
+        var (dest, result) = await TeeJsonAsync(json);
 
-        Assert.Null(usage);
+        Assert.Null(result.Usage);
         Assert.Equal(json, Encoding.UTF8.GetString(dest));
     }
 
@@ -108,9 +108,9 @@ public class UsageCaptureTests
     {
         const string json = "{broken";
 
-        var (dest, usage) = await TeeJsonAsync(json);
+        var (dest, result) = await TeeJsonAsync(json);
 
-        Assert.Null(usage);
+        Assert.Null(result.Usage);
         Assert.Equal(json, Encoding.UTF8.GetString(dest));
     }
 
@@ -126,12 +126,12 @@ public class UsageCaptureTests
         using var content = new StringContent(SseFixture, Encoding.UTF8, "text/event-stream");
         using var dest = new MemoryStream();
 
-        var usage = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
 
         Assert.Equal(SseFixture, Encoding.UTF8.GetString(dest.ToArray()));  // byte-forward nguyên vẹn
-        Assert.NotNull(usage);
-        Assert.Equal(9, usage.PromptTokens);                                // last-wins (spec §6.1)
-        Assert.Equal(2, usage.CompletionTokens);
+        Assert.NotNull(result.Usage);
+        Assert.Equal(9, result.Usage.PromptTokens);                         // last-wins (spec §6.1)
+        Assert.Equal(2, result.Usage.CompletionTokens);
     }
 
     [Fact]
@@ -141,9 +141,9 @@ public class UsageCaptureTests
         using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
         using var dest = new MemoryStream();
 
-        var usage = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
 
-        Assert.Null(usage);
+        Assert.Null(result.Usage);
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
     }
 
@@ -189,12 +189,12 @@ public class UsageCaptureTests
             chunks.Add(all[i..Math.Min(i + 7, all.Length)]);
         using var dest = new MemoryStream();
 
-        var usage = await UsageCapture.TeeSseAsync(
+        var result = await UsageCapture.TeeSseAsync(
             new ChunkedStream([.. chunks]), dest, CancellationToken.None);
 
         Assert.Equal(SseFixture, Encoding.UTF8.GetString(dest.ToArray()));
-        Assert.NotNull(usage);
-        Assert.Equal(9, usage.PromptTokens);
+        Assert.NotNull(result.Usage);
+        Assert.Equal(9, result.Usage.PromptTokens);
     }
 
     [Fact]
@@ -205,12 +205,63 @@ public class UsageCaptureTests
                   "data: [DONE]\n";
         using var dest = new MemoryStream();
 
-        var usage = await UsageCapture.TeeSseAsync(
+        var result = await UsageCapture.TeeSseAsync(
             new MemoryStream(Encoding.UTF8.GetBytes(sse)),
             dest, CancellationToken.None);
 
-        Assert.NotNull(usage);
-        Assert.Equal(5, usage.PromptTokens);
+        Assert.NotNull(result.Usage);
+        Assert.Equal(5, result.Usage.PromptTokens);
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task TeeAsync_Sse_ReportsFirstTokenAtAndAccumulatesDataWithoutDone()
+    {
+        const string sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+                           "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n" +
+                           "data: [DONE]\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.NotNull(result.FirstTokenAt);
+        Assert.Contains("{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}", result.ResponseBody);
+        Assert.Contains("{\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}", result.ResponseBody);
+        Assert.DoesNotContain("[DONE]", result.ResponseBody);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));  // byte-forward vẫn nguyên vẹn
+    }
+
+    [Fact]
+    public async Task TeeAsync_NotStream_FirstTokenAtNull_ReturnsBodyAndUsage()
+    {
+        const string json = """{"id":"x","usage":{"prompt_tokens":11,"completion_tokens":7}}""";
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.Null(result.FirstTokenAt);
+        Assert.Equal(json, result.ResponseBody);
+        Assert.NotNull(result.Usage);
+        Assert.Equal(11, result.Usage.PromptTokens);
+        Assert.Equal(7, result.Usage.CompletionTokens);
+        Assert.Equal(json, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task TeeAsync_BodyOverCap_TruncatesWithMarker()
+    {
+        var payload = new string('a', 70 * 1024);
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.NotNull(result.ResponseBody);
+        Assert.EndsWith("[truncated]", result.ResponseBody);
+        Assert.True(result.ResponseBody.Length <= 64 * 1024 + "[truncated]".Length,
+            $"ResponseBody.Length = {result.ResponseBody.Length} vượt cap 64KB + marker");
+        Assert.Equal(payload, Encoding.UTF8.GetString(dest.ToArray()));  // client vẫn nhận đủ 70KB
     }
 }
