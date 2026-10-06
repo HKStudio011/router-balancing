@@ -92,15 +92,19 @@
         height: 12px;
     }
 
-    /* 2 dòng endpoint trong INPUT node — 9px (bằng cap) + lh 11px ĐÃ ĐO trên WebView2:
+    /* 2 dòng endpoint trong INPUT node — 9px (bằng cap) + lh 11px + nowrap (đo trên WebView2:
        "POST /v1/chat/completions" = 99.6px, "POST /v1/responses" = 73.1px, vừa khung trong
-       101px của node width:120px → mỗi path đúng 1 dòng, không truncate; đáy box = top 8 +
-       46px = 54px, sát điểm bắt đầu spine (y=52) và THẤP HƠN box 11px hiện tại (61.7px).
-       Font 11px sẽ tràn 3 dòng (đáy 76.5px) → spine cắt ngang text. */
+       101px của node width:120px → mỗi path đúng 1 dòng, không truncate).
+       Chiều cao box = 2×1.5 border + 2×5 padding + 12 cap + 2×11 lines = 47px → đáy = top 8 +
+       47 = 55px, sát điểm bắt đầu spine (y=52) và thấp hơn box 11px hiện tại (~62px; font 11px
+       sẽ tràn 3 dòng, đáy ~77px → spine cắt ngang text).
+       nowrap: margin fit chỉ ~1.4px — nhỡ DPI/font metric lệch thì cấm wrap sau '/' thành dòng 3;
+       thà tràn ngang vài px còn hơn đổi hình học node (nguyên tắc như .cap). */
     .trace-node__paths {
         display: block;
         font-size: 9px;
         line-height: 11px;
+        white-space: nowrap;
     }
 
     /* Circle = request: transition left/top tạo hiệu ứng di chuyển trên đường (không JS) */
