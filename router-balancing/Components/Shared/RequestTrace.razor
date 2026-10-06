@@ -92,6 +92,17 @@
         height: 12px;
     }
 
+    /* 2 dòng endpoint trong INPUT node — 9px (bằng cap) + lh 11px ĐÃ ĐO trên WebView2:
+       "POST /v1/chat/completions" = 99.6px, "POST /v1/responses" = 73.1px, vừa khung trong
+       101px của node width:120px → mỗi path đúng 1 dòng, không truncate; đáy box = top 8 +
+       46px = 54px, sát điểm bắt đầu spine (y=52) và THẤP HƠN box 11px hiện tại (61.7px).
+       Font 11px sẽ tràn 3 dòng (đáy 76.5px) → spine cắt ngang text. */
+    .trace-node__paths {
+        display: block;
+        font-size: 9px;
+        line-height: 11px;
+    }
+
     /* Circle = request: transition left/top tạo hiệu ứng di chuyển trên đường (không JS) */
     .trace-dot {
         position: absolute;
@@ -311,10 +322,11 @@
             @* Skeleton spine — luôn vẽ kể cả khi idle (spec §5.1); tọa độ fixed theo mockup *@
             <div class="trace-node" style="left:8px;top:8px;width:120px">
                 <span class="cap">@L["trace.node.input"]</span>
-                @* Path THẬT của endpoint (ProxyApp.cs:124) — không truncate "v1/chat" gây hiểu nhầm;
-                   endpoint tự wrap sau dấu '/'. /v1/responses (design 2026-09-25 mục 2) chưa implement —
-                   khi thêm endpoint mới thì cập nhật node này thành danh sách path. *@
-                POST /v1/chat/completions
+                @* Path THẬT của cả 2 endpoint proxy (ProxyApp.cs:124,132) — giữ full path, không
+                   truncate "v1/chat" gây hiểu nhầm. /v1/responses (design 2026-09-25 mục 2) đã
+                   implement (Task 4) → node liệt kê cả 2. Font 9px/lh 11px có đo lường ở
+                   .trace-node__paths — 2 dòng gọn trong ô, không đè spine. *@
+                <span class="trace-node__paths">POST /v1/chat/completions<br />POST /v1/responses</span>
             </div>
             <div class="trace-node" style="left:8px;top:96px;width:120px">
                 <span class="cap">@L["trace.node.queue"]</span>
