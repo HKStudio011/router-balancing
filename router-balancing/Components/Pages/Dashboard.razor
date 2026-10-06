@@ -45,7 +45,26 @@
     </div>
 </div>
 
-<RequestTrace />
+@* Layout A (mockup dashboard-monitor.html): Live Trace trái, API Monitor phải;
+   1180px ≈ 740 canvas + 360 monitor + gap + padding → dưới ngưỡng ấy gộp 1 cột *@
+<style>
+    .dash-trace-grid {
+        display: grid;
+        grid-template-columns: auto minmax(360px, 1fr);
+        gap: 16px;
+    }
+
+    @@media (max-width: 1180px) {
+        .dash-trace-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<div class="dash-trace-grid">
+    <RequestTrace />
+    <ApiMonitorPanel />
+</div>
 
 @code {
     protected override void OnInitialized() => Proxy.StateChanged += OnStateChanged;

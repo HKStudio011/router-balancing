@@ -1,0 +1,251 @@
+@using RouterBalancing.Core.Engine
+@inject IApiMonitorStore Store
+@inject LocalizationService L
+@inject ILogService Log
+@implements IAsyncDisposable
+
+<style>
+    /* CSS theo mockup dashboard-monitor.html — priority 7 (style inline trong razor, xem style.css);
+       màu dot dùng lại class trace-dot--* từ style block của RequestTrace (cùng render trên Dashboard) */
+    .monitor-title {
+        font-weight: 600;
+        font-size: 14px;
+        color: #3b82f6;
+        margin-bottom: 10px;
+    }
+
+    .monitor-tiles {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+
+    .monitor-tile {
+        background: var(--background);
+        border-radius: 6px;
+        padding: 6px 8px;
+        min-width: 0;
+    }
+
+    .monitor-tile__label {
+        font-size: 11px;
+        opacity: .65;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .monitor-tile__value {
+        font-size: 16px;
+        font-weight: 600;
+    }
+
+    .monitor-tile__value--live { color: #3b82f6; }
+    .monitor-tile__value--error { color: #ef4444; }
+
+    .monitor-row {
+        display: grid;
+        grid-template-columns: 10px minmax(0, 1fr) 64px 56px 96px;
+        gap: 8px;
+        align-items: center;
+        padding: 5px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+    }
+
+    .monitor-row--head {
+        font-size: 10.5px;
+        opacity: .55;
+        padding-bottom: 4px;
+    }
+
+    /* Zebra xen kẽ (mockup) — rgba trung tính để hợp cả light/dark theme */
+    .monitor-body .monitor-row:nth-child(even) {
+        background: rgba(127, 127, 127, .07);
+    }
+
+    /* Cuộn trong vùng thay vì kéo panel cao vượt Live Trace (mockup "… cuộn …") */
+    .monitor-body {
+        max-height: 340px;
+        overflow-y: auto;
+    }
+
+    .monitor-cell--route {
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .monitor-route { opacity: .55; }
+
+    .monitor-num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .monitor-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+    }
+
+    /* Row Running: dot nhấp nháy nhẹ cho tới khi xong (mockup "số live nhấp nháy") */
+    .monitor-dot--pulse {
+        animation: monitor-pulse 1.3s ease-in-out infinite;
+    }
+
+    @@keyframes monitor-pulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.35); }
+    }
+
+    .monitor-empty {
+        padding: 18px 0;
+        text-align: center;
+        font-size: 12px;
+        opacity: .6;
+    }
+</style>
+
+<div class="mb-4 rounded border border-border bg-surface p-4">
+    <div class="monitor-title">📊 @L["monitor.title"]</div>
+
+    <div class="monitor-tiles">
+        <div class="monitor-tile">
+            <div class="monitor-tile__label">@L["monitor.tiles.live"]</div>
+            <div class="monitor-tile__value monitor-tile__value--live">@LiveCount</div>
+        </div>
+        <div class="monitor-tile">
+            <div class="monitor-tile__label">@L["monitor.tiles.errors"]</div>
+            <div class="monitor-tile__value monitor-tile__value--error">@ErrorCount</div>
+        </div>
+        <div class="monitor-tile">
+            <div class="monitor-tile__label">@L["monitor.tiles.avgLatency"]</div>
+            <div class="monitor-tile__value">@AvgLatency</div>
+        </div>
+        <div class="monitor-tile">
+            <div class="monitor-tile__label">@L["monitor.tiles.tokensToday"]</div>
+            <div class="monitor-tile__value">@Store.TodayTokens</div>
+        </div>
+    </div>
+
+    <div class="monitor-row monitor-row--head">
+        <span></span>
+        <span>@L["monitor.col.model"] · @L["monitor.col.route"]</span>
+        <span class="monitor-num">@L["monitor.col.latency"]</span>
+        <span class="monitor-num">@L["monitor.col.ttft"]</span>
+        <span class="monitor-num">@L["monitor.col.tokens"]</span>
+    </div>
+
+    <div class="monitor-body">
+        @if (_rows.Count == 0)
+        {
+            <div class="monitor-empty">@L["monitor.empty"]</div>
+        }
+        else
+        {
+            @* Row display-only — click/modal do Task 5 bổ sung *@
+            @foreach (var record in _rows)
+            {
+                @* Pulse chỉ thêm khi Running — tách biến để Razor khỏi parse string literal nhúng trong attribute *@
+                var dotClass = record.State == ApiCallState.Running
+                    ? TraceColors.ForState(record.State) + " monitor-dot--pulse"
+                    : TraceColors.ForState(record.State);
+                <div class="monitor-row" @key="record.RequestId">
+                    <i class="monitor-dot @dotClass"></i>
+                    <span class="monitor-cell--route">@record.Model<span class="monitor-route"> · @RouteLabel(record)</span></span>
+                    <span class="monitor-num">@MonitorFormat.Latency(record)</span>
+                    <span class="monitor-num">@MonitorFormat.Ttft(record)</span>
+                    <span class="monitor-num">@MonitorFormat.Tokens(record)</span>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    // Snapshot tối đa 50 record (mới nhất trước) — đọc lại từ store mỗi lần Changed
+    private IReadOnlyList<ApiCallRecord> _rows = [];
+
+    // Component đã gỡ — callback fire-and-forget không được StateHasChanged sau dispose
+    private bool _disposed;
+
+    /// <summary>Số request đang chạy — tile "Live".</summary>
+    private int LiveCount => _rows.Count(r => r.State == ApiCallState.Running);
+
+    /// <summary>Số request lỗi — chỉ tính Error, không tính Cancelled (hủy là chủ đích của client).</summary>
+    private int ErrorCount => _rows.Count(r => r.State == ApiCallState.Error);
+
+    /// <summary>Latency trung bình các request đã hoàn tất — "—" khi chưa request nào xong.</summary>
+    private string AvgLatency
+    {
+        get
+        {
+            var samples = _rows
+                .Where(r => r.CompletedAt is not null)
+                .Select(r => r.CompletedAt.GetValueOrDefault() - r.StartedAt)
+                .ToList();
+            return samples.Count == 0
+                ? "—"
+                : MonitorFormat.Duration(TimeSpan.FromTicks((long)samples.Average(t => t.Ticks)));
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        // Subscribe TRƯỚC khi đọc snapshot — event bắn giữa 2 bước không bị miss;
+        // record thấy trùng (có cả trong snapshot lẫn event) là idempotent (mirror RequestTrace).
+        Store.Changed += OnChanged;
+        _rows = Store.Snapshot();
+    }
+
+    /// <summary>
+    /// Nhận event từ <see cref="IApiMonitorStore.Changed"/> — chạy trên thread publish của Core.
+    /// </summary>
+    private void OnChanged()
+    {
+        // Handler tuyệt đối không được ném: Changed là multicast delegate của store singleton —
+        // subscriber ném sẽ chặn các subscriber phía sau (lesson RequestTrace.OnPublished).
+        try
+        {
+            // Publish đến từ thread Kestrel/dispatcher — Blazor chỉ render an toàn trên
+            // dispatcher thread nên Marshal bằng InvokeAsync; _disposed chặn StateHasChanged
+            // khi callback chạy muộn sau khi component đã gỡ.
+            _ = InvokeAsync(() =>
+            {
+                if (!_disposed)
+                {
+                    _rows = Store.Snapshot();
+                    StateHasChanged();
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("ApiMonitorPanel: làm mới snapshot thất bại.", ex);
+        }
+    }
+
+    /// <summary>Route "Combo · Provider · Account" — thiếu hết → "—", thiếu từng phần → "—" tại chỗ.</summary>
+    private static string RouteLabel(ApiCallRecord record) =>
+        string.IsNullOrEmpty(record.Combo) && string.IsNullOrEmpty(record.Provider) && string.IsNullOrEmpty(record.Account)
+            ? "—"
+            : string.Join(" · ",
+                string.IsNullOrEmpty(record.Combo) ? "—" : record.Combo,
+                string.IsNullOrEmpty(record.Provider) ? "—" : record.Provider,
+                string.IsNullOrEmpty(record.Account) ? "—" : record.Account);
+
+    /// <summary>Gỡ subscription và đánh dấu đã dispose — tránh leak delegate trên store singleton.</summary>
+    public ValueTask DisposeAsync()
+    {
+        // Bắt buộc unsubscribe: store là singleton, giữ delegate trỏ vào component đã
+        // dispose là leak + handler chạy vô ích cho mỗi lần đổi (mirror RequestTrace.DisposeAsync).
+        Store.Changed -= OnChanged;
+
+        // Đánh dấu sau unsubscribe — callback InvokeAsync có thể còn đang đợi trên dispatcher.
+        _disposed = true;
+        return ValueTask.CompletedTask;
+    }
+}

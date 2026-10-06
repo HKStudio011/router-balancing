@@ -65,6 +65,19 @@ public static class Translations
         ["trace.node.combo"] = "🧩 Combo",
         ["trace.node.provider"] = "☁️ Provider",
 
+        // API Monitor panel (Task 4)
+        ["monitor.title"] = "API Monitor",
+        ["monitor.tiles.live"] = "Live",
+        ["monitor.tiles.errors"] = "Errors",
+        ["monitor.tiles.avgLatency"] = "Avg latency",
+        ["monitor.tiles.tokensToday"] = "Tokens today",
+        ["monitor.col.model"] = "Model",
+        ["monitor.col.route"] = "Route",
+        ["monitor.col.latency"] = "Latency",
+        ["monitor.col.ttft"] = "TTFT",
+        ["monitor.col.tokens"] = "Tokens",
+        ["monitor.empty"] = "No requests yet.",
+
         ["common.copied"] = "Copied",
 
         // Settings panel (Task 13)
@@ -420,6 +433,19 @@ public static class Translations
         ["trace.node.client"] = "🖥 Client",
         ["trace.node.combo"] = "🧩 Combo",
         ["trace.node.provider"] = "☁️ Provider",
+
+        // API Monitor panel (Task 4)
+        ["monitor.title"] = "API Monitor",
+        ["monitor.tiles.live"] = "Đang chạy",
+        ["monitor.tiles.errors"] = "Lỗi",
+        ["monitor.tiles.avgLatency"] = "Latency TB",
+        ["monitor.tiles.tokensToday"] = "Token hôm nay",
+        ["monitor.col.model"] = "Model",
+        ["monitor.col.route"] = "Route",
+        ["monitor.col.latency"] = "Latency",
+        ["monitor.col.ttft"] = "TTFT",
+        ["monitor.col.tokens"] = "Tokens",
+        ["monitor.empty"] = "Chưa có request nào.",
 
         ["common.copied"] = "Đã sao chép",
 

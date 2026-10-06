@@ -1175,14 +1175,10 @@
     }
 
     /// <summary>
-    /// Định dạng khoảng thời gian/offset: dưới 1s → "123ms", từ 1s → "1.234s"
-    /// (ruling Task 7 — không thêm dependency, 1 helper local).
+    /// Định dạng khoảng thời gian/offset — delegate sang <see cref="MonitorFormat.Duration"/>
+    /// (một nguồn sự thật cho định dạng số liệu giữa trace và monitor).
     /// </summary>
-    private static string FormatDuration(TimeSpan value)
-    {
-        var ms = Math.Max(0, (long)value.TotalMilliseconds);
-        return ms < 1000 ? $"{ms}ms" : $"{ms / 1000}.{ms % 1000:000}s";
-    }
+    private static string FormatDuration(TimeSpan value) => MonitorFormat.Duration(value);
 
     /// <summary>Nhãn số attempt dạng "#2"; thiếu số → "—".</summary>
     private static string AttemptLabel(TraceEvent e) => $"#{e.Attempt?.ToString() ?? "—"}";
@@ -1218,15 +1214,9 @@
             .ThenBy(g => g.X)
             .ToList();
 
-    /// <summary>Màu circle theo trạng thái — spec G2: trắng/xanh/đỏ/vàng/xanh lá.</summary>
-    private static string ColorClass(TraceNode n) => n.Stage switch
-    {
-        TraceStage.Received => "trace-dot--white",
-        TraceStage.DispatchStarted or TraceStage.Attempt => "trace-dot--blue",
-        TraceStage.Canceled => "trace-dot--yellow",
-        TraceStage.Finished => n.Success == false ? "trace-dot--red" : "trace-dot--green",
-        _ => "trace-dot--white",
-    };
+    /// <summary>Màu circle theo trạng thái — spec G2; delegate sang <see cref="TraceColors.ForStage"/>
+    /// (một nguồn sự thật cho màu — API Monitor đọc cùng bảng này).</summary>
+    private static string ColorClass(TraceNode n) => TraceColors.ForStage(n.Stage, n.Success);
 
     /// <summary>Gỡ subscription và dừng vòng render — tránh leak delegate trên feed singleton.</summary>
     public ValueTask DisposeAsync()
