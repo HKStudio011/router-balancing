@@ -21,7 +21,23 @@ internal sealed class TestDb : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(DbPath)) File.Delete(DbPath);
+        if (!File.Exists(DbPath)) return;
+        // Connection của request vừa xong có thể còn đóng dở đúng lúc test kết thúc —
+        // race đã biết của suite (xem comment DispatcherLoop về "test xoá file DB
+        // trong lúc log còn ghi"). Thử lại có giới hạn: hết 2s vẫn khóa = leak thật,
+        // để IOException nổ chứ không nuốt.
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Delete(DbPath);
+                return;
+            }
+            catch (IOException) when (attempt < 20)
+            {
+                Thread.Sleep(100);
+            }
+        }
     }
 
     private sealed class SingleOptionsFactory(

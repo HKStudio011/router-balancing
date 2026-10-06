@@ -68,6 +68,13 @@ ITraceFeed.Published ──(store subscribe nội bộ)──┘    + event Chan
 | `ErrorBody` | `string?` | nhánh non-2xx / catch network — cap 64KB |
 | `State` | `Queued/Running/Done/Error/Cancelled` | suy ra từ feed events |
 
+> **Lưu ý (early-headers, 2026-10-06):** với request `stream=true` sau feature
+> early-headers-keepalive, wire status luôn là 200 (head flush tại flush point trước khi
+> biết outcome). `Status` vì thế là **logical status của outcome** — ví dụ exhaustion
+> `Passthrough(429)`, resolve `Error(404)`, upstream chết trước content byte đầu
+> (override §4.3 #7 → 500) — không còn đồng nghĩa "status bytes trên wire".
+> Monitor phục vụ debug nên logical status là giá trị đúng (spec early-headers §6).
+
 ### 3.2 `IApiMonitorStore`
 
 ```csharp

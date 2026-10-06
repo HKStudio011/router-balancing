@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Pipelines;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Domain;
@@ -158,9 +159,14 @@ public sealed class ChatCompletionsHandler(
                 if (response.IsSuccessStatusCode)
                 {
                     // 2xx giữ nguyên 3A/3B: stream thẳng — tee quét usage trong lúc copy (spec §6.1)
-                    ctx.Response.StatusCode = (int)response.StatusCode;
-                    if (response.Content.Headers.ContentType is { } okType)
-                        ctx.Response.ContentType = okType.ToString();
+                    // Sau flush point (stream) head đã gửi — set status/content-type vô nghĩa,
+                    // chỉ ghi khi chưa commit; non-stream không bao giờ có pipe → luôn vào đây (như cũ).
+                    if (!ctx.Response.HasStarted)
+                    {
+                        ctx.Response.StatusCode = (int)response.StatusCode;
+                        if (response.Content.Headers.ContentType is { } okType)
+                            ctx.Response.ContentType = okType.ToString();
+                    }
                     // Rethrow: KHÔNG đổi hành vi xử lý lỗi cho pipeline — dispatcher vẫn map
                     // HasStarted → Aborted như cũ (row vàng khớp circle, spec api-monitor §7).
                     // Nhưng RecordResponse chạy SAU tee nên mid-stream fail mất TTFT/ResponseBody —
@@ -168,7 +174,13 @@ public sealed class ChatCompletionsHandler(
                     UsageCapture.TeeResult tee;
                     try
                     {
-                        tee = await UsageCapture.TeeAsync(response.Content, ctx.Response.Body, ct);
+                        // Stream sau flush: dest là pipe endpoint đặt tại flush point — endpoint
+                        // là tay duy nhất ghi Response.Body và completer duy nhất của pipe, nên
+                        // handler KHÔNG dispose/Complete writer ở đây (spec early-headers §3.2).
+                        Stream dest = ctx.Items.TryGetValue(SsePipeItems.Key, out var pipeObj)
+                            ? ((Pipe)pipeObj!).Writer.AsStream()
+                            : ctx.Response.Body;
+                        tee = await UsageCapture.TeeAsync(response.Content, dest, ct);
                     }
                     catch
                     {

@@ -29,7 +29,7 @@ public enum ApiCallState
 /// <param name="State">Trạng thái hiện tại — do feed quyết định (<c>RecordError</c> không đụng tới).</param>
 /// <param name="FirstTokenAt">Thời điểm byte SSE đầu tiên — null nếu non-stream/chưa có.</param>
 /// <param name="CompletedAt">Thời điểm kết thúc (Finished/Canceled) — null khi chưa xong.</param>
-/// <param name="Status">HTTP status — null khi lỗi mạng (không có status) hoặc chưa có response.</param>
+/// <param name="Status">HTTP status — null khi lỗi mạng (không có status) hoặc chưa có response. Với request <c>stream=true</c> sau early-headers, wire luôn 200: đây là <b>logical status của outcome</b> (exhaustion 429, resolve 404, fault 500 — spec early-headers §6).</param>
 /// <param name="Success">Kết quả thành công — null khi chưa kết luận.</param>
 /// <param name="FailureKind">Nhóm lỗi ("http"/"network") — do <c>RecordError</c> ghi.</param>
 /// <param name="PromptTokens">Token prompt ghi được từ usage (2xx) — null khi thiếu.</param>

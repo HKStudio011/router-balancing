@@ -1,3 +1,4 @@
+using System.IO.Pipelines;
 using System.Net.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -181,7 +182,43 @@ public static class ProxyApp
                 }
             });
 
-            var outcome = await request.Completion.Task;
+            // Stream (spec early-headers §3.2): commit 200+event-stream NGAY sau enqueue —
+            // client nhận head khi request còn trong queue; content/keep-alive/in-band error
+            // do loop phía dưới forward qua pipe. Non-stream giữ nguyên đường cũ.
+            DispatchOutcome outcome;
+            Pipe? ssePipe = null;
+            long contentBytes = 0;   // CHỈ byte từ pipe — keep-alive không đếm (phân loại #7/#8)
+            if (prepared.IsStream)
+            {
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "text/event-stream";
+                ctx.Response.Headers.CacheControl = "no-cache";
+                var pipe = new Pipe();
+                ctx.Items[SsePipeItems.Key] = pipe;
+                try
+                {
+                    await ctx.Response.StartAsync(ctx.RequestAborted);
+                    // StartAsync chỉ chạy OnStarting; head (Kestrel lẫn TestServer) chỉ thực sự
+                    // đi ở lần flush/complete đầu tiên — flush 0 byte tường minh để head tới
+                    // client khi request còn queued (đây là chính feature, không phải test-patch).
+                    await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+                    ssePipe = pipe;
+                    (outcome, contentBytes) =
+                        await RunStreamLoopAsync(ctx, pipe, request.Completion.Task);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Client ngắt trước khi header commit — Register/Dispatcher đã set outcome;
+                    // bỏ pipe khỏi Items để nhánh ghi đi đường non-stream như cũ
+                    ctx.Items.Remove(SsePipeItems.Key);
+                    ssePipe = null;
+                    outcome = await request.Completion.Task;
+                }
+            }
+            else
+            {
+                outcome = await request.Completion.Task;
+            }
 
             // Publish tại đây (TRƯỚC khối ghi response): viết response có thể nổ
             // (client ngắt giữa passthrough) — nếu publish sau thì circle terminal bị mồ côi.
@@ -191,10 +228,69 @@ public static class ProxyApp
             // cần 200 cho record Done). ClassifyOutcome không nắm ctx nên trả null cho Handled.
             if (outcome is DispatchOutcome.Handled)
                 status = ctx.Response.StatusCode;
+            // Override đỏ #7 (spec early-headers §4.3): stream chết TRƯỚC khi có byte content
+            // nào (Aborted, 0 contentBytes, client còn nối) = lỗi server, không phải client
+            // ngắt — row đỏ status 500 dù wire là 200.
+            if (prepared.IsStream && contentBytes == 0 && outcome is DispatchOutcome.Aborted
+                && !ctx.RequestAborted.IsCancellationRequested)
+            {
+                stage = TraceStage.Finished;
+                success = false;
+                status = 500;
+            }
             trace.Publish(new TraceEvent(id, stage, prepared.ModelId,
                 null, null, status, success, null, DateTimeOffset.Now));
 
-            if (outcome is DispatchOutcome.Error error)
+            if (ssePipe is not null)
+            {
+                // Head đã commit 200 — lỗi sau đó là event in-band, không phải status HTTP
+                // (spec early-headers §3.5). OCE khi write (client vừa chết) được phép
+                // propagate: publish H4 đã chạy TRƯỚC write, giống hành vi passthrough cũ.
+                switch (outcome)
+                {
+                    case DispatchOutcome.Error inBandError:
+                        await WriteInBand(ctx, SseErrorEvent.Error(inBandError.Status,
+                            inBandError.Message, inBandError.Type, inBandError.Param,
+                            inBandError.Code));
+                        break;
+                    case DispatchOutcome.Passthrough inBandPassthrough:
+                        await WriteInBand(ctx, SseErrorEvent.Passthrough(inBandPassthrough.Status,
+                            inBandPassthrough.Body, inBandPassthrough.RetryAfterHeader));
+                        break;
+                    case DispatchOutcome.Retryable or DispatchOutcome.Fatal:
+                        // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Error,
+                            Category = LogCategory.Request,
+                            Message = $"Outcome nội bộ (Retryable/Fatal) lọt tới endpoint request {id}.",
+                            RequestId = id,
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                        await WriteInBand(ctx, SseErrorEvent.ServerFault());
+                        break;
+                    case DispatchOutcome.Cancelled when !ctx.RequestAborted.IsCancellationRequested:
+                        // Huỷ qua control API (client còn kết nối) — ghi log + event request_cancelled (spec §5)
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Info,
+                            Category = LogCategory.Request,
+                            Message = $"Đã huỷ request {id} (đang chờ), model {prepared.ModelId}.",
+                            RequestId = id,
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                        await WriteInBand(ctx, SseErrorEvent.Cancelled());
+                        break;
+                    case DispatchOutcome.Aborted when contentBytes == 0
+                        && !ctx.RequestAborted.IsCancellationRequested:
+                        // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
+                        await WriteInBand(ctx, SseErrorEvent.ServerFault());
+                        break;
+                    // Handled / Cancelled+client-abort / Aborted mid-content: không ghi gì —
+                    // content đã forward, hoặc kết nối đã đóng (row vàng Canceled qua H4)
+                }
+            }
+            else if (outcome is DispatchOutcome.Error error)
             {
                 await ChatCompletionsHandler.WriteErrorAsync(ctx, error.Status, error.Message,
                     error.Type, error.Param, error.Code);
@@ -240,6 +336,9 @@ public static class ProxyApp
                     "invalid_request_error", null, "request_cancelled");
             }
             // Handled / Aborted / Cancelled do client ngắt: response đã ghi hoặc kết nối đã đóng
+
+            static Task WriteInBand(HttpContext ctx, byte[] evt) =>
+                ctx.Response.Body.WriteAsync(evt, ctx.RequestAborted).AsTask();
         });
 
         MapEndpoints(app);
@@ -369,6 +468,107 @@ public static class ProxyApp
             // cần sửa chỗ này: map an toàn là finished + failed + không status, không nuốt event
             _ => (TraceStage.Finished, false, null),
         };
+
+    /// <summary>
+    /// Chu kỳ keep-alive SSE — LLM first-token có thể hàng chục giây; dòng comment giữ
+    /// kết nối sống qua proxy/client timeout (spec early-headers §3.4).
+    /// </summary>
+    private const int KeepAliveIntervalMs = 5000;
+
+    /// <summary>Frame SSE comment — parser bỏ qua, chỉ có tác dụng đẩy byte trên wire.</summary>
+    private static readonly byte[] KeepAliveComment = ": keep-alive\n\n"u8.ToArray();
+
+    /// <summary>
+    /// Forward pipe → Response.Body trong lúc chờ outcome: quá hạn chưa có data thì viết
+    /// keep-alive; outcome về thì complete writer và drain nốt phần còn lại. Trả số byte
+    /// content đã forward (keep-alive KHÔNG đếm) — quyết định phân loại #7/#8 ở caller.
+    /// </summary>
+    /// <param name="ctx">Context đã commit head 200+event-stream (flush point ở caller).</param>
+    /// <param name="pipe">Pipe handler 2xx dùng làm dest tee.</param>
+    /// <param name="completion">Task outcome của request — endpoint là người chờ duy nhất.</param>
+    /// <returns>Outcome cuối và tổng byte content đã ghi xuống wire.</returns>
+    private static async Task<(DispatchOutcome Outcome, long ContentBytes)> RunStreamLoopAsync(
+        HttpContext ctx, Pipe pipe, Task<DispatchOutcome> completion)
+    {
+        var ct = ctx.RequestAborted;
+        var readTask = pipe.Reader.ReadAsync(ct).AsTask();
+        long contentBytes = 0;
+        try
+        {
+            while (true)
+            {
+                var winner = await Task.WhenAny(readTask,
+                    Task.Delay(KeepAliveIntervalMs, ct), completion);
+                if (winner == completion)
+                    break;
+                if (winner == readTask)
+                {
+                    var result = await readTask;
+                    if (result.Buffer.Length > 0)
+                    {
+                        foreach (var segment in result.Buffer)
+                        {
+                            await ctx.Response.Body.WriteAsync(segment, ct);
+                            contentBytes += segment.Length;
+                        }
+                        pipe.Reader.AdvanceTo(result.Buffer.End);
+                    }
+                    else
+                    {
+                        // Read rỗng (writer chưa có gì) — chỉ re-arm, không advance
+                        pipe.Reader.AdvanceTo(result.Buffer.Start);
+                    }
+                    readTask = pipe.Reader.ReadAsync(ct).AsTask();
+                }
+                else
+                {
+                    // KeepAliveIntervalMs trôi qua chưa có data → comment line giữ kết nối
+                    await ctx.Response.Body.WriteAsync(KeepAliveComment, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Client ngắt giữa loop: Register/Dispatcher LUÔN set outcome khi abort —
+            // await completion không deadlock (đó là lý do abort không cần timeout ở đây)
+            return (await completion, contentBytes);
+        }
+
+        // Completion về: endpoint là completer duy nhất của pipe (handler không Complete).
+        // readTask đang pending sẽ về cùng buffer cuối khi writer complete — PHẢI await lại
+        // task đó (không ReadAsync mới: một Reader không cho hai ReadAsync đồng thời).
+        pipe.Writer.Complete();
+        // Drain PHẢI ghi nốt buffer còn lại và cộng contentBytes: Aborted mid-content tới đây
+        // khi pipe còn byte chưa forward (dispatcher set Aborted sau khi handler ném) —
+        // bỏ qua drain thì contentBytes==0 → nhầm in-band #7 thay vì im lặng #8.
+        while (true)
+        {
+            try
+            {
+                var result = await readTask;
+                if (result.Buffer.Length > 0)
+                {
+                    foreach (var segment in result.Buffer)
+                    {
+                        await ctx.Response.Body.WriteAsync(segment, CancellationToken.None);
+                        contentBytes += segment.Length;
+                    }
+                }
+                pipe.Reader.AdvanceTo(result.Buffer.End);
+                if (result.IsCompleted)
+                    break;
+                readTask = pipe.Reader.ReadAsync(CancellationToken.None).AsTask();
+            }
+            catch (Exception)
+            {
+                // IOException/OCE khi client đã chết lúc drain — KHÔNG propagate: publish H4
+                // chưa chạy (nằm sau outcome ở caller) → phải rơi về classification như chủ
+                // đích "viết response có thể nổ" đã phòng. contentBytes tới đây đủ phân loại.
+                break;
+            }
+        }
+        return (await completion, contentBytes);
+    }
 
     /// <summary>
     /// Snapshot map ngược vocab input: Highest → "max" (không phải "highest") để client

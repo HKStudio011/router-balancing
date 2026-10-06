@@ -188,6 +188,91 @@ public class ProxyRetryIntegrationTests : IDisposable
     private static async Task<JsonElement> ReadJson(HttpResponseMessage response) =>
         JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
 
+    private static StringContent StreamChatBody(string model) =>
+        Json($"{{\"model\":\"{model}\",\"messages\":[{{\"role\":\"user\"}}],\"stream\":true}}");
+
+    // SendAsync với HttpCompletionOption.ResponseHeadersRead — PostAsync mặc định buffer toàn body sẽ treo
+    private static Task<HttpResponseMessage> SendStreamAsync(HttpClient client, string model) =>
+        client.SendAsync(new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+            { Content = StreamChatBody(model) }, HttpCompletionOption.ResponseHeadersRead);
+
+    /// <summary>
+    /// Content SSE giao byte (tùy chọn) rồi nổ IOException khi đọc tiếp — upstream đứt giữa stream.
+    /// Đọc qua CreateContentReadStreamAsync (lazy) như BrokenSseContent: byte tới tee rồi mới nổ,
+    /// không bị LoadIntoBuffer nuốt (phân loại #7/#8 phụ thuộc số byte thực forward).
+    /// </summary>
+    private sealed class ThrowingContent : HttpContent
+    {
+        private readonly bool _writeFirst;
+
+        public ThrowingContent(bool writeFirst)
+        {
+            _writeFirst = writeFirst;
+            // TeeAsync rẽ theo Content-Type: phải là text/event-stream mới đi đường
+            // forward-từng-chunk; thiếu là rơi vào nhánh buffer (nuốt byte → contentBytes=0 sai)
+            Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new ThrowingStream(_writeFirst));
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    private sealed class ThrowingStream : Stream
+    {
+        private static readonly byte[] FirstChunk = "data: {\"x\":1}\n\n"u8.ToArray();
+        private readonly bool _writeFirst;
+        private bool _finished;
+
+        public ThrowingStream(bool writeFirst) => _writeFirst = writeFirst;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Deliver(buffer.AsSpan(offset, count));
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+            ValueTask.FromResult(Deliver(buffer.Span));
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+            CancellationToken ct) =>
+            Task.FromResult(Deliver(buffer.AsSpan(offset, count)));
+
+        private int Deliver(Span<byte> buffer)
+        {
+            if (_finished)
+                throw new IOException("boom");
+            _finished = true;
+            if (!_writeFirst)
+                throw new IOException("boom");
+            FirstChunk.CopyTo(buffer);
+            return FirstChunk.Length;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+    }
+
     [Fact]
     public async Task Chat_WhenFirstProvider429_SecondProviderSucceeds_ClientSeesOnly200()
     {
@@ -360,5 +445,114 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal(2, records.Count);
         Assert.Equal("p1", records[0].Provider);
         Assert.Equal("p2", records[1].Provider);
+    }
+
+    [Fact]
+    public async Task Stream_AllUpstreamFail_PassesThroughLastResponseInBand()
+    {
+        // Clone nguyên setup của Chat_WhenAllUpstreamFail_PassesThroughLastResponse (Resp401,
+        // from-p2, 4 attempt) — chỉ đổi sang stream:true; test gốc không có Retry-After
+        // nên assert retry_after (điều kiện "nếu test gốc có") không áp dụng.
+        SeedProvider("p1", maxConcurrent: 4, accountCount: 2, modelIds: ["m1"]);
+        SeedProvider("p2", maxConcurrent: 4, accountCount: 2, modelIds: ["m1"]);
+        var upstream = new ScriptedUpstream((p, _) =>
+            Resp401(JsonSerializer.Serialize(new { error = new { message = $"from-{p.Name}" } })));
+        var client = await StartAsync(upstream);
+
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("text/event-stream", resp.Content.Headers.ContentType!.MediaType);
+
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        // Passthrough in-band: error object của attempt cuối (p2) giữ nguyên + type:error, không [DONE]
+        Assert.Contains("\"type\":\"error\"", body);
+        Assert.Contains("\"message\":\"from-p2\"", body);
+        Assert.DoesNotContain("[DONE]", body);
+
+        // Frame merge không có field status → xác thực logical status qua monitor (spec §3.5 row 2)
+        var id = resp.Headers.GetValues("X-Request-Id").Single();
+        var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
+        Assert.Equal(401, record!.Status);
+
+        var records = upstream.Records;
+        Assert.Equal(4, records.Count);
+        Assert.Equal("p1", records[0].Provider);
+        Assert.Equal("p1", records[1].Provider);
+        Assert.NotEqual(records[0].ApiKey, records[1].ApiKey);
+        Assert.Equal("p2", records[2].Provider);
+        Assert.Equal("p2", records[3].Provider);
+        Assert.NotEqual(records[2].ApiKey, records[3].ApiKey);
+    }
+
+    [Fact]
+    public async Task Stream_AllNetworkFail_Returns502InBand()
+    {
+        // Clone setup của Chat_WhenAllUpstreamFail_Returns502WhenAllNetworkFailures, stream:true
+        SeedProvider("p1", maxConcurrent: 4, accountCount: 2, modelIds: ["m1"]);
+        SeedProvider("p2", maxConcurrent: 4, accountCount: 2, modelIds: ["m1"]);
+        var upstream = new ScriptedUpstream((_, _) =>
+            throw new HttpRequestException("connection refused"));
+        var client = await StartAsync(upstream);
+
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("text/event-stream", resp.Content.Headers.ContentType!.MediaType);
+
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        // Error(502) map thành event in-band với status 502 trong payload (wire là 200)
+        Assert.Contains("\"status\":502", body);
+        Assert.Contains("Upstream provider request failed", body);
+        Assert.DoesNotContain("[DONE]", body);
+
+        var records = upstream.Records;
+        Assert.Equal(2, records.Count);
+        Assert.Equal("p1", records[0].Provider);
+        Assert.Equal("p2", records[1].Provider);
+    }
+
+    [Fact]
+    public async Task Stream_WhenUpstreamDiesBeforeContent_ReturnsServerFaultInBandAndRedRow()
+    {
+        SeedProvider("p-main", maxConcurrent: 4, "m1");
+        var upstream = new ScriptedUpstream((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new ThrowingContent(writeFirst: false) });
+        var client = await StartAsync(upstream);
+
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("text/event-stream", resp.Content.Headers.ContentType!.MediaType);
+
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("\"code\":\"server_error\"", body);
+        Assert.Contains("\"type\":\"error\"", body);
+        Assert.DoesNotContain("[DONE]", body);
+
+        // Override đỏ #7: Aborted mà 0 byte content (client còn nối) → Finished/Error, status 500
+        var id = resp.Headers.GetValues("X-Request-Id").Single();
+        var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
+        Assert.Equal(ApiCallState.Error, record!.State);
+        Assert.Equal(500, record.Status);
+    }
+
+    [Fact]
+    public async Task Stream_WhenUpstreamDiesMidContent_ClosesSilentlyAndYellowRow()
+    {
+        SeedProvider("p-main", maxConcurrent: 4, "m1");
+        var upstream = new ScriptedUpstream((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new ThrowingContent(writeFirst: true) });
+        var client = await StartAsync(upstream);
+
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        // Đã có content → đóng stream im lặng: KHÔNG append error event, không [DONE]
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("data: {\"x\":1}\n\n", body);
+
+        // Giữ chủ đích vàng của b0b3ae7: mid-stream fail → Canceled + FailureKind network
+        var id = resp.Headers.GetValues("X-Request-Id").Single();
+        var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
+        Assert.Equal(ApiCallState.Cancelled, record!.State);
+        Assert.Equal("network", record.FailureKind);
     }
 }
