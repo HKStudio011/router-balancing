@@ -44,6 +44,27 @@ public static class Translations
         ["trace.more"] = "+{0}",
         ["trace.idleAccounts"] = "+{0} idle",
         ["trace.fadeHint"] = "terminal circle fades after ~10s",
+
+        // Drill-down modal timeline (Task 7)
+        ["trace.detail.title"] = "Request detail",
+        ["trace.detail.started"] = "Started",
+        ["trace.detail.duration"] = "Duration",
+        ["trace.detail.received"] = "Received",
+        ["trace.detail.dispatch"] = "Dispatch",
+        ["trace.detail.attempt"] = "Attempt",
+        ["trace.detail.done"] = "Done",
+        ["trace.detail.failed"] = "Failed",
+        ["trace.detail.cancelled"] = "Canceled",
+        ["trace.detail.idle"] = "No events yet.",
+
+        // Caption skeleton + nhánh — Task 7 thay 6 literal hardcode trong RequestTrace.razor
+        ["trace.node.input"] = "📥 Input",
+        ["trace.node.queue"] = "⏳ Queue",
+        ["trace.node.dispatch"] = "⚙️ Execution list",
+        ["trace.node.client"] = "🖥 Client",
+        ["trace.node.combo"] = "🧩 Combo",
+        ["trace.node.provider"] = "☁️ Provider",
+
         ["common.copied"] = "Copied",
 
         // Settings panel (Task 13)
@@ -379,6 +400,27 @@ public static class Translations
         ["trace.more"] = "+{0}",
         ["trace.idleAccounts"] = "+{0} idle",
         ["trace.fadeHint"] = "circle terminal fade sau ~10s",
+
+        // Drill-down modal timeline (Task 7)
+        ["trace.detail.title"] = "Chi tiết request",
+        ["trace.detail.started"] = "Bắt đầu",
+        ["trace.detail.duration"] = "Thời lượng",
+        ["trace.detail.received"] = "Đã nhận",
+        ["trace.detail.dispatch"] = "Phân phối",
+        ["trace.detail.attempt"] = "Lần thử",
+        ["trace.detail.done"] = "Hoàn tất",
+        ["trace.detail.failed"] = "Thất bại",
+        ["trace.detail.cancelled"] = "Đã hủy",
+        ["trace.detail.idle"] = "Chưa có sự kiện nào.",
+
+        // Caption skeleton + nhánh — Task 7 thay 6 literal hardcode trong RequestTrace.razor
+        ["trace.node.input"] = "📥 Input",
+        ["trace.node.queue"] = "⏳ Hàng đợi",
+        ["trace.node.dispatch"] = "⚙️ Danh sách thực thi",
+        ["trace.node.client"] = "🖥 Client",
+        ["trace.node.combo"] = "🧩 Combo",
+        ["trace.node.provider"] = "☁️ Provider",
+
         ["common.copied"] = "Đã sao chép",
 
         // Settings panel (Task 13)

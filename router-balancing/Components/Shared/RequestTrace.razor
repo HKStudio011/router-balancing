@@ -257,6 +257,63 @@
         padding: 2px 0;
         overflow-wrap: anywhere;
     }
+
+    /* ===== Modal chi tiết timeline (Task 7) ===== */
+    .trace-detail-head {
+        margin-bottom: 10px;
+        font-size: 12px;
+    }
+
+    .trace-detail-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .trace-detail-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        opacity: .8;
+    }
+
+    .trace-detail-trail {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .trace-detail-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-size: 12px;
+    }
+
+    .trace-detail-offset {
+        /* Cột +Nms cố định width để tag các dòng thẳng cột */
+        flex: 0 0 64px;
+        text-align: right;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        opacity: .7;
+    }
+
+    /* .trace-tag gốc 9px — quá nhỏ trong modal; override riêng size/padding,
+       màu/viền vẫn kế thừa .trace-tag + .trace-tag--bad (class này chỉ set font/padding) */
+    .trace-detail-tag {
+        flex: 0 0 auto;
+        font-size: 10.5px;
+        padding: 1px 6px;
+    }
+
+    .trace-detail-detail {
+        overflow-wrap: anywhere;
+    }
 </style>
 
 <div class="mb-4 rounded border border-border bg-surface p-4">
@@ -313,33 +370,30 @@
 
             @* Skeleton spine — luôn vẽ kể cả khi idle (spec §5.1); tọa độ fixed theo mockup *@
             <div class="trace-node" style="left:8px;top:8px;width:120px">
-                <span class="cap">📥 Input</span>
+                <span class="cap">@L["trace.node.input"]</span>
                 POST /v1/chat
             </div>
             <div class="trace-node" style="left:8px;top:96px;width:120px">
-                <span class="cap">⏳ Hàng đợi</span>
+                <span class="cap">@L["trace.node.queue"]</span>
                 <div class="trace-node__slot"></div>
                 <span class="cap">@QueuedCount @L["trace.count.queued"]</span>
             </div>
             <div class="trace-node @(RunningCount > 0 ? "trace-node--act" : "")" style="left:8px;top:188px;width:120px">
-                <span class="cap">⚙️ Danh sách thực thi</span>
+                <span class="cap">@L["trace.node.dispatch"]</span>
                 <div class="trace-node__slot"></div>
                 <span class="cap">@RunningCount @L["trace.count.running"]</span>
             </div>
             <div class="trace-node" style="left:8px;top:336px;width:120px">
-                <span class="cap">🖥 Client</span>
+                <span class="cap">@L["trace.node.client"]</span>
                 <div class="trace-node__slot"></div>
             </div>
 
-            @* Caption nhánh hardcode (🧩 Combo / ☁️ Provider) — Task 7 thêm 6 key `trace.node.*`
-               (gồm caption nhánh 🧩/☁️ theo plan đã amend) rồi thay 2 hardcode này; cùng tiền lệ
-               Task 5, emoji + tên riêng không đổi giữa EN/VI. *@
             @foreach (var combo in _layout.Combos)
             {
                 <div class="trace-node @(combo.Running ? "trace-node--act" : "")"
                      style="left:@(ComboLeft)px;top:@(combo.Top)px;width:@(ComboWidth)px"
                      @key="@($"combo-{combo.Name}")">
-                    <span class="cap">🧩 Combo</span>
+                    <span class="cap">@L["trace.node.combo"]</span>
                     @combo.DisplayName
                 </div>
             }
@@ -349,7 +403,7 @@
                 <div class="trace-node @(provider.Running ? "trace-node--act" : "") @(provider.HasError ? "trace-node--err" : "")"
                      style="left:@(ProviderLeft)px;top:@(provider.Top)px;width:@(ProviderWidth)px"
                      @key="@($"provider-{provider.Name}")">
-                    <span class="cap">☁️ Provider</span>
+                    <span class="cap">@L["trace.node.provider"]</span>
                     <i class="trace-idot @NodeDotClass(provider.Running, provider.HasError)"></i> @provider.Name
                     @if (provider.ErrorStatus is { } status)
                     {
@@ -405,7 +459,8 @@
                 {
                     var node = group.Shown[i];
                     <div class="trace-dot @ColorClass(node)" @key="node.Id"
-                         style="left:@(group.X + i * DotStepX)px;top:@(group.Y)px"></div>
+                         style="left:@(group.X + i * DotStepX)px;top:@(group.Y)px"
+                         @onclick="() => OpenDetail(node.Id)"></div>
                 }
                 @if (group.Overflow > 0)
                 {
@@ -425,6 +480,59 @@
         <span class="trace-legend__hint">@L["trace.fadeHint"]</span>
     </div>
 </div>
+
+@* Modal chi tiết timeline của 1 request — mở bằng click circle; đóng qua Esc/backdrop/×
+   (Modal tự bắt, gọi OnClose → CloseDetail). Đặt ngoài block chính vì Modal render fixed. *@
+<Modal Visible="@(_selectedId is not null)" Title="@L["trace.detail.title"]" OnClose="CloseDetail">
+    @{ var detail = BuildDetail(); }
+    @if (detail is null)
+    {
+        <p class="text-sm opacity-75">@L["trace.detail.idle"]</p>
+    }
+    else
+    {
+        <div class="trace-detail-head">
+            @* Id hiển thị raw (ruling Task 7 — không i18n), truncate thay wrap: id dài không đẩy vỡ dialog *@
+            <div class="trace-detail-id" title="@detail.Id">req #@detail.Id</div>
+            <div class="trace-detail-meta">
+                @if (!string.IsNullOrEmpty(detail.Model))
+                {
+                    <span>@detail.Model</span>
+                }
+                @if (detail.StartedAt is { } started)
+                {
+                    <span>@L["trace.detail.started"] @started.ToLocalTime().ToString("HH:mm:ss.fff")</span>
+                }
+                @if (detail.DurationText is { } duration)
+                {
+                    <span>@L["trace.detail.duration"] @duration</span>
+                }
+            </div>
+        </div>
+
+        @if (detail.Rows.Count == 0)
+        {
+            <p class="text-sm opacity-75">@L["trace.detail.idle"]</p>
+        }
+        else
+        {
+            <ul class="trace-detail-trail">
+                @for (var i = 0; i < detail.Rows.Count; i++)
+                {
+                    var row = detail.Rows[i];
+                    <li class="trace-detail-row" @key="i">
+                        <span class="trace-detail-offset">@row.Offset</span>
+                        <span class="trace-tag trace-detail-tag @(row.Bad ? "trace-tag--bad" : "")">@row.Tag</span>
+                        @if (row.Detail.Length > 0)
+                        {
+                            <span class="trace-detail-detail">@row.Detail</span>
+                        }
+                    </li>
+                }
+            </ul>
+        }
+    }
+</Modal>
 
 @code {
     private const int NodeCap = 60;
@@ -480,6 +588,9 @@
     // Provider đang mở panel danh sách idle (tối đa 1 chip mở cùng lúc)
     private string? _expandedIdleProvider;
 
+    // Id request đang mở modal chi tiết timeline — null = đóng; circle click gán, CloseDetail xóa
+    private string? _selectedId;
+
     // Component đã gỡ — callback fire-and-forget không được StateHasChanged sau dispose
     private bool _disposed;
 
@@ -534,6 +645,16 @@
 
     /// <summary>Một dòng trong panel expand chip idle — Living = còn node sống tham chiếu TK này.</summary>
     private sealed record IdleAccount(string Name, bool Living, bool Running);
+
+    /// <summary>
+    /// Một dòng timeline trong modal chi tiết: Offset là "+Nms" đã tính từ event Received
+    /// đầu tiên; Bad = tag màu đỏ (status ≥ 400 / finished failed); Detail rỗng = không có nội dung.
+    /// </summary>
+    private sealed record TrailRow(string Offset, string Tag, string Detail, bool Bad);
+
+    /// <summary>Dữ liệu render modal chi tiết — null khi chưa chọn circle nào.</summary>
+    private sealed record DetailView(string Id, string? Model, DateTimeOffset? StartedAt,
+        string? DurationText, IReadOnlyList<TrailRow> Rows);
 
     /// <summary>Đường connector 1 group — HasError đổi màu nét (đỏ) thay vì xanh marching-ants.</summary>
     private sealed record BranchPath(IReadOnlyList<string> Segments, bool HasError);
@@ -959,6 +1080,126 @@
     /// <summary>Bật/tắt panel inline danh sách TK khi click chip "+N idle" (spec §5.5 — không dùng Modal).</summary>
     private void ToggleIdleProvider(string provider) =>
         _expandedIdleProvider = _expandedIdleProvider == provider ? null : provider;
+
+    /// <summary>Mở modal chi tiết timeline — gọi từ onclick của circle request trên sơ đồ.</summary>
+    private void OpenDetail(string id) => _selectedId = id;
+
+    /// <summary>Đóng modal chi tiết — Modal gọi qua OnClose khi người dùng Esc/backdrop/×.</summary>
+    private void CloseDetail() => _selectedId = null;
+
+    /// <summary>
+    /// Gom dữ liệu render modal: header (node còn sống, fallback suy từ event trong ring khi
+    /// node đã expire) + trail từ <c>Feed.Snapshot()</c> theo thứ tự publish.
+    /// </summary>
+    /// <returns>Null khi chưa chọn request nào.</returns>
+    private DetailView? BuildDetail()
+    {
+        if (_selectedId is not { } id)
+            return null;
+
+        var events = Feed.Snapshot().Where(e => e.RequestId == id).ToList();
+        var node = _nodes.GetValueOrDefault(id);
+
+        // ReceivedAt/Model lấy từ node; node đã bị gỡ (expire 10s / cap-drop) → event đầu tiên
+        var startedAt = node?.ReceivedAt
+            ?? events.FirstOrDefault(e => e.Stage == TraceStage.Received)?.At
+            ?? events.FirstOrDefault()?.At;
+
+        // Duration = last.At − ReceivedAt (brief); chưa có event nào → bỏ qua dòng duration
+        var durationText = startedAt is { } started && events.Count > 0
+            ? FormatDuration(events[^1].At - started)
+            : null;
+
+        var model = node?.Model is { Length: > 0 } nodeModel
+            ? nodeModel
+            : events.FirstOrDefault()?.Model;
+        return new DetailView(id, model, startedAt, durationText, BuildTrailRows(events));
+    }
+
+    /// <summary>
+    /// Dựng các dòng timeline từ event của một request, giữ nguyên thứ tự publish.
+    /// Gộp (merge rule brief Task 7): attempt start không có attempt-done ngay trước
+    /// <see cref="TraceStage.Finished"/> → dòng attempt nhận status/success từ Finished
+    /// và event Finished bị nuốt — tránh hiện 2 dòng cùng hiển thị status.
+    /// </summary>
+    private List<TrailRow> BuildTrailRows(IReadOnlyList<TraceEvent> events)
+    {
+        var rows = new List<TrailRow>(events.Count);
+        if (events.Count == 0)
+            return rows;
+
+        // Mốc "+Nms": event Received đầu tiên; mất (ring eviction) → event đầu của trail
+        var baseAt = events.FirstOrDefault(e => e.Stage == TraceStage.Received)?.At ?? events[0].At;
+
+        for (var i = 0; i < events.Count; i++)
+        {
+            var e = events[i];
+            var offset = $"+{FormatDuration(e.At - baseAt)}";
+
+            // Merge: attempt start chưa có done khi chạm Finished (stream thành công không
+            // publish attempt-done — DispatcherLoop thoát trước khi ghi done)
+            if (e.Stage == TraceStage.Attempt && e.AttemptDone != true
+                && i + 1 < events.Count && events[i + 1].Stage == TraceStage.Finished)
+            {
+                var fin = events[i + 1];
+                rows.Add(new TrailRow(
+                    offset,
+                    L["trace.detail.attempt"],
+                    $"{AttemptLabel(e)} · {RouteLabel(e)} · {StatusLabel(fin)}",
+                    fin.Status is >= 400 || fin.Success == false));
+                i++; // nuốt event Finished — status đã gộp vào dòng attempt
+                continue;
+            }
+
+            rows.Add(e.Stage switch
+            {
+                TraceStage.Received => new TrailRow(offset, L["trace.detail.received"],
+                    "Input → queue", false),
+                TraceStage.DispatchStarted => new TrailRow(offset, L["trace.detail.dispatch"],
+                    e.Mode ?? "—", false),
+                TraceStage.Attempt when e.AttemptDone == true => new TrailRow(offset,
+                    L["trace.detail.attempt"], $"{AttemptLabel(e)} · {StatusLabel(e)}",
+                    e.Status is >= 400),
+                TraceStage.Attempt => new TrailRow(offset, L["trace.detail.attempt"],
+                    $"{AttemptLabel(e)} · {RouteLabel(e)}", false),
+                TraceStage.Finished => new TrailRow(offset,
+                    e.Success == false ? L["trace.detail.failed"] : L["trace.detail.done"],
+                    StatusLabel(e), e.Success == false || e.Status is >= 400),
+                TraceStage.Canceled => new TrailRow(offset, L["trace.detail.cancelled"],
+                    string.Empty, false),
+                _ => new TrailRow(offset, string.Empty, string.Empty, false),
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Định dạng khoảng thời gian/offset: dưới 1s → "123ms", từ 1s → "1.234s"
+    /// (ruling Task 7 — không thêm dependency, 1 helper local).
+    /// </summary>
+    private static string FormatDuration(TimeSpan value)
+    {
+        var ms = Math.Max(0, (long)value.TotalMilliseconds);
+        return ms < 1000 ? $"{ms}ms" : $"{ms / 1000}.{ms % 1000:000}s";
+    }
+
+    /// <summary>Nhãn số attempt dạng "#2"; thiếu số → "—".</summary>
+    private static string AttemptLabel(TraceEvent e) => $"#{e.Attempt?.ToString() ?? "—"}";
+
+    /// <summary>Route attempt: "Combo · Provider · Account" — từng field thiếu → "—".</summary>
+    private static string RouteLabel(TraceEvent e) => string.Join(" · ",
+        e.Route?.Combo ?? "—", e.Route?.Provider ?? "—", e.Route?.Account ?? "—");
+
+    /// <summary>
+    /// Status row: có HTTP status → số (≥400 tô đỏ ở nơi gọi); không có status nhưng
+    /// FailureKind = "network" → "network" (thuật ngữ kỹ thuật, không i18n — ruling Task 7);
+    /// thiếu cả hai → "—".
+    /// </summary>
+    private static string StatusLabel(TraceEvent e) =>
+        e.Status is { } status ? status.ToString()
+            : e.FailureKind == "network" ? "network"
+            : "—";
 
     /// <summary>Nhóm node theo anchor, tối đa 6 dot/nhóm + badge +N cho phần dư.</summary>
     private List<DotGroup> BuildGroups() =>
