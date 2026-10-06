@@ -22,7 +22,10 @@ public sealed class ChatCompletionsHandler(
     IApiMonitorStore monitor)
 {
     /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
-    public sealed record PreparedChatRequest(string ModelId, byte[] Body);
+    /// <param name="ModelId">Model id đã validate (resolve alias tại dispatcher).</param>
+    /// <param name="Body">Body JSON gốc từng byte — forward nguyên vẹn.</param>
+    /// <param name="IsStream">Body có <c>"stream": true</c> — cho phép flush header sớm (spec early-headers).</param>
+    public sealed record PreparedChatRequest(string ModelId, byte[] Body, bool IsStream);
 
     /// <summary>
     /// Buffer body rồi validate theo rule 3A. Lỗi validate → ghi 400 OpenAI-style NGAY
@@ -66,7 +69,7 @@ public sealed class ChatCompletionsHandler(
             return null;
         }
 
-        return new PreparedChatRequest(validation.ModelId!, body);
+        return new PreparedChatRequest(validation.ModelId!, body, validation.IsStream);
     }
 
     /// <summary>

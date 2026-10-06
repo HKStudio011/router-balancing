@@ -91,4 +91,45 @@ public class ChatRequestValidatorTests
         Assert.Equal(ValidationFailure.None, result.Failure);
         Assert.Equal("gpt-4o-mini", result.ModelId);
     }
+
+    [Fact]
+    public void Validate_StreamTrue_IsStreamTrue()
+    {
+        var result = ChatRequestValidator.Validate(B(
+            """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"stream":true}"""));
+
+        Assert.True(result.IsValid);
+        Assert.True(result.IsStream);
+    }
+
+    [Fact]
+    public void Validate_StreamMissing_IsStreamFalse()
+    {
+        var result = ChatRequestValidator.Validate(B(
+            """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.True(result.IsValid);
+        Assert.False(result.IsStream);
+    }
+
+    [Theory]
+    [InlineData("""{"model":"gpt-4o-mini","messages":[{"role":"user"}],"stream":false}""")]
+    [InlineData("""{"model":"gpt-4o-mini","messages":[{"role":"user"}],"stream":"true"}""")]
+    public void Validate_StreamFalseOrNotBool_IsStreamFalse(string json)
+    {
+        var result = ChatRequestValidator.Validate(B(json));
+
+        Assert.True(result.IsValid);
+        Assert.False(result.IsStream);
+    }
+
+    [Fact]
+    public void Validate_StreamStillParsesModelAndMessages()
+    {
+        // stream=true nhưng thiếu messages → vẫn phải báo đúng failure, IsStream không được rò rỉ true
+        var result = ChatRequestValidator.Validate(B("""{"model":"gpt-4o-mini","stream":true}"""));
+
+        Assert.Equal(ValidationFailure.MissingMessages, result.Failure);
+        Assert.False(result.IsStream);
+    }
 }
