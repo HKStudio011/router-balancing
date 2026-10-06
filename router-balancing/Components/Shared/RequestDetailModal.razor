@@ -2,6 +2,8 @@
 @inject ITraceFeed Feed
 @inject IApiMonitorStore Store
 @inject LocalizationService L
+@inject IProxyHost Proxy
+@inject ToastService Toast
 
 <style>
     /* CSS modal chi tiết — tách từ style block của RequestTrace.razor khi thành component
@@ -152,6 +154,14 @@
                     <span>@L["trace.detail.duration"] @duration</span>
                 }
             </div>
+            @* Nút huỷ chỉ hiện khi request còn trong queue (spec §5.1). Sau khi huỷ, endpoint
+               gốc publish H4 Canceled → row chuyển trạng thái → panel re-render, nút tự biến. *@
+            @if (record?.State == ApiCallState.Queued)
+            {
+                <button type="button" class="btn btn-outline-danger" @onclick="CancelQueuedAsync">
+                    @L["trace.detail.cancel"]
+                </button>
+            }
         </div>
 
         @* Rule fallback join (spec §6.3): record null + trail rỗng → không nguồn nào còn
@@ -247,6 +257,36 @@
 
     /// <summary>Gọi khi người dùng đóng (Esc / backdrop / nút &times;) — panel tự xóa selection.</summary>
     [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>
+    /// Huỷ request đang queued qua <see cref="IProxyHost.CancelRequest"/> — map từng kết quả
+    /// sang toast (spec §5.1). Không force refresh: endpoint gốc publish H4 Canceled,
+    /// panel re-render theo feed và nút tự biến.
+    /// </summary>
+    private void CancelQueuedAsync()
+    {
+        if (RequestId is not { } id)
+            return;
+
+        var result = Proxy.CancelRequest(id);
+        switch (result)
+        {
+            case RequestCancelResult.Cancelled:
+                Toast.Show(L["trace.detail.cancelDone"], ToastSeverity.Success);
+                break;
+            case RequestCancelResult.NotCancellable:
+                Toast.Show(L["trace.detail.cancelBusy"], ToastSeverity.Error);
+                break;
+            // NotFound = request đã xong/bị xoá giữa lúc mở popup — trạng thái trung tính
+            // (không phải lỗi thao tác) nên dùng Info, khác 2 nhánh lỗi thật (Error).
+            case RequestCancelResult.NotFound:
+                Toast.Show(L["trace.detail.cancelNotFound"], ToastSeverity.Info);
+                break;
+            default:
+                Toast.Show(L["trace.detail.cancelNotRunning"], ToastSeverity.Error);
+                break;
+        }
+    }
 
     /// <summary>
     /// Gom dữ liệu render modal: header (suy từ event trong ring; record monitor dự phòng

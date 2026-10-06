@@ -173,6 +173,17 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             .ToList();
     }
 
+    public RequestCancelResult CancelRequest(string id)
+    {
+        // Queue chỉ sống trong container DI của proxy — MAUI không có đường HTTP tới
+        // cancel endpoint, bridge qua app.Services đúng pattern QueuedSnapshot (spec §5.1).
+        // Capture local như QueuedSnapshot: StopAsync dispose + set null song song.
+        var app = _app;
+        if (app is null)
+            return RequestCancelResult.NotRunning;
+        return app.Services.GetRequiredService<IRequestCancelService>().Cancel(id);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;

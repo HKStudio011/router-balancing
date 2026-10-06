@@ -57,6 +57,13 @@ public static class Translations
         ["trace.detail.cancelled"] = "Canceled",
         ["trace.detail.idle"] = "No events yet.",
 
+        // Nút huỷ request queued (Task 5, spec §5.1)
+        ["trace.detail.cancel"] = "Cancel request",
+        ["trace.detail.cancelDone"] = "Request cancelled.",
+        ["trace.detail.cancelBusy"] = "Request is already being served.",
+        ["trace.detail.cancelNotFound"] = "Request no longer exists.",
+        ["trace.detail.cancelNotRunning"] = "Proxy is not running.",
+
         // Caption skeleton + nhánh — Task 7 thay 6 literal hardcode trong RequestTrace.razor
         ["trace.node.input"] = "📥 Input",
         ["trace.node.queue"] = "⏳ Queue",
@@ -437,6 +444,13 @@ public static class Translations
         ["trace.detail.failed"] = "Thất bại",
         ["trace.detail.cancelled"] = "Đã hủy",
         ["trace.detail.idle"] = "Chưa có sự kiện nào.",
+
+        // Nút huỷ request queued (Task 5, spec §5.1)
+        ["trace.detail.cancel"] = "Huỷ request",
+        ["trace.detail.cancelDone"] = "Đã huỷ request.",
+        ["trace.detail.cancelBusy"] = "Request đang được xử lý.",
+        ["trace.detail.cancelNotFound"] = "Request không còn tồn tại.",
+        ["trace.detail.cancelNotRunning"] = "Proxy chưa chạy.",
 
         // Caption skeleton + nhánh — Task 7 thay 6 literal hardcode trong RequestTrace.razor
         ["trace.node.input"] = "📥 Input",

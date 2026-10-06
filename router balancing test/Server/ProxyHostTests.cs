@@ -223,6 +223,27 @@ public class ProxyHostTests : IDisposable
     }
 
     [Fact]
+    public async Task CancelRequest_WhenNotStarted_ReturnsNotRunning()
+    {
+        // KHÔNG StartAsync — _app null: bridge phải trả NotRunning mà không chạm container DI (spec §5.1)
+        var feed = new TraceFeed(_log);
+        await using var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System));
+
+        Assert.Equal(RequestCancelResult.NotRunning, host.CancelRequest("any"));
+    }
+
+    [Fact]
+    public async Task CancelRequest_WhenRunning_DelegatesToCancelService()
+    {
+        await using var host = await StartHostAsync();
+
+        // id lạ → RequestCancelService trả NotFound; chứng minh bridge resolve đúng
+        // IRequestCancelService trong container DI của proxy (không tự xử lý ở host)
+        Assert.Equal(RequestCancelResult.NotFound, host.CancelRequest("missing-id"));
+    }
+
+    [Fact]
     public async Task StopAsync_PurgesTraceFeed()
     {
         var feed = new TraceFeed(_log);
