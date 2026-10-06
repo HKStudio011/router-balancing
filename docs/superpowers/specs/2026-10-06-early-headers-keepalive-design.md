@@ -183,6 +183,7 @@ return theo §4.3;
 - Override ở #7 chỉ áp khi `IsStream` — non-stream dùng luật `HasStarted` của `DispatcherLoop:219` như hôm nay (chưa commit → `Error(500)` đỏ; mid-body → `Aborted` vàng).
 - `DispatcherLoop` **không sửa gì** — mapping `HasStarted` của nó không còn quyết định outcome cho stream (endpoint tự phân loại theo bảng).
 - Non-stream: toàn bộ nhánh ghi hiện tại (`WriteErrorAsync`, `Passthrough` status thật, cancel 400) giữ nguyên.
+- **Known limitation (final review):** exception KHÔNG phải OCE từ client-write giữa loop (vd `IOException`) thoát cả hai catch OCE-only → `trace.Publish` bị skip, monitor row non-terminal. Reachability thấp vì Kestrel báo transport break qua `RequestAborted` → OCE. Nếu sau này broadening catch: KHÔNG tái dùng nguyên văn nhánh OCE — `await completion` deadlock-free chỉ khi `RequestAborted.Register` bảo đảm outcome; write-fault không có bảo đảm đó, cộng policy không timeout (G6) sẽ treo vô hạn.
 
 ### 4.4 Thay đổi `ChatCompletionsHandler.ForwardAsync`
 
