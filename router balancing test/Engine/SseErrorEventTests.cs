@@ -49,12 +49,14 @@ public class SseErrorEventTests
     {
         var bytes = SseErrorEvent.Cancelled();
 
-        // So string chính xác từng byte (kể cả đuôi \n\n) — envelope = Error trừ status;
-        // param/code null như WriteErrorAsync (parity response 400 cancel non-stream)
+        // So string chính xác từng byte (kể cả đuôi \n\n) — 3 key đúng shape spec §3.5
         const string expected =
             "data: {\"type\":\"error\",\"error\":{\"message\":\"Request cancelled.\"," +
-            "\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"request_cancelled\"}}\n\n";
+            "\"type\":\"invalid_request_error\",\"code\":\"request_cancelled\"}}\n\n";
         Assert.Equal(expected, AsText(bytes));
+
+        var error = ParseEvent(bytes)["error"]!.AsObject();
+        Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
     }
 
     [Fact]
@@ -64,8 +66,11 @@ public class SseErrorEventTests
 
         const string expected =
             "data: {\"type\":\"error\",\"error\":{\"message\":\"Internal server error\"," +
-            "\"type\":\"server_error\",\"param\":null,\"code\":\"server_error\"}}\n\n";
+            "\"type\":\"server_error\",\"code\":\"server_error\"}}\n\n";
         Assert.Equal(expected, AsText(bytes));
+
+        var error = ParseEvent(bytes)["error"]!.AsObject();
+        Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
     }
 
     [Fact]

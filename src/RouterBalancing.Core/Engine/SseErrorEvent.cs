@@ -31,8 +31,9 @@ internal static class SseErrorEvent
         Frame(new { type = "error", error = new { message, type, param, code, status } });
 
     /// <summary>
-    /// Request bị huỷ qua API/nút popup — envelope Error trừ <c>status</c>, spec §3.5:
-    /// <c>{"type":"error","error":{"message":"Request cancelled.","type":"invalid_request_error","param":null,"code":"request_cancelled"}}</c>.
+    /// Request bị huỷ qua API/nút popup — shape tối giản spec §3.5:
+    /// <c>{"type":"error","error":{"message":"Request cancelled.","type":"invalid_request_error","code":"request_cancelled"}}</c>
+    /// (không <c>status</c>, không <c>param</c> — 3 key đúng dòng Cancelled của spec).
     /// </summary>
     internal static byte[] Cancelled() =>
         Frame(new
@@ -42,15 +43,14 @@ internal static class SseErrorEvent
             {
                 message = "Request cancelled.",
                 type = "invalid_request_error",
-                param = (string?)null,
                 code = "request_cancelled",
             },
         });
 
     /// <summary>
-    /// Lỗi server trước khi có content (exception trước tee) — envelope Error trừ
-    /// <c>status</c>, spec §3.5:
-    /// <c>{"type":"error","error":{"message":"Internal server error","type":"server_error","param":null,"code":"server_error"}}</c>.
+    /// Lỗi server trước khi có content (exception trước tee) — shape spec §3.5:
+    /// <c>{"type":"error","error":{"message":"Internal server error","type":"server_error","code":"server_error"}}</c>
+    /// (không <c>status</c>, không <c>param</c> — 3 key đúng dòng Aborted của spec).
     /// </summary>
     internal static byte[] ServerFault() =>
         Frame(new
@@ -60,7 +60,6 @@ internal static class SseErrorEvent
             {
                 message = "Internal server error",
                 type = "server_error",
-                param = (string?)null,
                 code = "server_error",
             },
         });
