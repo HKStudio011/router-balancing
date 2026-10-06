@@ -9,9 +9,8 @@ public static class ProxyProtocols
     /// <summary>Protocol chat completions — hành vi cũ không đổi.</summary>
     public static IProxyProtocol Chat { get; } = new ChatCompletionsProtocol();
 
-    /// <summary>Protocol responses — body thật ở Task 2; không call site nào resolve trước đó.</summary>
-    public static IProxyProtocol Responses =>
-        throw new NotImplementedException("/v1/responses sẽ được cài đặt ở Task 2 (spec v1-responses §4).");
+    /// <summary>Protocol responses — validate/prepare theo spec §4.1/§4.2; tee ở Task 3.</summary>
+    public static IProxyProtocol Responses { get; } = new ResponsesProtocol();
 
     /// <summary>Protocol cho endpoint — switch exhaustive trên <see cref="ProxyEndpoint"/>.</summary>
     /// <exception cref="ArgumentOutOfRangeException">Endpoint không có protocol.</exception>
