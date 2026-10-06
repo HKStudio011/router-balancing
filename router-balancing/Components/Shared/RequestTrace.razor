@@ -1,8 +1,11 @@
 @using System.Collections.Concurrent
+@using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Engine
+@using RouterBalancing.Core.Providers
 @inject ITraceFeed Feed
 @inject IProxyHost Proxy
 @inject ILogService Log
+@inject IProviderService ProviderService
 @inject LocalizationService L
 @implements IAsyncDisposable
 
@@ -18,6 +21,9 @@
         width: 740px;
         height: 415px;
         font-size: 11px;
+        /* Clip nhánh tràn đáy (nhiều combo/provider hơn mockup) thay vì build scrolling —
+           ruling Task 6: clamp là chấp nhận được; panel expand tự chọn hướng để vừa vùng này */
+        overflow: hidden;
     }
 
     .trace-svg {
@@ -144,6 +150,113 @@
         height: 10px;
         border-radius: 50%;
     }
+
+    /* ===== Nhánh Combo → Provider → Account (copy từ mockup .n/.acct/.tag — Task 6) ===== */
+
+    /* Node nhánh lỗi (mockup .n.err) */
+    .trace-node--err {
+        border-color: #ef4444;
+        box-shadow: 0 0 0 1px rgba(239, 68, 68, .4);
+    }
+
+    /* Chip account (mockup .acct) — absolute như node, nội dung 1 dòng */
+    .trace-chip {
+        position: absolute;
+        box-sizing: border-box;
+        border: 1.5px solid #8b8fa3;
+        background: rgba(255, 255, 255, .05);
+        border-radius: 6px;
+        padding: 4px 7px;
+        font-size: 10.5px;
+        line-height: 1.35;
+        white-space: nowrap;
+        text-align: left;
+    }
+
+    .trace-chip--act { border-color: #3b82f6; }
+    .trace-chip--err { border-color: #ef4444; }
+
+    /* Chip "+N idle" (mockup .acct.idle) — click expand danh sách inline */
+    .trace-chip--idle {
+        border-style: dashed;
+        opacity: .6;
+        background: transparent;
+        cursor: pointer;
+    }
+
+    /* Dot indicator inline trong node/chip nhánh (mockup .dot) — khác .trace-dot (tuyệt đối, = circle request) */
+    .trace-idot {
+        display: inline-block;
+        box-sizing: border-box;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #3b82f6;
+        vertical-align: -2px;
+        animation: trace-pulse 1.3s ease-in-out infinite;
+    }
+
+    /* Còn node sống nhưng không có request đang chạy (mockup .dot.white opacity .5) */
+    .trace-idot--dim {
+        background: #fff;
+        border: 1.5px solid #9aa0aa;
+        opacity: .5;
+        animation: none;
+    }
+
+    /* Lỗi nhưng không chạy — dot đỏ đứng yên */
+    .trace-idot--err {
+        background: #ef4444;
+        animation: none;
+    }
+
+    @@keyframes trace-pulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.35); }
+    }
+
+    /* Tag status lỗi trong node Provider (mockup .tag.bad) */
+    .trace-tag {
+        font-size: 9px;
+        border: 1px solid rgba(139, 143, 163, .6);
+        border-radius: 4px;
+        padding: 0 4px;
+    }
+
+    .trace-tag--bad {
+        border-color: #ef4444;
+        color: #ef4444;
+    }
+
+    /* Panel inline danh sách TK khi click chip "+N idle" (spec §5.5 — inline, không Modal) */
+    .trace-idle-list {
+        position: absolute;
+        z-index: 30;
+        box-sizing: border-box;
+        width: 144px;
+        max-height: 160px;
+        overflow-y: auto;
+        border: 1px dashed rgba(139, 143, 163, .6);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--text);
+        padding: 6px 8px;
+        font-size: 10.5px;
+    }
+
+    .trace-idle-list ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .trace-idle-list li {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 0;
+        overflow-wrap: anywhere;
+    }
 </style>
 
 <div class="mb-4 rounded border border-border bg-surface p-4">
@@ -165,6 +278,9 @@
 
     <div class="trace-wrap">
         <div class="trace-canvas">
+            @* Tính lại layout nhánh TRƯỚC khi vẽ — svg/branch node/dot cùng đọc _layout trong 1 render *@
+            @{ RebuildBranchLayout(); }
+
             <svg class="trace-svg" width="740" height="415">
                 @* Đường nối spine — coords theo mockup; đoạn Thực thi→Client nối thêm cho đủ spine *@
                 <g fill="none" stroke="#8b8fa3" stroke-width="1.6" opacity=".55">
@@ -172,6 +288,20 @@
                     <path d="M68,152 L68,188" />
                     <path d="M68,244 L68,336" />
                 </g>
+                @* Nhánh route per group — đỏ khi group có node lỗi, ngược lại xanh marching-ants (mockup);
+                   tách từng đoạn như mockup để đường KHÔNG kẻ xuyên qua block (block nền trong) *@
+                @foreach (var path in _layout.Paths)
+                {
+                    <g fill="none" stroke="@(path.HasError ? "#ef4444" : "#3b82f6")" stroke-width="1.8"
+                       stroke-dasharray="7 6" opacity="@(path.HasError ? ".9" : "1")">
+                        @foreach (var segment in path.Segments)
+                        {
+                            <path d="@segment">
+                                <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
+                            </path>
+                        }
+                    </g>
+                }
                 @* Ornament trang trí (không gắn data): circle lặp vô hạn — coords mockup *@
                 <circle r="6.5" fill="#ffffff" stroke="#9aa0aa" stroke-width="1.5">
                     <animateMotion dur="2.4s" repeatCount="indefinite" path="M68,46 L68,96" />
@@ -200,6 +330,73 @@
                 <span class="cap">🖥 Client</span>
                 <div class="trace-node__slot"></div>
             </div>
+
+            @* Caption nhánh hardcode (🧩 Combo / ☁️ Provider) — plan không phân bổ key cho caption
+               nhánh (Task 7 chỉ thêm 4 caption spine); cùng tiền lệ Task 5, emoji + tên riêng
+               không đổi giữa EN/VI. *@
+            @foreach (var combo in _layout.Combos)
+            {
+                <div class="trace-node @(combo.Running ? "trace-node--act" : "")"
+                     style="left:@(ComboLeft)px;top:@(combo.Top)px;width:@(ComboWidth)px"
+                     @key="@($"combo-{combo.Name}")">
+                    <span class="cap">🧩 Combo</span>
+                    @combo.DisplayName
+                </div>
+            }
+
+            @foreach (var provider in _layout.Providers)
+            {
+                <div class="trace-node @(provider.Running ? "trace-node--act" : "") @(provider.HasError ? "trace-node--err" : "")"
+                     style="left:@(ProviderLeft)px;top:@(provider.Top)px;width:@(ProviderWidth)px"
+                     @key="@($"provider-{provider.Name}")">
+                    <span class="cap">☁️ Provider</span>
+                    <i class="trace-idot @NodeDotClass(provider.Running, provider.HasError)"></i> @provider.Name
+                    @if (provider.ErrorStatus is { } status)
+                    {
+                        <span class="trace-tag trace-tag--bad">@status</span>
+                    }
+                </div>
+            }
+
+            @foreach (var chip in _layout.Chips)
+            {
+                @if (chip.IsIdle)
+                {
+                    @* Chip "+N idle" → expand inline danh sách TK (spec §5.5 — không dùng Modal) *@
+                    <button type="button" class="trace-chip trace-chip--idle"
+                            style="left:@(AccountLeft)px;top:@(chip.Top)px"
+                            aria-expanded="@(_expandedIdleProvider == chip.Provider)"
+                            @key="@($"idle-{chip.Provider}")"
+                            @onclick="() => ToggleIdleProvider(chip.Provider)">
+                        @string.Format(L["trace.idleAccounts"], chip.IdleCount) @(_expandedIdleProvider == chip.Provider ? "▴" : "▾")
+                    </button>
+                    @if (_expandedIdleProvider == chip.Provider)
+                    {
+                        <div class="trace-idle-list" style="@IdleListStyle(chip)" @key="@($"idle-list-{chip.Provider}")">
+                            <ul>
+                                @foreach (var account in chip.IdleAccounts)
+                                {
+                                    <li @key="account.Name">
+                                        @if (account.Living)
+                                        {
+                                            <i class="trace-idot @(account.Running ? "" : "trace-idot--dim")"></i>
+                                        }
+                                        @account.Name
+                                    </li>
+                                }
+                            </ul>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="trace-chip @(chip.Running ? "trace-chip--act" : "") @(chip.HasError ? "trace-chip--err" : "")"
+                         style="left:@(AccountLeft)px;top:@(chip.Top)px"
+                         @key="@($"chip-{chip.Provider}-{chip.Name}")">
+                        <i class="trace-idot @NodeDotClass(chip.Running, chip.HasError)"></i> @chip.Name
+                    </div>
+                }
+            }
 
             @* Circle = request: 1 dot tuyệt đối/node, stack ngang theo anchor của stage *@
             @foreach (var group in BuildGroups())
@@ -244,9 +441,47 @@
     // Dòng dot nằm ngay dưới cap đầu node: padding-top 5px + cap line-height 12px (xem CSS)
     private const int DotRowOffsetY = 17;
 
+    // ===== Tọa độ nhánh Combo → Provider → Account — copy từ mockup trace-design-v2.html,
+    // tính thuần bằng C# trong AnchorOf/RebuildBranchLayout, không JS interop =====
+    private const int ComboLeft = 210;         // cột Combo
+    private const int ComboWidth = 130;
+    private const int ProviderLeft = 410;      // cột Provider
+    private const int ProviderWidth = 128;
+    private const int AccountLeft = 596;       // cột Account chip
+    private const int ComboStartY = 168;       // block Combo đầu tiên (mockup top 168)
+    private const int ComboRowH = 128;         // giãn cách block Combo (mockup 168 → 296)
+    private const int ProviderStartY = 76;     // đầu lane Provider/Account (mockup chip top 76)
+    private const int ProviderRowH = 110;      // giãn cách lane Provider (mockup 118 → 228 → 326)
+    private const int ChipRowH = 34;           // giãn cách chip (mockup 76 → 110 → 144 → 178)
+    private const int ChipProviderLift = 42;   // Provider block dưới đầu lane (mockup 118 − 76)
+    private const int ChipLanePadY = 24;       // padding đáy lane — tránh chip đè lane kế
+    private const int NodeElbowOffsetY = 20;   // điểm rẽ trên block nhánh (mockup ~+20)
+    private const int ChipElbowOffsetY = 12;   // điểm rẽ trên chip (mockup 90 − 76)
+    private const int DispatchExitX = 128;     // mép phải node Thực thi (mockup M128,210)
+    private const int DispatchExitY = 210;
+    private const int ChipDotOffsetX = 8;      // dot trong chip: border 1.5px + padding 7px
+    private const int ChipDotOffsetY = 6;
+    private const int ProviderDotOffsetX = 9;  // dot trong provider: border 1.5px + padding 8px
+    private const int MaxAccountChips = 4;     // spec §5.2: max 4 chip + "+N idle"
+    private const int CanvasHeight = 415;
+    private const int IdleChipHeight = 26;     // chiều cao chip (~22px) + hở 4px với panel
+    private const int IdleListUpThreshold = 200; // chip dưới ngưỡng này → panel mở xuống, trên → mở lên
+
     private readonly ConcurrentQueue<TraceEvent> _inbox = new();
     private readonly Dictionary<string, TraceNode> _nodes = new();
     private readonly CancellationTokenSource _cts = new();
+
+    // Layout nhánh tính lại mỗi lần render từ _nodes (không giữ state layout riêng)
+    private BranchLayout _layout = new();
+
+    // Cache provider cho chip "+N idle" — nạp 1 lần trong OnInitializedAsync
+    private IReadOnlyList<Provider> _providers = [];
+
+    // Provider đang mở panel danh sách idle (tối đa 1 chip mở cùng lúc)
+    private string? _expandedIdleProvider;
+
+    // Component đã gỡ — callback fire-and-forget không được StateHasChanged sau dispose
+    private bool _disposed;
 
     // Id từng bị drop do vượt cap 60 — cộng lại đúng khi node được dựng từ event mới,
     // tránh badge +N bị cao dần vô hạn theo thời gian
@@ -271,6 +506,52 @@
 
     /// <summary>Nhóm dot cùng anchor: tối đa 6 dot vẽ ra, phần dư cộng vào badge +N.</summary>
     private sealed record DotGroup(int X, int Y, List<TraceNode> Shown, int Overflow);
+
+    /// <summary>Nhóm node cùng route (Combo, Provider, Account) — đơn vị vẽ connector của nhánh.</summary>
+    private sealed record BranchGroup(string Combo, string Provider, string Account, List<TraceNode> Nodes)
+    {
+        /// <summary>Đang chạy: có node ở Attempt — viền xanh + dot pulse (spec §5.2).</summary>
+        public bool Running => Nodes.Any(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
+
+        /// <summary>Nhóm lỗi: node có status ≥ 400 hoặc Success == false → connector nét đỏ.</summary>
+        public bool HasError => Nodes.Any(n => n.Status is >= 400 || n.Success == false);
+    }
+
+    /// <summary>Block cột Combo — mockup <c>.n</c> tại left 210.</summary>
+    private sealed record ComboBlock(string Name, string? Mode, int Top, bool Running)
+    {
+        /// <summary>"combo · mode" (mockup <c>ai-fast · RR</c>); combo rỗng (dispatch trực tiếp) → "—".</summary>
+        public string DisplayName => Name.Length == 0 ? "—" : Mode is null ? Name : $"{Name} · {Mode}";
+    }
+
+    /// <summary>Block cột Provider — mockup <c>.n</c> tại left 410, kèm tag status lỗi.</summary>
+    private sealed record ProviderBlock(string Name, int Top, bool Running, bool HasError, int? ErrorStatus);
+
+    /// <summary>Chip cột Account — mockup <c>.acct</c> tại left 596; IsIdle = chip "+N idle".</summary>
+    private sealed record AccountChip(
+        string Provider, string Name, int Top, bool IsIdle, bool Running, bool HasError,
+        int IdleCount, IReadOnlyList<IdleAccount> IdleAccounts);
+
+    /// <summary>Một dòng trong panel expand chip idle — Living = còn node sống tham chiếu TK này.</summary>
+    private sealed record IdleAccount(string Name, bool Living, bool Running);
+
+    /// <summary>Đường connector 1 group — HasError đổi màu nét (đỏ) thay vì xanh marching-ants.</summary>
+    private sealed record BranchPath(IReadOnlyList<string> Segments, bool HasError);
+
+    /// <summary>Layout nhánh của lần render hiện tại — svg, block, chip và AnchorOf cùng đọc.</summary>
+    private sealed class BranchLayout
+    {
+        public List<ComboBlock> Combos { get; } = [];
+        public List<ProviderBlock> Providers { get; } = [];
+        public List<AccountChip> Chips { get; } = [];
+        public List<BranchPath> Paths { get; } = [];
+
+        public AccountChip? FindChip(string provider, string account) =>
+            Chips.FirstOrDefault(c => !c.IsIdle && c.Provider == provider && c.Name == account);
+
+        public ProviderBlock? FindProvider(string provider) =>
+            Providers.FirstOrDefault(p => p.Name == provider);
+    }
 
     private int QueuedCount => _nodes.Values.Count(n => n.Stage == TraceStage.Received);
     private int RunningCount => _nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
@@ -306,8 +587,38 @@
 
         EnforceCap();
 
+        _ = LoadProvidersAsync();
         _ = RunLoopAsync(_cts.Token);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Nạp cache provider (kèm Accounts) cho chip "+N idle" và panel expand —
+    /// fire-and-forget + try/catch: deviation có chủ đích khỏi chữ "lazy khi expand" trong
+    /// spec §5.5 (brief Task 6 Interfaces): tổng số TK cần biết NGAY khi render chip,
+    /// expand chỉ hiện lại danh sách đã có; không chặn first render.
+    /// </summary>
+    private async Task LoadProvidersAsync()
+    {
+        try
+        {
+            var providers = await ProviderService.ListAsync();
+
+            // Gán + render phải qua dispatcher thread — ListAsync chạy trên thread pool.
+            if (!_disposed)
+            {
+                await InvokeAsync(() =>
+                {
+                    _providers = providers;
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            // DB chưa sẵn sàng / query lỗi → chip idle ẩn (không có tổng TK), UI vẫn chạy.
+            Log.Error("RequestTrace: nạp danh sách provider cho chip idle thất bại.", ex);
+        }
     }
 
     /// <summary>
@@ -450,13 +761,189 @@
         }
     }
 
-    /// <summary>Tọa độ anchor của node theo stage hiện tại — Task 6 đổi nhánh Attempt sang chip Account.</summary>
+    /// <summary>Tọa độ anchor của node theo stage hiện tại — Attempt trỏ tới chip Account của route (Task 6).</summary>
     private (int X, int Y) AnchorOf(TraceNode n) => n.Stage switch
     {
         TraceStage.Received => (DotStartX, QueueTop + DotRowOffsetY),
-        TraceStage.DispatchStarted or TraceStage.Attempt => (DotStartX, DispatchTop + DotRowOffsetY),
+        TraceStage.DispatchStarted => (DotStartX, DispatchTop + DotRowOffsetY),
+        TraceStage.Attempt => AttemptAnchor(n),
         _ => (DotStartX, ClientTop + DotRowOffsetY),
     };
+
+    /// <summary>
+    /// Anchor cho Attempt: tâm dot inline của chip Account trong group route (spec G3).
+    /// Chip không render được → lùi về node Provider; group chưa render (không có route) →
+    /// lùi về nút Thực thi như Task 5 — dot không bao giờ nhảy ra ngoài layout.
+    /// </summary>
+    private (int X, int Y) AttemptAnchor(TraceNode n)
+    {
+        if (n.Route is not { Provider: { } providerName })
+            return (DotStartX, DispatchTop + DotRowOffsetY);
+
+        if (_layout.FindChip(providerName, n.Route!.Account ?? string.Empty) is { } chip)
+            return (AccountLeft + ChipDotOffsetX, chip.Top + ChipDotOffsetY);
+
+        if (_layout.FindProvider(providerName) is { } provider)
+            return (ProviderLeft + ProviderDotOffsetX, provider.Top + DotRowOffsetY);
+
+        return (DotStartX, DispatchTop + DotRowOffsetY);
+    }
+
+    /// <summary>
+    /// Tính lại layout nhánh từ <c>_nodes</c> còn hạn — gọi đầu mỗi render.
+    /// Chỉ group có node tham chiếu (<c>Route.Provider</c> khác null) được vẽ (spec §5.1);
+    /// thứ tự = xuất hiện đầu tiên của group trong <c>_nodes</c>, tọa độ cột fixed theo mockup.
+    /// </summary>
+    private void RebuildBranchLayout()
+    {
+        var layout = new BranchLayout();
+        _layout = layout;
+
+        // Sắp (ReceivedAt, Id) để thứ tự "xuất hiện đầu tiên" ổn định giữa các lần render —
+        // Dictionary không giữ thứ tự enumerate, không được dựa vào nó.
+        var routed = _nodes.Values
+            .Where(n => n.Route?.Provider is not null)
+            .OrderBy(n => n.ReceivedAt)
+            .ThenBy(n => n.Id, StringComparer.Ordinal)
+            .ToList();
+        if (routed.Count == 0)
+            return;
+
+        var groups = routed
+            .GroupBy(n => (Combo: n.Route!.Combo ?? string.Empty,
+                           Provider: n.Route!.Provider!,
+                           Account: n.Route!.Account ?? string.Empty))
+            .Select(g => new BranchGroup(g.Key.Combo, g.Key.Provider, g.Key.Account, g.ToList()))
+            .ToList();
+
+        // Cột Combo: mỗi combo distinct một block, xếp dọc theo thứ tự xuất hiện
+        var comboNames = groups.Select(g => g.Combo).Distinct(StringComparer.Ordinal).ToList();
+        var comboIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < comboNames.Count; i++)
+        {
+            var name = comboNames[i];
+            comboIndex[name] = i;
+            var nodes = groups.Where(g => g.Combo == name).SelectMany(g => g.Nodes).ToList();
+            // Mode do DispatchStarted ghi, ApplyEvent giữ lại khi node chuyển sang Attempt
+            var mode = nodes.Select(n => n.Mode).FirstOrDefault(m => m is not null);
+            var running = nodes.Any(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
+            layout.Combos.Add(new ComboBlock(name, mode, ComboStartY + i * ComboRowH, running));
+        }
+
+        // Cột Provider + chip Account — lane dồn theo số chip (chip 34px, lane ≥ 110px như mockup)
+        var laneTop = ProviderStartY;
+        foreach (var providerGroup in groups.GroupBy(g => g.Provider))
+        {
+            var providerName = providerGroup.Key;
+            var pGroups = providerGroup.ToList();
+
+            // TK đang tham chiếu: GroupBy giữ thứ tự xuất hiện, OrderByDescending (stable sort)
+            // đưa TK đang chạy lên trước khi vượt max 4 chip — "active trước" (spec §5.2)
+            var accounts = pGroups
+                .GroupBy(g => g.Account)
+                .Select(ag => (Name: ag.Key,
+                                Running: ag.Any(x => x.Running),
+                                HasError: ag.Any(x => x.HasError)))
+                .OrderByDescending(a => a.Running)
+                .ToList();
+            var shown = accounts.Take(MaxAccountChips).ToList();
+
+            // Tổng số TK lấy từ cache IProviderService; provider chưa có trong cache →
+            // không biết tổng → bỏ chip idle thay vì hiển thị N sai cho người dùng.
+            var providerEntity = _providers.FirstOrDefault(
+                p => string.Equals(p.Name, providerName, StringComparison.Ordinal));
+            var activeCount = accounts.Count;
+            var idleCount = providerEntity is { } pe ? Math.Max(0, pe.Accounts.Count - activeCount) : 0;
+            var chipTotal = shown.Count + (idleCount > 0 ? 1 : 0);
+            var laneHeight = Math.Max(ProviderRowH, ChipLanePadY + chipTotal * ChipRowH);
+
+            var running = pGroups.Any(g => g.Running);
+            var hasError = pGroups.Any(g => g.HasError);
+            // Tag lỗi: status ≥ 400 của node xuất hiện đầu — mockup hiện đúng 1 tag (429)
+            var errorStatus = pGroups
+                .SelectMany(g => g.Nodes)
+                .FirstOrDefault(n => n.Status is >= 400)?.Status;
+            layout.Providers.Add(new ProviderBlock(providerName, laneTop + ChipProviderLift, running, hasError, errorStatus));
+
+            for (var k = 0; k < shown.Count; k++)
+            {
+                layout.Chips.Add(new AccountChip(
+                    providerName, shown[k].Name, laneTop + k * ChipRowH,
+                    IsIdle: false, Running: shown[k].Running, HasError: shown[k].HasError,
+                    IdleCount: 0, IdleAccounts: []));
+            }
+
+            if (idleCount > 0)
+            {
+                // Panel expand = toàn bộ TK của provider (spec §5.5); dot active suy ra node
+                // đang sống trong _nodes (Living), pulse nếu TK đang có request chạy (Running).
+                var known = providerEntity?.Accounts.Select(a => a.Name).ToList() ?? [];
+                var referenced = pGroups.Select(g => g.Account).Distinct().ToList();
+                var entryNames = known.Concat(referenced.Where(r => !known.Contains(r))).ToList();
+                var entries = entryNames
+                    .Select(name => new IdleAccount(
+                        name,
+                        Living: pGroups.Any(g => g.Account == name),
+                        Running: pGroups.Any(g => g.Account == name && g.Running)))
+                    .ToList();
+                layout.Chips.Add(new AccountChip(
+                    providerName, string.Empty, laneTop + shown.Count * ChipRowH,
+                    IsIdle: true, Running: false, HasError: false,
+                    IdleCount: idleCount, IdleAccounts: entries));
+            }
+
+            laneTop += laneHeight;
+        }
+
+        // Connector per group: Thực thi → Combo → Provider → Account (elbow ở trung điểm 2 cột).
+        // Tách từng đoạn (giống mockup): block nền trong nên không kẻ đường xuyên qua trong block.
+        foreach (var g in groups)
+        {
+            // Defensive: combo/provider dựng ngay từ groups ở trên — không bao giờ vắng.
+            if (!comboIndex.TryGetValue(g.Combo, out var comboIdx))
+                continue;
+            var providerBlock = layout.FindProvider(g.Provider);
+            if (providerBlock is null)
+                continue;
+
+            var cy = layout.Combos[comboIdx].Top + NodeElbowOffsetY;
+            var py = providerBlock.Top + NodeElbowOffsetY;
+            var m1 = (DispatchExitX + ComboLeft) / 2;
+            var m2 = (ComboLeft + ComboWidth + ProviderLeft) / 2;
+            var segments = new List<string>
+            {
+                $"M{DispatchExitX},{DispatchExitY} L{m1},{DispatchExitY} L{m1},{cy} L{ComboLeft},{cy}",
+                $"M{ComboLeft + ComboWidth},{cy} L{m2},{cy} L{m2},{py} L{ProviderLeft},{py}",
+            };
+
+            // Chip bị cắt (vượt max 4) → đường dừng tại Provider
+            if (layout.FindChip(g.Provider, g.Account) is { } chip)
+            {
+                var m3 = (ProviderLeft + ProviderWidth + AccountLeft) / 2;
+                var chy = chip.Top + ChipElbowOffsetY;
+                segments.Add($"M{ProviderLeft + ProviderWidth},{py} L{m3},{py} L{m3},{chy} L{AccountLeft},{chy}");
+            }
+
+            layout.Paths.Add(new BranchPath(segments, g.HasError));
+        }
+    }
+
+    /// <summary>Class dot indicator: rỗng = xanh pulse (đang chạy), đỏ khi lỗi còn lại, xám khi chỉ còn terminal.</summary>
+    private static string NodeDotClass(bool running, bool hasError) =>
+        running ? "" : hasError ? "trace-idot--err" : "trace-idot--dim";
+
+    /// <summary>
+    /// Panel expand: mở xuống dưới chip nếu còn chỗ trong canvas 415px, ngược lại mở lên trên —
+    /// tự giữ panel trong vùng clip (không build scrolling theo ruling Task 6).
+    /// </summary>
+    private string IdleListStyle(AccountChip chip) =>
+        chip.Top > IdleListUpThreshold
+            ? $"left:{AccountLeft}px;bottom:{CanvasHeight - chip.Top + 4}px"
+            : $"left:{AccountLeft}px;top:{chip.Top + IdleChipHeight}px";
+
+    /// <summary>Bật/tắt panel inline danh sách TK khi click chip "+N idle" (spec §5.5 — không dùng Modal).</summary>
+    private void ToggleIdleProvider(string provider) =>
+        _expandedIdleProvider = _expandedIdleProvider == provider ? null : provider;
 
     /// <summary>Nhóm node theo anchor, tối đa 6 dot/nhóm + badge +N cho phần dư.</summary>
     private List<DotGroup> BuildGroups() =>
@@ -491,6 +978,10 @@
         // Bắt buộc unsubscribe: feed là singleton, giữ delegate trỏ vào component đã
         // dispose là leak + handler chạy vô ích cho mỗi event.
         Feed.Published -= OnPublished;
+
+        // Đánh dấu trước khi cancel — LoadProvidersAsync fire-and-forget có thể đang chạy,
+        // callback không được StateHasChanged trên component đã gỡ.
+        _disposed = true;
 
         // Chỉ Cancel, không Dispose: vòng lặp còn đăng ký Task.Delay trên token này;
         // CTS không giữ tài nguyên native nên GC thu hồi an toàn.
