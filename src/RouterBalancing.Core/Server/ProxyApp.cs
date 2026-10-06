@@ -47,6 +47,9 @@ public static class ProxyApp
         // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
         builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();
 
+        // Cancel: nguồn sự thật DUY NHẤT cho HTTP endpoint và nút Huỷ trong UI (spec §5.1)
+        builder.Services.AddSingleton<IRequestCancelService, RequestCancelService>();
+
         // Chính sách timeout đường forward chat (2026-10-04): app KHÔNG tự cắt request —
         // client→app và app→provider không có timeout; client→provider do client quyết
         // định qua disconnect (RequestAborted). Timeout 100s (default) cắt SSE giữa chừng,
@@ -320,27 +323,29 @@ public static class ProxyApp
 
         // Chỉ huỷ được request còn trong queue (spec §3.4): 200 / 409 / 404
         app.MapPost("/v1/requests/{id}/cancel", async (string id, HttpContext ctx,
-            IRequestQueue queue, IExecutionList executions) =>
+            IRequestCancelService cancelSvc) =>
         {
-            // TryRemove atomic với Take — thắng thì 200, thua thì rơi vào nhánh 409/404
-            if (queue.TryRemove(id, out var removed))
+            // TryRemove atomic với Take — logic nằm trong IRequestCancelService (spec §5.1);
+            // thắng thì 200, thua thì rơi vào nhánh 409/404
+            switch (cancelSvc.Cancel(id))
             {
-                removed.Completion.TrySetResult(new DispatchOutcome.Cancelled());
-                await Results.Json(new { cancelled = true }).ExecuteAsync(ctx);
-                return;
+                case RequestCancelResult.Cancelled:
+                    await Results.Json(new { cancelled = true }).ExecuteAsync(ctx);
+                    break;
+                case RequestCancelResult.NotCancellable:
+                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 409,
+                        $"The request '{id}' is not cancellable", "invalid_request_error", null,
+                        "not_cancellable");
+                    break;
+                // NotRunning không tới được từ service (nó không biết trạng thái host) —
+                // gộp NotFound để switch exhaustive, tránh rơi ra ngoài khi enum thêm giá trị
+                case RequestCancelResult.NotFound:
+                case RequestCancelResult.NotRunning:
+                    await ChatCompletionsHandler.WriteErrorAsync(ctx, 404,
+                        $"The request '{id}' does not exist", "invalid_request_error", null,
+                        "request_not_found");
+                    break;
             }
-
-            if (executions.Contains(id))
-            {
-                await ChatCompletionsHandler.WriteErrorAsync(ctx, 409,
-                    $"The request '{id}' is not cancellable", "invalid_request_error", null,
-                    "not_cancellable");
-                return;
-            }
-
-            await ChatCompletionsHandler.WriteErrorAsync(ctx, 404,
-                $"The request '{id}' does not exist", "invalid_request_error", null,
-                "request_not_found");
         });
     }
 
