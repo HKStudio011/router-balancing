@@ -226,6 +226,30 @@ public class TraceIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Enqueue_PublishesReceivedEvent_WithPriorityAndEndpoint()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        var client = await StartAsync(new StubUpstream());
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = ChatBody("m1"),
+        };
+        request.Headers.Add("X-Priority", "max");
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var id = response.Headers.GetValues("X-Request-Id").Single();
+        await WaitUntilAsync(() => EventsOf(id).Any(e => e.Stage == TraceStage.Finished),
+            "terminal Finished phải có trong feed");
+
+        var received = EventsOf(id).Single(e => e.Stage == TraceStage.Received);
+        Assert.Equal(RequestPriority.Highest, received.Priority);   // "max" → Highest (parser)
+        Assert.Equal("chat", received.Endpoint);
+        Assert.Null(received.HeadersSent);                          // non-stream không publish G2 (spec E6)
+    }
+
+    [Fact]
     public async Task QueuedRequest_Cancel_PublishesCanceled()
     {
         SeedProvider(maxConcurrent: 1, "m1");

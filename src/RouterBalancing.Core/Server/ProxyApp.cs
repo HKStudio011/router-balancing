@@ -202,7 +202,9 @@ public static class ProxyApp
         // đồng bộ với trace — request không qua enqueue (validate 400) không hiện trong monitor
         monitor.StartRequest(id, request.Model, prepared.Body);
         trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
-            null, null, null, null, null, DateTimeOffset.Now));
+            null, null, null, null, null, DateTimeOffset.Now,
+            Priority: request.Priority,
+            Endpoint: endpoint.ToString().ToLowerInvariant()));
 
         // Đăng ký SAU Enqueue: dispatcher đã Take thì TryRemove false → serve tự cắt stream (spec §3.4)
         ctx.RequestAborted.Register(() =>
