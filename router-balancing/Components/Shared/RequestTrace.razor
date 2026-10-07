@@ -103,6 +103,16 @@
         white-space: nowrap;
     }
 
+    /* G5: dòng endpoint đang được request dùng — sáng xanh ~2s rồi fade về màu gốc */
+    .trace-node__path {
+        transition: color .8s ease;
+    }
+
+    .trace-node__path--lit {
+        color: #3b82f6;
+        font-weight: 600;
+    }
+
     /* Circle = request: transition left/top tạo hiệu ứng di chuyển trên đường (không JS) */
     .trace-dot {
         position: absolute;
@@ -363,7 +373,7 @@
                    truncate "v1/chat" gây hiểu nhầm. /v1/responses (design 2026-09-25 mục 2) đã
                    implement (Task 4) → node liệt kê cả 2. Font 9px/lh 11px có đo lường ở
                    .trace-node__paths — 2 dòng gọn trong ô, không đè spine. *@
-                <span class="trace-node__paths">POST /v1/chat/completions<br />POST /v1/responses</span>
+                <span class="trace-node__paths"><span class="@PathLitClass("chat")">POST /v1/chat/completions</span><br /><span class="@PathLitClass("responses")">POST /v1/responses</span></span>
             </div>
             <div class="trace-node" style="left:8px;top:96px;width:120px">
                 <span class="cap">@L["trace.node.queue"]</span>
@@ -455,6 +465,7 @@
                     var node = group.Shown[i];
                     <div class="@("trace-dot " + ColorClass(node) + (node.Stage == TraceStage.Parked ? " trace-dot--park" : ""))" @key="node.Id"
                          style="left:@(group.X + i * DotStepX)px;top:@(group.Y)px"
+                         title="@node.Endpoint"
                          @onclick="() => OpenDetail(node.Id)"></div>
                 }
                 @if (group.Y == QueueTop + DotRowOffsetY)
@@ -519,6 +530,11 @@
     private const int DotStepX = 16;
     private const int TickMs = 100;
     private static readonly TimeSpan TerminalTtl = TimeSpan.FromSeconds(10);
+
+    // G5: giữ sáng dòng endpoint trên node Input trong ~2s sau event Received đầu
+    private static readonly TimeSpan EndpointLitTtl = TimeSpan.FromSeconds(2);
+    private string? _litEndpoint;
+    private DateTimeOffset? _litExpiresAt;
 
     // Tọa độ pixel spine theo mockup trace-design-v2.html — tính bằng C#, không JS interop
     private const int DotStartX = 14;   // node left 8 + padding
@@ -755,6 +771,13 @@
         if (RemoveExpired())
             changed = true;
 
+        if (_litExpiresAt is { } litUntil && litUntil <= DateTimeOffset.UtcNow)
+        {
+            _litEndpoint = null;
+            _litExpiresAt = null;
+            changed = true;
+        }
+
         if (!changed)
             return;
 
@@ -767,6 +790,14 @@
     {
         var isNew = !Nodes.ContainsKey(e.RequestId);
         _agg.Apply(e);
+
+        // G5: chỉ event nào MANG endpoint (Received đầu) mới thay ánh sáng —
+        // update demote/HeadersSent để null → không đụng (spec §3.6)
+        if (e.Endpoint is { } endpoint)
+        {
+            _litEndpoint = endpoint;
+            _litExpiresAt = e.At + EndpointLitTtl;
+        }
 
         // Node dựng lại từ id từng bị cap-drop → hoàn badge +N thay vì cộng dồn
         if (isNew && _droppedIds.Remove(e.RequestId))
@@ -1029,6 +1060,9 @@
             .OrderBy(g => g.Y)
             .ThenBy(g => g.X)
             .ToList();
+
+    /// <summary>Class dòng path trên node Input — sáng xanh khi endpoint vừa được request dùng (G5).</summary>
+    private string PathLitClass(string endpoint) => _litEndpoint == endpoint ? "trace-node__path trace-node__path--lit" : "trace-node__path";
 
     /// <summary>Màu circle theo trạng thái — spec G2; delegate sang <see cref="TraceColors.ForStage"/>
     /// (một nguồn sự thật cho màu — API Monitor đọc cùng bảng này).</summary>
