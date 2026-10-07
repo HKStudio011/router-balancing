@@ -236,11 +236,17 @@
     .trace-chip--act { border-color: #3b82f6; }
     .trace-chip--err { border-color: #ef4444; }
 
-    /* Chip proxy đang cooldown — nét đứt đỏ (spec §3.5, mockup .trace-chip--cooldown) */
+    /* Chip account có proxy đang cooldown — viền nét đứt đỏ trên CHÍNH chip (spec §3.5 G4:
+       trang trí chip, không thay chip) */
     .trace-chip--cooldown {
         border-style: dashed;
         border-color: #ef4444;
+    }
+
+    /* Badge đếm ngược COOLDOWN gắn trong chip — chữ đỏ (spec §3.5) */
+    .trace-chip__cooldown {
         color: #ef4444;
+        margin-left: 6px;
     }
 
     /* Chip "+N idle" (mockup .acct.idle) — click expand danh sách inline */
@@ -494,21 +500,19 @@
                         </div>
                     }
                 }
-                else if (TryGetCooldown(chip.Name, out var remaining))
-                {
-                    @* G4: account đang cooldown — chip nét đứt đỏ thay chip thường tại đúng slot
-                       (`.trace-chip` là absolute nên phải giữ tọa độ của chip; title/text theo spec §3.5) *@
-                    <span class="trace-chip trace-chip--cooldown"
-                          style="left:@(AccountLeft)px;top:@(chip.Top)px"
-                          @key="@($"cooldown-{chip.Provider}-{chip.Name}")"
-                          title="@L["trace.cooldown"]">@string.Format(L["trace.cooldown"], (int)Math.Ceiling(remaining.TotalSeconds))</span>
-                }
                 else
                 {
-                    <div class="trace-chip @(chip.Running ? "trace-chip--act" : "") @(chip.HasError ? "trace-chip--err" : "")"
+                    // G4: account có proxy đang cooldown → TRANG TRÍ chip (spec §3.5): giữ nguyên
+                    // tên/visual trạng thái, thêm viền đỏ đứt qua class + badge đếm ngược bên trong.
+                    var cooling = TryGetCooldown(chip.Name, out var remaining);
+                    <div class="trace-chip @(chip.Running ? "trace-chip--act" : "") @(chip.HasError ? "trace-chip--err" : "") @(cooling ? "trace-chip--cooldown" : "")"
                          style="left:@(AccountLeft)px;top:@(chip.Top)px"
                          @key="@($"chip-{chip.Provider}-{chip.Name}")">
                         <i class="trace-idot @NodeDotClass(chip.Running, chip.HasError)"></i> @chip.Name
+                        @if (cooling)
+                        {
+                            <span class="trace-chip__cooldown">@string.Format(L["trace.cooldown"], (int)Math.Ceiling(remaining.TotalSeconds))</span>
+                        }
                     </div>
                 }
             }
