@@ -619,16 +619,22 @@ public sealed class DispatcherLoop(
                 "server_error", null, null));
             return;
         }
-        // G1: marker park — chỉ publish khi re-enqueue thật sự thành công;
-        // Route/Attempt null để merge không ghi đè Route đã biết từ attempt trước (spec §2.5)
-        trace.Publish(new TraceEvent(request.Id, TraceStage.Parked, request.Model,
-            null, null, null, null, null, DateTimeOffset.Now));
         // Token cancel giữa check trên và Enqueue: callback Register (endpoint) đã lỡ fire khi
-        // item chưa trong queue → tự gỡ lại + Cancelled (giữ hành vi cancel 3B); TrySetResult idempotent
-        if (request.Context.RequestAborted.IsCancellationRequested
-            && queue.TryRemove(request.Id, out _))
+        // item chưa trong queue → tự gỡ lại + Cancelled (giữ hành vi cancel 3B); TrySetResult idempotent.
+        // Đọc một lần: publish bên dưới chỉ tin trạng thái tại thời điểm này.
+        var canceled = request.Context.RequestAborted.IsCancellationRequested;
+        if (canceled && queue.TryRemove(request.Id, out _))
         {
             request.Completion.TrySetResult(new DispatchOutcome.Cancelled());
+        }
+        // G1: marker park — chỉ publish khi request THẬT SỰ nằm trong queue chờ slot;
+        // bị cancel ngay tại đây → không publish (request rời queue, endpoint publish Canceled —
+        // tránh node non-terminal bị re-add sau terminal, spec §2.1);
+        // Route/Attempt null để merge không ghi đè Route đã biết từ attempt trước (spec §2.5)
+        if (!canceled)
+        {
+            trace.Publish(new TraceEvent(request.Id, TraceStage.Parked, request.Model,
+                null, null, null, null, null, DateTimeOffset.Now));
         }
     }
 

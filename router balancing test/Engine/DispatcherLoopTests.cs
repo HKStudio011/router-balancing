@@ -922,6 +922,60 @@ public class DispatcherLoopTests : IDisposable
     }
 
     [Fact]
+    public async Task ReenqueueForPark_WhenCanceledDuringEnqueue_DoesNotPublishParked()
+    {
+        var p1 = SeedProvider("p1", maxConcurrent: 1, modelId: "m1");
+        var p2 = SeedProvider("p2", maxConcurrent: 1, modelId: "m1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new CapacityCornerUpstream();
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        using var cts = new CancellationTokenSource();
+
+        // Cancel đúng TRONG queue.Enqueue của lần park: RequestQueue.Enqueue bắn Changed
+        // đồng bộ sau khi item đã vào bucket (RequestQueue.cs:36) → token lửa giữa entry-check
+        // và cancel-check của ReenqueueForPark. Count Changed: 1 = enqueue r2, 2 = enqueue r1
+        // (test), 3 = re-enqueue park của r1 (Take không bắn Changed; TryRemove r1 là count 4).
+        var changed = 0;
+        void OnQueueChanged()
+        {
+            if (Interlocked.Increment(ref changed) == 3)
+                cts.Cancel();
+        }
+        _queue.Changed += OnQueueChanged;
+        try
+        {
+            var r2 = Req("req00002");
+            _queue.Enqueue(r2);
+            await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var r1 = Req("req00001");
+            r1.Context.RequestAborted = cts.Token;
+            _queue.Enqueue(r1);
+
+            // Cancel trong park-Enqueue → TryRemove + Cancelled chạy đồng bộ trong
+            // ReenqueueForPark — completion là dấu hiệu đã qua nhánh cancel
+            Assert.IsType<DispatchOutcome.Cancelled>(
+                await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            // G1: bị cancel ngay tại đây → KHÔNG publish Parked (request rời queue,
+            // endpoint sẽ publish Canceled — tránh node non-terminal sau terminal, spec §2.1)
+            Assert.DoesNotContain(_trace.Snapshot(),
+                e => e.RequestId == "req00001" && e.Stage == TraceStage.Parked);
+
+            upstream.Release();
+            Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(2, upstream.Calls); // r1 đã hủy — không có call#3
+        }
+        finally
+        {
+            _queue.Changed -= OnQueueChanged;
+        }
+    }
+
+    [Fact]
     public async Task ServeAsync_When401_TriesNextAccountOfSameProvider_BeforeChangingProvider()
     {
         var pidA = SeedProvider("p1", accounts: 2);
