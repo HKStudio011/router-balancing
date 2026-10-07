@@ -484,10 +484,13 @@
     private const int IdleListUpThreshold = 200; // chip dưới ngưỡng này → panel mở xuống, trên → mở lên
 
     private readonly ConcurrentQueue<TraceEvent> _inbox = new();
-    private readonly Dictionary<string, TraceNode> _nodes = new();
+    // Merge rule/anchor/tag nằm trong Core (TraceNodeAggregator) để test project với
+    // chỉ tham chiếu Core kiểm tra được — component giữ bookkeeping (cap-drop) + map pixel.
+    private readonly TraceNodeAggregator _agg = new(TerminalTtl);
+    private Dictionary<string, TraceNodeState> Nodes => _agg.Nodes;
     private readonly CancellationTokenSource _cts = new();
 
-    // Layout nhánh tính lại mỗi lần render từ _nodes (không giữ state layout riêng)
+    // Layout nhánh tính lại mỗi lần render từ Nodes (không giữ state layout riêng)
     private BranchLayout _layout = new();
 
     // Cache provider cho chip "+N idle" — nạp 1 lần trong OnInitializedAsync
@@ -507,27 +510,11 @@
     private readonly HashSet<string> _droppedIds = new();
     private int _overflow;
 
-    /// <summary>Trạng thái hiển thị của một request trên sơ đồ — Task 6/7 đọc các field này.</summary>
-    private sealed class TraceNode
-    {
-        /// <summary>Id request — khóa trong <c>_nodes</c>.</summary>
-        public required string Id { get; init; }
-
-        public string Model { get; set; } = string.Empty;
-        public TraceStage Stage { get; set; } = TraceStage.Received;
-        public TraceRoute? Route { get; set; }
-        public bool? Success { get; set; }
-        public int? Status { get; set; }
-        public string? Mode { get; set; }
-        public DateTimeOffset ReceivedAt { get; init; }
-        public DateTimeOffset? ExpiresAt { get; set; }
-    }
-
     /// <summary>Nhóm dot cùng anchor: tối đa 6 dot vẽ ra, phần dư cộng vào badge +N.</summary>
-    private sealed record DotGroup(int X, int Y, List<TraceNode> Shown, int Overflow);
+    private sealed record DotGroup(int X, int Y, List<TraceNodeState> Shown, int Overflow);
 
     /// <summary>Nhóm node cùng route (Combo, Provider, Account) — đơn vị vẽ connector của nhánh.</summary>
-    private sealed record BranchGroup(string Combo, string Provider, string Account, List<TraceNode> Nodes)
+    private sealed record BranchGroup(string Combo, string Provider, string Account, List<TraceNodeState> Nodes)
     {
         /// <summary>Đang chạy: có node ở Attempt — viền xanh + dot pulse (spec §5.2).</summary>
         public bool Running => Nodes.Any(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
@@ -572,8 +559,8 @@
             Providers.FirstOrDefault(p => p.Name == provider);
     }
 
-    private int QueuedCount => _nodes.Values.Count(n => n.Stage == TraceStage.Received);
-    private int RunningCount => _nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
+    private int QueuedCount => Nodes.Values.Count(n => n.Stage == TraceStage.Received);
+    private int RunningCount => Nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
 
     protected override Task OnInitializedAsync()
     {
@@ -592,8 +579,8 @@
             var now = DateTimeOffset.UtcNow;
             foreach (var q in Proxy.QueuedSnapshot())
             {
-                if (!_nodes.ContainsKey(q.Id))
-                    _nodes[q.Id] = new TraceNode { Id = q.Id, Model = q.Model, ReceivedAt = now };
+                if (!Nodes.ContainsKey(q.Id))
+                    Nodes[q.Id] = new TraceNodeState { Id = q.Id, Model = q.Model, ReceivedAt = now };
             }
         }
         catch (Exception ex)
@@ -649,7 +636,7 @@
 
         // Publish đến từ thread Kestrel/dispatcher — Blazor chỉ render an toàn trên
         // dispatcher thread của component nên phải Marshal bằng InvokeAsync. Nội dung
-        // _nodes chỉ đổi trong Flush (loop 100ms, cũng chạy qua InvokeAsync) nên render
+        // Nodes chỉ đổi trong Flush (loop 100ms, cũng chạy qua InvokeAsync) nên render
         // ở đây là diff rỗng: không thrash, vẫn đảm bảo re-render đi qua đúng thread.
         _ = InvokeAsync(StateHasChanged);
     }
@@ -667,7 +654,7 @@
                 // hơn, vô hại vì render tối đa 10 lần/s và chỉ khi thật sự có thay đổi.
                 await Task.Delay(TickMs, ct);
 
-                // Mọi thao tác trên _nodes đều qua InvokeAsync → chỉ chạy trên dispatcher
+                // Mọi thao tác trên Nodes đều qua InvokeAsync → chỉ chạy trên dispatcher
                 // thread, không race với render.
                 await InvokeAsync(Flush);
             }
@@ -707,47 +694,20 @@
     /// <summary>Áp một trace event vào node của request — idempotent, tái tạo node nếu đã bị drop.</summary>
     private void ApplyEvent(TraceEvent e)
     {
-        if (!_nodes.TryGetValue(e.RequestId, out var node))
-        {
-            node = new TraceNode
-            {
-                Id = e.RequestId,
-                Model = e.Model,
-                ReceivedAt = e.At,
-            };
-            _nodes[e.RequestId] = node;
+        var isNew = !Nodes.ContainsKey(e.RequestId);
+        _agg.Apply(e);
 
-            // Node dựng lại từ id từng bị cap-drop → hoàn badge +N thay vì cộng dồn
-            if (_droppedIds.Remove(e.RequestId))
-                _overflow = Math.Max(0, _overflow - 1);
-        }
-
-        node.Model = e.Model;
-        node.Stage = e.Stage;
-
-        // Chỉ ghi field event mang giá trị: Received/DispatchStarted để Route null —
-        // không được xoá route đã biết từ attempt trước.
-        if (e.Route is not null)
-            node.Route = e.Route;
-        if (e.Status is not null)
-            node.Status = e.Status;
-        if (e.Success is not null)
-            node.Success = e.Success;
-        if (e.Mode is not null)
-            node.Mode = e.Mode;
-
-        // Terminal giữ 10s rồi fade (spec §5.4); event thường xoá hạn để node sống mãi
-        node.ExpiresAt = e.Stage is TraceStage.Finished or TraceStage.Canceled
-            ? e.At + TerminalTtl
-            : null;
+        // Node dựng lại từ id từng bị cap-drop → hoàn badge +N thay vì cộng dồn
+        if (isNew && _droppedIds.Remove(e.RequestId))
+            _overflow = Math.Max(0, _overflow - 1);
     }
 
-    /// <summary>Gỡ node đã qua <see cref="TraceNode.ExpiresAt"/>. Trả về <see langword="true"/> nếu có node bị gỡ.</summary>
+    /// <summary>Gỡ node đã qua <see cref="TraceNodeState.ExpiresAt"/>. Trả về <see langword="true"/> nếu có node bị gỡ.</summary>
     private bool RemoveExpired()
     {
         var now = DateTimeOffset.UtcNow;
         List<string>? expiredIds = null;
-        foreach (var (id, node) in _nodes)
+        foreach (var (id, node) in Nodes)
         {
             if (node.ExpiresAt is { } expiresAt && expiresAt <= now)
                 (expiredIds ??= []).Add(id);
@@ -757,32 +717,32 @@
             return false;
 
         foreach (var id in expiredIds)
-            _nodes.Remove(id);
+            Nodes.Remove(id);
         return true;
     }
 
     /// <summary>Giới hạn 60 node hiển thị: drop terminal cũ nhất trước, vẫn vượt → giữ 60 mới nhất + đếm _overflow.</summary>
     private void EnforceCap()
     {
-        while (_nodes.Count > NodeCap)
+        while (Nodes.Count > NodeCap)
         {
-            var victim = _nodes.Values
+            var victim = Nodes.Values
                 .OrderBy(n => n.ExpiresAt is null ? 1 : 0)
                 .ThenBy(n => n.ReceivedAt)
                 .ThenBy(n => n.Id, StringComparer.Ordinal)
                 .First();
-            _nodes.Remove(victim.Id);
+            Nodes.Remove(victim.Id);
             _droppedIds.Add(victim.Id);
             _overflow++;
         }
     }
 
-    /// <summary>Tọa độ anchor của node theo stage hiện tại — Attempt trỏ tới chip Account của route (Task 6).</summary>
-    private (int X, int Y) AnchorOf(TraceNode n) => n.Stage switch
+    /// <summary>Tọa độ anchor của node theo stage hiện tại — Attempt trỏ tới chip Account của route (Task 6); anchor ngữ nghĩa map pixel tại đây.</summary>
+    private (int X, int Y) AnchorOf(TraceNodeState n) => TraceNodeAggregator.AnchorOf(n) switch
     {
-        TraceStage.Received => (DotStartX, QueueTop + DotRowOffsetY),
-        TraceStage.DispatchStarted => (DotStartX, DispatchTop + DotRowOffsetY),
-        TraceStage.Attempt => AttemptAnchor(n),
+        TraceAnchor.Queue => (DotStartX, QueueTop + DotRowOffsetY),
+        TraceAnchor.Dispatch => (DotStartX, DispatchTop + DotRowOffsetY),
+        TraceAnchor.Attempt => AttemptAnchor(n),
         _ => (DotStartX, ClientTop + DotRowOffsetY),
     };
 
@@ -791,7 +751,7 @@
     /// Chip không render được → lùi về node Provider; group chưa render (không có route) →
     /// lùi về nút Thực thi như Task 5 — dot không bao giờ nhảy ra ngoài layout.
     /// </summary>
-    private (int X, int Y) AttemptAnchor(TraceNode n)
+    private (int X, int Y) AttemptAnchor(TraceNodeState n)
     {
         if (n.Route is not { Provider: { } providerName })
             return (DotStartX, DispatchTop + DotRowOffsetY);
@@ -806,9 +766,9 @@
     }
 
     /// <summary>
-    /// Tính lại layout nhánh từ <c>_nodes</c> còn hạn — gọi đầu mỗi render.
+    /// Tính lại layout nhánh từ <c>Nodes</c> còn hạn — gọi đầu mỗi render.
     /// Chỉ group có node tham chiếu (<c>Route.Provider</c> khác null) được vẽ (spec §5.1);
-    /// thứ tự = xuất hiện đầu tiên của group trong <c>_nodes</c>, tọa độ cột fixed theo mockup.
+    /// thứ tự = xuất hiện đầu tiên của group trong <c>Nodes</c>, tọa độ cột fixed theo mockup.
     /// </summary>
     private void RebuildBranchLayout()
     {
@@ -817,7 +777,7 @@
 
         // Sắp (ReceivedAt, Id) để thứ tự "xuất hiện đầu tiên" ổn định giữa các lần render —
         // Dictionary không giữ thứ tự enumerate, không được dựa vào nó.
-        var routed = _nodes.Values
+        var routed = Nodes.Values
             .Where(n => n.Route?.Provider is not null)
             .OrderBy(n => n.ReceivedAt)
             .ThenBy(n => n.Id, StringComparer.Ordinal)
@@ -900,7 +860,7 @@
             if (idleCount > 0)
             {
                 // Panel expand = toàn bộ TK của provider (spec §5.5); dot active suy ra node
-                // đang sống trong _nodes (Living), pulse nếu TK đang có request chạy (Running).
+                // đang sống trong Nodes (Living), pulse nếu TK đang có request chạy (Running).
                 var known = providerEntity?.Accounts.Select(a => a.Name).ToList() ?? [];
                 var referenced = pGroups.Select(g => g.Account).Distinct().ToList();
                 var entryNames = known.Concat(referenced.Where(r => !known.Contains(r))).ToList();
@@ -984,7 +944,7 @@
 
     /// <summary>Nhóm node theo anchor, tối đa 6 dot/nhóm + badge +N cho phần dư.</summary>
     private List<DotGroup> BuildGroups() =>
-        _nodes.Values
+        Nodes.Values
             .GroupBy(AnchorOf)
             .Select(g =>
             {
@@ -1001,7 +961,7 @@
 
     /// <summary>Màu circle theo trạng thái — spec G2; delegate sang <see cref="TraceColors.ForStage"/>
     /// (một nguồn sự thật cho màu — API Monitor đọc cùng bảng này).</summary>
-    private static string ColorClass(TraceNode n) => TraceColors.ForStage(n.Stage, n.Success);
+    private static string ColorClass(TraceNodeState n) => TraceColors.ForStage(n.Stage, n.Success);
 
     /// <summary>Gỡ subscription và dừng vòng render — tránh leak delegate trên feed singleton.</summary>
     public ValueTask DisposeAsync()
