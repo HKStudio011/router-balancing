@@ -55,10 +55,6 @@
         align-items: center;
     }
 
-    .trace-count--ok { color: #22c55e; }
-    .trace-count--error { color: #ef4444; }
-    .trace-count--cancelled { color: #eab308; }
-
     .trace-node {
         position: absolute;
         border: 1.5px solid #8b8fa3;
@@ -277,12 +273,9 @@
 <div class="mb-4 rounded border border-border bg-surface p-4">
     <div class="trace-head">
         <span class="trace-title">📊 @L["trace.title"]</span>
+        @* Count row đã gộp sang strip API Monitor (user quyết 2026-10-07, mockup merge-counts A):
+           state live đọc trực tiếp từ circles + legend; chỉ giữ badge drop-over-cap ở đây. *@
         <div class="trace-counts">
-            <span>◯ <b>@QueuedCount</b> @L["trace.count.queued"]</span>
-            <span>● <b>@RunningCount</b> @L["trace.count.running"]</span>
-            <span class="trace-count--ok">● <b>@OkCount</b> @L["trace.count.ok"]</span>
-            <span class="trace-count--error">● <b>@ErrorCount</b> @L["trace.count.error"]</span>
-            <span class="trace-count--cancelled">● <b>@CancelledCount</b> @L["trace.count.cancelled"]</span>
             @* Badge node bị drop khi vượt cap 60 (khác badge +N theo anchor bên dưới) *@
             @if (_overflow > 0)
             {
@@ -581,9 +574,6 @@
 
     private int QueuedCount => _nodes.Values.Count(n => n.Stage == TraceStage.Received);
     private int RunningCount => _nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
-    private int OkCount => _nodes.Values.Count(n => n.Stage == TraceStage.Finished && n.Success != false);
-    private int ErrorCount => _nodes.Values.Count(n => n.Stage == TraceStage.Finished && n.Success == false);
-    private int CancelledCount => _nodes.Values.Count(n => n.Stage == TraceStage.Canceled);
 
     protected override Task OnInitializedAsync()
     {

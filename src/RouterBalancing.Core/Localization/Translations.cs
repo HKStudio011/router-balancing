@@ -74,8 +74,6 @@ public static class Translations
 
         // API Monitor panel (Task 4)
         ["monitor.title"] = "API Monitor",
-        ["monitor.tiles.live"] = "Live",
-        ["monitor.tiles.errors"] = "Errors",
         ["monitor.tiles.avgLatency"] = "Avg latency",
         ["monitor.tiles.tokensToday"] = "Tokens today",
         ["monitor.col.model"] = "Model",
@@ -462,8 +460,6 @@ public static class Translations
 
         // API Monitor panel (Task 4)
         ["monitor.title"] = "API Monitor",
-        ["monitor.tiles.live"] = "Đang chạy",
-        ["monitor.tiles.errors"] = "Lỗi",
         ["monitor.tiles.avgLatency"] = "Latency TB",
         ["monitor.tiles.tokensToday"] = "Token hôm nay",
         ["monitor.col.model"] = "Model",
