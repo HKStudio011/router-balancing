@@ -329,6 +329,13 @@ public class ProxyQueueIntegrationTests : IDisposable
             Assert.Contains("no-cache", resp.Headers.GetValues("Cache-Control").Single());
             Assert.Equal(1, upstream.Calls); // vẫn queued — request 2 chưa tới upstream
 
+            var feed = _app!.Services.GetRequiredService<ITraceFeed>();
+            var streamId = resp.Headers.GetValues("X-Request-Id").Single();
+            for (var i = 0; i < 100 && !feed.Snapshot().Any(e => e.RequestId == streamId && e.HeadersSent == true); i++)
+                await Task.Delay(50);
+            Assert.Contains(feed.Snapshot(),
+                e => e.RequestId == streamId && e.Stage == TraceStage.Received && e.HeadersSent == true);
+
             // Nội dung chưa hoàn thành: đọc ngắn không thấy [DONE] (còn giữ slot, chưa release)
             var stream = await resp.Content.ReadAsStreamAsync();
             using var readCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));

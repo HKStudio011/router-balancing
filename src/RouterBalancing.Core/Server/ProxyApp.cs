@@ -241,6 +241,9 @@ public static class ProxyApp
                 // đi ở lần flush/complete đầu tiên — flush 0 byte tường minh để head tới
                 // client khi request còn queued (đây là chính feature, không phải test-patch).
                 await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+                // G2: head đã commit 200 — đánh dấu cho trace (stream only; non-stream không có flush point)
+                trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
+                    null, null, null, null, null, DateTimeOffset.Now, HeadersSent: true));
                 (outcome, contentBytes) =
                     await RunStreamLoopAsync(ctx, pipe, request.Completion.Task);
             }
