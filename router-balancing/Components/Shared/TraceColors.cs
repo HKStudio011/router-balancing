@@ -25,6 +25,8 @@ internal static class TraceColors
         TraceStage.DispatchStarted or TraceStage.Attempt => "trace-dot--blue",
         TraceStage.Canceled => "trace-dot--yellow",
         TraceStage.Finished => success == false ? "trace-dot--red" : "trace-dot--green",
+        // Parked: dot trắng như Received — khác biệt thể hiện qua ring vàng (spec §3.2)
+        TraceStage.Parked => "trace-dot--white",
         _ => "trace-dot--white",
     };
 

@@ -134,6 +134,28 @@
         line-height: 11px;
     }
 
+    /* Ring vàng đứt quanh dot đang chờ slot (G1 — mockup .lt-park-ring) */
+    .trace-dot--park {
+        outline: 1.5px dashed #eab308;
+        outline-offset: 2px;
+    }
+
+    /* Cột badge bên phải node Hàng đợi (mockup left 132 — G1/G2/G3 dùng chung) */
+    .trace-queue-badges {
+        position: absolute;
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        white-space: nowrap;
+        z-index: 5;
+    }
+
+    .trace-badge--park {
+        color: #eab308;
+        border-color: #eab308;
+        border-style: dashed;
+    }
+
     .trace-legend {
         display: flex;
         gap: 10px;
@@ -413,9 +435,25 @@
                 for (var i = 0; i < group.Shown.Count; i++)
                 {
                     var node = group.Shown[i];
-                    <div class="trace-dot @ColorClass(node)" @key="node.Id"
+                    <div class="@("trace-dot " + ColorClass(node) + (node.Stage == TraceStage.Parked ? " trace-dot--park" : ""))" @key="node.Id"
                          style="left:@(group.X + i * DotStepX)px;top:@(group.Y)px"
                          @onclick="() => OpenDetail(node.Id)"></div>
+                }
+                @if (group.Y == QueueTop + DotRowOffsetY)
+                {
+                    var row = 0;
+                    foreach (var node in group.Shown)
+                    {
+                        if (node.Stage != TraceStage.Parked)
+                        {
+                            continue;   // Task 10 sẽ nới điều kiện này cho headers/priority
+                        }
+                        <div class="trace-queue-badges" style="left:132px;top:@(group.Y - 6 + row * 14)px"
+                             @key="@($"badge-{node.Id}")">
+                            <span class="trace-badge trace-badge--park">@L["trace.park.badge"]</span>
+                        </div>
+                        row++;
+                    }
                 }
                 @if (group.Overflow > 0)
                 {
@@ -432,6 +470,7 @@
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--green"></i>@L["trace.legend.ok"]</span>
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--red"></i>@L["trace.legend.error"]</span>
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--yellow"></i>@L["trace.legend.cancelled"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--white trace-dot--park"></i>@L["trace.legend.parked"]</span>
         <span class="trace-legend__hint">@L["trace.fadeHint"]</span>
     </div>
 </div>
@@ -559,7 +598,7 @@
             Providers.FirstOrDefault(p => p.Name == provider);
     }
 
-    private int QueuedCount => Nodes.Values.Count(n => n.Stage == TraceStage.Received);
+    private int QueuedCount => Nodes.Values.Count(n => n.Stage is TraceStage.Received or TraceStage.Parked);
     private int RunningCount => Nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
 
     protected override Task OnInitializedAsync()
