@@ -72,6 +72,16 @@ public static class Translations
         ["trace.node.combo"] = "🧩 Combo",
         ["trace.node.provider"] = "☁️ Provider",
 
+        // Live trace markers (Task 8)
+        // badge symbol/vocab API (X-Priority) giữ nguyên ở 2 ngôn ngữ
+        ["trace.park.badge"] = "waiting for slot",
+        ["trace.headers.badge"] = "200 ✓",
+        ["trace.priority.high"] = "High",
+        ["trace.priority.highest"] = "Highest",
+        ["trace.cooldown"] = "COOLDOWN · {0}s",
+        ["trace.legend.parked"] = "parked",
+        ["trace.legend.headers"] = "headers sent",
+
         // API Monitor panel (Task 4)
         ["monitor.title"] = "API Monitor",
         ["monitor.tiles.avgLatency"] = "Avg latency",
@@ -457,6 +467,16 @@ public static class Translations
         ["trace.node.client"] = "🖥 Client",
         ["trace.node.combo"] = "🧩 Combo",
         ["trace.node.provider"] = "☁️ Provider",
+
+        // Live trace markers (Task 8)
+        // badge symbol/vocab API (X-Priority) giữ nguyên ở 2 ngôn ngữ
+        ["trace.park.badge"] = "chờ slot",
+        ["trace.headers.badge"] = "200 ✓",
+        ["trace.priority.high"] = "High",
+        ["trace.priority.highest"] = "Highest",
+        ["trace.cooldown"] = "COOLDOWN · {0}s",
+        ["trace.legend.parked"] = "chờ slot",
+        ["trace.legend.headers"] = "đã gửi headers",
 
         // API Monitor panel (Task 4)
         ["monitor.title"] = "API Monitor",
