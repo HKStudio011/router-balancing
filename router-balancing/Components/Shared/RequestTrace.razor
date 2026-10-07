@@ -2,10 +2,13 @@
 @using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Engine
 @using RouterBalancing.Core.Providers
+@using RouterBalancing.Core.Proxies
 @inject ITraceFeed Feed
 @inject IProxyHost Proxy
 @inject ILogService Log
 @inject IProviderService ProviderService
+@inject IProxyPool ProxyPool
+@inject IProxyService ProxyService
 @inject LocalizationService L
 @implements IAsyncDisposable
 
@@ -232,6 +235,13 @@
 
     .trace-chip--act { border-color: #3b82f6; }
     .trace-chip--err { border-color: #ef4444; }
+
+    /* Chip proxy đang cooldown — nét đứt đỏ (spec §3.5, mockup .trace-chip--cooldown) */
+    .trace-chip--cooldown {
+        border-style: dashed;
+        border-color: #ef4444;
+        color: #ef4444;
+    }
 
     /* Chip "+N idle" (mockup .acct.idle) — click expand danh sách inline */
     .trace-chip--idle {
@@ -484,6 +494,15 @@
                         </div>
                     }
                 }
+                else if (TryGetCooldown(chip.Name, out var remaining))
+                {
+                    @* G4: account đang cooldown — chip nét đứt đỏ thay chip thường tại đúng slot
+                       (`.trace-chip` là absolute nên phải giữ tọa độ của chip; title/text theo spec §3.5) *@
+                    <span class="trace-chip trace-chip--cooldown"
+                          style="left:@(AccountLeft)px;top:@(chip.Top)px"
+                          @key="@($"cooldown-{chip.Provider}-{chip.Name}")"
+                          title="@L["trace.cooldown"]">@string.Format(L["trace.cooldown"], (int)Math.Ceiling(remaining.TotalSeconds))</span>
+                }
                 else
                 {
                     <div class="trace-chip @(chip.Running ? "trace-chip--act" : "") @(chip.HasError ? "trace-chip--err" : "")"
@@ -625,6 +644,16 @@
     // Provider đang mở panel danh sách idle (tối đa 1 chip mở cùng lúc)
     private string? _expandedIdleProvider;
 
+    // ===== G4: badge COOLDOWN trên chip account — map accountName → max(DownUntil) do
+    // CooldownTracker (Task 6) trả về. Contract: empty = authoritative clear, null = lỗi
+    // source (giữ map cũ), ResolveAsync không bao giờ ném. =====
+    private CooldownTracker? _cooldown;
+    private IReadOnlyDictionary<string, DateTimeOffset> _cooldownMap = new Dictionary<string, DateTimeOffset>();
+    private long _lastDownSig;      // hash của tập down-id — đổi mới fetch
+    private DateTimeOffset _cooldownFetchedAt = DateTimeOffset.MinValue;
+    private bool _cooldownBusy;     // chống fire-and-forget chồng nhau
+    private long _cooldownSig;      // hash giây countdown đang hiển thị — đổi thì re-render
+
     // Id request đang mở modal chi tiết timeline — null = đóng; circle click gán, CloseDetail xóa
     private string? _selectedId;
 
@@ -729,6 +758,14 @@
 
         EnforceCap();
 
+        // G4: dựng tracker TRƯỚC khi loop render chạy — Flush đầu tiên sẽ fetch ngay
+        // (_cooldownFetchedAt = MinValue → điều kiện ≥30s luôn đúng ở tick đầu).
+        _cooldown = new CooldownTracker(
+            snapshot: () => ProxyPool.Snapshot(),
+            reverseAssignments: ct => ProxyService.GetReverseAssignmentsAsync(ct),
+            providerAssignments: (id, ct) => ProxyService.GetAssignmentsAsync(id, ct),
+            onError: ex => Log.Error("RequestTrace: cooldown snapshot failed — giữ map cũ", ex));
+
         _ = LoadProvidersAsync();
         _ = RunLoopAsync(_cts.Token);
         return Task.CompletedTask;
@@ -814,6 +851,34 @@
     private void Flush()
     {
         var changed = false;
+
+        // G4: fetch lại map cooldown khi tập proxy down đổi (sig) hoặc quá 30s — snapshot
+        // InMemory rẻ, chỉ bắn task khi thật cần; _cooldownBusy chặn fire-and-forget chồng nhau.
+        if (_cooldown is not null && !_cooldownBusy)
+        {
+            var down = ProxyPool.Snapshot()
+                .Where(s => s.IsDown && s.DownUntil > DateTimeOffset.UtcNow)
+                .Select(s => s.Id)
+                .OrderBy(id => id)
+                .ToList();
+            var sig = down.Count == 0 ? 0 : down.Aggregate(17, (h, id) => h * 31 + id.GetHashCode());
+            if (sig != _lastDownSig || DateTimeOffset.UtcNow - _cooldownFetchedAt >= TimeSpan.FromSeconds(30))
+            {
+                _lastDownSig = sig;
+                _cooldownFetchedAt = DateTimeOffset.UtcNow;
+                _ = RefreshCooldownAsync();
+            }
+        }
+
+        // Countdown đổi theo giây trên tick 100ms sẵn có (không timer riêng): sig chuỗi giây
+        // khác lần trước → ép re-render để số giảm đúng lúc.
+        var cooldownSig = CooldownSecondsSig();
+        if (cooldownSig != _cooldownSig)
+        {
+            _cooldownSig = cooldownSig;
+            changed = true;
+        }
+
         while (_inbox.TryDequeue(out var e))
         {
             ApplyEvent(e);
@@ -835,6 +900,58 @@
 
         EnforceCap();
         StateHasChanged();
+    }
+
+    /// <summary>
+    /// Fetch map cooldown qua CooldownTracker — null (lỗi source) thì GIỮ map cũ
+    /// (spec §3.5, Review Focus #4); gán + render phải qua dispatcher thread.
+    /// </summary>
+    private async Task RefreshCooldownAsync()
+    {
+        _cooldownBusy = true;
+        try
+        {
+            var map = await _cooldown!.ResolveAsync(CancellationToken.None);
+            if (map is not null)   // null = lỗi source → GIỮ map cũ (spec §3.5, Review Focus #4)
+                await InvokeAsync(() => { _cooldownMap = map; StateHasChanged(); });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("RequestTrace: cooldown refresh failed — giữ map cũ", ex);
+        }
+        finally
+        {
+            _cooldownBusy = false;
+        }
+    }
+
+    /// <summary>Sig theo giây của các entry còn hiệu lực trong <c>_cooldownMap</c> — khác → countdown đổi, phải render.</summary>
+    private long CooldownSecondsSig()
+    {
+        var now = DateTimeOffset.UtcNow;
+        long sig = 0;
+        foreach (var (accountName, downUntil) in _cooldownMap)
+        {
+            if (downUntil <= now)
+                continue;
+            sig = sig * 31 + accountName.GetHashCode() * 1000003 + (long)Math.Ceiling((downUntil - now).TotalSeconds);
+        }
+        return sig;
+    }
+
+    /// <summary>Remaining của account đang cooldown; entry hết hạn tự gỡ qua immutable copy
+    /// (render là side-effect — không mutate map in-place; badge tắt đúng lúc DownUntil qua kể cả chưa refresh).</summary>
+    private bool TryGetCooldown(string accountName, out TimeSpan remaining)
+    {
+        if (_cooldownMap.TryGetValue(accountName, out var downUntil))
+        {
+            var left = downUntil - DateTimeOffset.UtcNow;
+            if (left > TimeSpan.Zero) { remaining = left; return true; }
+            _cooldownMap = new Dictionary<string, DateTimeOffset>(_cooldownMap)
+                { [accountName] = DateTimeOffset.MinValue };  // hết hạn → tự gỡ khỏi map
+        }
+        remaining = default;
+        return false;
     }
 
     /// <summary>Áp một trace event vào node của request — idempotent, tái tạo node nếu đã bị drop.</summary>
