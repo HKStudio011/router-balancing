@@ -363,7 +363,10 @@
                      style="left:@(ProviderLeft)px;top:@(provider.Top)px;width:@(ProviderWidth)px"
                      @key="@($"provider-{provider.Name}")">
                     <span class="cap">@L["trace.node.provider"]</span>
-                    <i class="trace-idot @NodeDotClass(provider.Running, provider.HasError)"></i> @provider.Name
+                    @* Không vẽ dot trạng thái trong node Provider — user report: trùng với dot
+                       ở chip account ngay cạnh, nhìn như hình trang trí. Trạng thái provider vẫn
+                       có qua border --act/--err và tag lỗi bên dưới; dot thật chỉ ở chip account. *@
+                    @provider.Name
                     @if (provider.ErrorStatus is { } status)
                     {
                         <span class="trace-tag trace-tag--bad">@status</span>
