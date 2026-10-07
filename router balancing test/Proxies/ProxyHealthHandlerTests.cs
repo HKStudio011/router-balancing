@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Proxies;
@@ -16,6 +17,19 @@ public class ProxyHealthHandlerTests : IDisposable
 
     private static HttpRequestException ConnectFailure() =>
         new("Connection refused", new SocketException((int)SocketError.ConnectionRefused));
+
+    /// <summary>SocksException là internal type của System.Net.Http — inner thật của lỗi
+    /// tunnel/handshake SOCKS5, tạo qua reflection để pin classifier.</summary>
+    private static Exception SocksFailure()
+    {
+        var type = Type.GetType("System.Net.Http.SocksException, System.Net.Http")
+            ?? throw new InvalidOperationException("SocksException type not found.");
+        var ctor = type.GetConstructor(BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance,
+            null, [typeof(string)], null)
+            ?? throw new InvalidOperationException("SocksException(string) ctor not found.");
+        return (Exception)ctor.Invoke(
+            ["SOCKS server failed to connect to the destination. Received error code 0x03."]);
+    }
 
     [Fact]
     public async Task SendAsync_ConnectFailure_ReportsAndFailsOverToNextProxy()
@@ -101,6 +115,26 @@ public class ProxyHealthHandlerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(2, stub.Calls);
         Assert.Equal([1L], pool.Failures); // p1 message "407" → đánh down, p2 thành công
+        Assert.Equal([2L], pool.Successes);
+    }
+
+    [Fact]
+    // Regression 2026-10-06: inner SocksException (lỗi tunnel SOCKS5) là connect-phase
+    // failure — phải đánh down + failover, không bị coi là "lỗi khác" ném nguyên.
+    public async Task SendAsync_SocksInnerException_ReportsAndFailsOverToNextProxy()
+    {
+        var pool = new FakePool().Add(Attempt(1, 8001), Attempt(2, 8002));
+        var stub = new StubHandler(call => call == 1
+            ? throw new HttpRequestException(
+                "An error occurred while establishing a connection to the proxy tunnel.", SocksFailure())
+            : Ok());
+        using var client = ClientFor(pool, stub);
+
+        var response = await client.GetAsync("http://upstream.example/v1/chat");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, stub.Calls);
+        Assert.Equal([1L], pool.Failures); // p1 socks fail → đánh down, p2 thành công
         Assert.Equal([2L], pool.Successes);
     }
 

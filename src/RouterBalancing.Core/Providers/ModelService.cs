@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -38,55 +39,72 @@ public sealed class ModelService : IModelService
         var provider = await db.Providers
             .Include(p => p.Models)
             .Include(p => p.Accounts)
+            .Include(p => p.ProviderProxies) // resolver đọc junction — thiếu thì provider có proxy cũng resolve Direct
             .FirstOrDefaultAsync(p => p.Id == providerId, ct)
             ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
 
         var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
 
+        // Probe đi theo assignment của provider (pattern TestConnectionAsync, D4): thiếu
+        // ProxyTarget → ProxyHealthHandler rơi về global pool (D7) → provider không gán
+        // proxy vẫn bị gửi qua SOCKS proxy của pool (bug 2026-10-06).
         using var request = ProviderRequestFactory.Create(provider, key);
-        using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
-            .SendAsync(request, ct);
-        response.EnsureSuccessStatusCode(); // ném HttpRequestException → UI toast
-
-        // Cả OpenAI lẫn Anthropic đều trả {"data":[{"id":...}]} — parse chung 1 shape;
-        // field khác (type/display_name) bỏ qua, chỉ lấy id.
-        using var json = await JsonDocument.ParseAsync(
-            await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-
-        var existing = provider.Models.Select(m => m.ModelId).ToHashSet(StringComparer.Ordinal);
-        int added = 0, skipped = 0;
-        // Gom entities vừa Add để fill metadata SAU khi SaveChanges gán Id —
-        // không query lại theo IsManual/Local (dễ trúng entity cũ do Include đã load).
-        var created = new List<Model>();
-
-        if (json.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+        HttpResponseMessage response;
+        ProxyTarget.Current.Value = new ProxyTarget(provider, null);
+        try
         {
-            foreach (var item in data.EnumerateArray())
-            {
-                if (!item.TryGetProperty("id", out var idEl)) continue;
-                var modelId = idEl.GetString();
-                if (string.IsNullOrWhiteSpace(modelId)) continue;
-                if (!existing.Add(modelId)) { skipped++; continue; }
-
-                var newModel = new Model { ProviderId = providerId, ModelId = modelId, IsManual = false };
-                db.Models.Add(newModel);
-                created.Add(newModel);
-                added++;
-            }
+            response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
+                .SendAsync(request, ct);
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
         }
 
-        if (created.Count > 0)
+        using (response)
         {
-            await db.SaveChangesAsync(ct);
-            foreach (var entity in created)
-            {
-                // Metadata best-effort — lỗi không ảnh hưởng kết quả fetch (đã log bên trong)
-                await _metadata.TryFillAsync(entity.Id, ct);
-            }
-            _log.Info($"Fetched {added} models for provider {providerId}.");
-        }
+            response.EnsureSuccessStatusCode(); // ném HttpRequestException → UI toast
 
-        return (added, skipped);
+            // Cả OpenAI lẫn Anthropic đều trả {"data":[{"id":...}]} — parse chung 1 shape;
+            // field khác (type/display_name) bỏ qua, chỉ lấy id.
+            using var json = await JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+
+            var existing = provider.Models.Select(m => m.ModelId).ToHashSet(StringComparer.Ordinal);
+            int added = 0, skipped = 0;
+            // Gom entities vừa Add để fill metadata SAU khi SaveChanges gán Id —
+            // không query lại theo IsManual/Local (dễ trúng entity cũ do Include đã load).
+            var created = new List<Model>();
+
+            if (json.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in data.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("id", out var idEl)) continue;
+                    var modelId = idEl.GetString();
+                    if (string.IsNullOrWhiteSpace(modelId)) continue;
+                    if (!existing.Add(modelId)) { skipped++; continue; }
+
+                    var newModel = new Model { ProviderId = providerId, ModelId = modelId, IsManual = false };
+                    db.Models.Add(newModel);
+                    created.Add(newModel);
+                    added++;
+                }
+            }
+
+            if (created.Count > 0)
+            {
+                await db.SaveChangesAsync(ct);
+                foreach (var entity in created)
+                {
+                    // Metadata best-effort — lỗi không ảnh hưởng kết quả fetch (đã log bên trong)
+                    await _metadata.TryFillAsync(entity.Id, ct);
+                }
+                _log.Info($"Fetched {added} models for provider {providerId}.");
+            }
+
+            return (added, skipped);
+        }
     }
 
     /// <inheritdoc/>

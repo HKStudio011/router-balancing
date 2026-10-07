@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Storage;
 
 namespace RouterBalancing.Core.Providers;
@@ -32,65 +33,78 @@ public sealed class ModelMetadataService : IModelMetadataService
         var model = await db.Models
             .Include(m => m.Provider)
             .ThenInclude(p => p!.Accounts)
+            .Include(m => m.Provider)
+            .ThenInclude(p => p!.ProviderProxies) // resolver đọc junction — thiếu thì provider có proxy cũng resolve Direct
             .FirstOrDefaultAsync(m => m.Id == modelId, ct);
         if (model?.Provider is null) return;
 
-        foreach (var provider in _chain)
+        // Probe đi theo assignment của provider (pattern TestConnectionAsync, D4): thiếu
+        // ProxyTarget → ProxyHealthHandler rơi về global pool (D7) → provider không gán
+        // proxy vẫn bị gửi qua SOCKS proxy của pool (bug 2026-10-06).
+        ProxyTarget.Current.Value = new ProxyTarget(model.Provider, null);
+        try
         {
-            ModelMetadata? meta;
-            try
+            foreach (var provider in _chain)
             {
-                meta = await provider.FetchAsync(model.Provider, model, ct);
-            }
-            catch (Exception ex)
-            {
-                // Contract: bước thường trả null; ném exception là lệch contract →
-                // log warning và nhường bước sau (spec §3.3: mọi lỗi → log warning).
-                _log.Warn($"Metadata provider {provider.GetType().Name} lỗi cho model {modelId}: {ex.Message}");
-                continue;
-            }
-            if (meta is null) continue;
+                ModelMetadata? meta;
+                try
+                {
+                    meta = await provider.FetchAsync(model.Provider, model, ct);
+                }
+                catch (Exception ex)
+                {
+                    // Contract: bước thường trả null; ném exception là lệch contract →
+                    // log warning và nhường bước sau (spec §3.3: mọi lỗi → log warning).
+                    _log.Warn($"Metadata provider {provider.GetType().Name} lỗi cho model {modelId}: {ex.Message}");
+                    continue;
+                }
+                if (meta is null) continue;
 
-            // Chỉ ghi field còn trống — không ghi đè giá trị đã có (spec §3.3);
-            // bool không nullable trên entity coi false = "chưa rõ"
-            // (fill chỉ chạy lúc model được tạo — false tại thời điểm đó luôn là "chưa rõ").
-            var changed = false;
-            if (meta.ContextWindow is not null && model.ContextWindow is null)
-            {
-                model.ContextWindow = meta.ContextWindow;
-                changed = true;
-            }
-            if (meta.SupportsVision == true && !model.SupportsVision)
-            {
-                model.SupportsVision = true;
-                changed = true;
-            }
-            if (meta.SupportsThink == true && !model.SupportsThink)
-            {
-                model.SupportsThink = true;
-                changed = true;
-            }
-            if (meta.ThinkEfforts is not null && model.ThinkEfforts is null)
-            {
-                model.ThinkEfforts = meta.ThinkEfforts;
-                changed = true;
-            }
-            if (meta.InputModalities is not null && model.InputModalities is null)
-            {
-                model.InputModalities = meta.InputModalities;
-                changed = true;
-            }
-            if (meta.OutputModalities is not null && model.OutputModalities is null)
-            {
-                model.OutputModalities = meta.OutputModalities;
-                changed = true;
-            }
+                // Chỉ ghi field còn trống — không ghi đè giá trị đã có (spec §3.3);
+                // bool không nullable trên entity coi false = "chưa rõ"
+                // (fill chỉ chạy lúc model được tạo — false tại thời điểm đó luôn là "chưa rõ").
+                var changed = false;
+                if (meta.ContextWindow is not null && model.ContextWindow is null)
+                {
+                    model.ContextWindow = meta.ContextWindow;
+                    changed = true;
+                }
+                if (meta.SupportsVision == true && !model.SupportsVision)
+                {
+                    model.SupportsVision = true;
+                    changed = true;
+                }
+                if (meta.SupportsThink == true && !model.SupportsThink)
+                {
+                    model.SupportsThink = true;
+                    changed = true;
+                }
+                if (meta.ThinkEfforts is not null && model.ThinkEfforts is null)
+                {
+                    model.ThinkEfforts = meta.ThinkEfforts;
+                    changed = true;
+                }
+                if (meta.InputModalities is not null && model.InputModalities is null)
+                {
+                    model.InputModalities = meta.InputModalities;
+                    changed = true;
+                }
+                if (meta.OutputModalities is not null && model.OutputModalities is null)
+                {
+                    model.OutputModalities = meta.OutputModalities;
+                    changed = true;
+                }
 
-            if (changed)
-            {
-                await db.SaveChangesAsync(ct);
+                if (changed)
+                {
+                    await db.SaveChangesAsync(ct);
+                }
+                return; // bước đầu biết → dừng chain
             }
-            return; // bước đầu biết → dừng chain
+        }
+        finally
+        {
+            ProxyTarget.Current.Value = null;
         }
     }
 }

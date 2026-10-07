@@ -314,6 +314,10 @@ public sealed class ProxyHealthHandler : DelegatingHandler
         ex is HttpRequestException && (
             ex.InnerException is SocketException
             || ex.InnerException is TimeoutException
+            // SocksException là internal type của System.Net.Http — inner thật của lỗi
+            // tunnel/handshake SOCKS5, thuộc connect-phase nhưng không phải SocketException
+            // (regression 2026-10-06: SOCKS fail bị coi là "lỗi khác" → ném nguyên, không failover).
+            || ex.InnerException?.GetType().FullName == "System.Net.Http.SocksException"
             || ex.Message.Contains("407", StringComparison.Ordinal));
 
     private void LogDown(ProxyAttempt pick, Exception ex) =>

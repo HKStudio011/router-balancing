@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -33,6 +34,21 @@ public class ModelServiceTests : IDisposable
     private sealed class StubFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    /// <summary>Handler ghi lại ProxyTarget tại thời điểm gửi — bắt lỗi thiếu scope probe.</summary>
+    private sealed class ProbeRecordingHandler(string json) : HttpMessageHandler
+    {
+        public ProxyTarget? CapturedTarget { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            CapturedTarget = ProxyTarget.Current.Value;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json),
+            });
+        }
     }
 
     private ModelService ServiceWith(string json)
@@ -121,6 +137,55 @@ public class ModelServiceTests : IDisposable
         var service = ServiceWith("""{"data":[]}""");
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() => service.FetchFromProviderAsync(999));
+    }
+
+    [Fact]
+    public async Task FetchFromProvider_WhenProviderHasNoProxy_ScopesProxyTargetForDirectDispatch()
+    {
+        var providerId = await SeedProviderAsync();
+        var probe = new ProbeRecordingHandler("""{"data":[]}""");
+        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()]);
+        var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
+
+        await service.FetchFromProviderAsync(providerId);
+
+        // Regression (2026-10-06): thiếu ProxyTarget → ProxyHealthHandler rơi về global
+        // pool (D7) → provider không gán proxy vẫn bị gửi qua SOCKS proxy của pool.
+        Assert.NotNull(probe.CapturedTarget);
+        Assert.Equal(providerId, probe.CapturedTarget!.Provider.Id);
+        Assert.Empty(probe.CapturedTarget.Provider.ProviderProxies);
+        Assert.Null(ProxyTarget.Current.Value); // finally phải reset scope
+    }
+
+    [Fact]
+    public async Task FetchFromProvider_WhenProviderHasProxy_JunctionsLoadedForResolver()
+    {
+        long proxyId;
+        using (var db = _db.CreateDbContext())
+        {
+            var proxy = new OutboundProxy { Scheme = "socks5", Host = "127.0.0.1", Port = 1080 };
+            db.OutboundProxies.Add(proxy);
+            await db.SaveChangesAsync();
+            proxyId = proxy.Id;
+        }
+        var providerId = await SeedProviderAsync();
+        using (var db = _db.CreateDbContext())
+        {
+            db.Set<ProviderProxy>().Add(new ProviderProxy { ProviderId = providerId, ProxyId = proxyId });
+            await db.SaveChangesAsync();
+        }
+
+        var probe = new ProbeRecordingHandler("""{"data":[]}""");
+        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()]);
+        var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
+
+        await service.FetchFromProviderAsync(providerId);
+
+        // Resolver đọc junction từ entity đã load — thiếu Include thì provider CÓ proxy
+        // cũng bị resolve thành Direct (sai theo chiều ngược).
+        Assert.NotNull(probe.CapturedTarget);
+        Assert.Single(probe.CapturedTarget!.Provider.ProviderProxies);
+        Assert.Equal(proxyId, probe.CapturedTarget.Provider.ProviderProxies[0].ProxyId);
     }
 
     [Fact]

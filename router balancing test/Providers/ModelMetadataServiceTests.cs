@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Providers;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Storage;
 
 namespace router_balancing_test.Providers;
@@ -23,6 +24,18 @@ public class ModelMetadataServiceTests : IDisposable
     {
         public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default) =>
             Task.FromResult(result);
+    }
+
+    /// <summary>Bước chain ghi lại ProxyTarget tại thời điểm gọi — bắt lỗi thiếu scope probe.</summary>
+    private sealed class TargetRecordingProvider : IModelMetadataProvider
+    {
+        public ProxyTarget? CapturedTarget { get; private set; }
+
+        public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default)
+        {
+            CapturedTarget = ProxyTarget.Current.Value;
+            return Task.FromResult<ModelMetadata?>(null);
+        }
     }
 
     // NullLog: dùng lại từ `router balancing test/TestDoubles.cs` (Task 3) — KHÔNG khai
@@ -114,5 +127,47 @@ public class ModelMetadataServiceTests : IDisposable
 
         // Không ném — fill là best-effort
         await service.TryFillAsync(999);
+    }
+
+    [Fact]
+    public async Task TryFillAsync_ScopesProxyTargetWithJunctionsForProbeChain()
+    {
+        long proxyId;
+        using (var db = _db.CreateDbContext())
+        {
+            var proxy = new OutboundProxy { Scheme = "socks5", Host = "127.0.0.1", Port = 1080 };
+            db.OutboundProxies.Add(proxy);
+            await db.SaveChangesAsync();
+            proxyId = proxy.Id;
+        }
+        long providerId, modelId;
+        using (var db = _db.CreateDbContext())
+        {
+            var provider = new Provider { Name = "P", Type = ProviderType.OpenAI, BaseUrl = "https://api.example.com" };
+            provider.Models.Add(new Model { ModelId = "gpt-4o" });
+            db.Providers.Add(provider);
+            await db.SaveChangesAsync();
+            providerId = provider.Id;
+            modelId = provider.Models[0].Id;
+        }
+        using (var db = _db.CreateDbContext())
+        {
+            db.Set<ProviderProxy>().Add(new ProviderProxy { ProviderId = providerId, ProxyId = proxyId });
+            await db.SaveChangesAsync();
+        }
+
+        var probe = new TargetRecordingProvider();
+        var service = new ModelMetadataService(_db, new NullLog(), [probe]);
+
+        await service.TryFillAsync(modelId);
+
+        // Regression 2026-10-06: thiếu ProxyTarget → request metadata rơi về global pool
+        // (D7), provider không gán proxy vẫn đi qua SOCKS; junction phải được load để
+        // provider CÓ proxy resolve đúng.
+        Assert.NotNull(probe.CapturedTarget);
+        Assert.Equal(providerId, probe.CapturedTarget!.Provider.Id);
+        Assert.Single(probe.CapturedTarget.Provider.ProviderProxies);
+        Assert.Equal(proxyId, probe.CapturedTarget.Provider.ProviderProxies[0].ProxyId);
+        Assert.Null(ProxyTarget.Current.Value); // finally phải reset scope
     }
 }
