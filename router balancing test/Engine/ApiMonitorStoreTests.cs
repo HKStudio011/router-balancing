@@ -133,6 +133,19 @@ public class ApiMonitorStoreTests
     }
 
     [Fact]
+    public void ParkedEvent_KeepsCurrentState()
+    {
+        _store.StartRequest("r1", "m1", Bytes(Prompt));
+        _feed.Publish(Ev("r1", TraceStage.DispatchStarted, "m1", At));
+        Assert.Equal(ApiCallState.Running, _store.Find("r1")!.State);
+
+        _feed.Publish(Ev("r1", TraceStage.Parked, "m1", At));
+
+        // Marker chỉ dành cho Live Trace (spec §2.5) — monitor không đổi state
+        Assert.Equal(ApiCallState.Running, _store.Find("r1")!.State);
+    }
+
+    [Fact]
     public void RecordError429_ThenFeedFinishedSuccess_EndsDoneStatus200()
     {
         _store.StartRequest("r1", "m1", Bytes(Prompt));

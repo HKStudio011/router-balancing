@@ -234,6 +234,8 @@ public sealed class ApiMonitorStore : IApiMonitorStore
                         State = ApiCallState.Cancelled,
                         CompletedAt = e.At,
                     },
+                    // Parked: marker Live Trace — monitor giữ nguyên state (spec §2.5)
+                    TraceStage.Parked => current,
                     _ => current,
                 };
                 _calls[index] = updated;

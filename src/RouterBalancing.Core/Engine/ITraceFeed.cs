@@ -17,6 +17,9 @@ public enum TraceStage
 
     /// <summary>Request bị hủy — terminal.</summary>
     Canceled,
+
+    /// <summary>Request đã từng dispatch nhưng bị đẩy về queue chờ slot (ReenqueueForPark) — spec G1.</summary>
+    Parked,
 }
 
 /// <summary>Route đã chọn cho một request — null từng field khi chưa xác định.</summary>
@@ -37,10 +40,14 @@ public sealed record TraceRoute(string? Combo, string? Provider, string? Account
 /// <param name="At">Thời điểm event xảy ra.</param>
 /// <param name="Mode">Chế độ dispatch (vd. direct, balancer) — tùy chọn.</param>
 /// <param name="AttemptDone">Attempt này đã kết thúc chưa — dùng cho UI hiển thị tiến trình.</param>
+/// <param name="Priority">Priority hiện tại của request — gửi ở Received + update khi bị demote (spec G3).</param>
+/// <param name="Endpoint">Endpoint gốc ("chat" | "responses") — chỉ ở event đầu (spec G5).</param>
+/// <param name="HeadersSent">Header 200 đã commit (early-headers, stream only) — spec G2.</param>
 public sealed record TraceEvent(
     string RequestId, TraceStage Stage, string Model, TraceRoute? Route,
     int? Attempt, int? Status, bool? Success, string? FailureKind,
-    DateTimeOffset At, string? Mode = null, bool? AttemptDone = null);
+    DateTimeOffset At, string? Mode = null, bool? AttemptDone = null,
+    RequestPriority? Priority = null, string? Endpoint = null, bool? HeadersSent = null);
 
 /// <summary>Feed sự kiện trace in-process: publisher (Task 3/4) đẩy, UI (Task 5) subscribe.</summary>
 public interface ITraceFeed
