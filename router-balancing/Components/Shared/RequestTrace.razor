@@ -201,6 +201,13 @@
         border-radius: 50%;
     }
 
+    /* Legend: ring vàng đứt = dot đang chờ slot (G1) — offset 1px (khác .trace-dot--park 2px
+       trên dot thật) để không chạm text trong khoảng cách legend 4px */
+    .trace-ldot--ring {
+        outline: 1.5px dashed #eab308;
+        outline-offset: 1px;
+    }
+
     /* ===== Nhánh Combo → Provider → Account (copy từ mockup .n/.acct/.tag — Task 6) ===== */
 
     /* Node nhánh lỗi (mockup .n.err) */
@@ -346,6 +353,36 @@
                     <path d="M68,152 L68,188" />
                     <path d="M68,244 L68,336" />
                 </g>
+                @if (WireInputQueueLit)
+                {
+                    @* Luồng ① trắng (user gate §1.3-8): đáy node Input (8+47=55, xem CSS .trace-node__paths) → đỉnh Hàng đợi (top 96), lane x=14 theo DotStartX *@
+                    <g fill="none" stroke="#ffffff" stroke-width="1.8" opacity=".9" stroke-dasharray="7 6">
+                        <path d="M14,55 L14,96">
+                            <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
+                        </path>
+                    </g>
+                }
+                @if (WireCancelLit)
+                {
+                    @* Luồng ② vàng: 2 đoạn theo gap spine (152→188, 244→336), lane x=116 — bỏ qua node Thực thi 188..244 *@
+                    <g fill="none" stroke="#eab308" stroke-width="1.8" opacity=".9" stroke-dasharray="7 6">
+                        <path d="M116,152 L116,188">
+                            <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
+                        </path>
+                        <path d="M116,244 L116,336">
+                            <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
+                        </path>
+                    </g>
+                }
+                @if (WireErrorLit)
+                {
+                    @* Luồng ③ đỏ: lane riêng (x=100, khác lane vàng) đáy Thực thi (244) → đỉnh Client (336) — luôn đi qua DispatchStarted (G6 loại) *@
+                    <g fill="none" stroke="#ef4444" stroke-width="1.8" opacity=".9" stroke-dasharray="7 6">
+                        <path d="M100,244 L100,336">
+                            <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
+                        </path>
+                    </g>
+                }
                 @* Nhánh route per group — đỏ khi group có node lỗi, ngược lại xanh marching-ants (mockup);
                    tách từng đoạn như mockup để đường KHÔNG kẻ xuyên qua block (block nền trong) *@
                 @foreach (var path in _layout.Paths)
@@ -513,7 +550,9 @@
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--green"></i>@L["trace.legend.ok"]</span>
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--red"></i>@L["trace.legend.error"]</span>
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--yellow"></i>@L["trace.legend.cancelled"]</span>
-        <span class="trace-legend__item"><i class="trace-ldot trace-dot--white trace-dot--park"></i>@L["trace.legend.parked"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--white trace-ldot--ring"></i>@L["trace.legend.parked"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--green"></i>@L["trace.legend.headers"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--yellow"></i><i class="trace-ldot trace-dot--blue"></i>@L["trace.priority.highest"]/@L["trace.priority.high"]</span>
         <span class="trace-legend__hint">@L["trace.fadeHint"]</span>
     </div>
 </div>
@@ -648,6 +687,19 @@
 
     private int QueuedCount => Nodes.Values.Count(n => n.Stage is TraceStage.Received or TraceStage.Parked);
     private int RunningCount => Nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
+
+    // Wire ① Input→Queue: có request thật nằm trong queue (Received lẫn Parked — spec §3.1)
+    private bool WireInputQueueLit =>
+        _agg.Nodes.Values.Any(n => n.Stage is TraceStage.Received or TraceStage.Parked);
+
+    // Wire ② Cancel→Client: node Canceled còn hạn (đã fade = đã gỡ — Nodes chỉ chứa node
+    // đã qua RemoveExpired mỗi tick, nên wire tự tắt khi node hết hạn, Review Focus #5)
+    private bool WireCancelLit =>
+        _agg.Nodes.Values.Any(n => n.Stage == TraceStage.Canceled);
+
+    // Wire ③ Lỗi thực thi→Client: Finished success=false còn hạn
+    private bool WireErrorLit =>
+        _agg.Nodes.Values.Any(n => n.Stage == TraceStage.Finished && n.Success == false);
 
     protected override Task OnInitializedAsync()
     {
