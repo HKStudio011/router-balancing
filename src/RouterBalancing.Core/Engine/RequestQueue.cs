@@ -16,12 +16,22 @@ public sealed class RequestQueue : IRequestQueue
     private readonly Dictionary<string, ProxyRequest> _byId = new();
     private long _sequence;
 
+    private readonly ITraceFeed? _trace;
+
+    /// <summary>
+    /// Tạo queue rỗng. <paramref name="trace"/> null (mặc định) → không publish
+    /// priority-update — test cũ dùng <c>new RequestQueue()</c> không đổi hành vi.
+    /// </summary>
+    /// <param name="trace">Feed nhận update Priority khi demote/đổi ưu tiên (spec G3).</param>
+    public RequestQueue(ITraceFeed? trace = null) => _trace = trace;
+
     /// <inheritdoc/>
     public event Action? Changed;
 
     /// <inheritdoc/>
     public bool Enqueue(ProxyRequest request)
     {
+        List<ProxyRequest> demoted = [];
         lock (_lock)
         {
             if (_byId.ContainsKey(request.Id))
@@ -31,8 +41,11 @@ public sealed class RequestQueue : IRequestQueue
             Bucket(request.Priority).Add(request.Sequence, request);
             _byId[request.Id] = request;
             if (request.Priority == RequestPriority.Highest)
-                DemoteOtherHighest(keep: request);
+                demoted = DemoteOtherHighest(keep: request);
         }
+        // Publish + event ngoài lock: subscriber không được chạy khi đang giữ lock queue.
+        foreach (var item in demoted)
+            PublishPriorityUpdate(item);
         Changed?.Invoke();
         return true;
     }
@@ -78,6 +91,8 @@ public sealed class RequestQueue : IRequestQueue
     /// <inheritdoc/>
     public bool SetPriority(string id, RequestPriority priority)
     {
+        ProxyRequest? changed = null;
+        List<ProxyRequest> demoted = [];
         lock (_lock)
         {
             if (!_byId.TryGetValue(id, out var request))
@@ -87,10 +102,16 @@ public sealed class RequestQueue : IRequestQueue
             Bucket(request.Priority).Remove(request.Sequence);
             request.Priority = priority;
             Bucket(priority).Add(request.Sequence, request);
+            changed = request;
             // Thăng cấp lên Highest → hạ cấp các Highest khác (luật 1-Highest có hiệu lực cả ở đây)
             if (priority == RequestPriority.Highest)
-                DemoteOtherHighest(keep: request);
+                demoted = DemoteOtherHighest(keep: request);
         }
+        // Publish + event ngoài lock: subscriber không được chạy khi đang giữ lock queue.
+        if (changed is not null)
+            PublishPriorityUpdate(changed);
+        foreach (var item in demoted)
+            PublishPriorityUpdate(item);
         Changed?.Invoke();
         return true;
     }
@@ -112,18 +133,32 @@ public sealed class RequestQueue : IRequestQueue
         }
     }
 
-    private void DemoteOtherHighest(ProxyRequest keep)
+    /// <summary>
+    /// Hạ tất cả request Highest (trừ <paramref name="keep"/>) xuống High — luật 1-Highest.
+    /// </summary>
+    /// <param name="keep">Request Highest mới được giữ nguyên.</param>
+    /// <returns>Các request bị hạ, dùng để publish priority-update sau khi thoát lock.</returns>
+    private List<ProxyRequest> DemoteOtherHighest(ProxyRequest keep)
     {
         // Copy key trước khi sửa — không sửa SortedList khi đang enumerate
         var demote = _highest.Keys.Where(k => k != keep.Sequence).ToList();
+        List<ProxyRequest> demoted = [];
         foreach (var key in demote)
         {
             var item = _highest[key];
             _highest.Remove(key);
             item.Priority = RequestPriority.High;
             _high.Add(key, item);
+            demoted.Add(item);
         }
+        return demoted;
     }
+
+    // Stage=Received + Priority mới: UI Live Trace upsert badge theo RequestId (spec G3) —
+    // chỉ gọi ngoài _lock (xem comment ở Enqueue/SetPriority).
+    private void PublishPriorityUpdate(ProxyRequest request) =>
+        _trace?.Publish(new TraceEvent(request.Id, TraceStage.Received, request.Model,
+            null, null, null, null, null, DateTimeOffset.Now, Priority: request.Priority));
 
     private SortedList<long, ProxyRequest> Bucket(RequestPriority priority) => priority switch
     {

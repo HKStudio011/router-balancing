@@ -80,6 +80,22 @@ public class RequestQueueTests
     }
 
     [Fact]
+    public void EnqueueHigherPriority_DemotesQueuedRequest_PublishesReceivedUpdateWithNewPriority()
+    {
+        var feed = new TraceFeed(new NullLog());
+        var queue = new RequestQueue(feed);
+
+        queue.Enqueue(Req("h1", RequestPriority.Highest));
+        queue.Enqueue(Req("h2", RequestPriority.Highest)); // luật 1-Highest → h1 bị hạ
+
+        var update = Assert.Single(feed.Snapshot());
+        Assert.Equal("h1", update.RequestId);
+        Assert.Equal(TraceStage.Received, update.Stage);
+        Assert.Equal(RequestPriority.High, update.Priority);
+        Assert.Equal(RequestPriority.High, queue.Snapshot().Single(r => r.Id == "h1").Priority); // sync state
+    }
+
+    [Fact]
     public void Peek_WhenQueueEmpty_ReturnsFalse()
     {
         Assert.False(_queue.Peek(out var none));
@@ -148,6 +164,22 @@ public class RequestQueueTests
         Assert.Equal("n1", first!.Id);
         Assert.True(_queue.Take("h1", out var second));
         Assert.Equal(RequestPriority.High, second!.Priority);
+    }
+
+    [Fact]
+    public void SetPriority_PromoteToHighest_PublishesDemotedAndPromotedUpdates()
+    {
+        var feed = new TraceFeed(new NullLog());
+        var queue = new RequestQueue(feed);
+        queue.Enqueue(Req("h1", RequestPriority.Highest));
+        queue.Enqueue(Req("n1", RequestPriority.Normal));
+
+        Assert.True(queue.SetPriority("n1", RequestPriority.Highest));
+
+        var events = feed.Snapshot();
+        Assert.Equal(RequestPriority.High, events.Single(e => e.RequestId == "h1").Priority);
+        Assert.Equal(RequestPriority.Highest, events.Single(e => e.RequestId == "n1").Priority);
+        Assert.All(events, e => Assert.Equal(TraceStage.Received, e.Stage));
     }
 
     [Fact]
