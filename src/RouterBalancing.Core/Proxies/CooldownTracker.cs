@@ -81,7 +81,7 @@ public sealed class CooldownTracker(
         catch (Exception ex)
         {
             // null = caller giữ map cũ (spec §3.5); onError gọi đúng 1 lần cho mọi lỗi nguồn.
-            onError?.Invoke(ex);
+            try { onError?.Invoke(ex); } catch { /* callback không được phá contract never-throw */ }
             return null;
         }
     }

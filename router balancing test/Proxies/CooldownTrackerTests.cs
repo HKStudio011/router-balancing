@@ -102,4 +102,19 @@ public class CooldownTrackerTests
         Assert.Null(map);              // null = giữ map cũ ở caller (spec §3.5)
         Assert.IsType<IOException>(seen);
     }
+
+    [Fact]
+    public async Task Resolve_WhenOnErrorThrows_StillReturnsNone()
+    {
+        // onError ném không được thoát ra ngoài — Task 13 refresh loop phải luôn nhận null
+        var tracker = new CooldownTracker(
+            () => throw new IOException("db locked"),
+            _ => Task.FromResult<IReadOnlyDictionary<long, IReadOnlyList<ProxyUsage>>>(new Dictionary<long, IReadOnlyList<ProxyUsage>>()),
+            (_, _) => Task.FromResult<IReadOnlyList<ProxyAssignment>>([]),
+            _ => throw new InvalidOperationException("logger lỗi"));
+
+        var map = await tracker.ResolveAsync(CancellationToken.None);
+
+        Assert.Null(map);
+    }
 }
