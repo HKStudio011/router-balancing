@@ -889,6 +889,39 @@ public class DispatcherLoopTests : IDisposable
     }
 
     [Fact]
+    public async Task ReenqueueForPark_PublishesParkedStage()
+    {
+        var p1 = SeedProvider("p1", maxConcurrent: 1, modelId: "m1");
+        var p2 = SeedProvider("p2", maxConcurrent: 1, modelId: "m1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(p1), Candidate(p2)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new CapacityCornerUpstream();
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var r2 = Req("req00002");
+        _queue.Enqueue(r2);
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var r1 = Req("req00001");
+        _queue.Enqueue(r1);
+        await WaitUntilAsync(() => _queue.Contains("req00001") && upstream.Calls == 2);
+        await Task.Delay(200); // chắc chắn đã park
+
+        // G1: node nhận stage Parked SAU khi đã dispatch lần đầu (Review Focus #3)
+        var events = _trace.Snapshot().Where(e => e.RequestId == "req00001").ToList();
+        var parked = events.Single(e => e.Stage == TraceStage.Parked);
+        Assert.True(events.IndexOf(parked) > events.FindIndex(e => e.Stage == TraceStage.DispatchStarted),
+            "Parked phải đứng sau DispatchStarted — request đã từng dispatch mới bị re-enqueue (spec §2.1)");
+        Assert.Equal("m1", parked.Model);
+
+        // Dọn đúng fixture gốc: release → cả 2 hoàn thành
+        upstream.Release();
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
     public async Task ServeAsync_When401_TriesNextAccountOfSameProvider_BeforeChangingProvider()
     {
         var pidA = SeedProvider("p1", accounts: 2);

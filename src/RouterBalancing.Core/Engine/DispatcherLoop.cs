@@ -619,6 +619,10 @@ public sealed class DispatcherLoop(
                 "server_error", null, null));
             return;
         }
+        // G1: marker park — chỉ publish khi re-enqueue thật sự thành công;
+        // Route/Attempt null để merge không ghi đè Route đã biết từ attempt trước (spec §2.5)
+        trace.Publish(new TraceEvent(request.Id, TraceStage.Parked, request.Model,
+            null, null, null, null, null, DateTimeOffset.Now));
         // Token cancel giữa check trên và Enqueue: callback Register (endpoint) đã lỡ fire khi
         // item chưa trong queue → tự gỡ lại + Cancelled (giữ hành vi cancel 3B); TrySetResult idempotent
         if (request.Context.RequestAborted.IsCancellationRequested
