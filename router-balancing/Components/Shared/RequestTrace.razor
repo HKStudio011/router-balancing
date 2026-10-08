@@ -263,6 +263,11 @@
         margin-left: 6px;
     }
 
+    /* Chip 2 dòng (theo pattern .trace-node__slot): dòng 1 dành dot request rơi vào,
+       dòng 2 là tên TK — dot tuyệt đối không đè lên tên */
+    .trace-chip__dotrow { display: block; height: 12px; }
+    .trace-chip__name { display: block; }
+
     /* Chip "+N idle" (mockup .acct.idle) — click expand danh sách inline */
     .trace-chip--idle {
         border-style: dashed;
@@ -463,6 +468,7 @@
                      style="left:@(ComboLeft)px;top:@(combo.Top)px;width:@(ComboWidth)px"
                      @key="@($"combo-{combo.Name}")">
                     <span class="cap">@L["trace.node.combo"]</span>
+                    <div class="trace-node__slot"></div>
                     @combo.DisplayName
                 </div>
             }
@@ -473,6 +479,7 @@
                      style="left:@(ProviderLeft)px;top:@(provider.Top)px;width:@(ProviderWidth)px"
                      @key="@($"provider-{provider.Name}")">
                     <span class="cap">@L["trace.node.provider"]</span>
+                    <div class="trace-node__slot"></div>
                     @* Không vẽ dot trạng thái trong node Provider — user report: trùng với dot
                        ở chip account ngay cạnh, nhìn như hình trang trí. Trạng thái provider vẫn
                        có qua border --act/--err và tag lỗi bên dưới; dot thật chỉ ở chip account. *@
@@ -522,11 +529,13 @@
                     <div class="trace-chip @(chip.Running ? "trace-chip--act" : "") @(chip.HasError ? "trace-chip--err" : "") @(cooling ? "trace-chip--cooldown" : "")"
                          style="left:@(AccountLeft)px;top:@(chip.Top)px"
                          @key="@($"chip-{chip.Provider}-{chip.Name}")">
-                        <i class="trace-idot @NodeDotClass(chip.Running, chip.HasError)"></i> @chip.Name
-                        @if (cooling)
-                        {
-                            <span class="trace-chip__cooldown">@string.Format(L["trace.cooldown"], (int)Math.Ceiling(remaining.TotalSeconds))</span>
-                        }
+                        <span class="trace-chip__dotrow"><i class="trace-idot @NodeDotClass(chip.Running, chip.HasError)"></i></span>
+                        <span class="trace-chip__name">@chip.Name
+                            @if (cooling)
+                            {
+                                <span class="trace-chip__cooldown">@string.Format(L["trace.cooldown"], (int)Math.Ceiling(remaining.TotalSeconds))</span>
+                            }
+                        </span>
                     </div>
                 }
             }
@@ -631,10 +640,10 @@
     private const int ComboRowH = 128;         // giãn cách block Combo (mockup 168 → 296)
     private const int ProviderStartY = 76;     // đầu lane Provider/Account (mockup chip top 76)
     private const int ProviderRowH = 98;       // giãn cách lane thưa tối thiểu (mockup lane2→lane3: 334 − 236 = 98); lane dày chạy theo 24 + n×ChipRowH
-    private const int ChipRowH = 34;           // giãn cách chip (mockup 76 → 110 → 144 → 178)
-    private const int ChipHeight = 25;         // cao thật của .trace-chip (padding 4×2 + border 1.5×2 + line 10.5×1.35 ≈ 14) — dùng tính tâm cụm chip
+    private const int ChipRowH = 42;           // giãn cách chip — chip cao 37 + hở 5 (mockup 34 với chip 25)
+    private const int ChipHeight = 37;         // cao thật của .trace-chip (1.5×2 border + 4×2 padding + 12 dotrow + ~14 name ≈ 37) — dùng tính tâm cụm chip
     private const int ChipLanePadY = 24;       // padding đáy lane — tránh chip đè lane kế
-    private const int NodeElbowOffsetY = 20;   // tâm block nhánh (~39px: cap 12 + dòng tên 14 + padding 10 + border 3) — mockup nối connector ở +22
+    private const int NodeElbowOffsetY = 20;   // điểm nối connector block nhánh — nay rơi gần đỉnh dòng dot slot (cap 12 + slot 12 → block ~51px, không còn giữa block như trước khi có slot); mockup nối ở +22
     private const int ChipElbowOffsetY = 12;   // tâm dot request trong chip (dot top +6, bán kính 12/2 → 6 + 6) — mockup nối ở +14 (90 − 76)
     private const int DispatchExitX = 128;     // mép phải node Thực thi (mockup M128,210)
     private const int DispatchExitY = 210;
