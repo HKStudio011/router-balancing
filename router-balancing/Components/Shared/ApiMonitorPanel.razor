@@ -35,6 +35,8 @@
     .monitor-stat--ok { color: #22c55e; }
     .monitor-stat--error { color: #ef4444; }
     .monitor-stat--cancelled { color: #eab308; }
+    /* Màu xanh khớp dot Running (user checklist 2026-10-07) */
+    .monitor-stat--running { color: #3b82f6; }
 
     .monitor-row {
         display: grid;
@@ -113,7 +115,7 @@
        50 record trong ring, cùng nguồn với bảng bên dưới. Live Trace không còn count row. *@
     <div class="monitor-strip">
         <span><i class="monitor-dot @TraceColors.ForState(ApiCallState.Queued)"></i><b>@QueuedCount</b> @L["trace.count.queued"]</span>
-        <span><i class="monitor-dot @TraceColors.ForState(ApiCallState.Running)"></i><b>@RunningCount</b> @L["trace.count.running"]</span>
+        <span class="monitor-stat--running"><i class="monitor-dot @TraceColors.ForState(ApiCallState.Running)"></i><b>@RunningCount</b> @L["trace.count.running"]</span>
         <span class="monitor-stat--ok"><i class="monitor-dot @TraceColors.ForState(ApiCallState.Done)"></i><b>@OkCount</b> @L["trace.count.ok"]</span>
         <span class="monitor-stat--error"><i class="monitor-dot @TraceColors.ForState(ApiCallState.Error)"></i><b>@ErrorCount</b> @L["trace.count.error"]</span>
         <span class="monitor-stat--cancelled"><i class="monitor-dot @TraceColors.ForState(ApiCallState.Cancelled)"></i><b>@CancelledCount</b> @L["trace.count.cancelled"]</span>
