@@ -1174,6 +1174,10 @@
         // stage giữ nguyên (update field/Received merge) → không dựng travel.
         if (_primed && Nodes.TryGetValue(e.RequestId, out var node))
         {
+            // _layout chỉ tính lại khi render — event vừa áp có thể mang Route mới (Attempt)
+            // nên phải tính lại TRƯỚC khi resolve anchor. Thiếu bước này AttemptAnchor fallback
+            // về Thực thi (from == to) → travel bị bỏ sót → dot bay chéo bằng transition thường.
+            RebuildBranchLayout();
             var to = AnchorOf(node);
             if (before is null)
                 StartTravel(e.RequestId, node, (DotStartX, InputBottom), to, spawn: true);
