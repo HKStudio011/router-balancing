@@ -405,30 +405,33 @@
                 </g>
                 @if (WireInputQueueLit)
                 {
-                    @* Luồng ① trắng (user gate §1.3-8): đáy node Input (8+47=55, xem CSS .trace-node__paths) → đỉnh Hàng đợi (top 96), lane x=14 theo DotStartX *@
+                    @* Luồng ① trắng (user gate §1.3-8): overlay NGAY TRÊN gray spine tại lane tâm
+                       (mockup M70,58 V118 — dot, dây và spine cùng x, không tách lane song song) *@
                     <g fill="none" stroke="#ffffff" stroke-width="1.8" opacity=".9" stroke-dasharray="7 6">
-                        <path d="M14,55 L14,96">
+                        <path d="M@(DotStartX),@InputBottom L@(DotStartX),@QueueTop">
                             <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
                         </path>
                     </g>
                 }
                 @if (WireCancelLit)
                 {
-                    @* Luồng ② vàng: 2 đoạn theo gap spine (152→188, 244→336), lane x=116 — bỏ qua node Thực thi 188..244 *@
+                    @* Luồng ② vàng: 2 đoạn theo gap spine (QueueBottom→DispatchTop, DispatchBottom→ClientTop),
+                       lane CancelLaneX — bỏ qua node Thực thi; dot Cancel đi đúng lane này *@
                     <g fill="none" stroke="#eab308" stroke-width="1.8" opacity=".9" stroke-dasharray="7 6">
-                        <path d="M116,152 L116,188">
+                        <path d="M@(CancelLaneX),@QueueBottom L@(CancelLaneX),@DispatchTop">
                             <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
                         </path>
-                        <path d="M116,244 L116,336">
+                        <path d="M@(CancelLaneX),@DispatchBottom L@(CancelLaneX),@ClientTop">
                             <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
                         </path>
                     </g>
                 }
                 @if (WireErrorLit)
                 {
-                    @* Luồng ③ đỏ: lane riêng (x=100, khác lane vàng) đáy Thực thi (244) → đỉnh Client (336) — luôn đi qua DispatchStarted (G6 loại) *@
+                    @* Luồng ③ đỏ: lane ErrorLaneX (khác lane vàng) đáy Thực thi → đỉnh Client
+                       — luôn đi qua DispatchStarted (G6 loại); dot lỗi đi đúng lane này *@
                     <g fill="none" stroke="#ef4444" stroke-width="1.8" opacity=".9" stroke-dasharray="7 6">
-                        <path d="M100,244 L100,336">
+                        <path d="M@(ErrorLaneX),@DispatchBottom L@(ErrorLaneX),@ClientTop">
                             <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
                         </path>
                     </g>
@@ -567,7 +570,7 @@
                 }
             }
 
-            @* Circle = request: 1 dot tuyệt đối/node, stack ngang theo anchor của stage *@
+            @* Circle = request: 1 dot tuyệt đối/node, stack ngang căn giữa lane tâm theo anchor của stage *@
             @foreach (var group in BuildGroups())
             {
                 for (var i = 0; i < group.Shown.Count; i++)
@@ -618,8 +621,15 @@
                         </div>
                         row++;
                     }
+                    @* +N xếp DƯỚI cột tag bên phải node (không inline sau hàng dot — hàng đã
+                       căn giữa nên inline sẽ chạm tag ở x=132) *@
+                    if (group.Overflow > 0)
+                    {
+                        <div class="trace-badge trace-badge--float"
+                             style="left:132px;top:@(group.Y - 6 + row * 14)px">@string.Format(L["trace.more"], group.Overflow)</div>
+                    }
                 }
-                @if (group.Overflow > 0)
+                else if (group.Overflow > 0)
                 {
                     <div class="trace-badge trace-badge--float"
                          style="left:@(group.X + group.Shown.Count * DotStepX)px;top:@(group.Y)px">@string.Format(L["trace.more"], group.Overflow)</div>
@@ -667,14 +677,22 @@
     private DateTimeOffset? _litExpiresAt;
 
     // Tọa độ pixel spine theo mockup trace-design-v2.html — tính bằng C#, không JS interop
-    private const int DotStartX = 14;   // node left 8 + padding
+    private const int DotStartX = 68;   // tâm node (left 8 + width 120/2) — lane chung của dot,
+                                         // dây ① và gray spine (mockup dot rides x=70, không tách lane)
     private const int QueueTop = 96;
     private const int DispatchTop = 188;
     private const int ClientTop = 336;
     // Đáy node Input = top 8 + cao 47 (CSS .trace-node__paths) — dot mới trồi lên từ đây
     private const int InputBottom = 55;
+    // Mép dưới node Hàng đợi / Thực thi — hàng jog vào lane Cancel/lỗi (dây ②/③ cũng start ở đây)
+    private const int QueueBottom = 152;
+    private const int DispatchBottom = 244;
     // Dòng dot nằm ngay dưới cap đầu node: padding-top 5px + cap line-height 12px (xem CSS)
     private const int DotRowOffsetY = 17;
+    // Lane phải spine cho dot Cancel (dây ②) / Finished lỗi (dây ③) — mockup dot đi ĐÚT TRÊN
+    // dây đang sáng thay vì đi giữa node; giá trị theo design §3.1 (đã gate)
+    private const int CancelLaneX = 116;
+    private const int ErrorLaneX = 100;
 
     // ===== Tọa độ nhánh Combo → Provider → Account — copy từ mockup trace-design-v2.html,
     // tính thuần bằng C# trong AnchorOf/RebuildBranchLayout, không JS interop =====
@@ -1255,10 +1273,29 @@
 
     /// <summary>
     /// Vị trí dot ĐANG render: đang travel thì lấy điểm mục tiêu hiện tại (đang giữa đường),
-    /// không thì anchor stage — dùng làm điểm xuất phát khi stage đổi giữa chừng.
+    /// không thì slot thật trong hàng — dùng làm điểm xuất phát khi stage đổi giữa chừng.
     /// </summary>
     private (int X, int Y) RenderedAnchor(TraceNodeState n) =>
-        _travels.TryGetValue(n.Id, out var travel) ? travel.Points[travel.Idx] : AnchorOf(n);
+        _travels.TryGetValue(n.Id, out var travel) ? travel.Points[travel.Idx] : RenderedSlot(n);
+
+    /// <summary>
+    /// Slot dot sẽ render trong hàng (căn giữa như <see cref="BuildGroups"/>) — travel xuất
+    /// phát từ đây để không hop ngược về anchor giữa hàng khi dot đang nằm lệch trong group.
+    /// </summary>
+    private (int X, int Y) RenderedSlot(TraceNodeState n)
+    {
+        var anchor = AnchorOf(n);
+        var shown = Nodes.Values
+            .Where(x => AnchorOf(x) == anchor)
+            .OrderBy(x => x.ReceivedAt)
+            .ThenBy(x => x.Id, StringComparer.Ordinal)
+            .Take(MaxDotsPerAnchor)
+            .ToList();
+        var idx = shown.FindIndex(x => x.Id == n.Id);
+        if (idx < 0)
+            return anchor;
+        return (anchor.X - (shown.Count - 1) * DotStepX / 2 + idx * DotStepX, anchor.Y);
+    }
 
     /// <summary>
     /// Dựng travel cho node: đường đi + line dẫn đường transient (dashed + ants màu đích).
@@ -1296,43 +1333,92 @@
 
     /// <summary>
     /// Đường đi của dot khi stage đổi — luôn bám lane/elbow thật, không nhảy chéo canvas:
-    /// cùng lane spine (x=<see cref="DotStartX"/>) → đi thẳng; ra nhánh → cổng ra Thực thi
-    /// rồi elbow; về spine (parked/terminal từ nhánh) → đi ngược elbow về Thực thi rồi nối tiếp.
+    /// cùng spine → snap slot về lane tâm rồi đi thẳng; từ nhánh về spine → ngược route về
+    /// cổng ra Thực thi rồi jog ngang vào lane; Cancel/lỗi → đi đúng lane dây ②/③ đang
+    /// sáng (mockup dot rides its wire); Attempt → jog ngang tại row Thực thi rồi theo elbow.
     /// </summary>
     private List<(int X, int Y)> BuildLegs(TraceNodeState node, (int X, int Y) from, (int X, int Y) to)
     {
-        if (from.X == DotStartX && to.X == DotStartX)
-            return [to];
+        // Terminal có lane riêng — dot đi ĐÚT TRÊN dây vàng/đỏ đang sáng, không đi giữa node
+        if (node.Stage == TraceStage.Canceled)
+            return TerminalLaneLegs(node, from, to, CancelLaneX);
+        if (node.Stage is TraceStage.Finished && node.Success == false)
+            return TerminalLaneLegs(node, from, to, ErrorLaneX);
 
-        if (from.X == DotStartX)
-            return BranchLegs(node, from, to, forward: true) ?? [to];
+        var fromBranch = from.X > DispatchExitX;
+        var toBranch = to.X > DispatchExitX;
 
-        if (to.X == DotStartX)
+        // Rebase trong nhánh (Attempt đổi account giữa chặng) — cắt route tại chỗ
+        if (fromBranch && toBranch)
+            return RouteCutLegs(node, from, to);
+
+        // Từ nhánh về spine (Parked/Finished success/...): về cổng ra trước, jog vào lane tâm
+        if (fromBranch)
         {
-            // Về spine: trước hết về cổng vào node Thực thi, rồi đi tiếp đoạn tới đích
-            var back = BranchLegs(node, from, (DotStartX, DispatchTop + DotRowOffsetY), forward: false)
-                       ?? [(DotStartX, DispatchTop + DotRowOffsetY)];
+            var back = RouteCutLegs(node, from, (DotStartX, DispatchExitY), reverse: true);
             back.Add(to);
             return back;
         }
 
-        // Không match nhánh nào (layout chưa có route) → đi thẳng thay vì treo dot
-        return [to];
+        // Ra nhánh (Attempt): jog ngang tại row Thực thi — không chéo xuyên node
+        if (toBranch)
+        {
+            var pts = new List<(int X, int Y)>();
+            if (from.X != DotStartX && from.Y != DispatchExitY)
+                pts.Add((DotStartX, from.Y));          // snap slot lệch về lane tâm
+            if (pts.Count == 0 || pts[^1] != (DotStartX, DispatchExitY))
+                pts.Add((DotStartX, DispatchExitY));    // jog tại row cổng ra
+            pts.AddRange(RouteCutLegs(node, from, to));
+            return pts;
+        }
+
+        // Cùng spine: snap slot lệch (hàng căn giữa) về lane tâm rồi đi thẳng
+        var spine = new List<(int X, int Y)>();
+        if (from.X != DotStartX)
+            spine.Add((DotStartX, from.Y));
+        if (spine.Count == 0 || spine[^1] != to)
+            spine.Add(to);
+        return spine;
     }
 
     /// <summary>
-    /// Điểm dọc theo elbow connector nhánh — cùng geometry với đường đang vẽ
-    /// (<see cref="RebuildBranchLayout"/>): cắt tại điểm gần vị trí dot nhất (đang giữa
-    /// chặng do rebase) rồi nối tiếp tới <paramref name="to"/>.
-    /// Trả về <see langword="null"/> khi node không có route/layout — caller tự đi thẳng.
+    /// Dot Cancel/lỗi: vào lane tại mép dưới node đang đứng (queue → <see cref="QueueBottom"/>,
+    /// dispatch → <see cref="DispatchBottom"/>) — đúng hàng start của dây ②/③ — đi xuống row
+    /// Client rồi về slot. Từ nhánh thì về cổng ra Thực thi trước.
     /// </summary>
-    private List<(int X, int Y)>? BranchLegs(TraceNodeState node, (int X, int Y) from, (int X, int Y) to, bool forward)
+    private List<(int X, int Y)> TerminalLaneLegs(TraceNodeState node, (int X, int Y) from, (int X, int Y) to, int laneX)
+    {
+        List<(int X, int Y)> pts;
+        if (from.X > DispatchExitX)
+        {
+            pts = RouteCutLegs(node, from, (laneX, DispatchExitY), reverse: true);
+        }
+        else
+        {
+            pts = [];
+            if (from.X != DotStartX)
+                pts.Add((DotStartX, from.Y));
+            var jogY = from.Y < DispatchTop ? QueueBottom : DispatchBottom;
+            pts.Add((DotStartX, jogY));
+            pts.Add((laneX, jogY));
+        }
+        pts.Add((laneX, ClientTop + DotRowOffsetY));
+        pts.Add(to);
+        return pts;
+    }
+
+    /// <summary>
+    /// Cắt route tại điểm gần <paramref name="from"/> nhất (rebase giữa chặng không nhảy)
+    /// rồi nối tới <paramref name="to"/> — cùng geometry với connector đang vẽ
+    /// (<see cref="RebuildBranchLayout"/>). Route/layout thiếu → đi thẳng thay vì treo dot.
+    /// </summary>
+    private List<(int X, int Y)> RouteCutLegs(TraceNodeState node, (int X, int Y) from, (int X, int Y) to, bool reverse = false)
     {
         var route = ForwardRoutePoints(node);
         if (route is null)
-            return null;
+            return [to];
 
-        var path = forward ? route : [.. route.AsEnumerable().Reverse()];
+        List<(int X, int Y)> path = reverse ? [.. route.AsEnumerable().Reverse()] : route;
         var pts = new List<(int X, int Y)>();
         var k = NearestIndex(path, from);
         if (path[k] != from)
@@ -1712,7 +1798,10 @@
                     .ThenBy(n => n.Id, StringComparer.Ordinal)
                     .ToList();
                 var shown = ordered.Take(MaxDotsPerAnchor).ToList();
-                return new DotGroup(g.Key.X, g.Key.Y, shown, ordered.Count - shown.Count);
+                // Căn giữa hàng dot trên lane tâm — mockup slot dot nằm giữa node theo spine,
+                // travel kết thúc tại anchor giữa hàng rồi CSS transition trượt vào slot
+                var x = g.Key.X - (shown.Count - 1) * DotStepX / 2;
+                return new DotGroup(x, g.Key.Y, shown, ordered.Count - shown.Count);
             })
             .OrderBy(g => g.Y)
             .ThenBy(g => g.X)
