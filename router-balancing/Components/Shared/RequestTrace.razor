@@ -10,23 +10,26 @@
 @inject IProxyPool ProxyPool
 @inject IProxyService ProxyService
 @inject LocalizationService L
+@inject IJSRuntime JS
 @implements IAsyncDisposable
 
 <style>
     /* CSS theo mockup trace-design-v2.html — priority 7 (style inline trong razor, xem style.css) */
+    /* Chỉ phần sơ đồ cuộn; .trace-head/.trace-legend là sibling đứng ngoài nên đứng yên
+       (user 2026-10-08: chỉ phần sơ đồ cuộn, head/legend đứng yên) */
     .trace-wrap {
-        overflow-x: auto;
+        overflow: auto;
+        max-height: 415px;
         padding-bottom: 6px;
     }
 
     .trace-canvas {
         position: relative;
         width: 740px;
-        height: 415px;
         font-size: 11px;
-        /* Clip nhánh tràn đáy (nhiều combo/provider hơn mockup) thay vì build scrolling —
-           ruling Task 6: clamp là chấp nhận được; panel expand tự chọn hướng để vừa vùng này */
-        overflow: hidden;
+        /* Chiều cao set inline theo nội dung thật (CanvasHeight). Vùng giữa giờ CUỘN thay vì
+           clip: nội dung tràn đáy cuộn tới thay vì bị cắt (user 2026-10-08 thay ruling Task 6
+           "clamp thay vì scrolling"); panel expand vẫn tự chọn hướng để sát chip */
     }
 
     .trace-svg {
@@ -376,12 +379,14 @@
         </div>
     </div>
 
-    <div class="trace-wrap">
-        <div class="trace-canvas">
-            @* Tính lại layout nhánh TRƯỚC khi vẽ — svg/branch node/dot cùng đọc _layout trong 1 render *@
-            @{ RebuildBranchLayout(); }
+    @* Tính lại layout nhánh TRƯỚC khi vẽ — CanvasHeight (style .trace-canvas), svg, branch
+       node/dot cùng đọc _layout trong 1 render. Đặt TRƯỚC div .trace-canvas vì attribute
+       style của div này tính trước khi render nội dung bên trong. *@
+    @{ RebuildBranchLayout(); }
 
-            <svg class="trace-svg" width="740" height="415">
+    <div class="trace-wrap" @ref="_wrapRef">
+        <div class="trace-canvas" style="height:@(CanvasHeight)px">
+            <svg class="trace-svg" width="740" height="@CanvasHeight">
                 @* Đường nối spine — coords theo mockup; đoạn Thực thi→Client nối thêm cho đủ spine *@
                 <g fill="none" stroke="#8b8fa3" stroke-width="1.6" opacity=".55">
                     <path d="M68,52 L68,96" />
@@ -651,7 +656,12 @@
     private const int ChipDotOffsetY = 6;
     private const int ProviderDotOffsetX = 9;  // dot trong provider: border 1.5px + padding 8px
     private const int MaxAccountChips = 4;     // spec §5.2: max 4 chip + "+N idle"
-    private const int CanvasHeight = 415;
+    private const int MinCanvasHeight = 415;    // chiều cao mockup — canvas không bao giờ thấp hơn
+    private const int CanvasBottomPad = 16;     // hở dưới nội dung thật khi mở rộng canvas theo nội dung
+    private const int BranchBlockH = 55;        // ước lượng cao block Combo/Provider (cap 12 + slot 12 + tên + padding/border)
+    private const int IdleListRowH = 18;        // ước lượng cao 1 dòng panel expand (li ~14 + padding 2×2)
+    private const int IdleListPadY = 12;        // padding dọc ước lượng của panel expand
+    private const int IdleListMaxH = 160;       // bằng max-height CSS .trace-idle-list — panel tự cuộn trong nên không cao thêm
     private const int IdleChipHeight = 26;     // chiều cao chip (~22px) + hở 4px với panel
     private const int IdleListUpThreshold = 200; // chip dưới ngưỡng này → panel mở xuống, trên → mở lên
 
@@ -664,6 +674,15 @@
 
     // Layout nhánh tính lại mỗi lần render từ Nodes (không giữ state layout riêng)
     private BranchLayout _layout = new();
+
+    // Chiều cao canvas tính lại trong RebuildBranchLayout — CanvasHeight trả về,
+    // dùng cho style .trace-canvas và chiều cao svg (nội dung tràn đáy → cuộn tới)
+    private int _canvasHeight = MinCanvasHeight;
+
+    // Auto-follow: scroller .trace-wrap + cờ element đã attach DOM — JS interop chỉ gọi
+    // sau OnAfterRender lần đầu, trước đó ElementReference chưa resolve được
+    private ElementReference _wrapRef;
+    private bool _jsReady;
 
     // Cache provider cho chip "+N idle" — nạp 1 lần trong OnInitializedAsync
     private IReadOnlyList<Provider> _providers = [];
@@ -744,6 +763,10 @@
     private int QueuedCount => Nodes.Values.Count(n => n.Stage is TraceStage.Received or TraceStage.Parked);
     private int RunningCount => Nodes.Values.Count(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
 
+    /// <summary>Chiều cao canvas theo nội dung nhánh thật — tối thiểu <see cref="MinCanvasHeight"/>,
+    /// nội dung tràn đáy kéo dài vùng cuộn (set inline cho .trace-canvas, bind cho svg).</summary>
+    private int CanvasHeight => _canvasHeight;
+
     // Wire ① Input→Queue: có request thật nằm trong queue (Received lẫn Parked — spec §3.1)
     private bool WireInputQueueLit =>
         _agg.Nodes.Values.Any(n => n.Stage is TraceStage.Received or TraceStage.Parked);
@@ -796,6 +819,16 @@
         _ = LoadProvidersAsync();
         _ = RunLoopAsync(_cts.Token);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Bật auto-follow sau lần render đầu — ElementReference .trace-wrap mới attach DOM
+    /// lúc này, gọi JS trước đó sẽ ném (element chưa resolve).
+    /// </summary>
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+            _jsReady = true;
     }
 
     /// <summary>
@@ -917,10 +950,14 @@
             changed = true;
         }
 
+        TraceEvent? followEvent = null;
         while (_inbox.TryDequeue(out var e))
         {
             ApplyEvent(e);
             changed = true;
+            // Giữ event CUỐI của tick: batch nhiều event trong 100ms → auto-follow chỉ
+            // nhảy 1 lần (rbTrace.scrollTo no-op nếu điểm đã nằm trong viewport)
+            followEvent = e;
         }
 
         if (RemoveExpired())
@@ -938,6 +975,28 @@
 
         EnforceCap();
         StateHasChanged();
+
+        // Auto-follow: cuộn vùng sơ đồ đưa anchor của event cuối về giữa. Node đã bị gỡ
+        // (EnforceCap/RemoveExpired) thì bỏ qua; JS tự no-op khi điểm đã thấy nên người
+        // dùng cuộn tay không bị giật. Chạy sau StateHasChanged để render áp event trước.
+        if (followEvent is not null && _jsReady && !_disposed
+            && Nodes.TryGetValue(followEvent.RequestId, out var followNode))
+        {
+            var (x, y) = AnchorOf(followNode);
+            _ = InvokeAsync(async () =>
+            {
+                // when (!_disposed): component đã gỡ → element không còn, exception vô
+                // nghĩa — để thoát khỏi catch thay vì ghi log rác
+                try
+                {
+                    await JS.InvokeVoidAsync("rbTrace.scrollTo", _wrapRef, x, y);
+                }
+                catch (Exception ex) when (!_disposed)
+                {
+                    Log.Error("RequestTrace: cuộn theo event thất bại.", ex);
+                }
+            });
+        }
     }
 
     /// <summary>
@@ -1096,6 +1155,8 @@
     {
         var layout = new BranchLayout();
         _layout = layout;
+        // Về mức tối thiểu trước — nhánh rỗng return sớm ở dưới không cần tính lại
+        _canvasHeight = MinCanvasHeight;
 
         // Sắp (ReceivedAt, Id) để thứ tự "xuất hiện đầu tiên" ổn định giữa các lần render —
         // Dictionary không giữ thứ tự enumerate, không được dựa vào nó.
@@ -1239,6 +1300,43 @@
 
             layout.Paths.Add(new BranchPath(segments, g.HasError));
         }
+
+        // Chiều cao canvas tính SAU khi mọi block/chip/panel expand đã dựng xong
+        // (kể cả khi panel idle vừa bị đóng ở trên) — nội dung tràn đáy cuộn tới thay vì clip
+        UpdateCanvasHeight(layout);
+    }
+
+    /// <summary>
+    /// Mở rộng chiều cao canvas theo nội dung nhánh thật: block Combo/Provider, chip Account
+    /// và panel expand đang mở — vùng sơ đồ cuộn tới thay vì clip đáy (user 2026-10-08).
+    /// </summary>
+    private void UpdateCanvasHeight(BranchLayout layout)
+    {
+        var bottom = 0;
+        foreach (var combo in layout.Combos)
+            bottom = Math.Max(bottom, combo.Top + BranchBlockH);
+        foreach (var provider in layout.Providers)
+            bottom = Math.Max(bottom, provider.Top + BranchBlockH);
+
+        foreach (var chip in layout.Chips)
+        {
+            bottom = Math.Max(bottom, chip.Top + ChipHeight);
+
+            if (chip.IsIdle && _expandedIdleProvider == chip.Provider)
+            {
+                // Panel expand ước lượng theo đúng hướng của IdleListStyle (mở xuống/mở lên);
+                // giữ đơn giản: mỗi dòng ~18px + padding, chặn ở max-height CSS
+                // .trace-idle-list — panel tự cuộn trong nên canvas không phình vô hạn
+                // theo số TK idle.
+                var listH = Math.Min(IdleListMaxH, chip.IdleAccounts.Count * IdleListRowH + IdleListPadY);
+                var listTop = chip.Top > IdleListUpThreshold
+                    ? chip.Top - 4 - listH          // mở lên: đáy panel cách đỉnh chip 4px
+                    : chip.Top + IdleChipHeight;    // mở xuống: ngay dưới chip
+                bottom = Math.Max(bottom, listTop + listH);
+            }
+        }
+
+        _canvasHeight = Math.Max(MinCanvasHeight, bottom + CanvasBottomPad);
     }
 
     /// <summary>Class dot indicator: rỗng = xanh pulse (đang chạy), đỏ khi lỗi còn lại, xám khi chỉ còn terminal.</summary>
@@ -1246,8 +1344,10 @@
         running ? "" : hasError ? "trace-idot--err" : "trace-idot--dim";
 
     /// <summary>
-    /// Panel expand: mở xuống dưới chip nếu còn chỗ trong canvas 415px, ngược lại mở lên trên —
-    /// tự giữ panel trong vùng clip (không build scrolling theo ruling Task 6).
+    /// Panel expand: mở xuống dưới chip nếu còn chỗ, ngược lại mở lên trên — giữ panel sát
+    /// chip trong vùng nhìn được. <c>bottom</c> phải theo chiều cao canvas THẬT
+    /// (<see cref="CanvasHeight"/>): canvas giờ cao theo nội dung, dùng 415 cố định sẽ
+    /// tách panel khỏi chip.
     /// </summary>
     private string IdleListStyle(AccountChip chip) =>
         chip.Top > IdleListUpThreshold
