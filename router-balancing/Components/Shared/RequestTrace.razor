@@ -204,11 +204,25 @@
         border-radius: 50%;
     }
 
-    /* Legend: ring vàng đứt = dot đang chờ slot (G1) — offset 1px (khác .trace-dot--park 2px
-       trên dot thật) để không chạm text trong khoảng cách legend 4px */
+    /* Legend: ring đứt quanh dot = marker dạng badge/tag nét đứt (chờ slot, headers, priority).
+       offset 1px (khác .trace-dot--park 2px trên dot thật) để không chạm text trong khoảng cách legend 4px */
     .trace-ldot--ring {
-        outline: 1.5px dashed #eab308;
+        outline-style: dashed;
+        outline-width: 1.5px;
         outline-offset: 1px;
+    }
+
+    /* Màu ring lấy đúng border-color của marker thật tương ứng trong legend */
+    .trace-ldot--ring-amber {
+        outline-color: #eab308;
+    }
+
+    .trace-ldot--ring-green {
+        outline-color: #22c55e;
+    }
+
+    .trace-ldot--ring-blue {
+        outline-color: #3b82f6;
     }
 
     /* ===== Nhánh Combo → Provider → Account (copy từ mockup .n/.acct/.tag — Task 6) ===== */
@@ -573,9 +587,9 @@
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--green"></i>@L["trace.legend.ok"]</span>
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--red"></i>@L["trace.legend.error"]</span>
         <span class="trace-legend__item"><i class="trace-ldot trace-dot--yellow"></i>@L["trace.legend.cancelled"]</span>
-        <span class="trace-legend__item"><i class="trace-ldot trace-dot--white trace-ldot--ring"></i>@L["trace.legend.parked"]</span>
-        <span class="trace-legend__item"><i class="trace-ldot trace-dot--green"></i>@L["trace.legend.headers"]</span>
-        <span class="trace-legend__item"><i class="trace-ldot trace-dot--yellow"></i><i class="trace-ldot trace-dot--blue"></i>@L["trace.priority.highest"]/@L["trace.priority.high"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--white trace-ldot--ring trace-ldot--ring-amber"></i>@L["trace.legend.parked"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--green trace-ldot--ring trace-ldot--ring-green"></i>@L["trace.legend.headers"]</span>
+        <span class="trace-legend__item"><i class="trace-ldot trace-dot--yellow trace-ldot--ring trace-ldot--ring-amber"></i><i class="trace-ldot trace-dot--blue trace-ldot--ring trace-ldot--ring-blue"></i>@L["trace.priority.highest"]/@L["trace.priority.high"]</span>
         <span class="trace-legend__hint">@L["trace.fadeHint"]</span>
     </div>
 </div>
