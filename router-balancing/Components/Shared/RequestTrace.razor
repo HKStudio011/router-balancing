@@ -135,6 +135,14 @@
     .trace-dot--red { background: #ef4444; }
     .trace-dot--yellow { background: #eab308; }
 
+    /* Dot ĐANG chạy dọc line — glow màu trạng thái để mắt theo được hướng đi;
+       class do C# bỏ khi tới nơi (TravelState.ArrivalAt), không animation lặp */
+    .trace-dot--move.trace-dot--white { box-shadow: 0 0 8px #fff; }
+    .trace-dot--move.trace-dot--blue { box-shadow: 0 0 8px #3b82f6; }
+    .trace-dot--move.trace-dot--green { box-shadow: 0 0 8px #22c55e; }
+    .trace-dot--move.trace-dot--red { box-shadow: 0 0 8px #ef4444; }
+    .trace-dot--move.trace-dot--yellow { box-shadow: 0 0 8px #eab308; }
+
     .trace-badge {
         font-size: 9.5px;
         border: 1px solid rgba(139, 143, 163, .55);
@@ -382,7 +390,9 @@
     @* Tính lại layout nhánh TRƯỚC khi vẽ — CanvasHeight (style .trace-canvas), svg, branch
        node/dot cùng đọc _layout trong 1 render. Đặt TRƯỚC div .trace-canvas vì attribute
        style của div này tính trước khi render nội dung bên trong. *@
-    @{ RebuildBranchLayout(); }
+    @{ RebuildBranchLayout();
+       // Một giá trị now chung cho cả line dẫn đường (svg) và glow (dot) trong cùng lần render
+       var traceNow = DateTimeOffset.UtcNow; }
 
     <div class="trace-wrap" @ref="_wrapRef">
         <div class="trace-canvas" style="height:@(CanvasHeight)px">
@@ -435,6 +445,18 @@
                                 <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
                             </path>
                         }
+                    </g>
+                }
+                @* Line dẫn đường transient của dot đang chạy (user 2026-10-08): nét đứt +
+                   marching-ants màu trạng thái ĐÍCH — sáng full khi dot di chuyển rồi fade
+                   ~0.5s sau khi tới nơi; tự gỡ trong AdvanceTravels, không JS *@
+                @foreach (var travel in _travels.Values)
+                {
+                    <g fill="none" stroke="@travel.Stroke" stroke-width="1.8" stroke-dasharray="7 6"
+                       opacity="@TravelOpacity(travel, traceNow)">
+                        <path d="@travel.Path">
+                            <animate attributeName="stroke-dashoffset" values="0;-26" dur="1s" repeatCount="indefinite" />
+                        </path>
                     </g>
                 }
                 @* (Bỏ 2 circle ornament lặp vô hạn của mockup — user report: bị hiểu nhầm là request
@@ -551,8 +573,19 @@
                 for (var i = 0; i < group.Shown.Count; i++)
                 {
                     var node = group.Shown[i];
-                    <div class="@("trace-dot " + ColorClass(node) + (node.Stage == TraceStage.Parked ? " trace-dot--park" : ""))" @key="node.Id"
-                         style="left:@(group.X + i * DotStepX)px;top:@(group.Y)px"
+                    // Dot đang đổi stage → bám điểm hiện tại của travel (đang giữa đường)
+                    // thay vì anchor cuối; glow trong lúc còn di chuyển (ArrivalAt)
+                    var left = group.X + i * DotStepX;
+                    var top = group.Y;
+                    var gliding = false;
+                    if (_travels.TryGetValue(node.Id, out var travel) && travel is not null)
+                    {
+                        left = travel.Points[travel.Idx].X;
+                        top = travel.Points[travel.Idx].Y;
+                        gliding = traceNow <= travel.ArrivalAt;
+                    }
+                    <div class="@("trace-dot " + ColorClass(node) + (node.Stage == TraceStage.Parked ? " trace-dot--park" : "") + (gliding ? " trace-dot--move" : ""))" @key="node.Id"
+                         style="left:@(left)px;top:@(top)px"
                          title="@node.Endpoint"
                          @onclick="() => OpenDetail(node.Id)"></div>
                 }
@@ -621,6 +654,13 @@
     private const int TickMs = 100;
     private static readonly TimeSpan TerminalTtl = TimeSpan.FromSeconds(10);
 
+    // Dot chạy dọc line (user 2026-10-08): mỗi điểm travel tiến1 bước/bằng đúng1 tick render;
+    // settle = thêm1 lần CSS transition .35s sau điểm cuối để tính đúng lúc dot "tới nơi"
+    // (glow/line chờ hết transition mới bắt đầu fade); fade = line dẫn đường mờ sau khi dot dừng.
+    private static readonly TimeSpan TravelStep = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan TravelSettle = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan TravelFade = TimeSpan.FromMilliseconds(500);
+
     // G5: giữ sáng dòng endpoint trên node Input trong ~2s sau event Received đầu
     private static readonly TimeSpan EndpointLitTtl = TimeSpan.FromSeconds(2);
     private string? _litEndpoint;
@@ -631,6 +671,8 @@
     private const int QueueTop = 96;
     private const int DispatchTop = 188;
     private const int ClientTop = 336;
+    // Đáy node Input = top 8 + cao 47 (CSS .trace-node__paths) — dot mới trồi lên từ đây
+    private const int InputBottom = 55;
     // Dòng dot nằm ngay dưới cap đầu node: padding-top 5px + cap line-height 12px (xem CSS)
     private const int DotRowOffsetY = 17;
 
@@ -675,6 +717,14 @@
     // Layout nhánh tính lại mỗi lần render từ Nodes (không giữ state layout riêng)
     private BranchLayout _layout = new();
 
+    // Dot đang chạy dọc line: nodeId → travel (điểm cần tới, line dẫn đường, thời gian).
+    // Một node tối đa 1 travel — stage đổi giữa chừng thì dựng lại từ điểm đang render.
+    private readonly Dictionary<string, TravelState> _travels = [];
+
+    // Đã qua bootstrap (snapshot + QueuedSnapshot của OnInitializedAsync) — travel chỉ dựng
+    // cho event runtime; nếu không thì mở app giữa chừng sẽ animate "cả dây dot" từ Input xuống
+    private bool _primed;
+
     // Chiều cao canvas tính lại trong RebuildBranchLayout — CanvasHeight trả về,
     // dùng cho style .trace-canvas và chiều cao svg (nội dung tràn đáy → cuộn tới)
     private int _canvasHeight = MinCanvasHeight;
@@ -713,6 +763,32 @@
 
     /// <summary>Nhóm dot cùng anchor: tối đa 6 dot vẽ ra, phần dư cộng vào badge +N.</summary>
     private sealed record DotGroup(int X, int Y, List<TraceNodeState> Shown, int Overflow);
+
+    /// <summary>
+    /// Đường đi của 1 node đang đổi stage — dot chạy dọc line: render tại <c>Points[Idx]</c>
+    /// (CSS transition .35s lo phần chuyển mượt giữa các điểm), <c>Path</c> là polyline vẽ
+    /// thành line dẫn đường transient (dashed + ants màu trạng thái đích).
+    /// </summary>
+    private sealed class TravelState
+    {
+        /// <summary>Các điểm mục tiêu theo thứ tự — Idx nhảy 1 bước mỗi <c>TravelStep</c>.</summary>
+        public required List<(int X, int Y)> Points { get; init; }
+
+        /// <summary>Polyline từ vị trí bắt đầu qua Points — stroke trong svg.</summary>
+        public required string Path { get; init; }
+
+        /// <summary>Màu nét = màu trạng thái đích (khớp dot/legend).</summary>
+        public required string Stroke { get; init; }
+
+        /// <summary>Thời điểm dựng travel — tính Idx từ thời gian trôi qua.</summary>
+        public required DateTimeOffset StartAt { get; init; }
+
+        /// <summary>Thời điểm dot thật sự tới nơi = điểm cuối + TravelSettle — hết hạn này thì ngừng glow, bắt đầu fade line.</summary>
+        public required DateTimeOffset ArrivalAt { get; init; }
+
+        /// <summary>Chỉ số điểm mục tiêu hiện tại.</summary>
+        public int Idx { get; set; }
+    }
 
     /// <summary>Nhóm node cùng route (Combo, Provider, Account) — đơn vị vẽ connector của nhánh.</summary>
     private sealed record BranchGroup(string Combo, string Provider, string Account, List<TraceNodeState> Nodes)
@@ -815,6 +891,10 @@
             reverseAssignments: ct => ProxyService.GetReverseAssignmentsAsync(ct),
             providerAssignments: (id, ct) => ProxyService.GetAssignmentsAsync(id, ct),
             onError: ex => Log.Error("RequestTrace: cooldown snapshot failed — giữ map cũ", ex));
+
+        // Xong bootstrap → từ giờ event runtime mới dựng travel (dot chạy dọc line);
+        // snapshot/QueuedSnapshot phía trên không animate
+        _primed = true;
 
         _ = LoadProvidersAsync();
         _ = RunLoopAsync(_cts.Token);
@@ -970,6 +1050,12 @@
             changed = true;
         }
 
+        // Dot chạy dọc line: tiến Idx theo thời gian trôi, dọn travel khi node bị gỡ
+        // hoặc line dẫn đường đã fade xong — luôn gọi trước early-return để animation
+        // vẫn chạy khi không có event mới
+        if (AdvanceTravels(DateTimeOffset.UtcNow))
+            changed = true;
+
         if (!changed)
             return;
 
@@ -1067,7 +1153,12 @@
     /// <summary>Áp một trace event vào node của request — idempotent, tái tạo node nếu đã bị drop.</summary>
     private void ApplyEvent(TraceEvent e)
     {
-        var isNew = !Nodes.ContainsKey(e.RequestId);
+        var isNew = !Nodes.TryGetValue(e.RequestId, out var before);
+        // Chụp vị trí + stage TRƯỚC khi merge: _agg.Apply mutate node tại chỗ nên sau
+        // dòng dưới before == node (cùng reference) — không đọc được trạng thái cũ nữa.
+        var from = before is null ? default((int X, int Y)) : RenderedAnchor(before);
+        var fromStage = before?.Stage;
+
         _agg.Apply(e);
 
         // G5: chỉ event nào MANG endpoint (Received đầu) mới thay ánh sáng —
@@ -1076,6 +1167,18 @@
         {
             _litEndpoint = endpoint;
             _litExpiresAt = e.At + EndpointLitTtl;
+        }
+
+        // Dot chạy dọc line: node mới → trồi từ đáy Input; stage ĐỔI CHỖ → đi polyline
+        // (BuildLegs bám lane/elbow thật, không nhảy chéo). Bootstrap không animate;
+        // stage giữ nguyên (update field/Received merge) → không dựng travel.
+        if (_primed && Nodes.TryGetValue(e.RequestId, out var node))
+        {
+            var to = AnchorOf(node);
+            if (before is null)
+                StartTravel(e.RequestId, node, (DotStartX, InputBottom), to, spawn: true);
+            else if (fromStage != node.Stage && from != to)
+                StartTravel(e.RequestId, node, from, to, spawn: false);
         }
 
         // Node dựng lại từ id từng bị cap-drop → hoàn badge +N thay vì cộng dồn
@@ -1144,6 +1247,236 @@
             return (ProviderLeft + ProviderDotOffsetX, provider.Top + DotRowOffsetY);
 
         return (DotStartX, DispatchTop + DotRowOffsetY);
+    }
+
+    /// <summary>
+    /// Vị trí dot ĐANG render: đang travel thì lấy điểm mục tiêu hiện tại (đang giữa đường),
+    /// không thì anchor stage — dùng làm điểm xuất phát khi stage đổi giữa chừng.
+    /// </summary>
+    private (int X, int Y) RenderedAnchor(TraceNodeState n) =>
+        _travels.TryGetValue(n.Id, out var travel) ? travel.Points[travel.Idx] : AnchorOf(n);
+
+    /// <summary>
+    /// Dựng travel cho node: đường đi + line dẫn đường transient (dashed + ants màu đích).
+    /// Stage đổi giữa chừng → ghi đè travel cũ, dot rebase từ <see cref="RenderedAnchor"/>.
+    /// </summary>
+    private void StartTravel(string id, TraceNodeState node, (int X, int Y) from, (int X, int Y) to, bool spawn)
+    {
+        List<(int X, int Y)> points;
+        if (spawn)
+        {
+            // Element mới không có vị trí cũ để transition → tự đặt điểm đầu tại đáy Input,
+            // rồi đi tiếp tuyến đường coi như xuất phát từ Hàng đợi
+            points = [(DotStartX, InputBottom)];
+            points.AddRange(BuildLegs(node, (DotStartX, QueueTop + DotRowOffsetY), to));
+        }
+        else
+        {
+            points = BuildLegs(node, from, to);
+        }
+
+        if (points.Count == 0)
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        _travels[id] = new TravelState
+        {
+            Points = points,
+            Path = BuildTravelPath(from, points),
+            Stroke = TravelStroke(node),
+            StartAt = now,
+            // Điểm cuối + TravelSettle: transition .35s chạy xong mới tính "tới nơi"
+            ArrivalAt = now + TimeSpan.FromTicks(TravelStep.Ticks * (points.Count - 1)) + TravelSettle,
+        };
+    }
+
+    /// <summary>
+    /// Đường đi của dot khi stage đổi — luôn bám lane/elbow thật, không nhảy chéo canvas:
+    /// cùng lane spine (x=<see cref="DotStartX"/>) → đi thẳng; ra nhánh → cổng ra Thực thi
+    /// rồi elbow; về spine (parked/terminal từ nhánh) → đi ngược elbow về Thực thi rồi nối tiếp.
+    /// </summary>
+    private List<(int X, int Y)> BuildLegs(TraceNodeState node, (int X, int Y) from, (int X, int Y) to)
+    {
+        if (from.X == DotStartX && to.X == DotStartX)
+            return [to];
+
+        if (from.X == DotStartX)
+            return BranchLegs(node, from, to, forward: true) ?? [to];
+
+        if (to.X == DotStartX)
+        {
+            // Về spine: trước hết về cổng vào node Thực thi, rồi đi tiếp đoạn tới đích
+            var back = BranchLegs(node, from, (DotStartX, DispatchTop + DotRowOffsetY), forward: false)
+                       ?? [(DotStartX, DispatchTop + DotRowOffsetY)];
+            back.Add(to);
+            return back;
+        }
+
+        // Không match nhánh nào (layout chưa có route) → đi thẳng thay vì treo dot
+        return [to];
+    }
+
+    /// <summary>
+    /// Điểm dọc theo elbow connector nhánh — cùng geometry với đường đang vẽ
+    /// (<see cref="RebuildBranchLayout"/>): cắt tại điểm gần vị trí dot nhất (đang giữa
+    /// chặng do rebase) rồi nối tiếp tới <paramref name="to"/>.
+    /// Trả về <see langword="null"/> khi node không có route/layout — caller tự đi thẳng.
+    /// </summary>
+    private List<(int X, int Y)>? BranchLegs(TraceNodeState node, (int X, int Y) from, (int X, int Y) to, bool forward)
+    {
+        var route = ForwardRoutePoints(node);
+        if (route is null)
+            return null;
+
+        var path = forward ? route : [.. route.AsEnumerable().Reverse()];
+        var pts = new List<(int X, int Y)>();
+        var k = NearestIndex(path, from);
+        if (path[k] != from)
+            pts.Add(path[k]);
+        for (var i = k + 1; i < path.Count; i++)
+            pts.Add(path[i]);
+        if (pts.Count == 0 || pts[^1] != to)
+            pts.Add(to);
+        return pts;
+    }
+
+    /// <summary>
+    /// Polyline cửa ra Thực thi → nhánh Attempt — copy đúng geometry connector đang vẽ
+    /// (elbow ở trung điểm 2 cột; chip bị cắt thì đường dừng tại Provider).
+    /// </summary>
+    private List<(int X, int Y)>? ForwardRoutePoints(TraceNodeState node)
+    {
+        if (node.Route is not { Provider: { } providerName })
+            return null;
+        var combo = _layout.Combos.FirstOrDefault(c => c.Name == (node.Route!.Combo ?? string.Empty));
+        var provider = _layout.FindProvider(providerName);
+        if (combo is null || provider is null)
+            return null;
+
+        var cy = combo.Top + NodeElbowOffsetY;
+        var py = provider.Top + NodeElbowOffsetY;
+        var m1 = (DispatchExitX + ComboLeft) / 2;
+        var m2 = (ComboLeft + ComboWidth + ProviderLeft) / 2;
+        var pts = new List<(int X, int Y)>
+        {
+            (DispatchExitX, DispatchExitY),
+            (m1, DispatchExitY),
+            (m1, cy),
+            (ComboLeft, cy),
+            (ComboLeft + ComboWidth, cy),
+            (m2, cy),
+            (m2, py),
+            (ProviderLeft, py),
+        };
+
+        if (_layout.FindChip(providerName, node.Route!.Account ?? string.Empty) is { } chip)
+        {
+            var m3 = (ProviderLeft + ProviderWidth + AccountLeft) / 2;
+            var chy = chip.Top + ChipElbowOffsetY;
+            pts.Add((ProviderLeft + ProviderWidth, py));
+            pts.Add((m3, py));
+            pts.Add((m3, chy));
+            pts.Add((AccountLeft, chy));
+        }
+        return pts;
+    }
+
+    /// <summary>Chỉ số điểm gần <paramref name="from"/> nhất (đường đi cắt tại đó khi rebase giữa chặng).</summary>
+    private static int NearestIndex(IReadOnlyList<(int X, int Y)> path, (int X, int Y) from)
+    {
+        var best = 0;
+        var bestD = long.MaxValue;
+        for (var i = 0; i < path.Count; i++)
+        {
+            var dx = (long)path[i].X - from.X;
+            var dy = (long)path[i].Y - from.Y;
+            var d = dx * dx + dy * dy;
+            if (d < bestD)
+            {
+                bestD = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /// <summary>String polyline M…L… cho path svg — StringBuilder để không nối string giữa chừng.</summary>
+    private static string BuildTravelPath((int X, int Y) from, List<(int X, int Y)> points)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append('M').Append(from.X).Append(',').Append(from.Y);
+        foreach (var (x, y) in points)
+            sb.Append(" L").Append(x).Append(',').Append(y);
+        return sb.ToString();
+    }
+
+    /// <summary>Màu line dẫn đường = màu trạng thái ĐÍCH — cùng bảng với TraceColors/legend.</summary>
+    private static string TravelStroke(TraceNodeState node) => node.Stage switch
+    {
+        TraceStage.DispatchStarted or TraceStage.Attempt => "#3b82f6",
+        TraceStage.Canceled => "#eab308",
+        TraceStage.Finished => node.Success == false ? "#ef4444" : "#22c55e",
+        _ => "#ffffff",
+    };
+
+    /// <summary>Opacity line dẫn đường: full khi dot còn đi, fade về 0 trong <see cref="TravelFade"/> sau khi tới nơi.</summary>
+    private static string TravelOpacity(TravelState travel, DateTimeOffset now)
+    {
+        if (now <= travel.ArrivalAt)
+            return "1";
+        var fading = 1d - (now - travel.ArrivalAt).TotalMilliseconds / TravelFade.TotalMilliseconds;
+        if (fading <= 0)
+            return "0";
+        // Invariant culture: decimal ',' của locale vi-VN sẽ làm opacity CSS hỏng
+        return fading.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Tiến dot dọc line theo tick render (Idx nhảy về điểm theo thời gian đã trôi) và dọn
+    /// travel khi node bị gỡ hoặc line đã fade xong. Trả về <see langword="true"/> nếu cần
+    /// render (đổi điểm / đang fade / gỡ entry).
+    /// </summary>
+    private bool AdvanceTravels(DateTimeOffset now)
+    {
+        if (_travels.Count == 0)
+            return false;
+
+        var changed = false;
+        List<string>? gone = null;
+        foreach (var (id, travel) in _travels)
+        {
+            if (!Nodes.ContainsKey(id))
+            {
+                // Node đã hết hạn/bị drop → travel mồ côi không được giữ line trên canvas
+                (gone ??= []).Add(id);
+                changed = true;
+                continue;
+            }
+
+            var target = Math.Min(travel.Points.Count - 1, (now - travel.StartAt).Ticks / TravelStep.Ticks);
+            if (target > travel.Idx)
+            {
+                travel.Idx = (int)target;
+                changed = true;
+            }
+
+            if (now > travel.ArrivalAt + TravelFade)
+            {
+                (gone ??= []).Add(id);
+                changed = true;
+            }
+            else if (now > travel.ArrivalAt)
+            {
+                changed = true; // đang fade → opacity đổi mỗi tick, buộc phải render
+            }
+        }
+
+        if (gone is not null)
+        {
+            foreach (var id in gone)
+                _travels.Remove(id);
+        }
+        return changed;
     }
 
     /// <summary>
