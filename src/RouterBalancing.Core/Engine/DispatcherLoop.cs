@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Settings;
 
 namespace RouterBalancing.Core.Engine;
 
@@ -19,7 +20,8 @@ public sealed class DispatcherLoop(
     IModelSelector selector,
     ProxyRequestHandler handler,
     ILogService log,
-    ITraceFeed trace) : BackgroundService
+    ITraceFeed trace,
+    IAppSettingsService settings) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
 
@@ -225,6 +227,13 @@ public sealed class DispatcherLoop(
             if (outcome is not (DispatchOutcome.Retryable or DispatchOutcome.Fatal))
             {
                 // Không phải Retryable/Fatal: trả slot rồi complete (Handled/Passthrough/Error/Cancelled/Aborted)
+                // Spec transient-retry §6.1: attempt thành công sau retry là attempt thật (Attempts=2);
+                // record CHỈ khi đã retry — journaling exhaustive-failover cho request thường giữ nguyên (§3.4)
+                if (outcome is DispatchOutcome.Handled && request.Retry.TransientRetries > 0)
+                {
+                    request.Retry.RecordAttempt(candidate.Provider.Name, candidate.Model.ModelId,
+                        AccountNameOf(candidate, accountId), 200);
+                }
                 executions.Exit(request.Id);
                 request.Completion.TrySetResult(outcome);
                 return;
@@ -255,6 +264,30 @@ public sealed class DispatcherLoop(
                     new RetryState.Failure(f.Status, f.ContentType, f.Body, f.RetryAfter),
                 _ => request.Retry.LastFailure,
             };
+
+            // Retry transient cùng (provider, model, account) trước khi failover (spec transient-retry §3.2)
+            if (outcome is DispatchOutcome.Retryable rt
+                && RetryClassifier.IsTransient(rt.Status)
+                && request.Retry.TransientRetries < settings.TransientMaxRetries)
+            {
+                request.Retry.TransientRetries++;
+                var wait = BackoffPolicy.Delay(request.Retry.TransientRetries, settings.TransientBackoffBaseMs);
+                LogAttemptFail(request, candidate, accountId, attemptBudget,
+                    $"chờ {wait.TotalMilliseconds:0}ms retry ({request.Retry.TransientRetries}/{settings.TransientMaxRetries})",
+                    LogSeverity.Info);
+                try
+                {
+                    await Task.Delay(wait, request.Context.RequestAborted);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Client abort trong delay — mirror nhánh abort hiện có: trả slot, báo Aborted
+                    executions.Exit(request.Id);
+                    request.Completion.TrySetResult(new DispatchOutcome.Aborted());
+                    return;
+                }
+                continue; // vòng serve — publish Attempt start mới (attemptNo++), CÙNG route
+            }
 
             // Retryable (429/408/5xx) dispatcher gán cấp Account (spec exhaustive-failover §3.1)
             var level = outcome is DispatchOutcome.Fatal fatal
@@ -547,8 +580,10 @@ public sealed class DispatcherLoop(
     /// <param name="accountId">TK VỪA fail (trước khi đổi sang TK/candidate kế).</param>
     /// <param name="attemptBudget">N ước lượng — snapshot tại đầu <c>ServeAsync</c>.</param>
     /// <param name="action">Action của nhánh rẽ: chuyển TK/provider/candidate kế, chờ slot, exhausted.</param>
+    /// <param name="severity">Mức log — <see cref="LogSeverity.Info"/> cho dòng chờ retry transient,
+    /// <see cref="LogSeverity.Warning"/> (mặc định) cho các caller fail khác.</param>
     private void LogAttemptFail(ProxyRequest request, ModelCandidate candidate, long accountId,
-        int attemptBudget, string action)
+        int attemptBudget, string action, LogSeverity severity = LogSeverity.Warning)
     {
         var failure = request.Retry.LastFailure;
         var statusText = failure?.Status is { } code ? $"HTTP {code}" : "lỗi mạng";
@@ -556,7 +591,7 @@ public sealed class DispatcherLoop(
         {
             log.Write(new LogEntry
             {
-                Severity = LogSeverity.Warning,
+                Severity = severity,
                 Category = LogCategory.Request,
                 Message =
                     $"Request {request.Id} — attempt {request.Retry.Attempts}/{attemptBudget} fail: " +

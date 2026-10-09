@@ -7,6 +7,7 @@ using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
+using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
 namespace router_balancing_test.Engine;
@@ -18,6 +19,7 @@ public class DispatcherLoopTests : IDisposable
     private readonly TestDb _db = new();
     private readonly RequestQueue _queue = new();
     private readonly ExecutionList _executions;
+    private readonly AppSettingsService _settings;
     private readonly DpapiSecretProtector _protector = new();
     private DispatcherLoop? _loop;
     // Gán trong StartAsync cùng log của test — test mới subscribe Published để assert sequence;
@@ -27,6 +29,7 @@ public class DispatcherLoopTests : IDisposable
     public DispatcherLoopTests()
     {
         DbInitializer.Initialize(_db.CreateFactory());
+        _settings = new AppSettingsService(_db.CreateFactory());
         _executions = new ExecutionList(_db.CreateFactory());
     }
 
@@ -36,6 +39,7 @@ public class DispatcherLoopTests : IDisposable
         // CancellationToken.None: BackgroundService không có overload không tham số — token None =
         // chỉ StopAsync mới cancel (ExecuteAsync dừng khi loop tự thấy cancellation).
         _loop?.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+        _settings.Dispose();
         _db.Dispose();
     }
 
@@ -121,8 +125,9 @@ public class DispatcherLoopTests : IDisposable
         _trace = new TraceFeed(log);
         var handler = new ProxyRequestHandler(upstream, _protector, log, new NullUsageSink(),
             new ApiMonitorStore(_trace, log, TimeProvider.System));
+        _settings.Set(SettingsKeys.TransientMaxRetries, 0); // baseline opt-out — test transient riêng Set lại (đọc tại mỗi quyết định retry)
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
-            log, _trace);
+            log, _trace, _settings);
         await _loop.StartAsync(CancellationToken.None);
     }
 
@@ -282,6 +287,12 @@ public class DispatcherLoopTests : IDisposable
 
     private static HttpResponseMessage Resp429(string body = """{"error":{"message":"rate limited"}}""") =>
         new(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+
+    private static HttpResponseMessage Resp504(string body = """{"error":{"message":"gateway timeout"}}""") =>
+        new(HttpStatusCode.GatewayTimeout)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
@@ -1492,5 +1503,81 @@ public class DispatcherLoopTests : IDisposable
         // Dọn r0 cuối cùng: release để r0 thoát p1 (không tính vào Calls — cùng call đã gate)
         release.SetResult();
         Assert.IsType<DispatchOutcome.Handled>(await r0.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task Serve_When504Once_RetriesSameAccountThenSucceeds()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var calls = 0;
+        var upstream = new ScriptedUpstream(_ =>
+            Interlocked.Increment(ref calls) == 1 ? Resp504() : Sse());
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+        // Set SAU StartAsync — StartAsync pin baseline 0; dispatcher đọc setting tại mỗi quyết định retry
+        _settings.Set(SettingsKeys.TransientMaxRetries, 5);
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, request.Retry.Attempts);
+        Assert.Equal(2, upstream.Calls);
+        Assert.Equal(1, request.Retry.TransientRetries);
+        Assert.Contains(log.Infos, m => m.Contains("chờ") && m.Contains("retry (1/5)"));
+        Assert.False(_executions.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task Serve_When429_RotatesAccountWithoutSameAccountRetry()
+    {
+        var pid = SeedProvider("p1", accounts: 2);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        // 429 chỉ cho TK a1 — a2 OK; factory nhận (provider, apiKey) để xác nhận rotate
+        var upstream = new WalkUpstream((_, apiKey, _, _) =>
+            Task.FromResult(apiKey == "sk-p1-a1" ? Resp429() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+        _settings.Set(SettingsKeys.TransientMaxRetries, 5);
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls.Count);
+        Assert.Equal("sk-p1-a1", upstream.Calls[0].Key);
+        Assert.Equal("sk-p1-a2", upstream.Calls[1].Key);   // rotate ngay, không retry cùng TK
+        Assert.Equal(0, request.Retry.TransientRetries);
+        Assert.DoesNotContain(log.Infos, m => m.Contains("retry"));
+        Assert.Contains(log.Warns, m => m.Contains("chuyển TK kế"));
+    }
+
+    [Fact]
+    public async Task Serve_WhenTransientRetriesDisabled_PassthroughWithoutRetry()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => Resp504());
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+        _settings.Set(SettingsKeys.TransientMaxRetries, 0);   // 0 = tắt (back-compat §3.3)
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(504, passthrough.Status);
+        Assert.Equal(1, upstream.Calls);          // đúng 1 call — không retry
+        Assert.Equal(0, request.Retry.TransientRetries);
     }
 }

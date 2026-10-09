@@ -38,6 +38,7 @@ public class ApiMonitorIntegrationTests : IDisposable
         DbInitializer.Initialize(_db.CreateFactory());
         var factory = _db.CreateFactory();
         _settings = new AppSettingsService(factory);
+        _settings.Set(SettingsKeys.TransientMaxRetries, 0); // baseline opt-out — test transient riêng của slice transient-retry opt-in
         _log = new LogService(factory);
         _clientKeys = new ClientKeyService(factory);
     }
