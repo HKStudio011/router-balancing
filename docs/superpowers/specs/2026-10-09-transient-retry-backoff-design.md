@@ -64,7 +64,7 @@ public int TransientRetries { get; set; }
 
 **`DispatcherLoop`** — inject thêm `IAppSettingsService` (đọc **tại mỗi quyết định retry** — chỉnh settings có hiệu lực ngay, theo pattern `ProviderProbeTimeoutHandler`); 1 nhánh mới trong `ServeAsync` (§3.2).
 
-**`Translations`** — 4 key mới vào đủ `English` + `Vietnamese`: `Settings_TransientMaxRetries`, `Settings_TransientMaxRetriesDesc`, `Settings_TransientBackoffBaseMs`, `Settings_TransientBackoffBaseMsDesc`.
+**`Translations`** — 4 key mới vào đủ `English` + `Vietnamese`, theo convention `settings.field.*`/`settings.error.*` hiện có (label cho ô number + message của validator): `settings.field.transientRetries`, `settings.error.transientRetries`, `settings.field.transientBackoffBase`, `settings.error.transientBackoffBase`.
 
 Không thêm file settings mới, không entity DB, không endpoint.
 
@@ -101,7 +101,9 @@ if (outcome is DispatchOutcome.Retryable r
 {
     request.Retry.TransientRetries++;
     var wait = BackoffPolicy.Delay(request.Retry.TransientRetries, settings.TransientBackoffBaseMs);
-    LogAttemptFail(request, candidate, accountId, attemptBudget, $"chờ {wait.TotalMilliseconds:0}ms retry");
+    LogAttemptFail(request, candidate, accountId, attemptBudget,
+        $"chờ {wait.TotalMilliseconds:0}ms retry ({request.Retry.TransientRetries}/{settings.TransientMaxRetries})",
+        LogSeverity.Info);
     try { await Task.Delay(wait, request.Context.RequestAborted); }
     catch (OperationCanceledException)
     {
@@ -138,7 +140,7 @@ if (outcome is DispatchOutcome.Retryable r
 
 | Event | Level | Nơi | Nội dung |
 |---|---|---|---|
-| Retry chờ | Info | dispatcher | reuse `LogAttemptFail` — `Request {id} — attempt {k}/{n} fail: ... — chờ {ms}ms retry ({t}/{max})` |
+| Retry chờ | Info | dispatcher | reuse `LogAttemptFail` với tham số optional mới `LogSeverity severity = LogSeverity.Warning` (các caller cũ giữ nguyên Warning) — `Request {id} — attempt {k}/{n} fail: ... → chờ {ms}ms retry ({t}/{max})` |
 
 Không log body/key/messages (nguyên tắc 3A).
 
