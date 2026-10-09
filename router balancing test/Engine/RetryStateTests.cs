@@ -90,4 +90,14 @@ public class RetryStateTests
         Assert.Null(state.Trail[0].Status);
         Assert.Equal(429, state.Trail[1].Status);
     }
+
+    [Fact]
+    public void TransientRetries_DefaultsZero_AndIsSettablePerRequest()
+    {
+        var state = new RetryState();
+        Assert.Equal(0, state.TransientRetries);
+
+        state.TransientRetries++;
+        Assert.Equal(1, state.TransientRetries);
+    }
 }

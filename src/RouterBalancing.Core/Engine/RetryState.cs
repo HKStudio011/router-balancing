@@ -55,6 +55,12 @@ public sealed class RetryState
     /// <summary>Lịch sử attempt theo thứ tự gọi — Task 6 serialize thành <c>Details</c> của log exhaustion.</summary>
     public IReadOnlyList<AttemptRecord> Trail => _trail;
 
+    /// <summary>
+    /// Số retry transient đã dùng — per-request, sống qua park (spec transient-retry §2.2):
+    /// dispatcher cộng dồn mỗi lần fail transient rồi so với max để quyết định backoff/retry.
+    /// </summary>
+    public int TransientRetries { get; set; }
+
     /// <summary>Ghi nhận đã thử 1 candidate.</summary>
     /// <param name="providerId">Id provider của candidate.</param>
     /// <param name="modelId">Model id của candidate.</param>
