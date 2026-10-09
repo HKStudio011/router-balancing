@@ -24,4 +24,21 @@ public class RetryClassifierTests
     [InlineData(HttpStatusCode.UnprocessableEntity)]      // 422
     public void IsRetryable_ClientErrors_ReturnsFalse(HttpStatusCode status)
         => Assert.False(RetryClassifier.IsRetryable(status));
+
+    [Theory]
+    [InlineData(null)]                         // lỗi mạng/timeout — catch filter 3A
+    [InlineData(408)]
+    [InlineData(500)]
+    [InlineData(502)]
+    [InlineData(503)]
+    [InlineData(504)]
+    public void IsTransient_NetworkTimeoutAnd5xx_ReturnsTrue(int? status)
+        => Assert.True(RetryClassifier.IsTransient(status));
+
+    [Theory]
+    [InlineData(429)]                          // 429 KHÔNG transient — rotate TK ngay (§1.3)
+    [InlineData(400)]
+    [InlineData(401)]
+    public void IsTransient_RateLimitAndClientErrors_ReturnsFalse(int? status)
+        => Assert.False(RetryClassifier.IsTransient(status));
 }
