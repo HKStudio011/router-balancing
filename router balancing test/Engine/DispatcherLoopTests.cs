@@ -1580,4 +1580,180 @@ public class DispatcherLoopTests : IDisposable
         Assert.Equal(1, upstream.Calls);          // đúng 1 call — không retry
         Assert.Equal(0, request.Retry.TransientRetries);
     }
+
+    [Fact]
+    public async Task Serve_WhenNetworkError_RetriesSameAccount()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var calls = 0;
+        var upstream = new WalkUpstream((_, _, _, _) =>
+            Interlocked.Increment(ref calls) == 1
+                ? throw new HttpRequestException("connection refused")
+                : Task.FromResult(Sse()));   // pattern dòng 1102 hiện có
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+        _settings.Set(SettingsKeys.TransientMaxRetries, 5);   // Set SAU StartAsync (baseline pin 0)
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, request.Retry.Attempts);
+        Assert.Equal(1, request.Retry.TransientRetries);
+        Assert.All(upstream.Calls, c => Assert.Equal("sk-p1-a1", c.Key)); // cùng TK
+    }
+
+    [Fact]
+    public async Task Serve_WhenFatal401_RotatesWithoutSameAccountRetry()
+    {
+        var pid = SeedProvider("p1", accounts: 2);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((_, apiKey, _, _) =>
+            Task.FromResult(apiKey == "sk-p1-a1" ? Resp401() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+        _settings.Set(SettingsKeys.TransientMaxRetries, 5);   // Set SAU StartAsync (baseline pin 0)
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(0, request.Retry.TransientRetries);        // 401 Fatal — không transient-retry
+        Assert.Equal("sk-p1-a2", upstream.Calls[1].Key);        // rotate TK kế
+    }
+
+    [Fact]
+    public async Task Serve_When504Persists_ExhaustsBudgetThenRotatesAndPassesThrough()
+    {
+        var pid = SeedProvider("p1", accounts: 2);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((_, _, _, _) => Task.FromResult(Resp504()));
+        await StartAsync(resolver, selector, upstream, new CapturingLog());
+        _settings.Set(SettingsKeys.TransientMaxRetries, 2);     // Set SAU StartAsync — ngân sách 2 cho TOÀN request
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // a1: attempt 1 + 2 retry = 3 call; hết budget → rotate a2: 1 call, không retry tiếp → exhaustion
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(504, passthrough.Status);
+        Assert.Equal(4, upstream.Calls.Count);
+        Assert.Equal(2, request.Retry.TransientRetries);
+        Assert.Equal(3, upstream.Calls.Count(c => c.Key == "sk-p1-a1"));
+        Assert.Equal(1, upstream.Calls.Count(c => c.Key == "sk-p1-a2"));
+    }
+
+    [Fact]
+    public async Task Serve_WhenClientAbortsDuringBackoff_ExitsSlotAndCompletesAborted()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var upstream = new ScriptedUpstream(_ =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                entered.TrySetResult();
+                return Resp504();
+            }
+            return Sse();
+        });
+        await StartAsync(resolver, selector, upstream, new CapturingLog());
+        _settings.Set(SettingsKeys.TransientMaxRetries, 5);   // Set SAU StartAsync (baseline pin 0)
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 2000); // delay đủ dài để abort chắc chắn nằm trong window
+
+        using var abort = new CancellationTokenSource();
+        var request = Req("req00001");
+        request.Context.RequestAborted = abort.Token;
+        _queue.Enqueue(request);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));   // call#1 xong, dispatcher vào delay 2s
+        await Task.Delay(150);                                   // journal xong, đang trong Task.Delay
+        abort.Cancel();
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsType<DispatchOutcome.Aborted>(outcome);
+        Assert.False(_executions.Contains("req00001"));          // slot đã trả — không rò
+    }
+
+    [Fact]
+    public async Task Serve_WhenWaitingBackoff_HoldsSlotAndParksOtherRequest()
+    {
+        var pid = SeedProvider("p1", maxConcurrent: 1);          // 1 slot duy nhất
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var upstream = new ScriptedUpstream(_ =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                entered.TrySetResult();
+                return Resp504();
+            }
+            return Sse();
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+        _settings.Set(SettingsKeys.TransientMaxRetries, 3);   // Set SAU StartAsync (baseline pin 0)
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 2000);
+
+        var r1 = Req("req00001");
+        _queue.Enqueue(r1);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));   // r1 fail 504, chuẩn bị delay
+        await Task.Delay(100);
+        var r2 = Req("req00002");
+        _queue.Enqueue(r2);
+
+        await Task.Delay(300);                                   // r1 đang trong delay — slot vẫn giữ
+        Assert.False(_executions.Contains("req00002"));
+        Assert.False(r2.Completion.Task.IsCompleted);            // r2 park, không 503
+
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(0, _executions.GetInFlight(pid));
+    }
+
+    [Fact]
+    public async Task Serve_WhenRetryOccurs_PublishesAttemptPairsWithSameRoute()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var calls = 0;
+        var upstream = new ScriptedUpstream(_ =>
+            Interlocked.Increment(ref calls) == 1 ? Resp504() : Sse());
+        await StartAsync(resolver, selector, upstream, new CapturingLog());
+        _settings.Set(SettingsKeys.TransientMaxRetries, 5);   // Set SAU StartAsync (baseline pin 0)
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+
+        var events = new List<TraceEvent>();
+        _trace.Published += e => events.Add(e);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        Assert.IsType<DispatchOutcome.Handled>(
+            await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        // DispatchStarted + 2 cặp (start, done) — retry là attempt thật, route lặp (§3.2)
+        var attempts = events.Where(e => e.Stage == TraceStage.Attempt).ToList();
+        Assert.Equal(4, attempts.Count);
+        Assert.Equal(1, attempts[0].Attempt); Assert.False(attempts[0].AttemptDone);
+        Assert.Equal(1, attempts[1].Attempt); Assert.True(attempts[1].AttemptDone);
+        Assert.Equal(2, attempts[2].Attempt); Assert.False(attempts[2].AttemptDone);
+        Assert.Equal(2, attempts[3].Attempt); Assert.True(attempts[3].AttemptDone);
+        var routes = attempts.Select(a => a.Route).Distinct().ToList();
+        Assert.Single(routes);                                     // CÙNG combo/provider/account
+    }
 }

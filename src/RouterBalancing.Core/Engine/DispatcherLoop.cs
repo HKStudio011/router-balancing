@@ -233,6 +233,11 @@ public sealed class DispatcherLoop(
                 {
                     request.Retry.RecordAttempt(candidate.Provider.Name, candidate.Model.ModelId,
                         AccountNameOf(candidate, accountId), 200);
+                    // H3b parity cho attempt thành công sau retry: publish cặp (start, done) như
+                    // nhánh lỗi — thiếu done thì UI treo circle "đang chạy" cho attempt đã xong (§6.2)
+                    trace.Publish(new TraceEvent(request.Id, TraceStage.Attempt, request.Model,
+                        attemptRoute, attemptNo, 200, null, null, DateTimeOffset.Now, null,
+                        AttemptDone: true));
                 }
                 executions.Exit(request.Id);
                 request.Completion.TrySetResult(outcome);
@@ -265,9 +270,10 @@ public sealed class DispatcherLoop(
                 _ => request.Retry.LastFailure,
             };
 
-            // Retry transient cùng (provider, model, account) trước khi failover (spec transient-retry §3.2)
-            if (outcome is DispatchOutcome.Retryable rt
-                && RetryClassifier.IsTransient(rt.Status)
+            // Retry transient cùng (provider, model, account) trước khi failover (spec transient-retry §3.2).
+            // Lỗi mạng không đi qua Retryable: handler catch 3A trả Fatal(Provider, Status=null) —
+            // spec §3.1 coi null là transient nên phải bắt cả 2 shape tại đây (404-khác có Status thật → không khớp)
+            if (IsTransientOutcome(outcome)
                 && request.Retry.TransientRetries < settings.TransientMaxRetries)
             {
                 request.Retry.TransientRetries++;
@@ -499,6 +505,19 @@ public sealed class DispatcherLoop(
     private static bool HasEnabledUntriedAccount(ModelCandidate candidate, RetryState retry) =>
         candidate.Provider.Accounts?
             .Any(a => a.Enabled && !retry.IsAccountTried(candidate.Provider.Id, a.Id)) != false;
+
+    /// <summary>
+    /// Lỗi transient có thể retry backoff cùng TK (spec transient-retry §3.1):
+    /// <see cref="DispatchOutcome.Retryable"/> 408/5xx, hoặc lỗi mạng — handler catch 3A trả
+    /// <see cref="DispatchOutcome.Fatal"/> cấp Provider với <c>Status=null</c> (không đi qua
+    /// Retryable). 404-khác cũng là Fatal(Provider) nhưng có Status thật → không transient.
+    /// </summary>
+    private static bool IsTransientOutcome(DispatchOutcome outcome) => outcome switch
+    {
+        DispatchOutcome.Retryable rt => RetryClassifier.IsTransient(rt.Status),
+        DispatchOutcome.Fatal { Level: FailoverLevel.Provider, Status: null } => true,
+        _ => false,
+    };
 
     /// <summary>
     /// Tên TK đã dùng cho journal attempt — tra từ snapshot theo <paramref name="accountId"/>;
