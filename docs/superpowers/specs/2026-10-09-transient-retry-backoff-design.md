@@ -1,7 +1,7 @@
 # Spec: Transient Retry Backoff cùng Account (dispatcher)
 
 - **Ngày:** 2026-10-09
-- **Trạng thái:** Draft (chờ user review)
+- **Trạng thái:** Approved (user "ok" tại `54459d5`)
 - **Nguồn gốc:** Nghiên cứu cách Hermes/OpenCode xử lý 504 NVIDIA — retry transient với backoff + jitter trước khi failover; chốt các quyết định khi brainstorm (mục 1.3).
 - **Điều kiện đầu:** master tại `11a7f5d` — working tree đang có thay đổi khác (live-trace markers, v1-responses) **không** thuộc slice này; plan phải tách task, không trộn.
 
