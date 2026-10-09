@@ -50,6 +50,10 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public int StatsErrorRateThreshold => Get(SettingsKeys.StatsErrorRateThreshold, 10);
 
+    public int TransientMaxRetries => Get(SettingsKeys.TransientMaxRetries, 5);
+
+    public int TransientBackoffBaseMs => Get(SettingsKeys.TransientBackoffBaseMs, 1000);
+
     public T Get<T>(string key, T defaultValue = default!)
     {
         bool found;

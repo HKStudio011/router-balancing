@@ -27,6 +27,8 @@ public class AppSettingsServiceTests : IDisposable
         Assert.Equal(60, service.ProviderProbeTimeoutSec);
         Assert.Equal(90, service.LogRetentionDays);
         Assert.True(service.CloseToTray);
+        Assert.Equal(5, service.TransientMaxRetries);
+        Assert.Equal(1000, service.TransientBackoffBaseMs);
     }
 
     [Fact]

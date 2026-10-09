@@ -24,4 +24,10 @@ public static class SettingsKeys
     public const string LogRetentionDays = "logRetentionDays";
 
     public const string StatsErrorRateThreshold = "statsErrorRateThreshold";
+
+    /// <summary>Số lần retry tối đa cho lỗi transient — 0..10, mặc định 5 (0 = tắt retry).</summary>
+    public const string TransientMaxRetries = "transientMaxRetries";
+
+    /// <summary>Đệm (base) backoff exponential cho retry transient — 250..4000 ms, mặc định 1000.</summary>
+    public const string TransientBackoffBaseMs = "transientBackoffBaseMs";
 }

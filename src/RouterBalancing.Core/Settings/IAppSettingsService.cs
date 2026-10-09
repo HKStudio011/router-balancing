@@ -27,6 +27,12 @@ public interface IAppSettingsService
 
     int StatsErrorRateThreshold { get; }
 
+    /// <summary>Số lần retry tối đa cho lỗi transient — đọc tại thời điểm quyết định; 0 = tắt retry.</summary>
+    int TransientMaxRetries { get; }
+
+    /// <summary>Đệm backoff exponential (ms) cho retry transient — đọc tại thời điểm quyết định.</summary>
+    int TransientBackoffBaseMs { get; }
+
     /// <summary>Đọc setting bất kỳ với mặc định khi chưa có trong DB.</summary>
     T Get<T>(string key, T defaultValue);
 

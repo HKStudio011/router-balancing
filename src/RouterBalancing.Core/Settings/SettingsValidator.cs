@@ -30,6 +30,13 @@ public static class SettingsValidator
         if (draft.StatsErrorRateThreshold is < 1 or > 100)
             errors[nameof(SettingsDraft.StatsErrorRateThreshold)] = "settings.error.threshold";
 
+        // 0 hợp lệ (tắt retry) nên range bắt đầu tại 0, không phải 1 như các rule kia
+        if (draft.TransientMaxRetries is < 0 or > 10)
+            errors[nameof(SettingsDraft.TransientMaxRetries)] = "settings.error.transientRetries";
+
+        if (draft.TransientBackoffBaseMs is < 250 or > 4000)
+            errors[nameof(SettingsDraft.TransientBackoffBaseMs)] = "settings.error.transientBackoffBase";
+
         return errors;
     }
 }

@@ -24,4 +24,8 @@ public sealed record SettingsDraft
     public int LogRetentionDays { get; set; } = 90;
 
     public int StatsErrorRateThreshold { get; set; } = 10;
+
+    public int TransientMaxRetries { get; set; } = 5;
+
+    public int TransientBackoffBaseMs { get; set; } = 1000;
 }
