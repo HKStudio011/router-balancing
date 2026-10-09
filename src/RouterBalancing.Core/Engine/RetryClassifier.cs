@@ -4,8 +4,11 @@ namespace RouterBalancing.Core.Engine;
 
 /// <summary>
 /// Phân loại lỗi upstream retryable vs non-retryable — 1 điểm duy nhất cho handler
-/// (spec 3C §3.1). Lỗi mạng/timeout KHÔNG đi qua đây: handler bắt bằng catch filter
-/// sẵn có (3A) rồi trả <see cref="DispatchOutcome.Retryable"/> với <c>Status = null</c>.
+/// (spec 3C §3.1). Phân loại theo status: <see langword="null"/> (lỗi mạng/timeout),
+/// 408 và 500–599 là transient; 429 và 4xx còn lại không transient (xoay tài khoản).
+/// Lỗi mạng KHÔNG đi qua đây dạng <see cref="DispatchOutcome.Retryable"/>: handler
+/// catch filter (3A) trả <see cref="DispatchOutcome.Fatal"/> cấp Provider với
+/// <c>Status = null</c>; dispatcher bắt shape đó riêng trong <c>IsTransientOutcome</c>.
 /// </summary>
 public static class RetryClassifier
 {
