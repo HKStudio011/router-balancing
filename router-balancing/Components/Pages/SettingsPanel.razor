@@ -170,11 +170,29 @@
             <input class="rounded border border-border bg-surface px-2 py-1.5"
                    type="number" @bind="_draft.ProviderProbeTimeoutSec" />
         </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.transientRetries"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.TransientMaxRetries" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.transientBackoffBase"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.TransientBackoffBaseMs" />
+        </label>
     </div>
 
     @if (Error(nameof(SettingsDraft.ProviderProbeTimeoutSec)) is { } probeTimeoutError)
     {
         <div class="mt-1 text-sm text-danger">@L[probeTimeoutError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.TransientMaxRetries)) is { } transientRetriesError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[transientRetriesError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.TransientBackoffBaseMs)) is { } transientBackoffBaseError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[transientBackoffBaseError]</div>
     }
 
     <button class="btn btn-primary mt-3" @onclick="SaveEngine">@L["settings.action.save"]</button>
@@ -270,6 +288,8 @@
     private static readonly string[] EngineFields =
     [
         nameof(SettingsDraft.ProviderProbeTimeoutSec),
+        nameof(SettingsDraft.TransientMaxRetries),
+        nameof(SettingsDraft.TransientBackoffBaseMs),
     ];
     private static readonly string[] DataFields =
     [
@@ -307,6 +327,8 @@
         CloseToTray = Settings.CloseToTray,
         StartWithWindows = Settings.StartWithWindows,
         ProviderProbeTimeoutSec = Settings.ProviderProbeTimeoutSec,
+        TransientMaxRetries = Settings.TransientMaxRetries,
+        TransientBackoffBaseMs = Settings.TransientBackoffBaseMs,
         LogRetentionDays = Settings.LogRetentionDays,
         StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
     };
@@ -402,6 +424,8 @@
         if (!ValidateFor(EngineFields)) return;
 
         Settings.Set(SettingsKeys.ProviderProbeTimeoutSec, _draft.ProviderProbeTimeoutSec);
+        Settings.Set(SettingsKeys.TransientMaxRetries, _draft.TransientMaxRetries);
+        Settings.Set(SettingsKeys.TransientBackoffBaseMs, _draft.TransientBackoffBaseMs);
         // Engine đọc setting mỗi request qua SettingsChanged — giá trị mới áp dụng ngay
         Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
     }
