@@ -22,8 +22,8 @@ Dispatcher hiện failover **ngay lập tức** sau mỗi lỗi retryable: 504/5
 ### 1.3 Quyết định đã chốt (user gate)
 
 1. **Phạm vi lỗi**: transient = HTTP `null` (lỗi mạng/timeout), `408`, `500–599` (gồm 504). **429 KHÔNG retry backoff** — rotate TK ngay như hiện tại.
-2. **Backoff**: giữ slot trong lúc chờ; **5 lần retry** mặc định, **base 3000ms**, ×2 mỗi lần, **cap 4000ms/lần**, jitter 25% → worst-case tích lũy **~19s (~24s với jitter)**/request — trần hiếm gặp, chấp nhận.
-3. **Settings làm UI chỉnh được** (không hardcode): `transientMaxRetries` (0..10, default 5; 0 = tắt), `transientBackoffBaseMs` (250..4000, default 3000).
+2. **Backoff**: giữ slot trong lúc chờ; **5 lần retry** mặc định, **base 1000ms**, ×2 mỗi lần, **cap 4000ms/lần**, jitter 25% → worst-case tích lũy **~15s (~18.75s với jitter)**/request — trần hiếm gặp, chấp nhận.
+3. **Settings làm UI chỉnh được** (không hardcode): `transientMaxRetries` (0..10, default 5; 0 = tắt), `transientBackoffBaseMs` (250..4000, default 1000).
 4. **Phương án A — dispatcher** (không phải retry trong handler): ngân sách per-request chặt về latency, retry hiện trong Live Trace; từ chối Phương án B (handler-internal — ngân sách per-account, ~11s+ khi outage, retry mù trong trace).
 5. Park giữ nguyên (không "re-park chờ backoff" — đã loại từ đầu).
 
@@ -58,7 +58,7 @@ public int TransientRetries { get; set; }
 | Key | Property | Default | Validator |
 |---|---|---|---|
 | `transientMaxRetries` | `TransientMaxRetries` | 5 | int 0..10 |
-| `transientBackoffBaseMs` | `TransientBackoffBaseMs` | 3000 | int 250..4000 |
+| `transientBackoffBaseMs` | `TransientBackoffBaseMs` | 1000 | int 250..4000 |
 
 **`SettingsValidator`** — range như trên; **`SettingsDraft`** + trang Settings: 2 ô number + label/mô tả i18n.
 
@@ -120,7 +120,7 @@ if (outcome is DispatchOutcome.Retryable r
 ### 3.3 Backoff math
 
 - `wait(n)` với n = `TransientRetries` **sau khi ++** (1-based): `min(baseMs × 2^(n-1), 4000)` rồi + jitter `uniform[0, 0.25 × raw]`.
-- Mặc định (base 3000): 3s → 4s → 4s → 4s → 4s = **19s** raw, ≤ ~23.75s với jitter.
+- Mặc định (base 1000): 1s → 2s → 4s → 4s → 4s = **15s** raw, ≤ ~18.75s với jitter.
 - Settings `transientMaxRetries = 0` → nhánh `if` không bao giờ chạy → **hành vi y hệt code hiện tại** (back-compat).
 
 ### 3.4 Không đổi (cam kết)
@@ -146,7 +146,7 @@ Không log body/key/messages (nguyên tắc 3A).
 
 ### 6.1 Unit
 
-- **`BackoffPolicyTests` (mới)**: progression 3000→4000→4000 (cap), jitter ∈ [0; 25%], RNG seed deterministic, n ≤ 1.
+- **`BackoffPolicyTests` (mới)**: progression 1000→2000→4000→4000 (cap từ n=3), jitter ∈ [0; 25%], RNG seed deterministic, n ≤ 1.
 - **`RetryStateTests`**: `TransientRetries` tăng/reset mặc định 0.
 - **`DispatcherLoopTests`** (mở rộng; test set base=250ms để nhanh):
   1. 504 → retry cùng (provider, model, account) → 200 ⇒ client 200, `Attempts=2`;
@@ -156,7 +156,7 @@ Không log body/key/messages (nguyên tắc 3A).
   5. abort trong delay → `Aborted` + slot đã trả (`ExecutionList.Contains=false`);
   6. slot vẫn giữ trong delay (request khác `Full` → park);
   7. lỗi mạng (status null) → retry; `Fatal` 401 → không retry.
-- **`SettingsValidatorTests`**: range 0..10 / 250..4000, default 5/3000.
+- **`SettingsValidatorTests`**: range 0..10 / 250..4000, default 5/1000.
 - **`TranslationParityTests`**: tự enforce 4 key × 2 ngôn ngữ.
 
 ### 6.2 Integration (TestServer + fake upstream)
