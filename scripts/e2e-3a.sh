@@ -66,6 +66,29 @@ check "thiếu messages -> 400" 400 \
   -d "{\"model\":\"$MODEL_ID\"}"
 expect_body "'messages'" "400 param messages"
 
+# --- Transient backoff (spec transient-retry §6.3): 504×2 đầu rồi 200, retry cùng TK ---
+MOCK="${MOCK:-http://127.0.0.1:9999}"
+if curl -sf -X POST "$MOCK/__config" -H 'Content-Type: application/json' \
+    -d '{"failFirst":2,"failStatus":504}' >/dev/null; then
+  START=$SECONDS
+  check "504 x2 dau -> retry backoff, 200" 200 \
+    -X POST "$BASE/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$MODEL_ID\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}"
+  expect_body '[DONE]' "transient retry SSE ket thuc [DONE]"
+  # base 1000ms: 2 lần retry ~1s+2s ≥ 3s — xác nhận CÓ chờ backoff, không failover ngay
+  if (( SECONDS - START >= 3 )); then
+    echo "PASS - backoff cho >=3s truoc khi thanh cong"
+  else
+    echo "FAIL - backoff qua nhanh ($(( SECONDS - START ))s, mong >=3s)"
+    FAIL=1
+  fi
+  curl -sf -X POST "$MOCK/__config" -H 'Content-Type: application/json' \
+    -d '{"failFirst":0,"failStatus":429}' >/dev/null || true   # reset mock
+else
+  echo "FAIL - khong cau hinh duoc mock (mock-upstream chay tai $MOCK?)"
+  FAIL=1
+fi
+
 if [[ $FAIL -eq 0 ]]; then
   echo "ALL PASS"
 else
