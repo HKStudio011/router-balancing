@@ -184,6 +184,28 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         return app.Services.GetRequiredService<IRequestCancelService>().Cancel(id);
     }
 
+    public QueuedRequestInfo? TryGetQueued(string id)
+    {
+        // Capture local như CancelRequest: StopAsync dispose + set null song song.
+        var app = _app;
+        if (app is null)
+            return null;
+        return app.Services.GetRequiredService<IRequestQueue>().Snapshot()
+            .Where(r => r.Id == id)
+            .Select(r => new QueuedRequestInfo(r.Id, r.Model, r.Priority))
+            .FirstOrDefault();
+    }
+
+    public RequestPriorityResult SetRequestPriority(string id, RequestPriority priority)
+    {
+        // Bridge qua app.Services đúng pattern CancelRequest — nguồn sự thật
+        // IRequestPriorityService (cùng IRequestQueue.SetPriority với HTTP-less UI path).
+        var app = _app;
+        if (app is null)
+            return RequestPriorityResult.NotRunning;
+        return app.Services.GetRequiredService<IRequestPriorityService>().SetPriority(id, priority);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;

@@ -124,6 +124,52 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 10.5px;
     }
+
+    /* Queue actions (Huỷ + đổi ưu tiên) — chỉ render khi request còn trong queue */
+    .trace-detail-queue-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+    }
+
+    .trace-detail-priority-label {
+        font-size: 11px;
+        opacity: .65;
+    }
+
+    /* Segmented control 3 mức Normal/High/Highest — nút active = priority hiện tại */
+    .trace-detail-priority-group {
+        display: inline-flex;
+        border: 1px solid rgba(139, 143, 163, .4);
+        border-radius: 4px;
+        overflow: hidden;
+    }
+
+    .trace-detail-priority {
+        font-size: 11px;
+        padding: 2px 8px;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        opacity: .7;
+    }
+
+    .trace-detail-priority + .trace-detail-priority {
+        border-left: 1px solid rgba(139, 143, 163, .4);
+    }
+
+    .trace-detail-priority--active {
+        background: rgba(59, 130, 246, .15);
+        color: #3b82f6;
+        font-weight: 600;
+        opacity: 1;
+    }
+
+    .trace-detail-priority:disabled {
+        cursor: default;
+    }
 </style>
 
 @* Modal chi tiết của 1 request — mở từ circle Live Trace hoặc row API Monitor (cùng 1 popup);
@@ -154,13 +200,33 @@
                     <span>@L["trace.detail.duration"] @duration</span>
                 }
             </div>
-            @* Nút huỷ chỉ hiện khi request còn trong queue (spec §5.1). Sau khi huỷ, endpoint
-               gốc publish H4 Canceled → row chuyển trạng thái → panel re-render, nút tự biến. *@
-            @if (record?.State == ApiCallState.Queued)
+            @* Queue actions (Huỷ + đổi ưu tiên): chỉ render khi request CÒN trong queue —
+               nguồn sự thật là TryGetQueued (live), không phải store state (spec §5.1 +
+               nút đổi ưu tiên 2026-10-08). Request rời queue → lần render sau nút tự biến.
+               Không viết `detail is not null &&` ở đây: false-edge của phép test null làm
+               Roslyn nghĩ detail MaybeNull ở các dòng sau (CS8602) — detail đã non-null
+               trong nhánh else này. *@
+            @if (Proxy.TryGetQueued(detail.Id) is { } queued)
             {
-                <button type="button" class="btn btn-outline-danger" @onclick="CancelQueuedAsync">
-                    @L["trace.detail.cancel"]
-                </button>
+                <div class="trace-detail-queue-actions">
+                    <span class="trace-detail-priority-label">@L["trace.detail.priority"]</span>
+                    <div class="trace-detail-priority-group">
+                        @foreach (var level in PriorityLevels)
+                        {
+                            var p = level;
+                            <button type="button"
+                                    class="trace-detail-priority @(p == queued.Priority ? "trace-detail-priority--active" : "")"
+                                    disabled="@(p == queued.Priority)"
+                                    @onclick="() => RequestPriorityChange(p)">
+                                @PriorityLabel(p)
+                            </button>
+                        }
+                    </div>
+                    <button type="button" class="btn btn-outline-danger"
+                            @onclick="() => _confirmCancel = true">
+                        @L["trace.detail.cancel"]
+                    </button>
+                </div>
             }
         </div>
 
@@ -251,6 +317,27 @@
     }
 </Modal>
 
+@* Xác nhận huỷ — mở từ nút Huỷ trong header; bấm Esc/backdrop = OnCancel (đóng, không huỷ) *@
+<ConfirmDialog Visible="_confirmCancel"
+               Title="@L["trace.detail.cancelConfirmTitle"]"
+               Message="@(RequestId is { } cid ? string.Format(L["trace.detail.cancelConfirmMessage"], cid) : "")"
+               Danger="true"
+               ConfirmText="@L["trace.detail.cancel"]"
+               CancelText="@L["confirm.cancel"]"
+               OnConfirm="ConfirmCancelAsync"
+               OnCancel="() => _confirmCancel = false" />
+
+@* Xác nhận đổi ưu tiên — _confirmPriorityFrom/To = giá trị tại lúc bấm nút segmented *@
+<ConfirmDialog Visible="_confirmPriorityFrom is not null"
+               Title="@L["trace.detail.priorityConfirmTitle"]"
+               Message="@(RequestId is { } pid && _confirmPriorityFrom is { } from && _confirmPriorityTo is { } to
+                          ? string.Format(L["trace.detail.priorityConfirmMessage"], pid, PriorityLabel(from), PriorityLabel(to))
+                          : "")"
+               ConfirmText="@L["trace.detail.priorityConfirmTitle"]"
+               CancelText="@L["confirm.cancel"]"
+               OnConfirm="ConfirmPriorityAsync"
+               OnCancel="() => _confirmPriorityFrom = null" />
+
 @code {
     /// <summary>Id request cần hiển thị — <see langword="null"/> = đóng modal.</summary>
     [Parameter] public string? RequestId { get; set; }
@@ -258,13 +345,74 @@
     /// <summary>Gọi khi người dùng đóng (Esc / backdrop / nút &times;) — panel tự xóa selection.</summary>
     [Parameter] public EventCallback OnClose { get; set; }
 
-    /// <summary>
-    /// Huỷ request đang queued qua <see cref="IProxyHost.CancelRequest"/> — map từng kết quả
-    /// sang toast (spec §5.1). Không force refresh: endpoint gốc publish H4 Canceled,
-    /// panel re-render theo feed và nút tự biến.
-    /// </summary>
-    private void CancelQueuedAsync()
+    // 3 mức priority hiển thị trên segmented control — Normal ở giữa, High/Highest theo vocab API
+    private static readonly RequestPriority[] PriorityLevels =
+        [RequestPriority.Normal, RequestPriority.High, RequestPriority.Highest];
+
+    // Hộp xác nhận huỷ — mở khi bấm nút Huỷ, đóng khi xác nhận/huỷ
+    private bool _confirmCancel;
+
+    // Hộp xác nhận đổi ưu tiên — From = giá trị lúc bấm (đóng dialog = xóa From), To = giá trị mới
+    private RequestPriority? _confirmPriorityFrom;
+    private RequestPriority? _confirmPriorityTo;
+
+    /// <summary>Mở hộp xác nhận đổi ưu tiên — From lấy từ TryGetQueued tại lúc bấm.</summary>
+    private void RequestPriorityChange(RequestPriority to)
     {
+        if (RequestId is not { } id || Proxy.TryGetQueued(id) is not { } queued)
+            return;
+        _confirmPriorityFrom = queued.Priority;
+        _confirmPriorityTo = to;
+    }
+
+    /// <summary>
+    /// Người dùng xác nhận đổi ưu tiên — re-check request còn trong queue không
+    /// (đã rời queue giữa lúc mở dialog và lúc xác nhận → toast, bỏ qua),
+    /// sau đó gọi bridge <see cref="IProxyHost.SetRequestPriority"/>.
+    /// </summary>
+    private void ConfirmPriorityAsync()
+    {
+        var to = _confirmPriorityTo;
+        _confirmPriorityFrom = null;
+        _confirmPriorityTo = null;
+        if (RequestId is not { } id || to is not { } target)
+            return;
+
+        // Re-check: request có thể bị dispatch/huỷ bởi nơi khác trong lúc dialog đang mở
+        if (Proxy.TryGetQueued(id) is null)
+        {
+            Toast.Show(L["trace.detail.priorityGone"], ToastSeverity.Info);
+            return;
+        }
+
+        switch (Proxy.SetRequestPriority(id, target))
+        {
+            case RequestPriorityResult.Updated:
+                // Badge Live Trace đổi theo event priority-update G3 — không force render
+                Toast.Show(L["trace.detail.priorityDone"], ToastSeverity.Success);
+                break;
+            case RequestPriorityResult.NotUpdatable:
+                Toast.Show(L["trace.detail.priorityNotUpdatable"], ToastSeverity.Error);
+                break;
+            case RequestPriorityResult.NotFound:
+                Toast.Show(L["trace.detail.priorityGone"], ToastSeverity.Info);
+                break;
+            default:
+                Toast.Show(L["trace.detail.priorityNotRunning"], ToastSeverity.Error);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Người dùng xác nhận huỷ — gọi <see cref="IProxyHost.CancelRequest"/>: TryRemove
+    /// atomic với Take của dispatcher nên THAO TÁC NÀY CHÍNH LÀ re-check (request đã rời
+    /// queue → thua TryRemove → mapping result trả busy/info, không huỷ nhầm request
+    /// đang phục vụ). Map từng kết quả sang toast (spec §5.1). Không force refresh:
+    /// endpoint gốc publish H4 Canceled → panel re-render theo feed và nút tự biến.
+    /// </summary>
+    private void ConfirmCancelAsync()
+    {
+        _confirmCancel = false;
         if (RequestId is not { } id)
             return;
 
@@ -287,6 +435,14 @@
                 break;
         }
     }
+
+    /// <summary>Nhãn i18n của mức priority — Normal/High/Highest (vocab API giữ nguyên 2 ngôn ngữ).</summary>
+    private string PriorityLabel(RequestPriority priority) => priority switch
+    {
+        RequestPriority.Highest => L["trace.priority.highest"],
+        RequestPriority.High => L["trace.priority.high"],
+        _ => L["trace.priority.normal"],
+    };
 
     /// <summary>
     /// Gom dữ liệu render modal: header (suy từ event trong ring; record monitor dự phòng

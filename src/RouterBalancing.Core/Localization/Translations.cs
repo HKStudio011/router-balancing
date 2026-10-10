@@ -64,6 +64,17 @@ public static class Translations
         ["trace.detail.cancelNotFound"] = "Request no longer exists.",
         ["trace.detail.cancelNotRunning"] = "Proxy is not running.",
 
+        // Nút huỷ (xác nhận) + đổi ưu tiên trong modal chi tiết — chỉ request đang trong queue
+        ["trace.detail.cancelConfirmTitle"] = "Cancel request",
+        ["trace.detail.cancelConfirmMessage"] = "Cancel request #{0}? This cannot be undone.",
+        ["trace.detail.priority"] = "Priority",
+        ["trace.detail.priorityConfirmTitle"] = "Change priority",
+        ["trace.detail.priorityConfirmMessage"] = "Change priority of request #{0} from {1} to {2}?",
+        ["trace.detail.priorityDone"] = "Priority updated.",
+        ["trace.detail.priorityGone"] = "Request is no longer in the queue.",
+        ["trace.detail.priorityNotRunning"] = "Proxy is not running.",
+        ["trace.detail.priorityNotUpdatable"] = "Request is already being served.",
+
         // Caption skeleton + nhánh — Task 7 thay 6 literal hardcode trong RequestTrace.razor
         ["trace.node.input"] = "📥 Input",
         ["trace.node.queue"] = "⏳ Queue",
@@ -76,6 +87,7 @@ public static class Translations
         // badge symbol/vocab API (X-Priority) giữ nguyên ở 2 ngôn ngữ
         ["trace.park.badge"] = "waiting for slot",
         ["trace.headers.badge"] = "200 ✓",
+        ["trace.priority.normal"] = "Normal",
         ["trace.priority.high"] = "High",
         ["trace.priority.highest"] = "Highest",
         ["trace.cooldown"] = "COOLDOWN · {0}s",
@@ -464,6 +476,17 @@ public static class Translations
         ["trace.detail.cancelNotFound"] = "Request không còn tồn tại.",
         ["trace.detail.cancelNotRunning"] = "Proxy chưa chạy.",
 
+        // Nút huỷ (xác nhận) + đổi ưu tiên trong modal chi tiết — chỉ request đang trong queue
+        ["trace.detail.cancelConfirmTitle"] = "Huỷ request",
+        ["trace.detail.cancelConfirmMessage"] = "Huỷ request #{0}? Thao tác này không thể hoàn tác.",
+        ["trace.detail.priority"] = "Ưu tiên",
+        ["trace.detail.priorityConfirmTitle"] = "Đổi ưu tiên",
+        ["trace.detail.priorityConfirmMessage"] = "Đổi ưu tiên request #{0} từ {1} sang {2}?",
+        ["trace.detail.priorityDone"] = "Đã đổi ưu tiên.",
+        ["trace.detail.priorityGone"] = "Request không còn trong hàng đợi.",
+        ["trace.detail.priorityNotRunning"] = "Proxy chưa chạy.",
+        ["trace.detail.priorityNotUpdatable"] = "Request đang được xử lý.",
+
         // Caption skeleton + nhánh — Task 7 thay 6 literal hardcode trong RequestTrace.razor
         ["trace.node.input"] = "📥 Input",
         ["trace.node.queue"] = "⏳ Hàng đợi",
@@ -476,6 +499,7 @@ public static class Translations
         // badge symbol/vocab API (X-Priority) giữ nguyên ở 2 ngôn ngữ
         ["trace.park.badge"] = "chờ slot",
         ["trace.headers.badge"] = "200 ✓",
+        ["trace.priority.normal"] = "Normal",
         ["trace.priority.high"] = "High",
         ["trace.priority.highest"] = "Highest",
         ["trace.cooldown"] = "COOLDOWN · {0}s",

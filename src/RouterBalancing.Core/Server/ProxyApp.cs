@@ -51,6 +51,10 @@ public static class ProxyApp
         // Cancel: nguồn sự thật DUY NHẤT cho HTTP endpoint và nút Huỷ trong UI (spec §5.1)
         builder.Services.AddSingleton<IRequestCancelService, RequestCancelService>();
 
+        // Đổi ưu tiên: nguồn sự thật cho nút đổi priority trong RequestDetailModal —
+        // cùng IRequestQueue.SetPriority với luật 1-Highest và publish trace G3
+        builder.Services.AddSingleton<IRequestPriorityService, RequestPriorityService>();
+
         // Chính sách timeout đường forward chat (2026-10-04): app KHÔNG tự cắt request —
         // client→app và app→provider không có timeout; client→provider do client quyết
         // định qua disconnect (RequestAborted). Timeout 100s (default) cắt SSE giữa chừng,
