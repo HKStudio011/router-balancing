@@ -64,7 +64,7 @@ public sealed record TraceEvent(..., long? ClientKeyId = null);
 | `ModelKey` | `text?` | alias model (`TraceEvent.Model`) |
 | `HttpStatus` | `int?` | `TraceEvent.Status` |
 
-- `DurationMs`, `ErrorCode`, `ClientKeyId`, `RequestId` — cột sẵn có, journal writer điền (`ErrorCode` nhận `FailureKind`: "http"/"network"/…).
+- `DurationMs`, `ErrorCode`, `ClientKeyId`, `RequestId` — cột sẵn có, journal writer điền (`ErrorCode` nhận `"http"`/`"network"` suy ra từ `Status` — xem §4).
 - Giữ nguyên `ProviderId`/`ModelId` (long, chưa dùng) — stats không đụng tới.
 - **Không thêm index mới** — truy vấn filter qua prefix `(Category, Timestamp)` của index sẵn có; volume desktop (≤90 ngày) đủ nhanh.
 
@@ -114,17 +114,19 @@ public interface IStatsService
 ## 4. `RequestJournalWriter` (Core.Engine)
 
 - Singleton, ctor nhận `ITraceFeed`, `IDbContextFactory<RouterBalancingDbContext>`, `ILogService`, `IStatsInvalidationSource`; subscribe `Published` (mirror `ApiMonitorStore`).
-- **Active map** `Dictionary<string, Pending>` theo `RequestId`: `Received` → tạo entry `(StartedAt=e.At, Model, ClientKeyId)`; `DispatchStarted`/`Attempt` → cập nhật `Combo/Provider/Account` (attempt mới nhất đè); terminal (`Finished`/`Canceled`) → ghi dòng rồi **xóa entry**.
-- **Sweep an toàn:** trước mỗi lần xử lý event, xóa entry có `StartedAt` cũ hơn **30 phút** (giới hạn leak khi request không bao giờ tới terminal — ví dụ enqueue fail không publish Received→terminal).
+- **Active map** `Dictionary<string, Pending>` theo `RequestId`: `Received` → tạo entry `(StartedAt=e.At, Model, ClientKeyId)` **chỉ khi chưa có entry** (endpoint publish `Received` lần 2 với `HeadersSent=true` — spec early-headers G2 — không được đè `StartedAt`); `DispatchStarted`/`Attempt` → cập nhật `Combo/Provider/Account` (attempt mới nhất đè); terminal (`Finished`/`Canceled`) → ghi dòng rồi **xóa entry**.
+- **Sweep an toàn:** trước mỗi lần xử lý event, xóa entry có `StartedAt` cũ hơn **30 phút** (giới hạn leak khi request không bao giờ tới terminal — ví dụ enqueue fail không publish terminal).
+- **`Timestamp = e.At.ToUniversalTime()`** — ProxyApp publish bằng `DateTimeOffset.Now` (offset local); chuẩn hóa UTC để so sánh cửa sổ range an toàn trên SQLite.
 - **Ghi dòng terminal** (1 dòng/request):
 
 | Cột | Finished | Canceled |
 |---|---|---|
 | `Outcome` | `Ok` nếu `Success==true`, ngược lại `Error` | `Cancelled` |
-| `Timestamp` | `e.At` | `e.At` |
+| `Timestamp` | `e.At.ToUniversalTime()` | như vậy |
 | `DurationMs` | `(int)(e.At − StartedAt).TotalMilliseconds` | như vậy |
 | `ProviderKey`/`ModelKey` | `Route.Provider` / `Model` từ entry | như vậy |
-| `HttpStatus`/`ErrorCode` | `e.Status` / `e.FailureKind` | null |
+| `HttpStatus` | `e.Status` | null |
+| `ErrorCode` | Ok → null; Error → **writer tự suy ra** `"http"` nếu `Status > 0`, ngược lại `"network"` (mirror `ApiMonitorStore.RecordError` — event terminal **không** mang `FailureKind`) | null |
 | `ClientKeyId` | từ entry | như vậy |
 | `Severity` | `Info` (Ok) / `Error` (Error) | `Info` |
 | `Message` | `"Request {id} hoàn tất: {model} → {provider}, HTTP {status}, {ms}ms"` (Error/Cancelled tương ứng)"thất bại"/"bị huỷ") | |
@@ -174,8 +176,9 @@ public interface IStatsService
 
 1. **`RequestJournalWriterTests`** (fake feed publish thẳng `TraceEvent`, `TestDb` SQLite):
    - `Finished_Success_WritesOkRowWithRouteAndDuration` — đúng Outcome/ProviderKey/ModelKey/HttpStatus/DurationMs/ClientKeyId.
-   - `Finished_Failure_WritesErrorRowWithFailureKind`.
+   - `Finished_Failure_WritesErrorRowWithDerivedFailureKind` (Status 503 → "http"; Status null → "network").
    - `Canceled_WritesCancelledRow`.
+   - `ReceivedPublishedTwice_KeepsOriginalStartedAt` (G2 HeadersSent re-publish).
    - `MultipleAttempts_LatestAttemptWinsRoute`.
    - `DbFailure_LogsAndDoesNotInvalidate` + không nổ feed.
    - `Write_Success_InvalidatesSource`.
