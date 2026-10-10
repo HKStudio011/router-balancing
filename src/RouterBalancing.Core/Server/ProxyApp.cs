@@ -205,10 +205,13 @@ public static class ProxyApp
         // H1 monitor: record vào ring tại đây (store fail-open — không try/catch ở call site);
         // đồng bộ với trace — request không qua enqueue (validate 400) không hiện trong monitor
         monitor.StartRequest(id, request.Model, prepared.Body);
+        // ClientKeyId chỉ ở Received đầu (spec dashboard-stats §3.1) — G2 (HeadersSent) và
+        // terminal không truyền: journal writer lấy ClientKeyId từ entry, tránh 2 nguồn sự thật
         trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
             null, null, null, null, null, DateTimeOffset.Now,
             Priority: request.Priority,
-            Endpoint: endpoint.ToString().ToLowerInvariant()));
+            Endpoint: endpoint.ToString().ToLowerInvariant(),
+            ClientKeyId: ClientKeyItems.IdOf(ctx)));
 
         // Đăng ký SAU Enqueue: dispatcher đã Take thì TryRemove false → serve tự cắt stream (spec §3.4)
         ctx.RequestAborted.Register(() =>

@@ -43,11 +43,14 @@ public sealed record TraceRoute(string? Combo, string? Provider, string? Account
 /// <param name="Priority">Priority hiện tại của request — gửi ở Received + update khi bị demote (spec G3).</param>
 /// <param name="Endpoint">Endpoint gốc ("chat" | "responses") — chỉ ở event đầu (spec G5).</param>
 /// <param name="HeadersSent">Header 200 đã commit (early-headers, stream only) — spec G2.</param>
+/// <param name="ClientKeyId">Client key id đã auth — chỉ điền ở event Received đầu; journal writer
+/// carry qua active map để ghi thống kê theo key (spec dashboard-stats §3.1).</param>
 public sealed record TraceEvent(
     string RequestId, TraceStage Stage, string Model, TraceRoute? Route,
     int? Attempt, int? Status, bool? Success, string? FailureKind,
     DateTimeOffset At, string? Mode = null, bool? AttemptDone = null,
-    RequestPriority? Priority = null, string? Endpoint = null, bool? HeadersSent = null);
+    RequestPriority? Priority = null, string? Endpoint = null, bool? HeadersSent = null,
+    long? ClientKeyId = null);
 
 /// <summary>Feed sự kiện trace in-process: publisher (Task 3/4) đẩy, UI (Task 5) subscribe.</summary>
 public interface ITraceFeed

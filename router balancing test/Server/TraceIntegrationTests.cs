@@ -251,6 +251,30 @@ public class TraceIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Received_CarriesClientKeyId_WhenApiKeyEnabled()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        var (key, plaintext) = await _clientKeys.CreateAsync(new ClientKeyDraft("trace", null, null));
+        var seededKeyId = key.Id;
+        var client = await StartAsync(new StubUpstream());
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = ChatBody("m1"),
+        };
+        request.Headers.Add("X-API-Key", plaintext);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var id = response.Headers.GetValues("X-Request-Id").Single();
+        await WaitUntilAsync(() => EventsOf(id).Any(e => e.Stage == TraceStage.Finished),
+            "terminal Finished phải có trong feed");
+
+        var received = EventsOf(id).Single(e => e.Stage == TraceStage.Received);
+        Assert.Equal(seededKeyId, received.ClientKeyId);
+    }
+
+    [Fact]
     public async Task QueuedRequest_Cancel_PublishesCanceled()
     {
         SeedProvider(maxConcurrent: 1, "m1");
