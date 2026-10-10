@@ -166,6 +166,9 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<string>("ErrorCode")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("HttpStatus")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Message")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -173,11 +176,20 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<long?>("ModelId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ModelKey")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Outcome")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("PromptTokens")
                         .HasColumnType("INTEGER");
 
                     b.Property<long?>("ProviderId")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("ProviderKey")
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("RequestId")
                         .HasColumnType("TEXT");

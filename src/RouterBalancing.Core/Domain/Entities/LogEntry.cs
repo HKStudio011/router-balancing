@@ -37,4 +37,16 @@ public class LogEntry
 
     /// <summary>JSON chi tiết (error body, stack…) — không chứa secret.</summary>
     public string? Details { get; set; }
+
+    /// <summary>Kết quả terminal — null = dòng chưa phải terminal (chưa xong request, hoặc Category=App).</summary>
+    public RequestOutcome? Outcome { get; set; }
+
+    /// <summary>Provider key đã dùng cho request — snapshot string để stats không join Providers (rename không vỡ số liệu lịch sử).</summary>
+    public string? ProviderKey { get; set; }
+
+    /// <summary>Model key đã dùng cho request — snapshot tại thời điểm request.</summary>
+    public string? ModelKey { get; set; }
+
+    /// <summary>HTTP status trả về client — null khi request không tới bước response (timeout, cancel…).</summary>
+    public int? HttpStatus { get; set; }
 }
