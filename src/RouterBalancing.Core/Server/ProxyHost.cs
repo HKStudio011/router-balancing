@@ -11,6 +11,7 @@ using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Settings;
+using RouterBalancing.Core.Stats;
 using RouterBalancing.Core.Storage;
 
 namespace RouterBalancing.Core.Server;
@@ -38,7 +39,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool, ITraceFeed trace,
-        IApiMonitorStore monitor)
+        IApiMonitorStore monitor, IRequestJournalWriter journalWriter)
     {
         _settings = settings;
         _log = log;
@@ -48,6 +49,9 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _pool = pool;
         _trace = trace;
         _monitor = monitor;
+        // eager-create singleton (mirror ITraceFeed) — writer tự subscribe feed trong ctor,
+        // không endpoint nào inject IRequestJournalWriter nên resolve tại đây
+        _ = journalWriter;
     }
 
     /// <summary>

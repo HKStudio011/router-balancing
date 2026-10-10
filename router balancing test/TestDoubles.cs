@@ -2,6 +2,7 @@ using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Server;
+using RouterBalancing.Core.Stats;
 
 namespace router_balancing_test;
 
@@ -16,6 +17,11 @@ internal sealed class NullLog : ILogService
     public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
     public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
     public int Count(LogQuery query) => 0;
+}
+
+/// <summary>IRequestJournalWriter rỗng — ProxyHostTests chỉ cần pass qua ctor (eager marker).</summary>
+internal sealed class NullJournalWriter : IRequestJournalWriter
+{
 }
 
 /// <summary>IClientKeyUsageSink rỗng — unit test không cần DB/thật.</summary>

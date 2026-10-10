@@ -14,6 +14,7 @@ using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
+using RouterBalancing.Core.Stats;
 using RouterBalancing.Core.Storage;
 #if WINDOWS
 using router_balancing.Platforms.Windows;
@@ -64,6 +65,10 @@ namespace router_balancing
             // ApiMonitorStore singleton cùng pattern: ProxyHost.StartAsync re-register cùng
             // instance vào container proxy — panel và hooks ghi/đọc 1 store
             builder.Services.AddSingleton<IApiMonitorStore, ApiMonitorStore>();
+            // Stats: invalidation + journal writer — writer subscribe ITraceFeed trong ctor,
+            // ProxyHost ctor eager-create để singleton gắn feed từ trước request đầu tiên
+            builder.Services.AddSingleton<IStatsInvalidationSource, StatsInvalidationSource>();
+            builder.Services.AddSingleton<IRequestJournalWriter, RequestJournalWriter>();
             builder.Services.AddSingleton<LocalizationService>();
             // Scoped: ThemeService phụ thuộc IJSRuntime — lifetime scoped để Blazor resolve được
             // (singleton không được inject scoped service).
