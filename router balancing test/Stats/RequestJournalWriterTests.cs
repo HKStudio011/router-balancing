@@ -179,6 +179,32 @@ public class RequestJournalWriterTests : IDisposable
     }
 
     [Fact]
+    public void PriorityUpdateBeforeReceived_MergesClientKeyIdKeepingStartedAt()
+    {
+        var t0 = Now;
+        // Priority-update (G3, RequestQueue.PublishPriorityUpdate) đến TRƯỚC Received thật
+        // trong cửa sổ microgiây Enqueue→Received — ClientKeyId chưa auth xong nên null
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0));
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0.AddMilliseconds(50), clientKeyId: 7));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", t0.AddSeconds(1.5), status: 200, success: true));
+
+        var row = Assert.Single(Rows());
+        Assert.Equal(7, row.ClientKeyId);       // merge từ Received thật
+        Assert.Equal(1500, row.DurationMs);     // StartedAt gốc t0 — không reset khi merge
+    }
+
+    [Fact]
+    public void PriorityUpdateThenReceived_WritesRowWithClientKeyId()
+    {
+        var t0 = Now;
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0));
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0.AddMilliseconds(50), clientKeyId: 7));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", t0.AddSeconds(1), status: 200, success: true));
+
+        Assert.Equal(7, Assert.Single(Rows()).ClientKeyId);
+    }
+
+    [Fact]
     public void StaleEntry_OlderThan30Minutes_IsEvicted()
     {
         var t0 = DateTimeOffset.UtcNow.AddMinutes(-40);

@@ -72,10 +72,13 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
             switch (e.Stage)
             {
                 case TraceStage.Received:
-                    // TryAdd KHÔNG đè: Received được publish lại (G2 HeadersSent, priority-update
-                    // G3) — đè StartedAt sẽ làm DurationMs sai (âm hoặc lệch mốc).
-                    _active.TryAdd(e.RequestId,
-                        new Pending(e.At, e.Model, e.ClientKeyId, null, null, null));
+                    // TryAdd KHÔNG đè StartedAt: Received bị publish lại (G2 HeadersSent,
+                    // priority-update G3) — đè StartedAt sẽ làm DurationMs sai (âm hoặc lệch mốc).
+                    // TryAdd fail → thử merge ClientKeyId (priority-update có thể đến trước
+                    // Received thật — xem MergeClientKeyId).
+                    if (!_active.TryAdd(e.RequestId,
+                            new Pending(e.At, e.Model, e.ClientKeyId, null, null, null)))
+                        MergeClientKeyId(e);
                     break;
                 case TraceStage.DispatchStarted:
                 case TraceStage.Attempt:
@@ -94,6 +97,25 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
         {
             SafeLog(nameof(OnPublished), ex);
         }
+    }
+
+    /// <summary>
+    /// Merge ClientKeyId từ Received thật vào entry đã tạo bởi priority-update (G3) —
+    /// priority-update (<c>RequestQueue.PublishPriorityUpdate</c>, ClientKeyId=null) có thể
+    /// publish TRƯỚC Received đầu tiên của ProxyApp trong cửa sổ microgiây Enqueue→Received,
+    /// khiến TryAdd đầu tiên lưu ClientKeyId=null. Chỉ update ClientKeyId khi entry chưa có
+    /// giá trị; StartedAt LUÔN giữ nguyên (event sớm nhất quyết định DurationMs).
+    /// </summary>
+    /// <param name="e">Received event vừa fail TryAdd.</param>
+    private void MergeClientKeyId(TraceEvent e)
+    {
+        if (e.ClientKeyId is null)
+            return; // incoming không mang giá trị (G2/priority-update) — không đụng entry
+
+        if (!_active.TryGetValue(e.RequestId, out var current) || current.ClientKeyId is not null)
+            return; // entry đã bị xóa (terminal/sweep) hoặc đã có ClientKeyId — không đè
+
+        _active.TryUpdate(e.RequestId, current with { ClientKeyId = e.ClientKeyId }, current);
     }
 
     /// <summary>

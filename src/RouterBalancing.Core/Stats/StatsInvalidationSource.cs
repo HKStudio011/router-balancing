@@ -10,5 +10,6 @@ public sealed class StatsInvalidationSource : IStatsInvalidationSource
     /// <inheritdoc />
     // Lỗi subscriber để nổi lên caller: RequestJournalWriter bọc try/catch + log.
     // Không nuốt ở đây (và không có logger) — subscriber hỏng phải được thấy trong log.
-    public void Invalidate() => Changed?.Invoke();
+    // Changed không null-check: delegate {} khởi tạo, chỉ class này assign
+    public void Invalidate() => Changed.Invoke();
 }
