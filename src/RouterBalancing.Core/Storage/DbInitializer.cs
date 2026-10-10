@@ -28,10 +28,62 @@ public static class DbInitializer
     {
         Directory.CreateDirectory(StoragePathProvider.GetDataDirectory());
         using var db = factory.CreateDbContext();
+        DeleteStaleMigrationLock(db);
         db.Database.Migrate();
         SeedFreeProviders(db);
         BackfillIdentifiers(db);
         MigrateLegacyApiKey(db, legacyKeyProtector);
+    }
+
+    /// <summary>
+    /// Dọn hàng lock kẹt trong <c>__EFMigrationsLock</c> trước khi Migrate.
+    /// EF Core 10 giữ migration lock bằng đúng 1 hàng Id=1 trong bảng này và chỉ DELETE
+    /// khi dispose êm đẹp — process bị kill giữa <c>Migrate()</c> để hàng kẹt vĩnh viễn.
+    /// <c>AcquireDatabaseLock</c> retry <c>INSERT OR IGNORE</c> vô hạn khi hàng còn tồn tại
+    /// (changes()=0, không bao giờ ném exception) → app treo im lặng trước khi window được
+    /// tạo, try/catch startup không bắt được. <c>SingleInstanceGuard</c> giữ mutex ngay trước
+    /// khi chạm DB nên instance này là instance duy nhất của file — hàng kẹt chắc chắn là
+    /// di sản của process đã chết, không có migrator nào đang sống thật sự để tranh lock.
+    /// </summary>
+    private static void DeleteStaleMigrationLock(RouterBalancingDbContext db)
+    {
+        // File chưa tồn tại = DB mới tinh, không thể có lock kẹt. Bắt buộc skip tại đây,
+        // không chỉ check bảng: connection mở với Mode=ReadWriteCreate sẽ TẠO file rỗng
+        // trước Migrate → Migrator thấy DatabaseCreator.Exists() = true → bỏ qua Create()
+        // (nơi chạy PRAGMA journal_mode='wal') → DB chạy rollback-journal thay vì WAL,
+        // writer kẹt với reader → lỗi "database is locked" ngẫu nhiên ở pipeline.
+        var dataSource = db.Database.GetDbConnection().DataSource;
+        if (!File.Exists(dataSource)) return;
+
+        // Bảng được EF tạo lázay trong lần Migrate đầu tiên — file có thể tồn tại nhưng
+        // chưa từng migrate, DELETE sẽ ném "no such table" nếu không kiểm tra trước.
+        var lockTableExists = db.Database
+            .SqlQueryRaw<string>("SELECT name FROM sqlite_master WHERE type='table' AND name='__EFMigrationsLock'")
+            .ToList();
+        if (lockTableExists.Count == 0) return;
+
+        // Đọc Timestamp trước khi xóa để log ghi được dấu vết thời điểm process đã chết
+        // giữ lock — cần cho lần điều tra sau (hàng chỉ tồn tại khi bị kill giữa migrate).
+        var leftover = db.Database
+            .SqlQueryRaw<string>("SELECT \"Timestamp\" FROM \"__EFMigrationsLock\"")
+            .ToList();
+        if (leftover.Count == 0) return;
+
+        db.Database.ExecuteSqlRaw("DELETE FROM \"__EFMigrationsLock\"");
+
+        // Chỉ ghi startup-error.log khi đang vận hành DB production — test chạy trên DB tạm
+        // trong thư mục temp, không được ghi nhiễu (và hiểu sai) log lỗi khởi động thật.
+        if (string.Equals(
+                dataSource,
+                StoragePathProvider.GetDatabasePath(),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            StartupErrorReporter.Append(
+                $"STALE MIGRATION LOCK CLEARED — __EFMigrationsLock còn sót {leftover.Count} hàng " +
+                $"(Timestamp: {string.Join(", ", leftover)}). " +
+                "Process bị kill giữa Migrate ở lần chạy trước.",
+                StartupErrorReporter.DefaultLogPath);
+        }
     }
 
     /// <summary>

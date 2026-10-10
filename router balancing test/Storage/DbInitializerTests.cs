@@ -52,6 +52,49 @@ public class DbInitializerTests : IDisposable
     }
 
     [Fact]
+    public void Initialize_OnEmptyDatabase_EnablesWalJournalMode()
+    {
+        var factory = _db.CreateFactory();
+
+        DbInitializer.Initialize(factory);
+
+        // WAL là bắt buộc: writer song song với reader trong pipeline (LogService ghi
+        // trong request) chỉ không kẹt ở WAL. Migrator chỉ chạy PRAGMA journal_mode='wal'
+        // khi DatabaseCreator.Exists() = false — thao tác DB nào tạo file TRƯỚC Migrate
+        // sẽ bỏ lỡ Create() và âm thầm rơi về rollback-journal.
+        using var db = factory.CreateDbContext();
+        var mode = db.Database
+            .SqlQueryRaw<string>("PRAGMA journal_mode")
+            .ToList();
+        Assert.Equal("wal", mode.Single());
+    }
+
+    [Fact]
+    public async Task Initialize_WhenStaleMigrationLockLeftBehind_ClearsItAndCompletes()
+    {
+        var factory = _db.CreateFactory();
+        // Lần đầu để EF tạo schema + bảng __EFMigrationsLock
+        DbInitializer.Initialize(factory);
+
+        using (var db = factory.CreateDbContext())
+        {
+            // Mô phỏng process bị kill giữa Migrate: hàng lock Id=1 kẹt lại, không ai DELETE
+            db.Database.ExecuteSqlRaw(
+                "INSERT INTO \"__EFMigrationsLock\" (\"Id\", \"Timestamp\") " +
+                "VALUES (1, '2026-10-10 07:56:29.8728158+00:00')");
+        }
+
+        // Không có bước dọn lock: AcquireDatabaseLock retry INSERT OR IGNORE vô hạn →
+        // treo. Wait có giới hạn để fail rõ ràng thay vì treo cả suite.
+        var initialize = Task.Run(() => DbInitializer.Initialize(factory));
+        var finished = await Task.WhenAny(initialize, Task.Delay(TimeSpan.FromSeconds(30)));
+        Assert.True(
+            ReferenceEquals(finished, initialize),
+            "Initialize kẹt ở AcquireDatabaseLock — hàng __EFMigrationsLock kẹt không được dọn trước Migrate");
+        await initialize;
+    }
+
+    [Fact]
     public void Initialize_WhenComboItemsWritten_BothNavigationAndForeignKeyLoad()
     {
         var factory = _db.CreateFactory();

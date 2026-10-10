@@ -24,6 +24,34 @@ public static class StartupErrorReporter
         ArgumentNullException.ThrowIfNull(exception);
         ArgumentException.ThrowIfNullOrEmpty(logFilePath);
 
+        var entry =
+            $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] UNHANDLED STARTUP EXCEPTION" + Environment.NewLine +
+            $"{exception.GetType().FullName}: {exception.Message}" + Environment.NewLine +
+            exception.ToString() + Environment.NewLine +
+            new string('-', 80) + Environment.NewLine;
+        return AppendEntry(entry, logFilePath);
+    }
+
+    /// <summary>
+    /// Append một entry văn bản thường (sự kiện khởi động đáng chú ý, không phải exception)
+    /// vào <paramref name="logFilePath"/> — cùng kênh log file độc lập DB với
+    /// <see cref="Report(Exception, string)"/>, dùng khi cần ghi sự kiện trước khi migrate.
+    /// Best-effort như <see cref="Report(Exception, string)"/>: không ném nếu không ghi được.
+    /// </summary>
+    /// <returns><paramref name="logFilePath"/> nếu ghi thành công; <see langword="null"/> nếu không ghi được.</returns>
+    public static string? Append(string message, string logFilePath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(message);
+        ArgumentException.ThrowIfNullOrEmpty(logFilePath);
+
+        var entry =
+            $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] {message}" + Environment.NewLine +
+            new string('-', 80) + Environment.NewLine;
+        return AppendEntry(entry, logFilePath);
+    }
+
+    private static string? AppendEntry(string entry, string logFilePath)
+    {
         try
         {
             var directory = Path.GetDirectoryName(logFilePath);
@@ -32,11 +60,6 @@ public static class StartupErrorReporter
                 Directory.CreateDirectory(directory);
             }
 
-            var entry =
-                $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}] UNHANDLED STARTUP EXCEPTION" + Environment.NewLine +
-                $"{exception.GetType().FullName}: {exception.Message}" + Environment.NewLine +
-                exception.ToString() + Environment.NewLine +
-                new string('-', 80) + Environment.NewLine;
             File.AppendAllText(logFilePath, entry);
             return logFilePath;
         }

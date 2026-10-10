@@ -32,4 +32,29 @@ public class StartupErrorReporterTests
             }
         }
     }
+
+    [Fact]
+    public void Append_WritesPlainMessageToLogFile()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"startup-error-{Guid.NewGuid():N}");
+        var logFilePath = Path.Combine(directory, "startup-error.log");
+
+        try
+        {
+            var result = StartupErrorReporter.Append("STALE MIGRATION LOCK CLEARED", logFilePath);
+
+            Assert.Equal(logFilePath, result);
+            var content = File.ReadAllText(logFilePath);
+            Assert.Contains("STALE MIGRATION LOCK CLEARED", content);
+            // Entry thuần văn bản — không được thêm header chỉ dành cho exception
+            Assert.DoesNotContain("UNHANDLED STARTUP EXCEPTION", content);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
 }
