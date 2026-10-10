@@ -15,7 +15,6 @@ namespace router_balancing_test.Storage;
 public class AddStatsJournalColumnsMigrationTests : IDisposable
 {
     private const string PreviousId = "20261004172008_RemoveAccountPriority";
-    // Điền sau khi chạy dotnet ef — dạng <ts>_AddStatsJournalColumns
     private const string TargetId = "20261010150737_AddStatsJournalColumns";
 
     private readonly TestDb _testDb = new();
