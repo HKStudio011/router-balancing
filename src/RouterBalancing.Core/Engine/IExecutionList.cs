@@ -33,6 +33,12 @@ public interface IExecutionList
     /// <summary>Số request in-flight của provider.</summary>
     int GetInFlight(long providerId);
 
+    /// <summary>
+    /// Tổng số request đang phục vụ trên MỌI provider — luồng update dùng để
+    /// xác định queue đã drain chưa và hiển thị "còn N request" trong dialog.
+    /// </summary>
+    int TotalInFlight { get; }
+
     /// <summary>Snapshot toàn bộ entry đang phục vụ — data source cho <c>GET /v1/requests</c>.</summary>
     IReadOnlyList<ExecutionEntry> Snapshot();
 }

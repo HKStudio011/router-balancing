@@ -326,6 +326,22 @@ public class ExecutionListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetTotalInFlight_ReturnsSumAcrossProviders()
+    {
+        var p1 = SeedProvider("p1");
+        var p2 = SeedProvider("p2");
+        var sut = CreateSut();
+        await sut.TryEnterAsync(p1, "req00001", "p1", "m1", RequestPriority.Normal, Enq, null, default);
+        await sut.TryEnterAsync(p2, "req00002", "p2", "m2", RequestPriority.Normal, Enq, null, default);
+
+        // Tổng mọi provider — luồng update dùng để biết queue đã drain chưa ("còn N request")
+        Assert.Equal(2, sut.TotalInFlight);
+
+        sut.Exit("req00001");
+        Assert.Equal(1, sut.TotalInFlight);
+    }
+
+    [Fact]
     public async Task TryEnterAsync_WhenAccountExcluded_DoesNotPickItAgain()
     {
         var pid = SeedProvider("p1", maxConcurrent: 4, accountCount: 2);

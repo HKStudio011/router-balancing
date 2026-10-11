@@ -242,6 +242,8 @@ public class DispatcherLoopTests : IDisposable
 
         public int GetInFlight(long pid) => inner.GetInFlight(pid);
 
+        public int TotalInFlight => inner.TotalInFlight;
+
         public IReadOnlyList<ExecutionEntry> Snapshot() => inner.Snapshot();
     }
 

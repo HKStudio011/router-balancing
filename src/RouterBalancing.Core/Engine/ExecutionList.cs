@@ -125,6 +125,16 @@ public sealed class ExecutionList(IDbContextFactory<RouterBalancingDbContext> db
     }
 
     /// <inheritdoc/>
+    public int TotalInFlight
+    {
+        get
+        {
+            lock (_lock)
+                return _entries.Count;
+        }
+    }
+
+    /// <inheritdoc/>
     public IReadOnlyList<ExecutionEntry> Snapshot()
     {
         lock (_lock)
