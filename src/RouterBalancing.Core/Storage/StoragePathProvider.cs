@@ -12,4 +12,11 @@ public static class StoragePathProvider
     /// <summary>Đường dẫn file SQLite: %AppData%/router-balancing/router-balancing.db.</summary>
     public static string GetDatabasePath() =>
         Path.Combine(GetDataDirectory(), "router-balancing.db");
+
+    /// <summary>
+    /// Đường dẫn snapshot hàng đợi: %AppData%/router-balancing/queue-snapshot.json —
+    /// persist request chưa dispatch trước khi app restart cài update (spec §8).
+    /// </summary>
+    public static string GetQueueSnapshotPath() =>
+        Path.Combine(GetDataDirectory(), "queue-snapshot.json");
 }
