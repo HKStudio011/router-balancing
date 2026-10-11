@@ -633,7 +633,8 @@
     private void UpdateNowAsync()
     {
         // is { } guard: 24h loop có thể vừa xác nhận "bản mới nhất" và xoá release
-        // giữa lúc render nút và lúc bấm — StartUpdateAsync(null!) sẽ ném
+        // giữa lúc render nút và lúc bấm — nếu chạy với release null sẽ bắt đầu một
+        // update "ma" (drain + modal) rồi fail ở download, toast "tải thất bại" sai bản chất
         if (Check.AvailableRelease is not { } release) return;
         // Fire-and-forget: await sẽ giữ handler mở suốt thời gian download —
         // modal hiển thị qua UpdateCoordinator.UpdateInProgress + event Changed
