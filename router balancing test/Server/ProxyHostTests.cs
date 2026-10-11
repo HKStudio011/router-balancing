@@ -9,6 +9,7 @@ using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Update;
 
 namespace router_balancing_test.Server;
 
@@ -241,6 +242,61 @@ public class ProxyHostTests : IDisposable
         // id lạ → RequestCancelService trả NotFound; chứng minh bridge resolve đúng
         // IRequestCancelService trong container DI của proxy (không tự xử lý ở host)
         Assert.Equal(RequestCancelResult.NotFound, host.CancelRequest("missing-id"));
+    }
+
+    [Fact]
+    public async Task GetTotalInFlight_ReturnsZero_WhenNotRunning()
+    {
+        // KHÔNG StartAsync — _app null: bridge phải trả 0 mà không chạm container DI
+        var feed = new TraceFeed(_log);
+        await using var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+
+        Assert.Equal(0, host.GetTotalInFlight());
+    }
+
+    [Fact]
+    public async Task TryWriteQueueSnapshotAsync_ReturnsFalse_WhenNotRunning()
+    {
+        // KHÔNG StartAsync — _app null: không có queue để snapshot, phải false chứ không throw
+        var feed = new TraceFeed(_log);
+        await using var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+
+        Assert.False(await host.TryWriteQueueSnapshotAsync());
+    }
+
+    [Fact]
+    public async Task GetTotalInFlight_WhenRunning_ReturnsZero()
+    {
+        // Host chạy nhưng chưa có request nào đang phục vụ — đồng thời chứng minh
+        // bridge resolve được IExecutionList từ container DI của proxy
+        await using var host = await StartHostAsync();
+
+        Assert.Equal(0, host.GetTotalInFlight());
+    }
+
+    [Fact]
+    public async Task TryWriteQueueSnapshotAsync_WhenRunning_WritesLoadableSnapshot()
+    {
+        await using var host = await StartHostAsync();
+        var path = StoragePathProvider.GetQueueSnapshotPath();
+        try
+        {
+            var written = await host.TryWriteQueueSnapshotAsync();
+
+            Assert.True(written);
+            Assert.True(File.Exists(path));
+            var snapshot = await QueueSnapshotStore.LoadAsync(path);
+            Assert.NotNull(snapshot);
+            Assert.Equal(QueueSnapshotStore.CurrentVersion, snapshot!.Version);
+            Assert.Empty(snapshot.Requests);
+        }
+        finally
+        {
+            // Snapshot ghi vào AppData thật — dọn để không rò sang lần chạy test sau
+            if (File.Exists(path)) File.Delete(path);
+        }
     }
 
     [Fact]

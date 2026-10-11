@@ -49,6 +49,21 @@ public interface IProxyHost : IAsyncDisposable
     /// <param name="priority">Priority mới.</param>
     /// <returns>Kết quả; <see cref="RequestPriorityResult.NotRunning"/> khi host chưa chạy.</returns>
     RequestPriorityResult SetRequestPriority(string id, RequestPriority priority);
+
+    /// <summary>
+    /// Tổng request đang phục vụ — luồng update hiển thị "còn N request" và poll tới
+    /// khi drain xong trước khi ghi snapshot (spec §8).
+    /// </summary>
+    /// <returns>Số request in-flight; 0 khi host chưa chạy.</returns>
+    int GetTotalInFlight();
+
+    /// <summary>
+    /// Ghi snapshot request chưa dispatch xuống <c>queue-snapshot.json</c> — cầu nối để
+    /// coordinator (MAUI) persist queue trước khi restart cài update; queue sống trong
+    /// container DI của proxy nên MAUI không đọc được trực tiếp (spec §8).
+    /// </summary>
+    /// <returns><see langword="true"/> khi ghi thành công; <see langword="false"/> khi host chưa chạy hoặc ghi file thất bại (đã log Warn).</returns>
+    Task<bool> TryWriteQueueSnapshotAsync();
 }
 
 /// <summary>Request còn trong queue — id + model để UI ghép node trace.</summary>

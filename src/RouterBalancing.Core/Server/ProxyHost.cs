@@ -13,6 +13,7 @@ using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Stats;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Update;
 
 namespace RouterBalancing.Core.Server;
 
@@ -213,6 +214,38 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         if (app is null)
             return RequestPriorityResult.NotRunning;
         return app.Services.GetRequiredService<IRequestPriorityService>().SetPriority(id, priority);
+    }
+
+    public int GetTotalInFlight()
+    {
+        // Capture local như QueuedSnapshot: StopAsync dispose + set null song song.
+        var app = _app;
+        if (app is null)
+            return 0;
+        return app.Services.GetRequiredService<IExecutionList>().TotalInFlight;
+    }
+
+    public async Task<bool> TryWriteQueueSnapshotAsync()
+    {
+        // Bridge qua app.Services đúng pattern QueuedSnapshot — queue chỉ sống trong
+        // container DI của proxy, coordinator MAUI không có đường đọc trực tiếp.
+        var app = _app;
+        if (app is null)
+            return false;
+        try
+        {
+            var queue = app.Services.GetRequiredService<IRequestQueue>();
+            await QueueSnapshotStore.SaveAsync(queue.Snapshot(),
+                StoragePathProvider.GetQueueSnapshotPath());
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Coordinator xử lý tiếp được (bỏ qua snapshot) — không được để lỗi ghi file
+            // nổ ra ngoài làm đứt chuỗi update; Warn kèm exception để điều tra được nguyên nhân
+            _log.Warn($"Không ghi được queue snapshot: {ex.Message}");
+            return false;
+        }
     }
 
     public async ValueTask DisposeAsync()
