@@ -82,9 +82,13 @@ internal static class MonitorFormat
         if (value is >= -999 and <= 999)
             return value.ToString(CultureInfo.CurrentCulture);
 
-        var (divisor, suffix) = value is <= -1_000_000 or >= 1_000_000
-            ? (1_000_000d, "M")
-            : (1_000d, "k");
-        return (value / divisor).ToString("0.0", CultureInfo.CurrentCulture) + suffix;
+        // Quyết định hậu tố TRƯỚC khi format: 999_999 làm tròn 1 chữ số thập phân của
+        // k-branch ra 1000.0 → hiển thị "1000,0k" (vượt tiền tố k). Với giá trị < 1_000_000
+        // luôn dùng k và clamp 999.9 để không bao giờ đạt 1000.
+        if (value is <= -1_000_000 or >= 1_000_000)
+            return (value / 1_000_000d).ToString("0.0", CultureInfo.CurrentCulture) + "M";
+
+        var thousands = Math.Clamp(Math.Round(value / 1000d, 1), -999.9, 999.9);
+        return thousands.ToString("0.0", CultureInfo.CurrentCulture) + "k";
     }
 }

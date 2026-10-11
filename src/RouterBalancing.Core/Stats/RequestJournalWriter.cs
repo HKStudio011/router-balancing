@@ -122,17 +122,24 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
     /// Cập nhật Combo/Provider/Account từ DispatchStarted/Attempt — attempt mới nhất đè
     /// (event terminal lấy route tại thời điểm request, spec §4).
     /// </summary>
-    /// <param name="e">Event mang Route (có thể null — DispatchStarted chưa chọn xong).</param>
+    /// <param name="e">Event trace — <see cref="TraceEvent.Route"/> null (DispatchStarted
+    /// chưa chọn xong) bị bỏ qua, không đè route đã biết.</param>
     private void UpdateRoute(TraceEvent e)
     {
+        // DispatchStarted publish Route=null (DispatcherLoop:162-165) — null KHÔNG được đè
+        // route đã biết từ Attempt (quy ước ApiMonitorStore/DispatcherLoop:687:
+        // null never overwrites known route).
+        if (e.Route is null)
+            return;
+
         if (!_active.TryGetValue(e.RequestId, out var current))
             return; // chưa Received hoặc đã sweep — không có entry để cập nhật
 
         var updated = current with
         {
-            Combo = e.Route?.Combo,
-            Provider = e.Route?.Provider,
-            Account = e.Route?.Account,
+            Combo = e.Route.Combo,
+            Provider = e.Route.Provider,
+            Account = e.Route.Account,
         };
         _active.TryUpdate(e.RequestId, updated, current);
     }

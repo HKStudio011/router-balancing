@@ -194,14 +194,19 @@ public class RequestJournalWriterTests : IDisposable
     }
 
     [Fact]
-    public void PriorityUpdateThenReceived_WritesRowWithClientKeyId()
+    public void DispatchStartedWithNullRoute_DoesNotOverwriteKnownProvider()
     {
         var t0 = Now;
         _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0));
-        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0.AddMilliseconds(50), clientKeyId: 7));
-        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", t0.AddSeconds(1), status: 200, success: true));
+        _feed.Publish(Ev("r1", TraceStage.Attempt, "m1", t0.AddSeconds(1),
+            route: new TraceRoute(null, "prov1", null)));
+        // DispatcherLoop:162-165 — DispatchStarted publish Route=null (chưa chọn xong);
+        // null không được đè route đã biết từ Attempt (quy ước ApiMonitorStore)
+        _feed.Publish(Ev("r1", TraceStage.DispatchStarted, "m1", t0.AddSeconds(1.5)));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", t0.AddSeconds(2), status: 200, success: true));
 
-        Assert.Equal(7, Assert.Single(Rows()).ClientKeyId);
+        var row = Assert.Single(Rows());
+        Assert.Equal("prov1", row.ProviderKey);
     }
 
     [Fact]

@@ -57,7 +57,7 @@ public class StatsServiceTests : IDisposable
     [Fact]
     public async Task P95_NearestRank()
     {
-        // 20 Ok, DurationMs 1..20 — nearest-rank: ceil(0.95×20)=19 → index 18 khi sort DESC = 19
+        // 20 Ok, DurationMs 1..20 — nearest-rank: ceil(0.95×20)=19 → index 18 khi sort ASC = 19
         var at = MidnightUtc.AddHours(8);
         Seed([.. Enumerable.Range(1, 20)
             .Select(ms => Terminal(RequestOutcome.Ok, at, durationMs: ms))]);

@@ -64,21 +64,25 @@ else
             @for (var i = 0; i < buckets.Count; i++)
             {
                 var bucket = buckets[i];
-                var requestHeight = BarHeight(bucket.Requests);
+                // Requests ĐÃ bao gồm Errors (Errors ⊂ Requests, StatsService) — blue chỉ
+                // vẽ phần thành công, red chồng đúng phần errors. Vẽ blue = toàn Requests
+                // rồi cộng Errors lên trên sẽ đếm lỗi 2 lần: bucket 100%-error cao gấp 2 lần
+                // bucket lành mạnh cùng volume.
+                var okHeight = BarHeight(Math.Max(bucket.Requests - bucket.Errors, 0));
                 var errorHeight = BarHeight(bucket.Errors);
                 var x = BarXPercent(i);
 
                 @* Bar 0 không vẽ segment nhưng nhãn vẫn hiển thị (bucket rỗng trả 0 — spec §5) *@
-                if (requestHeight > 0)
+                if (okHeight > 0)
                 {
-                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - requestHeight)"
-                          height="@Num(requestHeight)" fill="#3b82f6" />
+                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - okHeight)"
+                          height="@Num(okHeight)" fill="#3b82f6" />
                 }
 
-                @* Errors chồng lên requests — stacked bar theo spec §7 *@
+                @* Errors chồng lên phần thành công — stacked bar theo spec §7 *@
                 if (errorHeight > 0)
                 {
-                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - requestHeight - errorHeight)"
+                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - okHeight - errorHeight)"
                           height="@Num(errorHeight)" fill="#ef4444" />
                 }
             }
@@ -106,15 +110,18 @@ else
     private const int PlotHeight = 120;
 
     /// <summary>
-    /// Thang vẽ stacked: mỗi bucket chiếm requests+errors; lớn nhất làm chuẩn.
-    /// Toàn bucket rỗng → trả 1 để tránh chia 0 (không segment nào được vẽ anyway).
+    /// Thang vẽ stacked: cao nhất trong các bucket — bằng chính <c>Requests</c> vì
+    /// Requests đã bao gồm Errors (Errors ⊂ Requests); cộng thêm Errors nữa sẽ đếm
+    /// lỗi 2 lần và thổi phồng thang. Toàn bucket rỗng → trả 1 để tránh chia 0
+    /// (không segment nào được vẽ anyway). Clamp int.MaxValue: bucket &gt; 2B làm
+    /// cast (int) wrap số âm → BarHeight âm.
     /// </summary>
     private int ScaleMax
     {
         get
         {
-            var max = Buckets?.Max(b => (long)b.Requests + b.Errors) ?? 0;
-            return max <= 0 ? 1 : (int)max;
+            var max = Buckets?.Max(b => (long)b.Requests) ?? 0;
+            return max <= 0 ? 1 : (int)Math.Min(max, int.MaxValue);
         }
     }
 
