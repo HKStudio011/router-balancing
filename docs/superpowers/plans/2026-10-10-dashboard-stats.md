@@ -162,7 +162,7 @@ public interface IStatsService
 - [ ] **Step 1: Failing tests** — `StatsServiceTests`, fixture: `TestDb` (migrate) seed trực tiếp `LogEntry` (terminal: Outcome/DurationMs/ProviderKey/ModelKey/ClientKeyId/Timestamp UTC) + usage rows (`Category=Request`, `PromptTokens/CompletionTokens`, `RequestId`); service ctor `(IDbContextFactory<RouterBalancingDbContext> db, TimeProvider clock)` với `FixedTimeProvider` (test double override `GetUtcNow`). 6 test:
 
 ```csharp
-ErrorRate_ExcludesCancelled       // 8 Ok, 1 Error, 3 Cancelled → ErrorRatePercent == 10.0 (1/(8+1))
+ErrorRate_ExcludesCancelled       // 8 Ok, 1 Error, 3 Cancelled → ErrorRatePercent == 100.0/9 (1/(8+1), Cancelled ngoài denominator)
 P95_NearestRank                   // 20 Ok, DurationMs 1..20 → p95 == 19 (ceil(0.95*20)=19 → index 18 sorted asc)
 TodayWindow_UsesUtcMidnight       // row tại (midnight UTC hôm nay − 1ms) không tính; row tại midnight tính; row future không tính
 Breakdown_JoinsUsageTokensByRequestId // terminal ProviderKey="p1" + usage cùng RequestId → ByProvider["p1"].Tokens khớp tổng; requests từ terminal
