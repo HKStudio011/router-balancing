@@ -323,6 +323,13 @@
     // Debounce Changed: mỗi event cancel timer cũ rồi tạo timer mới (trailing — spec §6)
     private CancellationTokenSource? _debounce;
 
+    // Fetch stats đang chạy — fetch mới hơn hủy fetch cũ (đóng race stale-response khi đổi range)
+    private CancellationTokenSource? _refreshCts;
+
+    // Tăng dần mỗi lần fetch — kết quả của sequence cũ không được ghi đè sequence mới
+    // (belt-and-braces cùng CancellationToken: cancel không chặn được callback đã chạy trên thread pool)
+    private int _refreshSequence;
+
     // Ngưỡng đọc lại mỗi lần fetch — đổi setting có hiệu lực ở lần refresh kế tiếp (spec §6)
     private int _thresholdPercent;
 
@@ -383,15 +390,13 @@
         // subscriber ném sẽ chặn các subscriber phía sau (mirror ApiMonitorPanel.OnChanged).
         try
         {
-            // Gán null trước khi dispose: hai event đồng thời vẫn an toàn — thread sau thấy
-            // null, không Cancel CTS đã dispose; thread thua chỉ tốn một fetch thừa vô hại.
-            var previous = _debounce;
-            _debounce = null;
-            previous?.Cancel();
-            previous?.Dispose();
+            // Interlocked.Exchange:2 thread publish cùng bắn event → CTS thua được trả về
+            // rồi dispose (gán thẳng sẽ rơi CTS không ai dispose — Minor #5).
+            var cts = new CancellationTokenSource();
+            var stale = Interlocked.Exchange(ref _debounce, cts);
+            CancelAndDispose(stale, "timer debounce cũ");
 
-            _debounce = new CancellationTokenSource();
-            _ = DebouncedRefreshAsync(_debounce.Token);
+            _ = DebouncedRefreshAsync(cts.Token);
         }
         catch (Exception ex)
         {
@@ -411,10 +416,16 @@
             }
 
             await RefreshAsync();
-            if (!_disposed)
+
+            // Check _disposed BÊN TRONG lambda (mirror ApiMonitorPanel:223-230) — check ngoài
+            // vẫn để race window giữa lúc check và lúc callback chạy trên dispatcher (Minor #3)
+            await InvokeAsync(() =>
             {
-                await InvokeAsync(StateHasChanged);
-            }
+                if (!_disposed)
+                {
+                    StateHasChanged();
+                }
+            });
         }
         catch (OperationCanceledException)
         {
@@ -429,14 +440,44 @@
     /// <summary>Fetch snapshot cho range hiện tại; lỗi → giữ snapshot cũ + cờ refreshFailed.</summary>
     private async Task RefreshAsync()
     {
+        // Bắt captured range + sequence TRƯỚC khi await — fetch xong so lại state hiện tại
+        // để không ghi đè dữ liệu mới hơn bằng kết quả cũ (Minor #2 stale-response)
+        var range = _range;
+        var sequence = Interlocked.Increment(ref _refreshSequence);
+
+        var cts = new CancellationTokenSource();
+        // CTS không dispose ngay: nó còn nằm trong _refreshCts — fetch kế tiếp hoặc
+        // DisposeAsync sẽ CancelAndDispose (tránh dispose khi EF còn giữ token)
+        var stale = Interlocked.Exchange(ref _refreshCts, cts);
+        CancelAndDispose(stale, "fetch thống kê đang chạy");
+
         try
         {
-            var snapshot = await Stats.GetRangeAsync(_range);
+            // Truyền ct vào EF query — hủy fetch cũ khi fetch mới/panel dispose (plan Task 4)
+            var snapshot = await Stats.GetRangeAsync(range, ct: cts.Token);
+
+            // Sequence-guard: cancel không chặn được callback đã chạy trên thread pool —
+            // kết quả của sequence cũ bị bỏ, không được ghi đè sequence mới
+            if (sequence != Volatile.Read(ref _refreshSequence))
+            {
+                return;
+            }
+
             _snapshot = snapshot;
             _refreshFailed = false;
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // Bị fetch mới hơn hủy — fetch mới sẽ cập nhật UI, không phải lỗi.
+            return;
+        }
         catch (Exception ex)
         {
+            if (sequence != Volatile.Read(ref _refreshSequence))
+            {
+                return;
+            }
+
             _refreshFailed = true;
             Log.Error("StatsPanel: truy vấn thống kê thất bại.", ex);
         }
@@ -450,12 +491,45 @@
     {
         _range = range;
 
-        var pending = _debounce;
-        _debounce = null;
-        pending?.Cancel();
-        pending?.Dispose();
+        // Interlocked + try/catch: cancel/dispose chạy cạnh OnChanged trên thread publish —
+        // Cancel CTS đã bị thread khác dispose sẽ ném ODE ra Blazor dispatch (Minor #4)
+        CancelAndDispose(Interlocked.Exchange(ref _debounce, null), "timer debounce cũ");
 
         await RefreshAsync();
+    }
+
+    /// <summary>
+    /// Hủy rồi dispose CTS — helper dùng chung cho mọi chỗ thay/dispose CTS của panel.
+    /// Cancel cạnh tranh với thread khác có thể ném <see cref="ObjectDisposedException"/>;
+    /// log thay vì nuốt, không để exception thoát ra Blazor dispatch.
+    /// </summary>
+    /// <param name="cts">CTS cần hủy — <see langword="null"/> thì bỏ qua.</param>
+    /// <param name="context">Mô tả dùng cho log khi xảy ra race.</param>
+    private void CancelAndDispose(CancellationTokenSource? cts, string context)
+    {
+        if (cts is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Đúng race đã biết: thread khác đã dispose CTS này — hành vi mong muốn, chỉ log dấu vết
+            Log.Warn($"StatsPanel: {context} đã bị dispose bởi thread khác (race đã biết).");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"StatsPanel: hủy {context} thất bại.", ex);
+        }
+        finally
+        {
+            // Dispose idempotent — gọi nhiều lần an toàn, kể cả khi Cancel ném ODE
+            cts.Dispose();
+        }
     }
 
     /// <summary>Gỡ subscription và hủy debounce — tránh leak delegate/CTS trên singleton.</summary>
@@ -468,10 +542,8 @@
         // Đánh dấu sau unsubscribe — callback InvokeAsync có thể còn đang đợi trên dispatcher.
         _disposed = true;
 
-        var pending = _debounce;
-        _debounce = null;
-        pending?.Cancel();
-        pending?.Dispose();
+        CancelAndDispose(Interlocked.Exchange(ref _debounce, null), "timer debounce cũ");
+        CancelAndDispose(Interlocked.Exchange(ref _refreshCts, null), "fetch thống kê đang chạy");
 
         return ValueTask.CompletedTask;
     }
