@@ -69,6 +69,8 @@ namespace router_balancing
             // ProxyHost ctor eager-create để singleton gắn feed từ trước request đầu tiên
             builder.Services.AddSingleton<IStatsInvalidationSource, StatsInvalidationSource>();
             builder.Services.AddSingleton<IRequestJournalWriter, RequestJournalWriter>();
+            // StatsService stateless, chỉ đọc journal — singleton cho StatsPanel (Task 4/6)
+            builder.Services.AddSingleton<IStatsService, StatsService>();
             builder.Services.AddSingleton<LocalizationService>();
             // Scoped: ThemeService phụ thuộc IJSRuntime — lifetime scoped để Blazor resolve được
             // (singleton không được inject scoped service).

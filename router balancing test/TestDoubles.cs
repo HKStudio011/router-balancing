@@ -31,6 +31,12 @@ internal sealed class NullUsageSink : IClientKeyUsageSink
         CancellationToken ct = default) => Task.CompletedTask;
 }
 
+/// <summary>TimeProvider cố định — test đóng băng GetUtcNow để kiểm chứng cửa sổ UTC của StatsService.</summary>
+internal sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow() => utcNow;
+}
+
 /// <summary>Pool luôn trả direct — các test cũ không phụ thuộc behavior proxy.</summary>
 public sealed class DirectProxyPool : IProxyPool
 {
