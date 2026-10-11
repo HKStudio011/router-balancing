@@ -1,10 +1,14 @@
 ﻿@inherits LayoutComponentBase
 @implements IDisposable
+@using RouterBalancing.Core.Update
 @inject IProxyHost ProxyHost
 @inject ThemeService Theme
 @inject ILogService Log
 @inject LocalizationService L
 @inject ToastService Toast
+@inject IAppUpdateService Updates
+@inject UpdateCheckService UpdateCheck
+@inject UpdateCoordinator Coordinator
 
 <div class="flex h-screen overflow-hidden bg-background text-text">
     <aside class="w-56 shrink-0 border-r border-border bg-surface">
@@ -20,7 +24,15 @@
         <main class="flex-1 overflow-auto p-4">
             @Body
         </main>
+
+        @* Footer version — format ngắn qua AppVersionFormatter (spec §9.3) *@
+        <footer class="border-t border-border bg-surface px-4 py-1 text-right text-xs text-neutral-500">
+            v@_appVersion
+        </footer>
     </div>
+
+    @* Modal update toàn màn hình — tự render rỗng khi không có update đang chạy *@
+    <UpdateModal />
 
     @* Toast stack: fixed góc dưới phải, z-index cao để nổi trên nội dung *@
     <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
@@ -36,6 +48,7 @@
 @code {
     private string _badgeText = string.Empty;
     private string _badgeClass = string.Empty;
+    private string _appVersion = string.Empty;
     private readonly List<ToastItem> _toasts = [];
 
     protected override async Task OnInitializedAsync()
@@ -43,6 +56,10 @@
         ProxyHost.StateChanged += OnProxyStateChanged;
         Toast.ToastAdded += OnToastAdded;
         L.LanguageChanged += OnLanguageChanged;
+        UpdateCheck.UpdateFound += OnUpdateFound;
+        Coordinator.Failed += OnUpdateFailed;
+        Coordinator.Cancelled += OnUpdateCancelled;
+        _appVersion = AppVersionFormatter.Format(Version.Parse(Updates.CurrentVersion));
         UpdateBadge();
         try
         {
@@ -79,6 +96,26 @@
         StateHasChanged();
     });
 
+    // UpdateFound bắn từ luồng nền của UpdateCheckService — marshal về UI thread
+    private void OnUpdateFound(ReleaseInfo release) => _ = InvokeAsync(() =>
+        Toast.Show(string.Format(L["update.available"], release.TagName)));
+
+    // Cả 4 loại lỗi (UpdateError) đều toast kèm lý do — chi tiết đầy đủ đã vào Logs (spec §11)
+    private void OnUpdateFailed(UpdateError error) => _ = InvokeAsync(() =>
+    {
+        var reason = error switch
+        {
+            UpdateError.DownloadFailed => L["update.error.download"],
+            UpdateError.SnapshotFailed => L["update.error.snapshot"],
+            UpdateError.InstallFailed => L["update.error.install"],
+            _ => L["update.error.drain"],
+        };
+        Toast.Show(string.Format(L["update.failed"], reason), ToastSeverity.Error);
+    });
+
+    private void OnUpdateCancelled() => _ = InvokeAsync(() =>
+        Toast.Show(L["update.cancelled"]));
+
     private void UpdateBadge()
     {
         // Badge dùng màu Tailwind literal — class động không được purge vì nằm sẵn trong string constant
@@ -102,5 +139,8 @@
         ProxyHost.StateChanged -= OnProxyStateChanged;
         Toast.ToastAdded -= OnToastAdded;
         L.LanguageChanged -= OnLanguageChanged;
+        UpdateCheck.UpdateFound -= OnUpdateFound;
+        Coordinator.Failed -= OnUpdateFailed;
+        Coordinator.Cancelled -= OnUpdateCancelled;
     }
 }

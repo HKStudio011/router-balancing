@@ -1,0 +1,45 @@
+@* Modal cập nhật toàn màn hình — không đóng được bằng click ngoài (spec §9.2);
+   tự render rỗng khi không có update đang chạy *@
+@using RouterBalancing.Core.Update
+@implements IDisposable
+@inject UpdateCoordinator Coordinator
+@inject LocalizationService L
+
+@if (Coordinator.UpdateInProgress)
+{
+    @* z-50 theo pattern Modal.razor — toast stack (cũng z-50) nằm sau trong DOM nên nổi trên *@
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div role="dialog" aria-modal="true" aria-label="@L["update.title"]"
+             class="w-full max-w-lg rounded border border-border bg-surface p-4 shadow-xl">
+            <h2 class="mb-3 text-base font-semibold">@L["update.title"]</h2>
+
+            @if (Coordinator.IsFinalizing)
+            {
+                @* Đang snapshot/install — không huỷ được nữa, ẩn nút Hủy (spec §9.2 trạng thái 2) *@
+                <p class="text-sm">@L["update.preparing"]</p>
+            }
+            else
+            {
+                <div class="mb-1 text-sm">@string.Format(L["update.downloading"], $"{Coordinator.DownloadPercent}%")</div>
+                @* h-2/bg-primary chưa có trong CSS Tailwind build sẵn — height dùng inline;
+                   bg-info là utility đã có trong theme *@
+                <div class="mb-3 w-full rounded bg-info" style="height: 8px; width: @(Coordinator.DownloadPercent)%"></div>
+                <div class="mb-3 text-sm">@string.Format(L["update.draining"], Coordinator.InFlightCount)</div>
+                <div class="flex justify-end gap-2">
+                    <button type="button" class="btn btn-outline-secondary" @onclick="Coordinator.CancelUpdate">
+                        @L["update.cancel"]
+                    </button>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    protected override void OnInitialized() => Coordinator.Changed += OnChanged;
+
+    // Changed bắn từ luồng nền (poll/download) — marshal về UI thread trước khi re-render
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Coordinator.Changed -= OnChanged;
+}

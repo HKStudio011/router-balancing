@@ -4,6 +4,7 @@
 @using RouterBalancing.Core.Server
 @using RouterBalancing.Core.Settings
 @using RouterBalancing.Core.Storage
+@using RouterBalancing.Core.Update
 @implements IDisposable
 @inject IAppSettingsService Settings
 @inject LocalizationService L
@@ -15,6 +16,9 @@
 @inject LogRetentionWorker Retention
 @inject IClientKeyService ClientKeys
 @inject IClipboardService Clipboard
+@inject IAppUpdateService Updates
+@inject UpdateCheckService Check
+@inject UpdateCoordinator Coordinator
 
 <h1 class="mb-4 text-xl font-semibold">@L["panel.settings.title"]</h1>
 
@@ -238,6 +242,23 @@
     </div>
 </section>
 
+@* Application update (spec §9.1): version + badge + check thủ công + cập nhật ngay *@
+<section class="mb-4 rounded border border-border bg-surface p-4">
+    <h2 class="mb-3 text-base font-semibold">@L["update.title"]</h2>
+    <div class="text-sm">
+        @L["update.version"]: @_appVersion
+        @if (Check.IsUpdateAvailable)
+        {
+            <span class="ml-1 rounded-full bg-warning px-2 py-1 text-xs text-dark">@L["update.badge"]</span>
+        }
+    </div>
+    <button class="btn btn-primary mt-3" disabled="@_checking" @onclick="CheckAsync">@L["update.check"]</button>
+    @if (Check.IsUpdateAvailable)
+    {
+        <button class="btn btn-primary mt-3" @onclick="UpdateNowAsync">@L["update.now"]</button>
+    }
+</section>
+
 <Modal Visible="_keyFormOpen"
        Title="@(_keyFormId is null ? L["clientKeys.title.new"] : L["clientKeys.title.edit"])"
        OnClose="CloseKeyForm">
@@ -310,11 +331,15 @@
     private bool _deleteKeyOpen;
     private ClientKey? _deleteKeyTarget;
     private string? _newKeyPlaintext;
+    private string _appVersion = string.Empty;
+    private bool _checking;
 
     protected override async Task OnInitializedAsync()
     {
         _draft = LoadDraft();
         L.LanguageChanged += OnLanguageChanged;
+        Check.StateChanged += OnCheckStateChanged;
+        _appVersion = AppVersionFormatter.Format(Version.Parse(Updates.CurrentVersion));
         await ReloadKeysAsync();
     }
 
@@ -334,6 +359,9 @@
     };
 
     private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
+
+    // StateChanged bắn từ luồng nền của UpdateCheckService — marshal về UI thread
+    private void OnCheckStateChanged() => _ = InvokeAsync(StateHasChanged);
 
     /// <summary>Lấy key lỗi i18n của field; null nếu field không có lỗi.</summary>
     private string? Error(string field) =>
@@ -574,5 +602,39 @@
         }
     }
 
-    public void Dispose() => L.LanguageChanged -= OnLanguageChanged;
+    private async Task CheckAsync()
+    {
+        if (_checking) return;
+        _checking = true;
+        try
+        {
+            var result = await Check.CheckOnceAsync();
+            if (result == UpdateCheckResult.UpdateAvailable && Check.AvailableRelease is { } release)
+            {
+                Toast.Show(string.Format(L["update.available"], release.TagName));
+            }
+            else if (result == UpdateCheckResult.AlreadyLatest)
+            {
+                Toast.Show(L["update.latest"]);
+            }
+            // Failed: im lặng (spec §11) — không toast lỗi, badge cũ (nếu có) được giữ nguyên
+        }
+        finally
+        {
+            _checking = false;
+        }
+    }
+
+    private void UpdateNowAsync()
+    {
+        // Fire-and-forget: await sẽ giữ handler mở suốt thời gian download —
+        // modal hiển thị qua UpdateCoordinator.UpdateInProgress + event Changed
+        _ = Coordinator.StartUpdateAsync(Check.AvailableRelease!);
+    }
+
+    public void Dispose()
+    {
+        L.LanguageChanged -= OnLanguageChanged;
+        Check.StateChanged -= OnCheckStateChanged;
+    }
 }

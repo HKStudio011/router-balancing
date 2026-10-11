@@ -441,6 +441,25 @@ public static class Translations
         ["stats.more"] = "… and {0} more rows",
         ["stats.empty"] = "No requests in this period",
         ["stats.refreshFailed"] = "Refresh failed — showing last data",
+
+        // Application update (Task 12, spec §9.1–§9.5)
+        ["update.title"] = "Application update",
+        ["update.version"] = "Version",
+        ["update.badge"] = "Update available",
+        ["update.check"] = "Check for updates",
+        ["update.now"] = "Update now",
+        ["update.latest"] = "You are on the latest version.",
+        ["update.available"] = "New update available: {0}",
+        ["update.downloading"] = "Downloading update… {0}",
+        ["update.draining"] = "Waiting for {0} request(s) to finish…",
+        ["update.preparing"] = "Preparing to install…",
+        ["update.cancel"] = "Cancel",
+        ["update.cancelled"] = "Update cancelled.",
+        ["update.failed"] = "Update failed: {0}",
+        ["update.error.download"] = "download error",
+        ["update.error.snapshot"] = "queue snapshot error",
+        ["update.error.install"] = "installer launch error",
+        ["update.error.drain"] = "in-flight count error",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -877,6 +896,25 @@ public static class Translations
         ["stats.more"] = "… còn {0} dòng",
         ["stats.empty"] = "Chưa có request trong khoảng thời gian này",
         ["stats.refreshFailed"] = "Không làm mới được — đang hiển thị số cũ",
+
+        // Application update (Task 12, spec §9.1–§9.5)
+        ["update.title"] = "Cập nhật ứng dụng",
+        ["update.version"] = "Phiên bản",
+        ["update.badge"] = "Có bản cập nhật",
+        ["update.check"] = "Kiểm tra cập nhật",
+        ["update.now"] = "Cập nhật ngay",
+        ["update.latest"] = "Bạn đang dùng bản mới nhất.",
+        ["update.available"] = "Có bản cập nhật mới: {0}",
+        ["update.downloading"] = "Đang tải bản cập nhật… {0}",
+        ["update.draining"] = "Còn {0} request đang chạy",
+        ["update.preparing"] = "Đang chuẩn bị cài đặt…",
+        ["update.cancel"] = "Hủy",
+        ["update.cancelled"] = "Đã hủy cập nhật.",
+        ["update.failed"] = "Cập nhật thất bại: {0}",
+        ["update.error.download"] = "lỗi tải bản cập nhật",
+        ["update.error.snapshot"] = "lỗi ghi snapshot hàng đợi",
+        ["update.error.install"] = "lỗi khởi chạy trình cài đặt",
+        ["update.error.drain"] = "lỗi đếm request đang chạy",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>

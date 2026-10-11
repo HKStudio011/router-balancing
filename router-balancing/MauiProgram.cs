@@ -16,6 +16,7 @@ using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Stats;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Update;
 #if WINDOWS
 using router_balancing.Platforms.Windows;
 #endif
@@ -142,6 +143,19 @@ namespace router_balancing
             builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
             builder.Services.AddSingleton<LogRetentionWorker>();
             builder.Services.AddSingleton<FreeModelSyncWorker>();
+
+            // Application update (spec §6–§9): DrainGate đã đăng ký trên — UpdateCoordinator
+            // phải dùng chung instance gate đó; UpdateCheckService do App ctor gọi Start()
+            builder.Services.AddSingleton<IAppUpdateService>(_ => new GitHubAppUpdateService(new HttpClient()));
+            builder.Services.AddSingleton<IAppShutdown, MauiAppShutdown>();
+            builder.Services.AddSingleton<UpdateCoordinator>(sp => new UpdateCoordinator(
+                sp.GetRequiredService<IAppUpdateService>(),
+                sp.GetRequiredService<DrainGate>(),
+                sp.GetRequiredService<IProxyHost>(),
+                sp.GetRequiredService<IAppShutdown>(),
+                sp.GetRequiredService<ILogService>(),
+                StoragePathProvider.GetQueueSnapshotPath()));
+            builder.Services.AddSingleton<UpdateCheckService>();
 
 #if DEBUG
             builder.Services.AddBlazorWebViewDeveloperTools();
