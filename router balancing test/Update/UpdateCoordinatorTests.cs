@@ -148,7 +148,13 @@ public class UpdateCoordinatorTests : IDisposable
     {
         using var fx = CreateFixtures();
         var cancelled = 0;
-        fx.Coordinator.Cancelled += () => cancelled++;
+        bool? inProgressAtEvent = null;
+        fx.Coordinator.Cancelled += () =>
+        {
+            // Review Finding 1: Cancelled phải fire TRƯỚC khi reset cờ — handler thấy UpdateInProgress=true
+            inProgressAtEvent = fx.Coordinator.UpdateInProgress;
+            cancelled++;
+        };
 
         var startTask = fx.Coordinator.StartUpdateAsync(Release());
         await WaitUntilAsync(() => fx.Updates.DownloadStarted.IsCompleted, "download phải bắt đầu");
@@ -156,6 +162,7 @@ public class UpdateCoordinatorTests : IDisposable
         await startTask;
 
         Assert.Equal(1, cancelled);
+        Assert.True(inProgressAtEvent, "UpdateInProgress phải còn true khi Cancelled fire");
         Assert.False(fx.Gate.IsDraining);
         Assert.False(fx.Coordinator.UpdateInProgress);
         Assert.Equal(0, fx.Proxy.WriteCalls);
@@ -226,6 +233,89 @@ public class UpdateCoordinatorTests : IDisposable
         fx.Updates.CompleteDownload(Path.Combine(_directory, "app-9.9.9.zip"));
     }
 
+    [Fact]
+    public async Task StartUpdateAsync_WhenDownloadFails_HandlerSeesInProgressTrue_AndReentrantStartThrows()
+    {
+        // Review Finding 1: Failed phải fire TRƯỚC khi reset cờ — handler thấy UpdateInProgress=true
+        // nên re-entrant Start bị chặn; nếu không, CancelDrain chạy SAU handler sẽ mở gate của run mới.
+        using var fx = CreateFixtures();
+        bool? inProgressAtEvent = null;
+        Task? reentrant = null;
+        fx.Coordinator.Failed += _ =>
+        {
+            inProgressAtEvent = fx.Coordinator.UpdateInProgress;
+            reentrant = fx.Coordinator.StartUpdateAsync(Release());
+        };
+
+        var startTask = fx.Coordinator.StartUpdateAsync(Release());
+        await WaitUntilAsync(() => fx.Updates.DownloadStarted.IsCompleted, "download phải bắt đầu");
+        fx.Updates.CompleteDownload(null);
+        await startTask;
+
+        Assert.True(inProgressAtEvent, "UpdateInProgress phải còn true khi Failed fire");
+        Assert.NotNull(reentrant);
+        // Guard ném trước await đầu tiên → task faulted ngay khi StartUpdateAsync trả về
+        Assert.True(reentrant.IsFaulted, "re-entrant Start phải throw InvalidOperationException");
+        Assert.IsType<InvalidOperationException>(reentrant.Exception!.InnerException);
+        Assert.False(fx.Coordinator.UpdateInProgress);
+        Assert.False(fx.Gate.IsDraining);
+    }
+
+    [Fact]
+    public async Task StartUpdateAsync_WhenGetTotalInFlightThrows_FailsAndResumesDrain()
+    {
+        // Review Finding 2a: seed ném lỗi sau BeginDrain không được để gate đóng + UpdateInProgress kẹt true
+        using var fx = CreateFixtures();
+        fx.Proxy.InFlightFailAfterCalls = 0; // mọi lần đọc đều ném
+        var failed = new List<UpdateError>();
+        fx.Coordinator.Failed += failed.Add;
+
+        await fx.Coordinator.StartUpdateAsync(Release());
+
+        Assert.Equal(UpdateError.DrainFailed, Assert.Single(failed));
+        Assert.False(fx.Gate.IsDraining);
+        Assert.False(fx.Coordinator.UpdateInProgress);
+        Assert.Equal(0, fx.Proxy.WriteCalls);
+        Assert.Equal(0, fx.Updates.InstallCalls);
+    }
+
+    [Fact]
+    public async Task StartUpdateAsync_WhenPollInFlightReadThrows_FailsWithoutSnapshot()
+    {
+        // Review Minor 3: poll ném lỗi không được để pollTask fault rồi proceed snapshot khi chưa verify == 0
+        using var fx = CreateFixtures();
+        fx.Updates.CompleteDownload(Path.Combine(_directory, "app-9.9.9.zip"));
+        fx.Proxy.InFlightFailAfterCalls = 1; // seed (lần 1) OK, poll (lần 2+) ném
+        var failed = new List<UpdateError>();
+        fx.Coordinator.Failed += failed.Add;
+
+        await fx.Coordinator.StartUpdateAsync(Release());
+
+        Assert.Equal(UpdateError.DrainFailed, Assert.Single(failed));
+        Assert.Equal(0, fx.Proxy.WriteCalls); // không snapshot khi chưa xác minh in-flight == 0
+        Assert.Equal(0, fx.Updates.InstallCalls);
+        Assert.False(fx.Gate.IsDraining);
+        Assert.False(fx.Coordinator.UpdateInProgress);
+    }
+
+    [Fact]
+    public async Task StartUpdateAsync_WhenQuitThrows_ResumesDrainAndResetsState()
+    {
+        // Review Finding 2b: Quit ném lỗi = process vẫn sống — không được kẹt IsFinalizing + gate đóng
+        using var fx = CreateFixtures();
+        fx.Updates.CompleteDownload(Path.Combine(_directory, "app-9.9.9.zip"));
+        fx.Shutdown.ThrowOnQuit = true;
+
+        await fx.Coordinator.StartUpdateAsync(Release());
+
+        Assert.False(fx.Gate.IsDraining);
+        Assert.False(fx.Coordinator.UpdateInProgress);
+        Assert.False(fx.Coordinator.IsFinalizing);
+        // Update thật sự đã thành công trước khi Quit lỗi
+        Assert.Equal(1, fx.Updates.InstallCalls);
+        Assert.Equal(1, fx.Proxy.WriteCalls);
+    }
+
     // ===== Test doubles =====
 
     private sealed record Fixtures(
@@ -284,6 +374,7 @@ public class UpdateCoordinatorTests : IDisposable
     private sealed class FakeProxyHost(string snapshotPath, Action<string>? record = null) : IProxyHost
     {
         private int _inFlight;
+        private int _inFlightCalls;
         private int _writeCalls;
         private TaskCompletionSource<bool>? _writeBlock;
 
@@ -297,6 +388,12 @@ public class UpdateCoordinatorTests : IDisposable
 
         public int WriteCalls => Volatile.Read(ref _writeCalls);
 
+        /// <summary>
+        /// Ném lỗi từ lần đọc thứ <c>InFlightFailAfterCalls + 1</c> — mô phỏng DI hỏng giữa chừng
+        /// (0 = mọi lần đọc đều ném, 1 = seed OK poll ném, mặc định không bao giờ ném).
+        /// </summary>
+        public int InFlightFailAfterCalls { get; set; } = int.MaxValue;
+
         /// <summary>Chặn TryWrite cho tới khi test giải phóng — giữ pipeline trong trạng thái finalise.</summary>
         public TaskCompletionSource<bool> BlockWrites()
         {
@@ -304,7 +401,15 @@ public class UpdateCoordinatorTests : IDisposable
             return _writeBlock;
         }
 
-        public int GetTotalInFlight() => InFlight;
+        public int GetTotalInFlight()
+        {
+            if (Interlocked.Increment(ref _inFlightCalls) > InFlightFailAfterCalls)
+            {
+                throw new InvalidOperationException("in-flight read failed");
+            }
+
+            return InFlight;
+        }
 
         public async Task<bool> TryWriteQueueSnapshotAsync()
         {
@@ -369,8 +474,16 @@ public class UpdateCoordinatorTests : IDisposable
 
         public bool? FinalizingAtQuit { get; private set; }
 
+        /// <summary>Quit ném exception — mô phỏng app không đóng được (process vẫn sống).</summary>
+        public bool ThrowOnQuit { get; set; }
+
         public void Quit()
         {
+            if (ThrowOnQuit)
+            {
+                throw new InvalidOperationException("simulated quit failure");
+            }
+
             FinalizingAtQuit = ReadFinalizing?.Invoke();
             record?.Invoke("quit");
             Interlocked.Increment(ref _quitCount);

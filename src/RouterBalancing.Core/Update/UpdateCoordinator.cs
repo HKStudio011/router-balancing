@@ -17,6 +17,9 @@ public enum UpdateError
 
     /// <summary>Khởi chạy updater thất bại — snapshot bị xoá để tránh restore oan ở lần boot sau.</summary>
     InstallFailed,
+
+    /// <summary>Không đọc được số request in-flight — không xác minh được drain nên huỷ update.</summary>
+    DrainFailed,
 }
 
 /// <summary>
@@ -164,7 +167,21 @@ public sealed class UpdateCoordinator : IDisposable
         Changed?.Invoke();
 
         _gate.BeginDrain();
-        SetInFlightCount(_proxy.GetTotalInFlight());
+
+        // Seed lỗi (DI hỏng, host dừng giữa chừng) không được thoát ra ngoài —
+        // nếu không UpdateInProgress kẹt true + gate đóng vĩnh viễn, không có Failed nào báo UI
+        int inFlight;
+        try
+        {
+            inFlight = _proxy.GetTotalInFlight();
+        }
+        catch (Exception ex)
+        {
+            Fail(UpdateError.DrainFailed, $"Update aborted: cannot read in-flight count: {ex.Message}");
+            return;
+        }
+
+        SetInFlightCount(inFlight);
 
         var downloadTask = Task.Run(() => _updates.DownloadUpdateAsync(release, new PercentProgress(this)));
         var pollTask = Task.Run(() => PollUntilReadyAsync(downloadTask, cts.Token));
@@ -208,13 +225,37 @@ public sealed class UpdateCoordinator : IDisposable
 
         Changed?.Invoke();
 
-        if (!await TryWriteSnapshotAsync())
+        bool wrote;
+        try
+        {
+            wrote = await _proxy.TryWriteQueueSnapshotAsync();
+        }
+        catch (Exception ex)
+        {
+            // Chi tiết exception vào thẳng message của Fail — chỉ một lần Warn, không nuốt lỗi
+            Fail(UpdateError.SnapshotFailed, $"Update aborted: queue snapshot write failed: {ex.Message}");
+            return;
+        }
+
+        if (!wrote)
         {
             Fail(UpdateError.SnapshotFailed, "Update aborted: queue snapshot write failed.");
             return;
         }
 
-        if (!await TryInstallAsync())
+        bool installed;
+        try
+        {
+            installed = await _updates.InstallUpdateAsync();
+        }
+        catch (Exception ex)
+        {
+            DeleteSnapshot();
+            Fail(UpdateError.InstallFailed, $"Update aborted: installer launch failed: {ex.Message}");
+            return;
+        }
+
+        if (!installed)
         {
             // Snapshot không hợp lệ nữa (install fail) — xoá để tránh restore oan ở boot sau
             DeleteSnapshot();
@@ -222,36 +263,49 @@ public sealed class UpdateCoordinator : IDisposable
             return;
         }
 
-        _shutdown.Quit();
+        try
+        {
+            _shutdown.Quit();
+        }
+        catch (Exception ex)
+        {
+            // Quit lỗi = process vẫn sống: không được để finalise giữ gate đóng vĩnh viễn.
+            // Update thật sự đã thành công (updater đã launch) nên chỉ Warn + mở lại gate +
+            // reset — không bắn Failed (báo "cập nhật thất bại" sẽ sai sự thật).
+            _log.Warn($"Application quit failed after update install: {ex.Message}");
+            ReleaseDrainAndReset();
+        }
     }
 
     /// <summary>
-    /// Hủy update (nút Hủy trong modal) — no-op khi chưa start hoặc đã finalise
-    /// (không thể huỷ giữa snapshot/install). Luôn CancelDrain để dispatcher resume ngay.
+    /// Hủy update (nút Hủy trong modal) — no-op khi chưa start, đã finalise hoặc đã huỷ
+    /// trước đó. Luôn CancelDrain để dispatcher resume ngay. Handler của <see cref="Cancelled"/>
+    /// thấy <see cref="UpdateInProgress"/> còn <see langword="true"/> — Start lại từ handler sẽ throw.
     /// </summary>
     public void CancelUpdate()
     {
         lock (_sync)
         {
-            if (!_updateInProgress || _isFinalizing)
+            // IsCancellationRequested: cancel thứ hai (handler reentrant/concurrent) là no-op —
+            // tránh bắn Cancelled đôi; cts.Cancel cùng lock với guard để transition nhất quán
+            var cts = _cts;
+            if (!_updateInProgress || _isFinalizing || cts is null || cts.IsCancellationRequested)
             {
                 return;
             }
 
-            // Cancel trong lock: transition trạng thái luôn dưới _sync — không thể
-            // tranh với Start lần sau dispose CTS, và pipeline thấy trạng thái nhất quán
-            _cts?.Cancel();
-            _updateInProgress = false;
+            cts.Cancel();
         }
 
         Cancelled?.Invoke();
-        _gate.CancelDrain();
-        Changed?.Invoke();
+        ReleaseDrainAndReset();
     }
 
     /// <summary>
     /// Teardown: huỷ CTS và giải phóng update đang chờ (nếu có). Không bắn
-    /// <see cref="Cancelled"/> — đây không phải hành động người dùng.
+    /// <see cref="Cancelled"/> — đây không phải hành động người dùng. Nếu Dispose chạy trong
+    /// window finalise (snapshot/install đang chạy) thì pipeline vẫn tiếp tục tới Quit —
+    /// app đang teardown, cho phép process thoát sạch; event có thể vẫn fire sau Dispose.
     /// </summary>
     public void Dispose()
     {
@@ -260,17 +314,12 @@ public sealed class UpdateCoordinator : IDisposable
         {
             _cts?.Cancel();
             resume = _updateInProgress && !_isFinalizing;
-            if (resume)
-            {
-                _updateInProgress = false;
-            }
         }
 
         if (resume)
         {
             // Đóng giữa chừng vẫn phải mở lại gate — dispatcher không park vĩnh viễn
-            _gate.CancelDrain();
-            Changed?.Invoke();
+            ReleaseDrainAndReset();
         }
     }
 
@@ -287,8 +336,21 @@ public sealed class UpdateCoordinator : IDisposable
                 return;
             }
 
-            SetInFlightCount(_proxy.GetTotalInFlight());
-            if (downloadTask.IsCompleted && InFlightCount == 0)
+            int total;
+            try
+            {
+                total = _proxy.GetTotalInFlight();
+            }
+            catch (Exception ex)
+            {
+                // Poll fault mà bỏ qua thì snapshot proceed khi in-flight chưa chắc == 0 —
+                // fail đúng nghĩa (Failed + CancelDrain + reset), không được đi tiếp
+                Fail(UpdateError.DrainFailed, $"Update aborted: in-flight poll failed: {ex.Message}");
+                return;
+            }
+
+            SetInFlightCount(total);
+            if (downloadTask.IsCompleted && total == 0)
             {
                 return;
             }
@@ -305,49 +367,43 @@ public sealed class UpdateCoordinator : IDisposable
         }
     }
 
-    /// <summary>Ghi snapshot qua bridge của proxy; exception → coi như fail (đã log Warn).</summary>
-    private async Task<bool> TryWriteSnapshotAsync()
-    {
-        try
-        {
-            return await _proxy.TryWriteQueueSnapshotAsync();
-        }
-        catch (Exception ex)
-        {
-            _log.Warn($"Queue snapshot write failed: {ex.Message}");
-            return false;
-        }
-    }
-
-    /// <summary>Khởi chạy updater; exception → coi như fail (đã log Warn).</summary>
-    private async Task<bool> TryInstallAsync()
-    {
-        try
-        {
-            return await _updates.InstallUpdateAsync();
-        }
-        catch (Exception ex)
-        {
-            _log.Warn($"Update install failed: {ex.Message}");
-            return false;
-        }
-    }
-
     /// <summary>
-    /// Dừng update vì lỗi: log Warn, bắn <see cref="Failed"/>, MỞ lại gate drain
-    /// (dispatcher resume — tuyệt đối không để gate đóng vĩnh viễn) và reset trạng thái.
+    /// Dừng update vì lỗi: log Warn, bắn <see cref="Failed"/>, MỞ lại gate drain rồi MỚI
+    /// reset trạng thái (dispatcher resume — tuyệt đối không để gate đóng vĩnh viễn).
+    /// Handler của <see cref="Failed"/> thấy <see cref="UpdateInProgress"/> còn
+    /// <see langword="true"/> — Start lại từ handler sẽ throw, không thể bị CancelDrain
+    /// của run cũ mở nhầm gate của run mới.
     /// </summary>
     private void Fail(UpdateError error, string message)
     {
+        lock (_sync)
+        {
+            if (!_updateInProgress)
+            {
+                // Luồng khác (cancel/dispose/fail khác) đã dừng run này trước — tránh bắn duplicate
+                return;
+            }
+        }
+
+        _log.Warn(message);
+        Failed?.Invoke(error);
+        ReleaseDrainAndReset();
+    }
+
+    /// <summary>
+    /// Mở lại gate drain, RỒI reset cờ dưới lock, rồi mới bắn <see cref="Changed"/> —
+    /// CancelDrain luôn đứng TRƯỚC khi cờ false, nên handler nào khởi động run mới từ
+    /// event/Changed cũng không bị CancelDrain muộn của run cũ mở cửa gate (Finding 1).
+    /// </summary>
+    private void ReleaseDrainAndReset()
+    {
+        _gate.CancelDrain();
         lock (_sync)
         {
             _updateInProgress = false;
             _isFinalizing = false;
         }
 
-        _log.Warn(message);
-        Failed?.Invoke(error);
-        _gate.CancelDrain();
         Changed?.Invoke();
     }
 
