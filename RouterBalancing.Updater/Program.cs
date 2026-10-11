@@ -28,6 +28,7 @@ try
         goto error;
     }
 }
+// pid đã không còn (app thoát trước đó) — điều kiện chờ đạt được, tiếp tục.
 catch (ArgumentException) { }
 
 try
