@@ -1,5 +1,6 @@
 using System.IO.Pipelines;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Update;
@@ -171,6 +172,49 @@ public class QueueSnapshotRestorerTests : IDisposable
         // Item thứ hai id trùng → Enqueue false → skip, giữ nguyên item đầu
         var restored = Assert.Single(_queue.Snapshot());
         Assert.Equal("gpt-5", restored.Model);
+        Assert.False(File.Exists(SnapshotPath));
+    }
+
+    [Fact]
+    public async Task RestoreAsync_SkipsItemWithBadBodyBase64_AndDeletesFile()
+    {
+        var good = CreateRequest("req-good", RequestPriority.Normal, "gpt-5",
+            """{"model":"gpt-5"}""");
+        var bad = CreateRequest("req-bad", RequestPriority.Normal, "claude-sonnet-4-5",
+            """{"model":"claude-sonnet-4-5"}""");
+        await WriteSnapshotAsync(good, bad);
+
+        // Tamper base64 sau khi ghi — mô phỏng file hợp lệ nhưng dữ liệu item hỏng:
+        // item fail phải skip + log, KHÔNG được nổ exception (RestoreAsync chạy trước
+        // try StartAsync — nổ ra là crash startup proxy)
+        var snapshot = await QueueSnapshotStore.LoadAsync(SnapshotPath);
+        Assert.NotNull(snapshot);
+        var tampered = snapshot! with
+        {
+            Requests = [.. snapshot.Requests.Select(i =>
+                i.Id == "req-bad" ? i with { BodyBase64 = "!!not-base64!!" } : i)],
+        };
+        await File.WriteAllTextAsync(SnapshotPath, JsonSerializer.Serialize(tampered));
+
+        await CreateRestorer().RestoreAsync(SnapshotPath);
+
+        var restored = Assert.Single(_queue.Snapshot());
+        Assert.Equal("req-good", restored.Id);
+        Assert.DoesNotContain(_monitor.Started, c => c.RequestId == "req-bad");
+        Assert.False(File.Exists(SnapshotPath));
+    }
+
+    [Fact]
+    public async Task RestoreAsync_WhenProcessingFailsUnexpectedly_DoesNotThrow_AndDeletesFile()
+    {
+        // JSON hợp lệ, version đúng, nhưng requests: null — lỗi bất ngờ NGOÀI per-item:
+        // không được nổ ra caller, file đã thấy vẫn phải bị xoá
+        await File.WriteAllTextAsync(SnapshotPath,
+            $$"""{"version": {{QueueSnapshotStore.CurrentVersion}}, "saved_at": "2026-10-11T00:00:00+00:00", "requests": null}""");
+
+        await CreateRestorer().RestoreAsync(SnapshotPath);
+
+        Assert.Empty(_queue.Snapshot());
         Assert.False(File.Exists(SnapshotPath));
     }
 
