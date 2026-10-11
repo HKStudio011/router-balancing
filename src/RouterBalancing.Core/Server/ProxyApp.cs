@@ -11,6 +11,7 @@ using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Update;
 
 namespace RouterBalancing.Core.Server;
 
@@ -93,6 +94,9 @@ public static class ProxyApp
         // Queue-first 3B (spec §2.1): endpoint chỉ enqueue + chờ outcome;
         // DispatcherLoop (hosted service) resolve → chọn → serve.
         builder.Services.AddSingleton<IRequestQueue, RequestQueue>();
+        // Restore queue-snapshot trước khi DispatcherLoop start — cùng container để
+        // resolve IRequestQueue/monitor/trace thật (spec §8)
+        builder.Services.AddSingleton<QueueSnapshotRestorer>();
         builder.Services.AddSingleton<IExecutionList, ExecutionList>();
         builder.Services.AddSingleton<IComboResolver, ComboResolver>();
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();

@@ -98,6 +98,12 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             var app = builder.Build();
             ProxyApp.ConfigurePipeline(app);
 
+            // Restore snapshot trước StartAsync: DispatcherLoop (BackgroundService) chưa chạy
+            // nên không tranh Take; RestoreAsync tự xoá file đã thấy (spec §8). Lỗi đọc file
+            // đã được nuốt trong restorer — chỉ lỗi hiếm (đĩa đầy…) mới nổ ra ngoài.
+            await app.Services.GetRequiredService<QueueSnapshotRestorer>()
+                .RestoreAsync(StoragePathProvider.GetQueueSnapshotPath(), cancellationToken);
+
             // StartAsync có thể thất bại thật (port bị đánh cắp giữa FindAvailable và
             // Listen, hoặc ct hủy) — nếu không dispose thì service provider/socket rò rỉ
             // và lần thử sau kế thừa state hỏng. State chỉ cập nhật khi start thành công.
