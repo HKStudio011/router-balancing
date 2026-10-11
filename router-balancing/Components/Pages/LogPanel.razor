@@ -121,25 +121,24 @@
     </table>
 </div>
 
-<div class="mt-3 flex items-center justify-between text-sm">
-    <span class="opacity-70">@string.Format(L["log.count"], _total)</span>
-    <div class="flex items-center gap-2">
-        <button class="btn btn-outline-secondary" disabled="@(_page <= 1)" @onclick="PrevPage">‹</button>
-        <span>@string.Format(L["log.page"], _page, TotalPages)</span>
-        <button class="btn btn-outline-secondary" disabled="@(_page >= TotalPages)" @onclick="NextPage">›</button>
-    </div>
+<div class="mt-3 flex justify-end text-sm">
+    <Pager Total="_total"
+           @bind-Page="_page"
+           @bind-PageSize="_pageSize"
+           PageSizeOptions="[25, 50, 100]"
+           @bind-Page:after="Load" />
 </div>
 
 @code {
-    /// <summary>100 dòng/trang — khớp mặc định của <c>LogQuery.PageSize</c>.</summary>
-    private const int PageSize = 100;
-
     /// <summary>Spec §6: UI giữ tối đa ~500 dòng, dòng cũ nhất bị drop.</summary>
     private const int MaxRows = 500;
 
     private readonly List<LogEntry> _entries = [];
     private int _total;
     private int _page = 1;
+
+    /// <summary>Số dòng mỗi trang — 100 khớp mặc định của <c>LogQuery.PageSize</c>, đổi được qua Pager.</summary>
+    private int _pageSize = 100;
     private string _severity = string.Empty;
     private string _category = string.Empty;
     private string _search = string.Empty;
@@ -152,8 +151,6 @@
 
     private LogCategory? Category =>
         Enum.TryParse<LogCategory>(_category, out var value) ? value : null;
-
-    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_total / (double)PageSize));
 
     protected override void OnInitialized()
     {
@@ -183,25 +180,11 @@
         Category: Category,
         Search: string.IsNullOrWhiteSpace(_search) ? null : _search.Trim(),
         Page: _page,
-        PageSize: PageSize);
+        PageSize: _pageSize);
 
     private void ApplyFilters()
     {
         _page = 1;
-        Load();
-    }
-
-    private void PrevPage()
-    {
-        if (_page <= 1) return;
-        _page--;
-        Load();
-    }
-
-    private void NextPage()
-    {
-        if (_page >= TotalPages) return;
-        _page++;
         Load();
     }
 

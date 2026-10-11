@@ -204,8 +204,6 @@ public static class Translations
         ["log.category.request"] = "Request",
         ["log.col.time"] = "Time",
         ["log.col.message"] = "Message",
-        ["log.page"] = "Page {0} of {1}",
-        ["log.count"] = "{0} entries",
         ["log.empty"] = "No log entries.",
         ["log.detail"] = "Details",
 
@@ -214,11 +212,11 @@ public static class Translations
         ["modal.close"] = "Close",
         ["pager.prev"] = "Previous",
         ["pager.next"] = "Next",
-        ["pager.page"] = "Page {0}",
-        ["pager.of"] = "of",
-        ["pager.total"] = "({0} items)",
+        ["pager.first"] = "First",
+        ["pager.last"] = "Last",
         ["pager.goto"] = "Go to",
         ["pager.pageSize"] = "Per page",
+        ["pager.range"] = "{0}–{1} of {2}",
 
         // Providers page (Phase 2A Task 8)
         ["nav.providers"] = "Providers",
@@ -642,8 +640,6 @@ public static class Translations
         ["log.category.request"] = "Yêu cầu",
         ["log.col.time"] = "Thời gian",
         ["log.col.message"] = "Nội dung",
-        ["log.page"] = "Trang {0} / {1}",
-        ["log.count"] = "{0} dòng",
         ["log.empty"] = "Không có nhật ký nào.",
         ["log.detail"] = "Chi tiết",
 
@@ -652,11 +648,11 @@ public static class Translations
         ["modal.close"] = "Đóng",
         ["pager.prev"] = "Trước",
         ["pager.next"] = "Sau",
-        ["pager.page"] = "Trang {0}",
-        ["pager.of"] = "trên",
-        ["pager.total"] = "({0} mục)",
+        ["pager.first"] = "Đầu",
+        ["pager.last"] = "Cuối",
         ["pager.goto"] = "Đến trang",
         ["pager.pageSize"] = "Mỗi trang",
+        ["pager.range"] = "{0}–{1} trên {2}",
 
         // Providers page (Phase 2A Task 8)
         ["nav.providers"] = "Nhà cung cấp",
