@@ -1,0 +1,141 @@
+@using System.Globalization
+@using RouterBalancing.Core.Stats
+@inject LocalizationService L
+
+<style>
+    /* Biểu đồ stats tự vẽ bằng SVG — không thêm JS chart library (quyết định thiết kế
+       dashboard-stats §1.4); màu bar theo bảng màu trace (spec §7): requests xanh, errors đỏ. */
+    .stats-chart__legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 6px;
+        font-size: 11px;
+    }
+
+    .stats-chart__item {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+
+    .stats-chart__dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+    }
+
+    /* Không viewBox: width theo % của panel còn font-size giữ cố định — tránh chữ
+       scale lên/down theo tỉ lệ viewBox khi số bucket đổi (7 vs 30). */
+    .stats-chart__svg {
+        display: block;
+        width: 100%;
+    }
+
+    /* Nhãn trục X mờ — flex đều theo slot để căn giữa mỗi bar (cùng chia % với svg) */
+    .stats-chart__labels {
+        display: flex;
+        font-size: 9px;
+        opacity: .55;
+    }
+
+    .stats-chart__labels span {
+        flex: 1;
+        text-align: center;
+    }
+</style>
+
+@if (Buckets is null || Buckets.Count == 0)
+{
+    <EmptyState Message="@L["stats.empty"]" />
+}
+else
+{
+    var buckets = Buckets!;
+    <div class="stats-chart">
+        <div class="stats-chart__legend">
+            <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#3b82f6"></i>@L["stats.chart.requests"]</span>
+            <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#ef4444"></i>@L["stats.chart.errors"]</span>
+        </div>
+
+        <svg class="stats-chart__svg" height="@PlotHeight">
+            @* Đường baseline mảnh — mốc 0 cho các bar, currentColor theo theme *@
+            <line x1="0" y1="@PlotHeight" x2="100%" y2="@PlotHeight" stroke="currentColor" stroke-opacity=".15" />
+            @for (var i = 0; i < buckets.Count; i++)
+            {
+                var bucket = buckets[i];
+                var requestHeight = BarHeight(bucket.Requests);
+                var errorHeight = BarHeight(bucket.Errors);
+                var x = BarXPercent(i);
+
+                @* Bar 0 không vẽ segment nhưng nhãn vẫn hiển thị (bucket rỗng trả 0 — spec §5) *@
+                if (requestHeight > 0)
+                {
+                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - requestHeight)"
+                          height="@Num(requestHeight)" fill="#3b82f6" />
+                }
+
+                @* Errors chồng lên requests — stacked bar theo spec §7 *@
+                if (errorHeight > 0)
+                {
+                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - requestHeight - errorHeight)"
+                          height="@Num(errorHeight)" fill="#ef4444" />
+                }
+            }
+        </svg>
+
+        @* Nhãn ngoài svg (Razor reserved tag `<text>` không nhận attribute — RZ1023);
+           flex-1 mỗi cột = 1 slot nên luôn căn giữa bar tương ứng *@
+        <div class="stats-chart__labels">
+            @foreach (var bucket in buckets)
+            {
+                <span>@Label(bucket)</span>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>
+    /// Bucket theo cửa sổ thống kê — 24 bucket giờ (Hôm nay) hoặc 7/30 bucket ngày;
+    /// null/rỗng → <see cref="EmptyState"/> "chưa có request". Task 6 mount.
+    /// </summary>
+    [Parameter] public IReadOnlyList<StatsBucket>? Buckets { get; set; }
+
+    // Chiều cao vùng vẽ bar (px) — nhãn trục X là dải HTML riêng bên dưới svg
+    private const int PlotHeight = 120;
+
+    /// <summary>
+    /// Thang vẽ stacked: mỗi bucket chiếm requests+errors; lớn nhất làm chuẩn.
+    /// Toàn bucket rỗng → trả 1 để tránh chia 0 (không segment nào được vẽ anyway).
+    /// </summary>
+    private int ScaleMax
+    {
+        get
+        {
+            var max = Buckets?.Max(b => (long)b.Requests + b.Errors) ?? 0;
+            return max <= 0 ? 1 : (int)max;
+        }
+    }
+
+    private double SlotPercent => 100.0 / (Buckets?.Count ?? 1);
+
+    // Bar chiếm 72% slot, căn giữa — chừa má để nhãn không dính nhau
+    private double BarWidthPercent => SlotPercent * 0.72;
+
+    private double BarXPercent(int index) => index * SlotPercent + SlotPercent * 0.14;
+
+    private double BarHeight(int value) => value * (double)PlotHeight / ScaleMax;
+
+    /// <summary>
+    /// Nhãn trục X tự suy từ số bucket: 24 bucket giờ UTC → "{hour:00}h" (Hôm nay);
+    /// còn lại (7/30 bucket ngày) → "{dd/MM}".
+    /// </summary>
+    private string Label(StatsBucket bucket) =>
+        Buckets?.Count == 24 ? $"{bucket.BucketStart:HH}h" : $"{bucket.BucketStart:dd/MM}";
+
+    // Số/percent trong attribute SVG phải dùng dấu thập phân "." — culture VI dùng "," sẽ hỏng parse
+    private static string Pct(double value) => value.ToString("0.###", CultureInfo.InvariantCulture) + "%";
+
+    private static string Num(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+}

@@ -69,4 +69,22 @@ internal static class MonitorFormat
         record.PromptTokens is null && record.CompletionTokens is null
             ? Missing
             : $"↑{record.PromptTokens?.ToString() ?? Missing} ↓{record.CompletionTokens?.ToString() ?? Missing}";
+
+    /// <summary>
+    /// Rút gọn số liệu cho StatsPanel: dưới 1.000 → "999"; từ 1.000 → "12,3k";
+    /// từ 1.000.000 → "1,2M" — 1 chữ số thập phân cho k/M, phân cách theo
+    /// <see cref="CultureInfo.CurrentCulture"/> (mockup dùng "," — VI culture).
+    /// </summary>
+    /// <param name="value">Giá trị cần định dạng — mặc định input không âm (token/request count).</param>
+    /// <returns>Số nguyên hoặc chuỗi có hậu tố k/M.</returns>
+    public static string Compact(long value)
+    {
+        if (value is >= -999 and <= 999)
+            return value.ToString(CultureInfo.CurrentCulture);
+
+        var (divisor, suffix) = value is <= -1_000_000 or >= 1_000_000
+            ? (1_000_000d, "M")
+            : (1_000d, "k");
+        return (value / divisor).ToString("0.0", CultureInfo.CurrentCulture) + suffix;
+    }
 }
