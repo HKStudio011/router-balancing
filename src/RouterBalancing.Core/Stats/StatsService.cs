@@ -87,7 +87,7 @@ public sealed class StatsService : IStatsService
     /// <param name="range">Khoảng preset.</param>
     /// <param name="now">Thời điểm hiện tại (UTC) — đầu cửa sổ tính từ ngày UTC của nó.</param>
     /// <returns>(Đầu cửa sổ, số bucket, kích thước bucket).</returns>
-    /// <exception cref="OutOfRangeException">Khi <paramref name="range"/> không nằm trong enum.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Khi <paramref name="range"/> không nằm trong enum.</exception>
     private static (DateTimeOffset From, int BucketCount, TimeSpan BucketStep) ResolveWindow(
         StatsRange range, DateTimeOffset now)
     {
