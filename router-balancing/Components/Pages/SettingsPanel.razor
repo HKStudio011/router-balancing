@@ -608,8 +608,13 @@
         _checking = true;
         try
         {
+            // Bắt trạng thái TRƯỚC khi check: chuyển tiếp none→available sẽ bắn UpdateFound
+            // (MainLayout đã toast) — SettingsPanel chỉ toast khi user check lại update
+            // đã biết (không có chuyển tiếp) để làm phản hồi nút Check, tránh toast đôi
+            var wasAvailable = Check.IsUpdateAvailable;
             var result = await Check.CheckOnceAsync();
-            if (result == UpdateCheckResult.UpdateAvailable && Check.AvailableRelease is { } release)
+            if (result == UpdateCheckResult.UpdateAvailable && wasAvailable
+                && Check.AvailableRelease is { } release)
             {
                 Toast.Show(string.Format(L["update.available"], release.TagName));
             }
@@ -627,9 +632,12 @@
 
     private void UpdateNowAsync()
     {
+        // is { } guard: 24h loop có thể vừa xác nhận "bản mới nhất" và xoá release
+        // giữa lúc render nút và lúc bấm — StartUpdateAsync(null!) sẽ ném
+        if (Check.AvailableRelease is not { } release) return;
         // Fire-and-forget: await sẽ giữ handler mở suốt thời gian download —
         // modal hiển thị qua UpdateCoordinator.UpdateInProgress + event Changed
-        _ = Coordinator.StartUpdateAsync(Check.AvailableRelease!);
+        _ = Coordinator.StartUpdateAsync(release);
     }
 
     public void Dispose()

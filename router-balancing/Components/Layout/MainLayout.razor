@@ -108,6 +108,7 @@
             UpdateError.DownloadFailed => L["update.error.download"],
             UpdateError.SnapshotFailed => L["update.error.snapshot"],
             UpdateError.InstallFailed => L["update.error.install"],
+            UpdateError.DrainFailed => L["update.error.drain"],
             _ => L["update.error.drain"],
         };
         Toast.Show(string.Format(L["update.failed"], reason), ToastSeverity.Error);
