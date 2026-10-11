@@ -137,6 +137,27 @@ public class GitHubAppUpdateServiceTests
     }
 
     [Fact]
+    public void BuildUpdaterStartInfo_UsesArgumentList_AndKeepsTrailingBackslash()
+    {
+        // Simulate AppContext.BaseDirectory — luôn kết thúc bằng '\'
+        const string zipPath = @"C:\Temp\RouterBalancing_Update\app.zip";
+        const string appDir = @"C:\Program Files\RouterBalancing\net10.0\";
+
+        var psi = GitHubAppUpdateService.BuildUpdaterStartInfo(zipPath, 1234, appDir);
+
+        // Sequence đúng contract parser của updater: [--zip, zip, --pid, pid, --app-dir, dir]
+        Assert.Equal(
+            new[] { "--zip", zipPath, "--pid", "1234", "--app-dir", appDir },
+            psi.ArgumentList);
+
+        // Regression: '\' cuối phải giữ nguyên verbatim — chuỗi Arguments thủ công
+        // sẽ bị Windows parse là escape dấu quote và updater nhận arg có ký tự '"'.
+        Assert.EndsWith(@"\", psi.ArgumentList[^1]);
+        Assert.Equal(string.Empty, psi.Arguments);
+        Assert.True(psi.UseShellExecute);
+    }
+
+    [Fact]
     public async Task DownloadUpdateAsync_FailureAfterSuccess_ClearsPathAndDeletesPartialFile()
     {
         // 30 bytes / chunk 10: attempt 1 tải trọn; attempt 2 ghi 20 bytes rồi ném IOException giữa chừng

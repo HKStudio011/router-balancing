@@ -202,14 +202,8 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
             var updaterPath = FindUpdaterPath(appDir);
             if (updaterPath is null) return Task.FromResult(false);
 
-            // --pid để updater chờ app chết hẳn trước khi ghi đè file đang chạy.
-            var psi = new ProcessStartInfo
-            {
-                FileName = updaterPath,
-                Arguments = $"--zip \"{DownloadedZipPath}\" --pid {Environment.ProcessId} --app-dir \"{appDir}\"",
-                UseShellExecute = true,
-                WindowStyle = ProcessWindowStyle.Normal,
-            };
+            var psi = BuildUpdaterStartInfo(DownloadedZipPath, Environment.ProcessId, appDir);
+            psi.FileName = updaterPath;
 
             Process.Start(psi);
             return Task.FromResult(true);
@@ -219,6 +213,38 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
             // Không khởi động được updater (file hỏng, thiếu quyền...) → false để UI báo lỗi cài đặt.
             return Task.FromResult(false);
         }
+    }
+
+    /// <summary>
+    /// Xây <see cref="ProcessStartInfo"/> khởi chạy updater với đúng sequence
+    /// <c>--zip &lt;zip&gt; --pid &lt;pid&gt; --app-dir &lt;dir&gt;</c> mà parser của updater yêu cầu.
+    /// </summary>
+    /// <param name="zipPath">Đường dẫn zip update đã tải.</param>
+    /// <param name="parentPid">PID của app để updater chờ process thoát trước khi ghi đè.</param>
+    /// <param name="appDir">Thư mục cài đặt của app (thường là <c>AppContext.BaseDirectory</c>).</param>
+    internal static ProcessStartInfo BuildUpdaterStartInfo(string zipPath, int parentPid, string appDir)
+    {
+        var psi = new ProcessStartInfo
+        {
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Normal,
+        };
+
+        // Dùng ArgumentList thay vì nối chuỗi `Arguments` thủ công: appDir luôn kết thúc bằng '\',
+        // nên `--app-dir "C:\...\net10.0\"` bị Windows parse theo odd-backslash rule — '\' cuối
+        // escape dấu quote đóng, updater nhận arg thừa ký tự '"' → backup bị skip và extract
+        // tạo thư mục lỗi. ArgumentList để .NET tự quote từng phần tử đúng chuẩn CommandLineToArgvW.
+        psi.ArgumentList.Add("--zip");
+        psi.ArgumentList.Add(zipPath);
+
+        // --pid để updater chờ app chết hẳn trước khi ghi đè file đang chạy.
+        psi.ArgumentList.Add("--pid");
+        psi.ArgumentList.Add(parentPid.ToString());
+
+        psi.ArgumentList.Add("--app-dir");
+        psi.ArgumentList.Add(appDir);
+
+        return psi;
     }
 
     private static string? FindUpdaterPath(string appDir)
