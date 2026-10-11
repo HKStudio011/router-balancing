@@ -163,7 +163,7 @@ public interface IStatsService
 
 ```csharp
 ErrorRate_ExcludesCancelled       // 8 Ok, 1 Error, 3 Cancelled → ErrorRatePercent == 10.0 (1/(8+1))
-P95_NearestRank                   // 20 Ok, DurationMs 1..20 → p95 == 19 (ceil(0.95*20)=19 → index 18 sorted desc)
+P95_NearestRank                   // 20 Ok, DurationMs 1..20 → p95 == 19 (ceil(0.95*20)=19 → index 18 sorted asc)
 TodayWindow_UsesUtcMidnight       // row tại (midnight UTC hôm nay − 1ms) không tính; row tại midnight tính; row future không tính
 Breakdown_JoinsUsageTokensByRequestId // terminal ProviderKey="p1" + usage cùng RequestId → ByProvider["p1"].Tokens khớp tổng; requests từ terminal
 EmptyWindow_ReturnsZerosAndNullLatency // snapshot 0s, Avg/P95 null, breakdown rỗng
@@ -171,7 +171,7 @@ TodayBuckets_Hourly24             // Buckets.Count==24, BucketStart = 00h..23h U
 ```
 
 - [ ] **Step 2: Run fail** — filter `StatsService` → FAIL.
-- [ ] **Step 3: Implement** — `GetRangeAsync`: tính window từ `_clock.GetUtcNow()` (Today: midnight UTC→now; 7/30: midnight −6/−29 ngày →now); **2 query**: terminal rows (`Category=Request && Outcome != null && Timestamp ∈ window`) và usage rows (`Category=Request && PromptTokens != null && Timestamp ∈ window`) — select đúng cột cần; aggregate LINQ-to-objects (volumes desktop; không rollup — đúng master spec): đếm theo Outcome; avg/p95 trên DurationMs của Ok (p95 nearest-rank `List.Sort` desc + index `ceil(0.95n)-1`); tokens sum từ usage; buckets sinh đủ (24 giờ hoặc N ngày, UTC); breakdown group theo `ProviderKey ?? "—"` / `ModelKey ?? "—"` / `ClientKeyId?.ToString() ?? "—"`, tokens gán từ join usage qua dictionary `RequestId`; sort Requests desc. `ct` truyền qua query EF.
+- [ ] **Step 3: Implement** — `GetRangeAsync`: tính window từ `_clock.GetUtcNow()` (Today: midnight UTC→now; 7/30: midnight −6/−29 ngày →now); **2 query**: terminal rows (`Category=Request && Outcome != null && Timestamp ∈ window`) và usage rows (`Category=Request && PromptTokens != null && Timestamp ∈ window`) — select đúng cột cần; aggregate LINQ-to-objects (volumes desktop; không rollup — đúng master spec): đếm theo Outcome; avg/p95 trên DurationMs của Ok (p95 nearest-rank `List.Sort` asc + index `ceil(0.95n)-1` — asc, không phải desc); tokens sum từ usage; buckets sinh đủ (24 giờ hoặc N ngày, UTC); breakdown group theo `ProviderKey ?? "—"` / `ModelKey ?? "—"` / `ClientKeyId?.ToString() ?? "—"`, tokens gán từ join usage qua dictionary `RequestId`; sort Requests desc. `ct` truyền qua query EF.
 - [ ] **Step 4: Run pass** — filter → PASS.
 - [ ] **Step 5: DI + commit** — MauiProgram `AddSingleton<IStatsService, StatsService>()`; `dotnet test` toàn bộ; `git commit -m "feat: add stats service aggregating request journal"`.
 

@@ -140,7 +140,7 @@ public interface IStatsService
 - **Cửa sổ UTC:** `Today` = [nửa đêm UTC hôm nay, now]; `Last7Days` = [nửa đêm UTC − 6 ngày, now]; `Last30Days` = [nửa đêm UTC − 29 ngày, now]. Range đến luôn = now (không đóng cửa sổ cuối ngày).
 - **Requests/Ok/Errors/Cancelled:** đếm dòng terminal trong cửa sổ theo `Outcome`.
 - **ErrorRate%** = `Errors / (Ok + Errors) × 100` — **không tính Cancelled** (hủy là chủ đích client — đồng bộ `ApiMonitorPanel.ErrorCount`); mẫu rỗng → 0. Làm tròn 1 chữ số thập phân khi hiển thị.
-- **Latency:** chỉ dòng `Outcome=Ok` có `DurationMs NOT NULL`. `Avg` = trung bình; `P95` = nearest-rank: `ORDER BY DurationMs DESC LIMIT 1 OFFSET (ceil(0.95·n) − 1)`.
+- **Latency:** chỉ dòng `Outcome=Ok` có `DurationMs NOT NULL`. `Avg` = trung bình; `P95` = nearest-rank: `ORDER BY DurationMs ASC LIMIT 1 OFFSET (ceil(0.95·n) − 1)` (ASC — offset tính từ giá trị nhỏ nhất để lấy đúng rank `ceil(0.95·n)`; DESC sẽ lấy sai quantile).
 - **Tokens:** `SUM(PromptTokens/CompletionTokens)` trên dòng usage trong cửa sổ; breakdown tokens theo key = join usage ↔ terminal theo `RequestId`.
 - **Buckets:** `Today` → 24 bucket **giờ** UTC (00h…23h); `Last7Days`/`Last30Days` → bucket **ngày** UTC. Đếm terminal rows theo `Timestamp`; bucket rỗng trả 0 (UI vẽ bar 0).
 - **Snapshot `From`:** = start của cửa sổ; `To` = now.
