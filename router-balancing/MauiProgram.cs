@@ -65,6 +65,10 @@ namespace router_balancing
             // ApiMonitorStore singleton cùng pattern: ProxyHost.StartAsync re-register cùng
             // instance vào container proxy — panel và hooks ghi/đọc 1 store
             builder.Services.AddSingleton<IApiMonitorStore, ApiMonitorStore>();
+            // DrainGate singleton: UpdateCoordinator (UI) BeginDrain/CancelDrain và
+            // DispatcherLoop (proxy container) phải cùng 1 gate — ProxyHost.StartAsync
+            // re-register instance này vào container proxy
+            builder.Services.AddSingleton<DrainGate>();
             // Stats: invalidation + journal writer — writer subscribe ITraceFeed trong ctor,
             // ProxyHost ctor eager-create để singleton gắn feed từ trước request đầu tiên
             builder.Services.AddSingleton<IStatsInvalidationSource, StatsInvalidationSource>();

@@ -21,6 +21,7 @@ public class DispatcherLoopTests : IDisposable
     private readonly ExecutionList _executions;
     private readonly AppSettingsService _settings;
     private readonly DpapiSecretProtector _protector = new();
+    private readonly DrainGate _drain = new();
     private DispatcherLoop? _loop;
     // Gán trong StartAsync cùng log của test — test mới subscribe Published để assert sequence;
     // null! vì mọi test đều qua StartAsync trước khi đọc (tránh warning nullable)
@@ -127,7 +128,7 @@ public class DispatcherLoopTests : IDisposable
             new ApiMonitorStore(_trace, log, TimeProvider.System));
         _settings.Set(SettingsKeys.TransientMaxRetries, 0); // baseline opt-out — test transient riêng Set lại (đọc tại mỗi quyết định retry)
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
-            log, _trace, _settings);
+            log, _trace, _settings, _drain);
         await _loop.StartAsync(CancellationToken.None);
     }
 
@@ -1757,5 +1758,50 @@ public class DispatcherLoopTests : IDisposable
         Assert.Equal(2, attempts[3].Attempt); Assert.True(attempts[3].AttemptDone);
         var routes = attempts.Select(a => a.Route).Distinct().ToList();
         Assert.Single(routes);                                     // CÙNG combo/provider/account
+    }
+
+    [Fact]
+    public async Task DispatcherLoop_WhenDraining_DoesNotTakeQueuedRequest()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new GatedUpstream();
+        var log = new CapturingLog();
+        _drain.BeginDrain(); // drain TRƯỚC StartAsync — dispatcher không được Take ngay từ vòng đầu
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        await Task.Delay(500);
+        Assert.True(_queue.Contains("req00001")); // vẫn nằm trong queue — chưa Take
+        Assert.False(_executions.Contains("req00001")); // chưa TryEnter — không có slot nào bị giữ
+        Assert.False(request.Completion.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task DispatcherLoop_WhenDrainCancelled_TakesQueuedRequestAgain()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new GatedUpstream();
+        var log = new CapturingLog();
+        _drain.BeginDrain();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        await Task.Delay(500);
+        Assert.True(_queue.Contains("req00001")); // đang drain — request chưa được Take
+
+        _drain.CancelDrain(); // Changed phải wake NGAY — không có timeout nào trong loop (Review Focus #1)
+
+        await WaitUntilAsync(() => _executions.Contains("req00001")); // dispatch lại thành công
+        upstream.Release();
+        Assert.IsType<DispatchOutcome.Handled>(
+            await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(_queue.Contains("req00001"));
     }
 }

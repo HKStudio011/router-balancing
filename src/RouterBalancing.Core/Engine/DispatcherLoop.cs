@@ -12,6 +12,8 @@ namespace RouterBalancing.Core.Engine;
 /// Queue-first dispatcher (spec §2.1): chờ event → Peek → resolve → chọn → TryEnter → Take
 /// atomic → serve song song. Thiếu capacity: KHÔNG Take (item ở lại queue — park vô hạn),
 /// chờ <see cref="IRequestQueue.Changed"/> | <see cref="IExecutionList.Exited"/> đánh thức.
+/// Đang drain (<see cref="DrainGate.IsDraining"/>): không Take request mới — request đang
+/// serve chạy hết, request mới nằm yên trong queue chờ <see cref="DrainGate.Changed"/>.
 /// </summary>
 public sealed class DispatcherLoop(
     IRequestQueue queue,
@@ -21,9 +23,11 @@ public sealed class DispatcherLoop(
     ProxyRequestHandler handler,
     ILogService log,
     ITraceFeed trace,
-    IAppSettingsService settings) : BackgroundService
+    IAppSettingsService settings,
+    DrainGate drainGate) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
+    private readonly DrainGate _drain = drainGate;
 
     /// <inheritdoc/>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -31,6 +35,9 @@ public sealed class DispatcherLoop(
         // Subscribe TRƯỚC lần drain đầu — event xảy ra giữa "queue rỗng" và "chờ" không bị mất
         queue.Changed += OnWake;
         executions.Exited += OnWake;
+        // DrainGate.Changed: CancelDrain phải wake NGAY để resume dispatch — loop không có
+        // timeout nào chờ cờ đổi, thiếu subscribe này thì request kẹt vô hạn sau update fail
+        _drain.Changed += OnWake;
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -74,6 +81,7 @@ public sealed class DispatcherLoop(
         {
             queue.Changed -= OnWake;
             executions.Exited -= OnWake;
+            _drain.Changed -= OnWake;
         }
     }
 
@@ -83,6 +91,11 @@ public sealed class DispatcherLoop(
     /// <summary>Một vòng dispatch. Trả <see langword="true"/> nếu có tiến triển (drain tiếp), false = park/rỗng → chờ event.</summary>
     private async Task<bool> TryDispatchOnceAsync(CancellationToken ct)
     {
+        // Drain cho update: dừng nhận request MỚI trước cả Peek — request đang trong queue
+        // không bị Take/Resolve, nằm yên chờ CancelDrain (update thất bại) đánh thức
+        if (_drain.IsDraining)
+            return false;
+
         if (!queue.Peek(out var request))
             return false;
 

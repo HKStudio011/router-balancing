@@ -44,6 +44,12 @@ public static class ProxyApp
         if (!builder.Services.Any(d => d.ServiceType == typeof(IApiMonitorStore)))
             builder.Services.AddSingleton<IApiMonitorStore, ApiMonitorStore>(); // fallback test harness; app đã đăng ký instance ở StartAsync
 
+        // Fallback cho test harness dựng container qua ConfigureServices mà không qua
+        // ProxyHost.StartAsync; app (MAUI) đăng ký singleton + StartAsync forward instance
+        // thật TRƯỚC khi gọi method này → only-if-absent nhường chỗ
+        if (!builder.Services.Any(d => d.ServiceType == typeof(DrainGate)))
+            builder.Services.AddSingleton<DrainGate>();
+
         builder.Services.AddTransient<ProxyHealthHandler>();
         // Resolver singleton: dispatch theo provider+account (most-specific-wins, D1)
         builder.Services.AddSingleton<IProxySelectionResolver, ProxySelectionResolver>();

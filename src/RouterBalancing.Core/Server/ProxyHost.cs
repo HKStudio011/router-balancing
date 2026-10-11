@@ -27,6 +27,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly IProxyPool _pool;
     private readonly ITraceFeed _trace;
     private readonly IApiMonitorStore _monitor;
+    private readonly DrainGate _drain;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private WebApplication? _app;
     private bool _disposed;
@@ -39,7 +40,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool, ITraceFeed trace,
-        IApiMonitorStore monitor, IRequestJournalWriter journalWriter)
+        IApiMonitorStore monitor, IRequestJournalWriter journalWriter, DrainGate drainGate)
     {
         _settings = settings;
         _log = log;
@@ -49,6 +50,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _pool = pool;
         _trace = trace;
         _monitor = monitor;
+        _drain = drainGate;
         // eager-create singleton (mirror ITraceFeed) — writer tự subscribe feed trong ctor,
         // không endpoint nào inject IRequestJournalWriter nên resolve tại đây
         _ = journalWriter;
@@ -85,6 +87,9 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_trace);
             // Cùng instance với MAUI container — panel API Monitor đọc đúng store hooks ghi vào
             builder.Services.AddSingleton(_monitor);
+            // Cùng instance với MAUI container — UpdateCoordinator BeginDrain/CancelDrain
+            // phải pause/resume đúng DispatcherLoop đang chạy trong proxy container này
+            builder.Services.AddSingleton(_drain);
             builder.WebHost.ConfigureKestrel(options =>
                 options.Listen(ResolveBindAddress(_settings.LanAccess), port));
 
