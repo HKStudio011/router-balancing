@@ -66,6 +66,9 @@
     <ApiMonitorPanel />
 </div>
 
+@* Thống kê lịch sử (Task 6 dashboard-stats) — stacked dưới grid realtime *@
+<StatsPanel />
+
 @code {
     protected override void OnInitialized() => Proxy.StateChanged += OnStateChanged;
 

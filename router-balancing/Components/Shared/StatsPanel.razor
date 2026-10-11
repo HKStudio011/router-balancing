@@ -1,0 +1,478 @@
+@using RouterBalancing.Core.Settings
+@using RouterBalancing.Core.Stats
+@implements IAsyncDisposable
+@inject IStatsService Stats
+@inject IStatsInvalidationSource Invalidation
+@inject IAppSettingsService Settings
+@inject LocalizationService L
+@inject ILogService Log
+
+<style>
+    /* Panel thống kê lịch sử — CSS inline theo pattern ApiMonitorPanel (theme vars,
+       không cần npm/Tailwind build cho class mới); màu accent theo bảng màu trace (spec §7). */
+    .stats-panel__header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+
+    .stats-panel__title {
+        font-weight: 600;
+        font-size: 14px;
+        color: #3b82f6;
+    }
+
+    .stats-panel__ranges {
+        display: flex;
+        gap: 6px;
+    }
+
+    /* Chip range — active nền primary theo mockup layout A */
+    .stats-panel__chip {
+        font-size: 11px;
+        padding: 3px 10px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        opacity: .75;
+    }
+
+    .stats-panel__chip--active {
+        background: #3b82f6;
+        border-color: #3b82f6;
+        color: #fff;
+        font-weight: 600;
+        opacity: 1;
+    }
+
+    /* Badge refreshfail — vàng warning (không phải lỗi fatal nên không đỏ) */
+    .stats-panel__refresh-failed {
+        font-size: 11px;
+        color: #eab308;
+        margin-bottom: 8px;
+    }
+
+    /* KPI grid 4 → 2 → 1 cột (spec §7 responsive) */
+    .stats-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+
+    @@media (max-width: 900px) {
+        .stats-kpi-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @@media (max-width: 520px) {
+        .stats-kpi-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .stats-kpi {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+    }
+
+    .stats-kpi__label {
+        font-size: 11px;
+        opacity: .6;
+    }
+
+    .stats-kpi__value {
+        font-size: 18px;
+        font-weight: 600;
+        margin-top: 2px;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .stats-kpi__sub {
+        font-size: 11px;
+        opacity: .6;
+        margin-top: 2px;
+    }
+
+    /* Badge dưới KPI error rate — xanh dưới ngưỡng, vàng bằng/vượt (#22c55e/#eab308
+       bảng màu trace; Tailwind text-warning map #ffda6a quá nhạt trên nền sáng) */
+    .stats-kpi__badge {
+        font-size: 11px;
+        margin-top: 2px;
+    }
+
+    .stats-kpi__badge--under { color: #22c55e; }
+    .stats-kpi__badge--over { color: #eab308; }
+
+    .stats-chart-wrap {
+        margin-bottom: 12px;
+    }
+
+    /* Tabs segmented — mirror trace-detail-priority-group (RequestDetailModal) */
+    .stats-tabs {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 6px;
+    }
+
+    .stats-tab {
+        font-size: 11px;
+        padding: 3px 10px;
+        background: transparent;
+        border: none;
+        color: inherit;
+        cursor: pointer;
+        opacity: .7;
+    }
+
+    .stats-tab + .stats-tab {
+        border-left: 1px solid var(--border);
+    }
+
+    .stats-tab--active {
+        background: rgba(59, 130, 246, .15);
+        color: #3b82f6;
+        font-weight: 600;
+        opacity: 1;
+    }
+
+    .stats-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 72px 72px 88px 88px;
+        gap: 8px;
+        align-items: center;
+        padding: 5px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+    }
+
+    .stats-row--head {
+        font-size: 10.5px;
+        opacity: .55;
+        padding-bottom: 4px;
+    }
+
+    /* Zebra xen kẽ — rgba trung tính hợp light/dark (mirror monitor-body) */
+    .stats-body .stats-row:nth-child(even) {
+        background: rgba(127, 127, 127, .07);
+    }
+
+    .stats-cell--name {
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .stats-num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .stats-more {
+        font-size: 11px;
+        opacity: .55;
+        padding: 5px 6px;
+    }
+</style>
+
+<div class="mb-4 rounded border border-border bg-surface p-4">
+    <div class="stats-panel__header">
+        <div class="stats-panel__title">📊 @L["stats.title"]</div>
+        <div class="stats-panel__ranges">
+            @foreach (var (range, key) in RangeOptions)
+            {
+                var r = range;
+                <button type="button"
+                        class="stats-panel__chip @(r == _range ? "stats-panel__chip--active" : "")"
+                        @onclick="() => SelectRangeAsync(r)">
+                    @L[key]
+                </button>
+            }
+        </div>
+    </div>
+
+    @if (_refreshFailed)
+    {
+        <div class="stats-panel__refresh-failed">@L["stats.refreshFailed"]</div>
+    }
+
+    @* Skeleton: chưa từng có snapshot → 4 card "—"; refetch giữ nguyên snapshot cũ (spec §6) *@
+    <div class="stats-kpi-grid">
+        <div class="stats-kpi">
+            <div class="stats-kpi__label">@L["stats.kpi.requests"]</div>
+            <div class="stats-kpi__value">@(_snapshot is { } req ? req.Requests.ToString("N0") : "—")</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="stats-kpi__label">@L["stats.kpi.errorRate"]</div>
+            <div class="stats-kpi__value">@(_snapshot is { } rate ? rate.ErrorRatePercent.ToString("0.0\"%\"") : "—")</div>
+            @if (_snapshot is { } s)
+            {
+                var over = s.ErrorRatePercent >= _thresholdPercent;
+                <div class="stats-kpi__badge @(over ? "stats-kpi__badge--over" : "stats-kpi__badge--under")">
+                    @(over
+                        ? string.Format(L["stats.threshold.over"], _thresholdPercent)
+                        : string.Format(L["stats.threshold.under"], _thresholdPercent))
+                </div>
+            }
+        </div>
+        <div class="stats-kpi">
+            <div class="stats-kpi__label">@L["stats.kpi.latency"]</div>
+            <div class="stats-kpi__value">@LatencyText</div>
+            <div class="stats-kpi__sub">@P95Text</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="stats-kpi__label">@L["stats.kpi.tokens"]</div>
+            <div class="stats-kpi__value">@(_snapshot is { } tok ? MonitorFormat.Compact(tok.PromptTokens + tok.CompletionTokens) : "—")</div>
+        </div>
+    </div>
+
+    @if (_snapshot is { } snap)
+    {
+        if (snap.Requests == 0)
+        {
+            @* Cửa sổ rỗng: một EmptyState thay cả chart lẫn bảng (spec §7); KPI đã hiện 0/— *@
+            <EmptyState Message="@L["stats.empty"]" />
+        }
+        else
+        {
+            <div class="stats-chart-wrap">
+                <StatsChart Buckets="snap.Buckets" />
+            </div>
+
+            <div class="stats-tabs">
+                @foreach (var (id, key) in Tabs)
+                {
+                    var tabId = id;
+                    <button type="button"
+                            class="stats-tab @(tabId == _selectedTab ? "stats-tab--active" : "")"
+                            @onclick="() => _selectedTab = tabId">
+                        @L[key]
+                    </button>
+                }
+            </div>
+
+            <div class="stats-row stats-row--head">
+                <span>@L["stats.col.name"]</span>
+                <span class="stats-num">@L["stats.col.requests"]</span>
+                <span class="stats-num">@L["stats.col.errors"]</span>
+                <span class="stats-num">@L["stats.col.errorRate"]</span>
+                <span class="stats-num">@L["stats.col.tokens"]</span>
+            </div>
+
+            <div class="stats-body">
+                @foreach (var row in ShownRows)
+                {
+                    <div class="stats-row" @key="row.Key">
+                        <span class="stats-cell--name">@row.Key</span>
+                        <span class="stats-num">@row.Requests.ToString("N0")</span>
+                        <span class="stats-num">@row.Errors.ToString("N0")</span>
+                        <span class="stats-num">@RowErrorRate(row)</span>
+                        <span class="stats-num">@MonitorFormat.Compact(row.Tokens)</span>
+                    </div>
+                }
+            </div>
+
+            @if (HiddenRowCount > 0)
+            {
+                <div class="stats-more">@string.Format(L["stats.more"], HiddenRowCount)</div>
+            }
+        }
+    }
+</div>
+
+@code {
+    /// <summary>Chuỗi hiển thị khi thiếu dữ liệu — thống nhất với <see cref="MonitorFormat"/>.</summary>
+    private const string Missing = "—";
+
+    private const int DebounceDelayMs = 2000;
+
+    // Cap hiển thị breakdown — service trả toàn bộ dòng sort desc, UI chỉ hiện top 20 (spec §7)
+    private const int MaxBreakdownRows = 20;
+
+    private static readonly (StatsRange Range, string Key)[] RangeOptions =
+    [
+        (StatsRange.Today, "stats.range.today"),
+        (StatsRange.Last7Days, "stats.range.7d"),
+        (StatsRange.Last30Days, "stats.range.30d"),
+    ];
+
+    private static readonly (string Id, string Key)[] Tabs =
+    [
+        ("provider", "stats.tab.provider"),
+        ("model", "stats.tab.model"),
+        ("clientKey", "stats.tab.clientKey"),
+    ];
+
+    private StatsRange _range = StatsRange.Today;
+
+    // Giữ snapshot cũ trong lúc refetch — không nháy về skeleton/empty (spec §6)
+    private StatsSnapshot? _snapshot;
+
+    private string _selectedTab = "provider";
+
+    // Debounce Changed: mỗi event cancel timer cũ rồi tạo timer mới (trailing — spec §6)
+    private CancellationTokenSource? _debounce;
+
+    // Ngưỡng đọc lại mỗi lần fetch — đổi setting có hiệu lực ở lần refresh kế tiếp (spec §6)
+    private int _thresholdPercent;
+
+    private bool _refreshFailed;
+
+    // Component đã gỡ — callback fire-and-forget không được StateHasChanged sau dispose
+    private bool _disposed;
+
+    /// <summary>Latency trung bình (chỉ dòng Ok) — Missing khi chưa có mẫu.</summary>
+    private string LatencyText =>
+        _snapshot is { AvgLatencyMs: { } avg }
+            ? MonitorFormat.Duration(TimeSpan.FromMilliseconds(avg))
+            : Missing;
+
+    /// <summary>Dòng phụ p95 dưới card Latency — thiếu mẫu hiển thị "p95 —".</summary>
+    private string P95Text =>
+        string.Format(L["stats.kpi.p95"],
+            _snapshot is { P95LatencyMs: { } p95 }
+                ? MonitorFormat.Duration(TimeSpan.FromMilliseconds(p95))
+                : Missing);
+
+    /// <summary>Dạng hiển thị theo tab đang chọn — null snapshot → rỗng (chưa render bảng).</summary>
+    private IReadOnlyList<StatsBreakdownRow> ActiveRows =>
+        _selectedTab switch
+        {
+            "model" => _snapshot?.ByModel ?? [],
+            "clientKey" => _snapshot?.ByClientKey ?? [],
+            _ => _snapshot?.ByProvider ?? [],
+        };
+
+    private IReadOnlyList<StatsBreakdownRow> ShownRows =>
+        ActiveRows.Take(MaxBreakdownRows).ToList();
+
+    private int HiddenRowCount => Math.Max(0, ActiveRows.Count - MaxBreakdownRows);
+
+    /// <summary>
+    /// Tỷ lệ lỗi từng dòng = Errors/Requests — Cancelled nằm trong Requests nhưng không
+    /// trong Errors (khác công thức toàn cục loại Cancelled khỏi cả numerator lẫn denominator).
+    /// </summary>
+    private static string RowErrorRate(StatsBreakdownRow row) =>
+        row.Requests <= 0
+            ? "0.0%"
+            : (row.Errors * 100.0 / row.Requests).ToString("0.0\"%\"");
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Subscribe TRƯỚC fetch đầu — event bắn giữa 2 bước không bị miss (mirror ApiMonitorPanel)
+        Invalidation.Changed += OnChanged;
+        await RefreshAsync();
+    }
+
+    /// <summary>
+    /// Nhận event từ <see cref="IStatsInvalidationSource.Changed"/> — chạy trên thread publish của Core.
+    /// </summary>
+    private void OnChanged()
+    {
+        // Handler tuyệt đối không được ném: Changed là multicast delegate của singleton —
+        // subscriber ném sẽ chặn các subscriber phía sau (mirror ApiMonitorPanel.OnChanged).
+        try
+        {
+            // Gán null trước khi dispose: hai event đồng thời vẫn an toàn — thread sau thấy
+            // null, không Cancel CTS đã dispose; thread thua chỉ tốn một fetch thừa vô hại.
+            var previous = _debounce;
+            _debounce = null;
+            previous?.Cancel();
+            previous?.Dispose();
+
+            _debounce = new CancellationTokenSource();
+            _ = DebouncedRefreshAsync(_debounce.Token);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("StatsPanel: không thể lên lịch làm mới thống kê.", ex);
+        }
+    }
+
+    /// <summary>Debounce trailing 2s rồi fetch — dồn chuỗi Changed (mỗi request terminal bắn 1 lần) thành 1 query.</summary>
+    private async Task DebouncedRefreshAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(DebounceDelayMs, token);
+            if (_disposed)
+            {
+                return;
+            }
+
+            await RefreshAsync();
+            if (!_disposed)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Timer bị thay bởi event mới hơn hoặc panel bị dispose — không phải lỗi.
+        }
+        catch (Exception ex)
+        {
+            Log.Error("StatsPanel: làm mới thống kê sau debounce thất bại.", ex);
+        }
+    }
+
+    /// <summary>Fetch snapshot cho range hiện tại; lỗi → giữ snapshot cũ + cờ refreshFailed.</summary>
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            var snapshot = await Stats.GetRangeAsync(_range);
+            _snapshot = snapshot;
+            _refreshFailed = false;
+        }
+        catch (Exception ex)
+        {
+            _refreshFailed = true;
+            Log.Error("StatsPanel: truy vấn thống kê thất bại.", ex);
+        }
+
+        // Đọc lại mỗi lần fetch — đổi setting có hiệu lực ngay ở lần refresh kế tiếp (spec §6)
+        _thresholdPercent = Settings.StatsErrorRateThreshold;
+    }
+
+    /// <summary>Đổi range preset từ chip — fetch ngay, bỏ pending debounce cho range cũ.</summary>
+    private async Task SelectRangeAsync(StatsRange range)
+    {
+        _range = range;
+
+        var pending = _debounce;
+        _debounce = null;
+        pending?.Cancel();
+        pending?.Dispose();
+
+        await RefreshAsync();
+    }
+
+    /// <summary>Gỡ subscription và hủy debounce — tránh leak delegate/CTS trên singleton.</summary>
+    public ValueTask DisposeAsync()
+    {
+        // Bắt buộc unsubscribe: invalidation source là singleton, giữ delegate trỏ vào
+        // component đã dispose là leak + handler chạy vô ích cho mỗi lần đổi.
+        Invalidation.Changed -= OnChanged;
+
+        // Đánh dấu sau unsubscribe — callback InvokeAsync có thể còn đang đợi trên dispatcher.
+        _disposed = true;
+
+        var pending = _debounce;
+        _debounce = null;
+        pending?.Cancel();
+        pending?.Dispose();
+
+        return ValueTask.CompletedTask;
+    }
+}
