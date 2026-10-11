@@ -2,6 +2,7 @@
   <Project Path="src/RouterBalancing.Core/RouterBalancing.Core.csproj" />
   <Project Path="src/RouterBalancing.Design/RouterBalancing.Design.csproj" />
   <Project Path="router balancing test/router balancing test.csproj" />
+  <Project Path="RouterBalancing.Updater/RouterBalancing.Updater.csproj" />
   <Project Path="router-balancing/router-balancing.csproj">
     <Deploy Solution="Debug|*" />
   </Project>

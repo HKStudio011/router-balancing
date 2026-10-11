@@ -76,6 +76,13 @@
     <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
         <!-- NotifyIcon (khay hệ thống) cần WinForms; chỉ trên TFM windows -->
         <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+
+        <!-- Updater exe: chỉ cần trên windows để InstallUpdateAsync launch sau khi app thoát;
+             ReferenceOutputAssembly=false vì không tham chiếu code, chỉ copy output. -->
+        <ProjectReference Include="..\RouterBalancing.Updater\RouterBalancing.Updater.csproj"
+                          ReferenceOutputAssembly="false"
+                          OutputItemType="Content"
+                          CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <ItemGroup>
