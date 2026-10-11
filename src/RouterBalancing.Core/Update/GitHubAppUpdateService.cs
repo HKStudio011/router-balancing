@@ -110,6 +110,12 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
         // Tải file + ghi đĩa là thao tác Windows-only theo contract của updater.
         if (!OperatingSystem.IsWindows()) return null;
 
+        // Invalidate NGAY khi bắt đầu attempt mới: FileStream bên dưới dùng FileMode.Create nên sẽ
+        // truncate zip cũ — nếu attempt này fail giữa chừng, path không được trỏ tới file rác
+        // (InstallUpdateAsync chỉ check File.Exists nên sẽ cài bản hỏng).
+        DownloadedZipPath = null;
+
+        string? zipPath = null;
         try
         {
             var asset = release.Assets.FirstOrDefault(a =>
@@ -121,7 +127,7 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
             // Ghi đè (FileMode.Create) thay vì reuse — bản tải dở lần trước có thể đã hỏng.
             var tempDir = Path.Combine(Path.GetTempPath(), UpdateFolderName);
             Directory.CreateDirectory(tempDir);
-            var zipPath = Path.Combine(tempDir, asset.Name);
+            zipPath = Path.Combine(tempDir, asset.Name);
 
             var request = new HttpRequestMessage(HttpMethod.Get, asset.BrowserDownloadUrl);
             request.Headers.UserAgent.ParseAdd($"RouterBalancing/{CurrentVersion}");
@@ -160,8 +166,25 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
         }
         catch (Exception)
         {
-            // Lỗi mạng/đĩa → null để UI báo tải thất bại, không nuốt im lặng cũng không crash.
+            // Lỗi mạng/đĩa → xóa zip dở dang (nếu đã mở file) rồi trả null để UI báo tải thất bại.
+            DeletePartialFile(zipPath);
             return null;
+        }
+    }
+
+    // File.Delete không ném khi file không tồn tại; có thể fail nếu file bị khóa — khi đó giữ nguyên,
+    // vô hại vì DownloadedZipPath đã null nên updater không thể dùng nhầm file rác.
+    private static void DeletePartialFile(string? zipPath)
+    {
+        if (zipPath is null) return;
+
+        try
+        {
+            File.Delete(zipPath);
+        }
+        catch (Exception)
+        {
+            // Không xóa được file rác trong temp (đĩa đầy/file khóa) — đã xử lý bằng cách không trỏ path tới nó.
         }
     }
 

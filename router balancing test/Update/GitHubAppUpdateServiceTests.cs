@@ -136,6 +136,38 @@ public class GitHubAppUpdateServiceTests
         }
     }
 
+    [Fact]
+    public async Task DownloadUpdateAsync_FailureAfterSuccess_ClearsPathAndDeletesPartialFile()
+    {
+        // 30 bytes / chunk 10: attempt 1 tải trọn; attempt 2 ghi 20 bytes rồi ném IOException giữa chừng
+        var payload = "0123456789ABCDEFGHIJ0123456789"u8.ToArray();
+        var release = Release("v1.2.3", new ReleaseAsset(ZipAssetName, "https://example.com/payload.zip"));
+        var service = ServiceWith(new GoodThenFailMidstreamHandler(payload, chunkSize: 10, succeedBeforeFail: 2));
+
+        var firstPath = await service.DownloadUpdateAsync(release, null);
+
+        Assert.NotNull(firstPath);
+        Assert.True(File.Exists(firstPath));
+        Assert.Equal(firstPath, service.DownloadedZipPath);
+
+        var secondResult = await service.DownloadUpdateAsync(release, null);
+
+        try
+        {
+            // Attempt 2 fail giữa chừng: path không được trỏ tới zip truncated, file rác phải bị xóa
+            Assert.Null(secondResult);
+            Assert.Null(service.DownloadedZipPath);
+            Assert.False(File.Exists(firstPath));
+        }
+        finally
+        {
+            if (firstPath is not null)
+            {
+                File.Delete(firstPath);
+            }
+        }
+    }
+
     // ===== HTTP doubles (pattern FreeModelSyncServiceTests) =====
 
     private sealed class JsonHandler(string json) : HttpMessageHandler
@@ -159,6 +191,82 @@ public class GitHubAppUpdateServiceTests
             content.Headers.ContentLength = payload.Length;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
+    }
+
+    /// <summary>Lần gọi đầu trả payload bình thường; các lần sau trả stream ném lỗi giữa chừng (mất mạng).</summary>
+    private sealed class GoodThenFailMidstreamHandler(byte[] payload, int chunkSize, int succeedBeforeFail)
+        : HttpMessageHandler
+    {
+        private int _calls;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            _calls++;
+            Stream stream = _calls == 1
+                ? new ChunkedStream(payload, chunkSize)
+                : new FailAfterChunksStream(payload, chunkSize, succeedBeforeFail);
+            var content = new StreamContent(stream);
+            content.Headers.ContentLength = payload.Length;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    /// <summary>Trả <paramref name="succeedBeforeFail"/> chunk đầu rồi ném IOException — mô phỏng mất mạng giữa chừng.</summary>
+    private sealed class FailAfterChunksStream(byte[] data, int chunkSize, int succeedBeforeFail) : Stream
+    {
+        private readonly MemoryStream _inner = new(data);
+        private int _reads;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _inner.Length;
+
+        public override long Position
+        {
+            get => _inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            MaybeFail();
+            return _inner.Read(buffer, offset, Math.Min(count, chunkSize));
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            MaybeFail();
+            return _inner.Read(buffer[..Math.Min(buffer.Length, chunkSize)]);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            MaybeFail();
+            return _inner.ReadAsync(buffer, offset, Math.Min(count, chunkSize), ct);
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            MaybeFail();
+            return _inner.ReadAsync(buffer[..Math.Min(buffer.Length, chunkSize)], ct);
+        }
+
+        private void MaybeFail()
+        {
+            if (_reads++ >= succeedBeforeFail)
+            {
+                throw new IOException("Simulated connection reset mid-download.");
+            }
+        }
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class ChunkedStream(byte[] data, int chunkSize) : Stream
