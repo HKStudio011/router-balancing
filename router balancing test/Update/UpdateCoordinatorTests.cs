@@ -299,6 +299,75 @@ public class UpdateCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task StartUpdateAsync_WhenPollFails_WithPendingDownload_PipelineTerminates()
+    {
+        // Review Round 2 Important: Fail từ poll phải huỷ CTS của run — nếu không pipeline
+        // kẹt vô hạn tại `await downloadTask` và run cũ có thể finalise chồng lên run mới.
+        using var fx = CreateFixtures();
+        fx.Proxy.InFlightFailAfterCalls = 1; // seed (lần 1) OK, poll (lần 2) ném — download chưa xong
+        var failed = new List<UpdateError>();
+        var cancelled = 0;
+        fx.Coordinator.Failed += failed.Add;
+        fx.Coordinator.Cancelled += () => cancelled++;
+
+        var startTask = fx.Coordinator.StartUpdateAsync(Release());
+        await WaitUntilAsync(() => failed.Count == 1, "poll fault phải bắn Failed");
+        await WaitUntilAsync(() => startTask.IsCompleted, "pipeline phải thoát sau Fail từ poll");
+
+        fx.Updates.CompleteDownload(Path.Combine(_directory, "app-9.9.9.zip"));
+        await Task.Delay(700);
+
+        Assert.Equal(UpdateError.DrainFailed, Assert.Single(failed));
+        Assert.Equal(0, cancelled); // Fail không phải hành động người dùng — không bắn Cancelled
+        Assert.Equal(0, fx.Proxy.WriteCalls);
+        Assert.Equal(0, fx.Updates.InstallCalls);
+        Assert.Equal(0, fx.Shutdown.QuitCount);
+        Assert.False(fx.Gate.IsDraining);
+        Assert.False(fx.Coordinator.UpdateInProgress);
+    }
+
+    [Fact]
+    public async Task FailedHandler_NestedDisposeThenStart_RunTwoGateSurvivesTrailingRelease()
+    {
+        // Review Round 2 Minor: release của run #1 (sau khi handler đã Dispose + Start run #2)
+        // là no-op theo runId — nếu không CancelDrain/t reset muộn sẽ phá run mới.
+        using var fx = CreateFixtures();
+        fx.Proxy.InFlightFailAfterCalls = 1; // run #1: seed OK, poll ném → Failed
+        var failed = new List<UpdateError>();
+        fx.Coordinator.Failed += failed.Add;
+        var handlerDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? startRun2 = null;
+
+        fx.Coordinator.Failed += _ =>
+        {
+            if (startRun2 is not null)
+            {
+                return;
+            }
+
+            fx.Proxy.InFlightFailAfterCalls = int.MaxValue; // run #2 không được poll-fail
+            fx.Coordinator.Dispose();
+            startRun2 = fx.Coordinator.StartUpdateAsync(Release());
+            handlerDone.TrySetResult();
+        };
+
+        var startRun1 = fx.Coordinator.StartUpdateAsync(Release());
+        await WaitUntilAsync(() => failed.Count == 1, "poll fault phải bắn Failed");
+        await WaitUntilAsync(() => handlerDone.Task.IsCompleted, "handler phải chạy xong");
+        await Task.Delay(100); // release trailing của run #1 (nếu có) phải hoàn tất trước khi assert
+
+        Assert.Single(failed);
+        Assert.NotNull(startRun2);
+        Assert.True(fx.Coordinator.UpdateInProgress, "run #2 còn sống sau release trailing của run #1");
+        Assert.True(fx.Gate.IsDraining, "gate của run #2 không được mở nhầm bởi run #1");
+
+        fx.Coordinator.CancelUpdate();
+        await WaitUntilAsync(() => startRun2.IsCompleted, "run #2 phải thoát sau CancelUpdate");
+        fx.Updates.CompleteDownload(Path.Combine(_directory, "app-9.9.9.zip"));
+        await startRun1;
+    }
+
+    [Fact]
     public async Task StartUpdateAsync_WhenQuitThrows_ResumesDrainAndResetsState()
     {
         // Review Finding 2b: Quit ném lỗi = process vẫn sống — không được kẹt IsFinalizing + gate đóng

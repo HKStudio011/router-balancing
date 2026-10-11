@@ -58,6 +58,11 @@ public sealed class UpdateCoordinator : IDisposable
     private int _downloadPercent;
     private int _inFlightCount;
 
+    // Số thứ tự run — ReleaseDrainAndReset của run cũ chỉ có hiệu lực khi _runId còn khớp;
+    // nếu không, release trailing (Fail/Cancel/Dispose chạy SAU khi handler đã Start run mới)
+    // sẽ CancelDrain/reset nhầm trạng thái của run #2 (Review Round 2 Minor).
+    private int _runId;
+
     /// <summary>Tạo coordinator mới.</summary>
     /// <param name="updates">Dịch vụ tải/cài zip update.</param>
     /// <param name="gate">Cờ drain — BeginDrain khi start, CancelDrain khi fail/cancel.</param>
@@ -150,6 +155,7 @@ public sealed class UpdateCoordinator : IDisposable
         }
 
         CancellationTokenSource cts;
+        int runId;
         lock (_sync)
         {
             if (_updateInProgress)
@@ -161,6 +167,7 @@ public sealed class UpdateCoordinator : IDisposable
             _cts?.Dispose();
             _cts = cts = new CancellationTokenSource();
             _updateInProgress = true;
+            runId = ++_runId;
             _downloadPercent = 0;
         }
 
@@ -273,7 +280,7 @@ public sealed class UpdateCoordinator : IDisposable
             // Update thật sự đã thành công (updater đã launch) nên chỉ Warn + mở lại gate +
             // reset — không bắn Failed (báo "cập nhật thất bại" sẽ sai sự thật).
             _log.Warn($"Application quit failed after update install: {ex.Message}");
-            ReleaseDrainAndReset();
+            ReleaseDrainAndReset(runId);
         }
     }
 
@@ -284,6 +291,7 @@ public sealed class UpdateCoordinator : IDisposable
     /// </summary>
     public void CancelUpdate()
     {
+        int runId;
         lock (_sync)
         {
             // IsCancellationRequested: cancel thứ hai (handler reentrant/concurrent) là no-op —
@@ -294,11 +302,12 @@ public sealed class UpdateCoordinator : IDisposable
                 return;
             }
 
+            runId = _runId;
             cts.Cancel();
         }
 
         Cancelled?.Invoke();
-        ReleaseDrainAndReset();
+        ReleaseDrainAndReset(runId);
     }
 
     /// <summary>
@@ -309,17 +318,19 @@ public sealed class UpdateCoordinator : IDisposable
     /// </summary>
     public void Dispose()
     {
+        int runId;
         bool resume;
         lock (_sync)
         {
             _cts?.Cancel();
+            runId = _runId;
             resume = _updateInProgress && !_isFinalizing;
         }
 
         if (resume)
         {
             // Đóng giữa chừng vẫn phải mở lại gate — dispatcher không park vĩnh viễn
-            ReleaseDrainAndReset();
+            ReleaseDrainAndReset(runId);
         }
     }
 
@@ -368,38 +379,62 @@ public sealed class UpdateCoordinator : IDisposable
     }
 
     /// <summary>
-    /// Dừng update vì lỗi: log Warn, bắn <see cref="Failed"/>, MỞ lại gate drain rồi MỚI
-    /// reset trạng thái (dispatcher resume — tuyệt đối không để gate đóng vĩnh viễn).
-    /// Handler của <see cref="Failed"/> thấy <see cref="UpdateInProgress"/> còn
-    /// <see langword="true"/> — Start lại từ handler sẽ throw, không thể bị CancelDrain
-    /// của run cũ mở nhầm gate của run mới.
+    /// Dừng update vì lỗi: huỷ CTS của run, log Warn, bắn <see cref="Failed"/>, MỞ lại
+    /// gate drain rồi MỚI reset trạng thái (dispatcher resume — tuyệt đối không để gate
+    /// đóng vĩnh viễn). Handler của <see cref="Failed"/> thấy <see cref="UpdateInProgress"/>
+    /// còn <see langword="true"/> — Start lại không qua <see cref="Dispose"/> sẽ throw;
+    /// nếu handler Dispose rồi Start run mới, release trailing phía sau là no-op nhờ
+    /// check <c>runId</c>.
     /// </summary>
     private void Fail(UpdateError error, string message)
     {
+        bool active;
+        int runId;
         lock (_sync)
         {
-            if (!_updateInProgress)
+            active = _updateInProgress;
+            runId = _runId;
+            if (active)
             {
-                // Luồng khác (cancel/dispose/fail khác) đã dừng run này trước — tránh bắn duplicate
-                return;
+                // Huỷ CTS TRƯỚC khi bắn Failed: pipeline (StartUpdateAsync) đang chờ
+                // WhenAny sẽ thoát tại check IsCancellationRequested; nếu không, nó rơi vào
+                // `await downloadTask` treo vô hạn với _cts còn sống — run cũ có thể
+                // finalise chồng lên run mới bắt đầu từ handler (Review Round 2 Important).
+                _cts?.Cancel();
             }
         }
 
+        // Warn luôn chạy kể cả run đã bị cancel/dispose dừng trước — mỗi lỗi phải vào log
         _log.Warn(message);
+        if (!active)
+        {
+            return;
+        }
+
         Failed?.Invoke(error);
-        ReleaseDrainAndReset();
+        ReleaseDrainAndReset(runId);
     }
 
     /// <summary>
     /// Mở lại gate drain, RỒI reset cờ dưới lock, rồi mới bắn <see cref="Changed"/> —
     /// CancelDrain luôn đứng TRƯỚC khi cờ false, nên handler nào khởi động run mới từ
     /// event/Changed cũng không bị CancelDrain muộn của run cũ mở cửa gate (Finding 1).
+    /// No-op khi run đã kết thúc hoặc <paramref name="runId"/> không còn khớp — release
+    /// của run cũ không được phá trạng thái run mới (Review Round 2 Minor).
     /// </summary>
-    private void ReleaseDrainAndReset()
+    /// <param name="runId">Số thứ tự run muốn release — bắt từ caller dưới cùng lock với state.</param>
+    private void ReleaseDrainAndReset(int runId)
     {
-        _gate.CancelDrain();
         lock (_sync)
         {
+            if (!_updateInProgress || _runId != runId)
+            {
+                return;
+            }
+
+            // CancelDrain dưới lock an toàn: subscriber duy nhất là DispatcherLoop.OnWake
+            // (SemaphoreSlim.Release — không re-entrant vào _sync); Changed vẫn bắn ngoài lock
+            _gate.CancelDrain();
             _updateInProgress = false;
             _isFinalizing = false;
         }
