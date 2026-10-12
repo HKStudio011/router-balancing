@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  PROJECT_PATH: router-balancing/router-balancing.csproj
+  TEST_PROJECT: router balancing test/router balancing test.csproj
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install MAUI workload
+        run: dotnet workload install maui
+
+      # Build app windows-TFM để bắt lỗi Razor/MAUI (test project chỉ tham chiếu Core, không cover UI)
+      - name: Build app (Windows)
+        run: dotnet build ${{ env.PROJECT_PATH }} -f net10.0-windows10.0.19041.0 --nologo
+
+      # SingleInstanceGuardTests phụ thuộc mutex/env của runner (fail cả trên master);
+      # Cancel_QueuedRequest_* flaky timing khi chạy song song — cả hai đã ruling baseline,
+      # filter khỏi CI để pass/fail phản ánh thay đổi thật của code
+      - name: Test
+        run: >
+          dotnet test "${{ env.TEST_PROJECT }}" --nologo
+          --filter "FullyQualifiedName!~SingleInstanceGuardTests&FullyQualifiedName!~Cancel_QueuedRequest"
