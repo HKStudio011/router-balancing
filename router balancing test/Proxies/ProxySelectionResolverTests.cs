@@ -51,6 +51,7 @@ public class ProxySelectionResolverTests
     {
         var provider = new Provider { Id = 1, Name = "Test", Type = ProviderType.OpenAI, BaseUrl = "https://a.com" };
         var account = AccountWithProxies(300, 400);
+        account.ProxyOverrideEnabled = true;
         account.ProxyMode = ProxyMode.Fallback;
         var sel = Resolver.Resolve(provider, account);
         Assert.Equal(ProxyMode.Fallback, sel.Mode);
@@ -62,10 +63,53 @@ public class ProxySelectionResolverTests
     {
         var provider = ProviderWithProxies(100, 200);
         var account = AccountWithProxies(300, 400);
+        account.ProxyOverrideEnabled = true;
         account.ProxyMode = ProxyMode.Fallback;
         var sel = Resolver.Resolve(provider, account);
         Assert.Equal(ProxyMode.Fallback, sel.Mode);
         Assert.Equal(new[] { 300L, 400L }, sel.ProxyIds!.ToList()); // không phải [100,200]
+    }
+
+    [Fact]
+    public void Resolve_AccountFlagOffWithStaleJunctions_InheritsProvider()
+    {
+        var provider = ProviderWithProxies(100);
+        var account = AccountWithProxies(200);
+        account.ProxyOverrideEnabled = false;
+        account.ProxyMode = ProxyMode.Fallback;
+        var sel = Resolver.Resolve(provider, account);
+        Assert.Equal(ProxyMode.RoundRobin, sel.Mode);
+        Assert.Equal(new[] { 100L }, sel.ProxyIds!.ToList());
+    }
+
+    [Fact]
+    public void Resolve_AccountOverrideEmptySet_ReturnsDirect()
+    {
+        var provider = ProviderWithProxies(100);
+        var account = new ProviderAccount
+        {
+            Id = 10,
+            ProviderId = 1,
+            Name = "Acc",
+            ProxyOverrideEnabled = true,
+            AccountProxies = [],
+        };
+        var sel = Resolver.Resolve(provider, account);
+        Assert.Same(ProxySelection.Direct, sel);
+        Assert.True(sel.IsDirect);
+    }
+
+    [Fact]
+    public void Resolve_AccountOverrideSubset_UsesAccountSetWithProviderMode()
+    {
+        var provider = ProviderWithProxies(100, 200);
+        provider.ProxyMode = ProxyMode.Fallback;
+        var account = AccountWithProxies(200);
+        account.ProxyOverrideEnabled = true;
+        account.ProxyMode = null;
+        var sel = Resolver.Resolve(provider, account);
+        Assert.Equal(ProxyMode.Fallback, sel.Mode);
+        Assert.Equal(new[] { 200L }, sel.ProxyIds!.ToList());
     }
 
     [Fact]

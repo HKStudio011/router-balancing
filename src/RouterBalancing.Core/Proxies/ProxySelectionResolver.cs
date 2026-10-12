@@ -3,22 +3,22 @@ using RouterBalancing.Core.Domain;
 namespace RouterBalancing.Core.Proxies;
 
 /// <summary>
-/// most-specific-wins (D1): account gán proxy → dùng tập + mode của account;
-/// không thì provider; không thì Direct. Mode inherit:
-/// account.Mode ?? provider.Mode ?? RoundRobin (D6).
+/// Chọn proxy theo cờ <c>ProviderAccount.ProxyOverrideEnabled</c> — nguồn sự thật (spec §A1):
+/// <c>false</c> = kế thừa toàn bộ tập + mode provider (junction của account, kể cả rác, bị bỏ qua);
+/// <c>true</c> + junction = đúng tập account; <c>true</c> + junction rỗng = Direct.
+/// Mode inherit (D6): account.Mode ?? provider.Mode ?? RoundRobin.
 /// </summary>
 public sealed class ProxySelectionResolver : IProxySelectionResolver
 {
     /// <inheritdoc />
     public ProxySelection Resolve(Provider provider, ProviderAccount? account)
     {
-        var accountProxies = account?.AccountProxies;
-        if (accountProxies is not null && accountProxies.Count > 0)
+        if (account is { ProxyOverrideEnabled: true })
         {
-            // accountProxies != null ⟹ account != null (?. trả null khi account null).
+            var ids = account.AccountProxies.Select(x => x.ProxyId).ToList();
+            if (ids.Count == 0) return ProxySelection.Direct;
             return new ProxySelection(
-                account!.ProxyMode ?? provider.ProxyMode ?? ProxyMode.RoundRobin,
-                accountProxies.Select(x => x.ProxyId).ToList());
+                account.ProxyMode ?? provider.ProxyMode ?? ProxyMode.RoundRobin, ids);
         }
 
         var providerProxies = provider.ProviderProxies;
