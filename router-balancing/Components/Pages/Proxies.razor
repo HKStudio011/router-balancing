@@ -94,8 +94,11 @@ else
     </div>
 }
 
-@* Cây reverse view: Proxy → Provider → AC — thay danh sách checkbox phẳng (D-A6, phương án B).
-   <details> thuần: expand/collapse do browser giữ DOM state, Blazor không re-render mất trạng thái. *@
+@* Cây gán provider-centric (spec C1-C4): root = mọi provider → proxy của provider →
+   mọi AC của provider với checkbox tick hiệu lực. <details> thuần: expand/collapse do browser
+   giữ DOM state; summary dùng preventDefault + state (_expandedProviderId) để chỉ 1 node mở
+   tại một thời điểm — không attach @ontoggle vì setAttribute/removeAttribute `open` khi
+   re-render cũng fire toggle → loop/sai node. *@
 <style>
     .proxy-tree { display: flex; flex-direction: column; gap: 2px; font-size: 0.875rem; }
     .proxy-tree .pt-node { margin-left: 18px; }
@@ -109,7 +112,7 @@ else
     .pt-chev { width: 12px; flex: none; opacity: 0.5; }
     .pt-chev::before { content: "▸"; }
     details[open] > .pt-summary .pt-chev::before { content: "▾"; }
-    /* meta chứa "N AC" + nút ✎ — margin-left:auto đẩy cụm phải, 2 auto sẽ chia khoảng trống */
+    /* meta chứa cluster phải (✕) — margin-left:auto đẩy cụm phải */
     .pt-meta {
         margin-left: auto; display: flex; align-items: center; gap: 8px;
         font-size: 11px; opacity: 0.75; white-space: nowrap;
@@ -118,11 +121,11 @@ else
         font-size: 10px; border: 1px solid var(--border); border-radius: 999px;
         padding: 1px 7px; text-transform: uppercase; white-space: nowrap;
     }
-    .pt-badge-dashed { border-style: dashed; }
+    /* dòng endpoint proxy — thụt vào ít hơn AC (24px vs 36px) để phân cấp trực quan */
+    .pt-endpoint { display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 24px; border-radius: 4px; }
+    .pt-endpoint:hover { background: var(--background); }
     .pt-leaf { display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 36px; border-radius: 4px; }
     .pt-leaf:hover { background: var(--background); }
-    .pt-tick { width: 12px; flex: none; color: var(--color-success); }
-    .pt-tick-off { opacity: 0.35; }
     .pt-empty { padding: 6px 8px 6px 30px; font-size: 12px; font-style: italic; opacity: 0.5; }
     .pt-edit {
         border: 0; background: transparent; cursor: pointer; border-radius: 4px;
@@ -131,7 +134,7 @@ else
     .pt-edit:hover { opacity: 1; background: var(--background); }
     .pt-edit:disabled { opacity: 0.25; cursor: not-allowed; background: transparent; }
     .pt-add {
-        display: inline-flex; align-items: center; gap: 6px; margin: 6px 0 2px 24px;
+        display: inline-flex; align-items: center; gap: 6px; margin: 0;
         padding: 3px 10px; font-size: 12px; border: 1px dashed var(--border);
         border-radius: 6px; background: transparent; color: var(--color-primary); cursor: pointer;
     }
@@ -147,127 +150,104 @@ else
     <h2 class="text-sm font-semibold mb-3">@L["proxies.assign.title"]</h2>
 
     <div class="proxy-tree">
-        @foreach (var node in Tree)
+        @foreach (var node in _tree)
         {
-            <details @key="node.Proxy.Id" class="pt-node">
-                <summary class="pt-summary">
+            <details @key="node.Provider.Id" class="pt-node"
+                     open="@(_expandedProviderId == node.Provider.Id ? "open" : null)">
+                @* preventDefault: click summary sẽ toggle native — state quản lý bằng
+                   _expandedProviderId để attr `open` luôn khớp (xem comment khối style ở trên). *@
+                <summary class="pt-summary"
+                         @onclick="() => ToggleExpandAsync(node.Provider.Id)"
+                         @onclick:preventDefault="true">
                     <span class="pt-chev"></span>
-                    <span class="font-mono">@EndpointOf(node.Proxy)</span>
-                    @if (!node.Proxy.Enabled)
-                    {
-                        @* Proxy tắt vẫn gán được — pool tự lọc (D-A2) *@
-                        <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
-                    }
-                    <span class="pt-meta">
-                        @(node.Usages.Count == 0
-                            ? L["proxies.assign.reverseNone"]
-                            : string.Format(L["proxies.assign.scopeCount"], node.Usages.Count))
+                    <span>@node.Provider.Name</span>
+                    @* stopPropagation + preventDefault: click vào <select> nằm trong <summary>
+                       sẽ bubble lên summary và collapse node nếu không chặn (cùng pattern
+                       nút ✎ trong summary trước đây). *@
+                    <select class="rounded border border-border bg-surface px-1 py-0.5 text-xs"
+                            value="@node.EffectiveMode" disabled="@_busy"
+                            @onclick:preventDefault="true" @onclick:stopPropagation="true"
+                            @onchange="args => OnModeChangedAsync(node.Provider.Id, args)">
+                        <option value="@ProxyMode.RoundRobin">@L["proxies.assign.mode_rr"]</option>
+                        <option value="@ProxyMode.Fallback">@L["proxies.assign.mode_fallback"]</option>
+                    </select>
+                    <span class="pt-badge">
+                        @(node.Proxies.Count == 0
+                            ? L["proxies.assign.none"]
+                            : string.Format(L["proxies.assign.badge_count"], node.Proxies.Count))
                     </span>
                 </summary>
 
-                @if (node.Providers.Count == 0)
+                @* Search-add: chỉ render khi node mở — tránh N input/option list bind cùng một _addSearch *@
+                @if (_expandedProviderId == node.Provider.Id)
                 {
-                    <div class="pt-empty">@L["proxies.assign.reverseNone"]</div>
-                }
-
-                @foreach (var providerNode in node.Providers)
-                {
-                    <details @key="providerNode.Provider.Id" class="pt-node">
-                        <summary class="pt-summary">
-                            <span class="pt-chev"></span>
-                            <span>@L["proxies.assign.scopeProvider"] <b>@providerNode.Provider.Name</b></span>
-                            @if (providerNode.ProviderUsage is { } providerUsage)
-                            {
-                                @* Mode HIỆU LỰC: null ≡ RoundRobin (D6) — hiển thị khớp badge trang Providers *@
-                                <span class="pt-badge">@ModeShort(providerUsage.Mode ?? ProxyMode.RoundRobin)</span>
-                            }
-                            @if (providerNode.IsAccountOnly)
-                            {
-                                <span class="pt-badge pt-badge-dashed">@L["proxies.assign.accountOnly"]</span>
-                            }
-                            <span class="pt-meta">
-                                @string.Format(L["proxies.assign.accountCount"], providerNode.AssignedAccountCount)
-                                @if (providerNode.Accounts.Any(a => a.Override is not null))
+                    var pool = UnassignedProxies(node);
+                    <div class="pt-panel">
+                        <input class="w-full rounded border border-border bg-surface px-2 py-1.5 text-sm"
+                               placeholder="@L["proxies.tree.addPlaceholder"]"
+                               disabled="@_busy"
+                               @bind="_addSearch" @bind:event="oninput" />
+                        @if (pool.Count == 0)
+                        {
+                            <p class="pt-empty">@L["proxies.tree.addEmpty"]</p>
+                        }
+                        else
+                        {
+                            <div class="mt-1 flex flex-col gap-1">
+                                @foreach (var option in MatchSearch(pool))
                                 {
-                                    @* Bulk reset: xóa hàng override của mọi AC — hiện khi node có AC override *@
-                                    <button type="button" class="pt-edit" disabled="@_busy"
-                                            title="@L["proxies.assign.resetOverrides"]"
-                                            aria-label="@L["proxies.assign.resetOverrides"]"
-                                            @onclick="() => _confirmResetProvider = providerNode"
-                                            @onclick:preventDefault="true" @onclick:stopPropagation="true">↺</button>
+                                    @* Proxy tắt vẫn thêm được — pool tự lọc khi chạy (D-A2) *@
+                                    <button type="button" class="pt-add" disabled="@_busy"
+                                            @onclick="() => AddProxyAsync(node.Provider.Id, option.Id)">
+                                        @EndpointOf(option)
+                                        @if (!option.Enabled)
+                                        {
+                                            <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
+                                        }
+                                    </button>
                                 }
-                                @* preventDefault: ✎ nằm trong <summary> — không chặn thì bấm sửa sẽ collapse node *@
-                                <button type="button" class="pt-edit" disabled="@_busy"
-                                        title="@L["proxies.assign.edit"]" aria-label="@L["proxies.assign.edit"]"
-                                        @onclick="() => OpenEditScope(EditProviderKey(providerNode.Provider.Id))"
-                                        @onclick:preventDefault="true" @onclick:stopPropagation="true">✎</button>
-                            </span>
-                        </summary>
-
-                        @foreach (var accountNode in providerNode.Accounts)
-                        {
-                            <div @key="accountNode.Account.Id" class="pt-leaf">
-                                <span class="@(accountNode.Assigned ? "pt-tick" : "pt-tick pt-tick-off")">@(accountNode.Assigned ? "✓" : "○")</span>
-                                <span class="font-mono">@accountNode.Account.Name</span>
-                                <span class="pt-meta">
-                                    @if (accountNode.Override is { } overrideUsage)
-                                    {
-                                        <span class="pt-badge">@OverrideLabel(overrideUsage.Mode)</span>
-                                    }
-                                    else if (accountNode.Assigned)
-                                    {
-                                        <span class="pt-badge pt-badge-dashed">@InheritLabel(providerNode.ProviderUsage?.Mode)</span>
-                                    }
-                                    else
-                                    {
-                                        <span>@L["proxies.assign.noneForProxy"]</span>
-                                    }
-                                    <button type="button" class="pt-edit" disabled="@_busy"
-                                            title="@L["proxies.assign.edit"]" aria-label="@L["proxies.assign.edit"]"
-                                            @onclick="() => OpenEditScope(EditAccountKey(accountNode.Account.Id))">✎</button>
-                                </span>
                             </div>
-
-                            @if (IsEditOpen(EditAccountKey(accountNode.Account.Id)))
-                            {
-                                <ScopeProxyEditor @key="@($"a:{accountNode.Account.Id}")"
-                                                  ProviderId="@providerNode.Provider.Id"
-                                                  AccountId="@accountNode.Account.Id"
-                                                  ScopeLabel="@($"{L["proxies.assign.scopeAccount"]} {accountNode.Account.Name}")"
-                                                  AllProxies="_rows"
-                                                  OnSaved="OnScopeSaved"
-                                                  OnCancel="ClosePanel" />
-                            }
                         }
-
-                        @if (IsEditOpen(EditProviderKey(providerNode.Provider.Id)))
-                        {
-                            <ScopeProxyEditor @key="@($"p:{providerNode.Provider.Id}")"
-                                              ProviderId="@providerNode.Provider.Id"
-                                              AccountId="@(null)"
-                                              ScopeLabel="@($"{L["proxies.assign.scopeProvider"]} {providerNode.Provider.Name}")"
-                                              AllProxies="_rows"
-                                              OnSaved="OnScopeSaved"
-                                              OnCancel="ClosePanel" />
-                        }
-                    </details>
+                    </div>
                 }
 
-                <button type="button" class="pt-add" disabled="@_busy"
-                        @onclick="() => ToggleAddPanel(node.Proxy.Id)">
-                    + @L["proxies.assign.add"]
-                </button>
-
-                @if (_addProxyId == node.Proxy.Id)
+                @if (node.Proxies.Count == 0)
                 {
-                    @* Key có prefix "add:" — proxy.Id là long trùng giá trị với provider.Id (long)
-                       của node <details> cùng parent → duplicate @key làm diff Blazor ném
-                       "Attempting to return wrong pooled instance" *@
-                    <AssignProxyToScope @key="@($"add:{node.Proxy.Id}")"
-                                        ProxyId="node.Proxy.Id"
-                                        Providers="_providers"
-                                        OnSaved="OnScopeSaved"
-                                        OnCancel="ClosePanel" />
+                    <div class="pt-empty">@L["proxies.tree.empty"]</div>
+                }
+
+                @foreach (var proxyNode in node.Proxies)
+                {
+                    <div @key="proxyNode.Proxy.Id" class="pt-endpoint">
+                        <span class="font-mono">@EndpointOf(proxyNode.Proxy)</span>
+                        @if (!proxyNode.Proxy.Enabled)
+                        {
+                            @* Proxy tắt vẫn gán/gỡ được — pool tự lọc (D-A2) *@
+                            <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
+                        }
+                        <span class="pt-meta">
+                            @* ✕ bật cả khi proxy tắt — chỉ chặn khi đang lưu (_busy) *@
+                            <button type="button" class="pt-edit" disabled="@_busy"
+                                    title="@L["proxies.tree.remove"]"
+                                    aria-label="@L["proxies.tree.remove"]"
+                                    @onclick="() => RemoveProxyAsync(node.Provider.Id, proxyNode.Proxy.Id)">✕</button>
+                        </span>
+                    </div>
+
+                    @foreach (var account in proxyNode.Accounts)
+                    {
+                        @* Tick = tập hiệu lực (matrix), không phải state DOM — save ghi ngay (spec C4) *@
+                        <label @key="account.Account.Id" class="pt-leaf">
+                            <input type="checkbox" checked="@account.Tick"
+                                   disabled="@(!proxyNode.Proxy.Enabled || _busy)"
+                                   @onchange="args => ToggleAccountAsync(node, proxyNode, account, args.Value is true)" />
+                            <span class="font-mono">@account.Account.Name</span>
+                            @if (account.IsOverride)
+                            {
+                                <span class="pt-badge">@L["proxies.assign.override"]</span>
+                            }
+                        </label>
+                    }
                 }
             </details>
         }
@@ -345,19 +325,6 @@ else
                    OnCancel="CancelDelete" />
 }
 
-@if (_confirmResetProvider is { } resetNode)
-{
-    <ConfirmDialog Visible="true"
-                   Title="@L["proxies.assign.resetOverrides"]"
-                   Message="@string.Format(L["proxies.assign.resetOverridesConfirm"],
-                              resetNode.Accounts.Count(a => a.Override is not null))"
-                   Danger="true"
-                   ConfirmText="@L["proxies.assign.resetOverrides"]"
-                   CancelText="@L["confirm.cancel"]"
-                   OnConfirm="ResetProviderOverridesAsync"
-                   OnCancel="CancelResetOverrides" />
-}
-
 @code {
     private List<OutboundProxy> _rows = [];
     private List<ProxyRuntimeStatus> _downStatuses = [];
@@ -374,24 +341,17 @@ else
     private string _username = string.Empty;
     private string _password = string.Empty; // rỗng = giữ mật khẩu cũ khi edit
     private OutboundProxy? _confirmDelete;
-    // Node provider đang xác nhận bulk reset override (null = không có dialog nào mở)
-    private ProxyTreeProviderNode? _confirmResetProvider;
 
-    // Section gán proxy — cây reverse view Proxy → Provider → AC (D-A6, phương án B)
+    // Section gán proxy — cây provider-centric Provider → Proxy → AC (spec C1-C4)
     private List<Provider> _providers = [];
-    // Reverse view: proxy-id → scope đang dùng; không có key = chưa gán ai
-    private IReadOnlyDictionary<long, IReadOnlyList<ProxyUsage>> _reverseAssignments =
-        new Dictionary<long, IReadOnlyList<ProxyUsage>>();
-    // Mọi hàng override của AC — cây dùng để phân biệt "chưa override" vs "override ngoài tập" (D1)
-    private IReadOnlyList<ProxyAssignment> _accountOverrides = [];
-    // Panel đang mở — "p:{providerId}" = sửa scope provider, "a:{accountId}" = sửa override;
-    // null = đóng. Chỉ 1 panel tại một thời điểm; form Gán giữ _addProxyId riêng.
-    private string? _editKey;
-    private long? _addProxyId;
-
-    /// <summary>Cây hiển thị cho UI — dựng từ _rows + _providers + reverse view, tính lại mỗi render.</summary>
-    private IReadOnlyList<ProxyTreeNode> Tree =>
-        ProxyAssignmentTree.Build(_rows, _providers, _reverseAssignments, _accountOverrides);
+    // Ma trận gán (B4) — nguồn tập hiệu lực + cờ override; tick/lưu luôn đọc từ đây, không từ DOM
+    private ProxyAssignmentMatrix _matrix = new([], []);
+    // Cây hiển thị — tính lại sau mỗi ReloadAsync
+    private IReadOnlyList<ProviderTreeNode> _tree = [];
+    // Node provider đang mở (null = tất cả đóng) — chỉ 1 node mở tại một thời điểm (spec C1)
+    private long? _expandedProviderId;
+    // Từ khóa search-add — chỉ 1 node mở tại một thời điểm nên dùng chung được
+    private string _addSearch = string.Empty;
 
     /// <summary>Chỉ hiện hint khi sửa — thêm mới để trống nghĩa là không đặt mật khẩu.</summary>
     private string? PasswordPlaceholder => _editing is { Id: > 0 } ? L["proxies.hint.password"] : null;
@@ -424,29 +384,29 @@ else
             _loading = false;
         }
 
-        // Danh sách provider cho section gán proxy — best-effort, không ảnh hưởng load proxy.
+        // Danh sách provider + ma trận gán cho cây — chạy song song, best-effort:
+        // lỗi không chặn load proxy chính, cây dùng dữ liệu của lần nạp trước.
+        var providersTask = ProviderSvc.ListAsync();
+        var matrixTask = ProxySvc.GetAssignmentMatrixAsync();
         try
         {
-            _providers = (await ProviderSvc.ListAsync()).ToList();
+            _providers = (await providersTask).ToList();
         }
         catch (Exception ex)
         {
             Log.Error("Không tải được danh sách provider.", ex);
         }
 
-        // Reverse view (D-A6) + override rows (D1) — best-effort: lỗi không chặn load proxy chính
         try
         {
-            var reverseTask = ProxySvc.GetReverseAssignmentsAsync();
-            var overridesTask = ProxySvc.GetAccountOverridesAsync();
-            await Task.WhenAll(reverseTask, overridesTask);
-            _reverseAssignments = await reverseTask;
-            _accountOverrides = await overridesTask;
+            _matrix = await matrixTask;
         }
         catch (Exception ex)
         {
-            Log.Error("Không tải được danh sách gán đảo.", ex);
+            Log.Error("Không tải được ma trận gán proxy.", ex);
         }
+
+        _tree = ProviderAssignmentTree.Build(_providers, _rows, _matrix);
 
         StateHasChanged();
     }
@@ -637,22 +597,68 @@ else
         }
     }
 
-    /// <summary>Xóa toàn bộ hàng override của provider đã xác nhận — mọi AC quay về kế thừa (bulk).</summary>
-    private async Task ResetProviderOverridesAsync()
+    /// <summary>Mở/đóng node provider — chỉ 1 node mở tại một thời điểm (spec C1); đổi node reset search-add.</summary>
+    private Task ToggleExpandAsync(long providerId)
     {
-        if (_busy || _confirmResetProvider is not { } node) return;
+        _expandedProviderId = _expandedProviderId == providerId ? null : providerId;
+        _addSearch = string.Empty;
+        return Task.CompletedTask;
+    }
+
+    private Task OnModeChangedAsync(long providerId, ChangeEventArgs args) =>
+        Enum.TryParse<ProxyMode>(args.Value?.ToString(), out var mode)
+            ? SetModeAsync(providerId, mode)
+            : Task.CompletedTask;
+
+    /// <summary>Đổi mode rr/fb của provider — giữ nguyên tập proxy (spec C3).</summary>
+    private async Task SetModeAsync(long providerId, ProxyMode mode)
+    {
+        if (_busy) return;
+        var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
+        await SaveProviderAssignmentAsync(providerId, row?.ProxyIds ?? [], mode);
+    }
+
+    /// <summary>Thêm 1 proxy vào tập của provider — cộng tập, giữ nguyên mode.</summary>
+    private async Task AddProxyAsync(long providerId, long proxyId)
+    {
+        if (_busy) return;
+        var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
+        var set = new HashSet<long>(row?.ProxyIds ?? []) { proxyId };
+        await SaveProviderAssignmentAsync(providerId, set.OrderBy(id => id).ToList(), row?.Mode);
+    }
+
+    /// <summary>Gỡ 1 proxy khỏi tập của provider — trừ tập, giữ nguyên mode (✕ bật cả khi proxy tắt).</summary>
+    private async Task RemoveProxyAsync(long providerId, long proxyId)
+    {
+        if (_busy) return;
+        var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
+        var set = new HashSet<long>(row?.ProxyIds ?? []);
+        set.Remove(proxyId);
+        await SaveProviderAssignmentAsync(providerId, set.OrderBy(id => id).ToList(), row?.Mode);
+    }
+
+    /// <summary>
+    /// Lưu gán cấp provider — single-flight (_busy chặn double-click), không toast thành công;
+    /// lỗi KeyNotFound = scope bị xóa nơi khác (spec C3) → toast riêng, còn lại toast chung.
+    /// </summary>
+    private async Task SaveProviderAssignmentAsync(
+        long providerId, IReadOnlyList<long> proxyIds, ProxyMode? mode)
+    {
         _busy = true;
         try
         {
-            var count = await ProxySvc.ResetAccountOverridesAsync(node.Provider.Id);
-            _confirmResetProvider = null;
-            Toast.Show(
-                string.Format(L["proxies.assign.resetOverridesDone"], count), ToastSeverity.Success);
+            await ProxySvc.AssignProviderProxiesAsync(providerId, proxyIds, mode);
+            await ReloadAsync();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            Log.Error("Không lưu được gán proxy — provider/proxy không còn tồn tại.", ex);
+            Toast.Show(L["proxies.assign.error.scopeNotFound"], ToastSeverity.Error);
             await ReloadAsync();
         }
         catch (Exception ex)
         {
-            Log.Error("Không đưa được các AC về kế thừa.", ex);
+            Log.Error("Không lưu được gán proxy.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
         }
         finally
@@ -661,68 +667,74 @@ else
         }
     }
 
-    private void CancelResetOverrides() => _confirmResetProvider = null;
-
-    private static string EditProviderKey(long providerId) => $"p:{providerId}";
-
-    private static string EditAccountKey(long accountId) => $"a:{accountId}";
-
-    private bool IsEditOpen(string key) => _editKey == key;
-
-    /// <summary>Mở panel ✎ cho scope — đóng form Gán để chỉ 1 panel active (D-A3 không cần ở đây: mỗi panel tự nạp khi mount).</summary>
-    private void OpenEditScope(string key)
+    /// <summary>
+    /// Bật/tắt checkbox 1 AC cho 1 proxy (spec C4): tập mới = tập hiệu lực ± proxyId;
+    /// trùng tập provider → quay kế thừa (flag=false), rỗng → direct (flag=true + tập rỗng).
+    /// Tập hiệu lực đọc từ _matrix (override dùng tập AC, còn lại kế thừa) — không đọc tick DOM.
+    /// </summary>
+    private async Task ToggleAccountAsync(ProviderTreeNode providerNode, ProxyNode proxyNode,
+        AccountTickNode accountNode, bool checking)
     {
         if (_busy) return;
-        _addProxyId = null;
-        _editKey = key;
-        StateHasChanged();
+        _busy = true;
+        try
+        {
+            var providerRow = _matrix.Providers.FirstOrDefault(r => r.Id == providerNode.Provider.Id);
+            var providerSet = providerRow?.ProxyIds ?? [];
+            var accountRow = _matrix.Accounts.FirstOrDefault(r => r.Id == accountNode.Account.Id);
+            var currentSet = accountRow is { OverrideEnabled: true }
+                ? accountRow.ProxyIds
+                : providerSet;
+
+            var set = new HashSet<long>(currentSet);
+            if (checking)
+            {
+                set.Add(proxyNode.Proxy.Id);
+            }
+            else
+            {
+                set.Remove(proxyNode.Proxy.Id);
+            }
+            var newSet = set.OrderBy(id => id).ToList();
+
+            // Đúng tập provider (cùng thứ tự Id) → tự tắt cờ, không cần hàng override nữa
+            var overrideEnabled = !newSet.SequenceEqual(providerSet.OrderBy(id => id));
+            await ProxySvc.SetAccountProxyOverrideAsync(
+                accountNode.Account.Id, newSet, overrideEnabled);
+            await ReloadAsync();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            Log.Error("Không lưu được tick AC — scope không còn tồn tại.", ex);
+            Toast.Show(L["proxies.assign.error.scopeNotFound"], ToastSeverity.Error);
+            await ReloadAsync(); // spec C4: lỗi → toast + reload, không để state lệch
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không lưu được tick AC.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 
-    /// <summary>Mở/đóng form "+ Gán provider" dưới proxy — đóng panel ✎ đang mở.</summary>
-    private void ToggleAddPanel(long proxyId)
+    /// <summary>Proxy chưa gán cho provider — pool của search-add (kể cả proxy tắt, thêm được — D-A2).</summary>
+    private List<OutboundProxy> UnassignedProxies(ProviderTreeNode node)
     {
-        if (_busy) return;
-        _editKey = null;
-        _addProxyId = _addProxyId == proxyId ? null : proxyId;
-        StateHasChanged();
+        var assigned = node.Proxies.Select(n => n.Proxy.Id).ToHashSet();
+        return _rows.Where(p => !assigned.Contains(p.Id)).ToList();
     }
 
-    private void ClosePanel()
+    /// <summary>Lọc pool theo _addSearch — khớp endpoint, không phân biệt hoa thường (pattern model panel).</summary>
+    private IEnumerable<OutboundProxy> MatchSearch(IReadOnlyList<OutboundProxy> pool)
     {
-        _editKey = null;
-        _addProxyId = null;
-        StateHasChanged();
-    }
-
-    /// <summary>Lưu xong từ panel con: đóng panel + nạp lại cây để badge reverse view phản ánh DB.</summary>
-    private async Task OnScopeSaved()
-    {
-        ClosePanel();
-        await ReloadAsync();
-    }
-
-    /// <summary>Badge mode ngắn "rr"/"fb" — ngôn ngữ kỹ thuật, không qua i18n.</summary>
-    private static string ModeShort(ProxyMode? mode) => mode switch
-    {
-        ProxyMode.RoundRobin => "rr",
-        ProxyMode.Fallback => "fb",
-        _ => string.Empty,
-    };
-
-    /// <summary>Nhãn AC override: "fb override"; mode null (tập override không đổi mode) chỉ còn "override".</summary>
-    private string OverrideLabel(ProxyMode? mode)
-    {
-        var shortMode = ModeShort(mode);
-        return string.IsNullOrEmpty(shortMode)
-            ? L["proxies.assign.override"]
-            : $"{shortMode} {L["proxies.assign.override"]}";
-    }
-
-    /// <summary>Nhãn AC kế thừa từ hàng provider: "kế thừa rr" (null ≡ RR — D6).</summary>
-    private string InheritLabel(ProxyMode? mode)
-    {
-        var shortMode = ModeShort(mode ?? ProxyMode.RoundRobin);
-        return $"{L["proxies.assign.inherit"]} {shortMode}";
+        var term = _addSearch.Trim();
+        return term.Length == 0
+            ? pool
+            : pool.Where(p => EndpointOf(p).Contains(term, StringComparison.OrdinalIgnoreCase));
     }
 
     private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);

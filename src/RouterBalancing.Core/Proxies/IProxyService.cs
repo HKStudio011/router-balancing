@@ -39,12 +39,6 @@ public interface IProxyService
     Task AssignProviderProxiesAsync(long providerId, IReadOnlyList<long> proxyIds,
         ProxyMode? mode, CancellationToken ct = default);
 
-    /// <summary>Gán proxy của account (override provider) + mode. proxyIds rỗng = gỡ toàn bộ.</summary>
-    /// <param name="mode">Mode dùng tập proxy; null = kế thừa provider.</param>
-    /// <exception cref="KeyNotFoundException">Không có account với <paramref name="accountId"/> hoặc proxy không tồn tại.</exception>
-    Task AssignAccountProxiesAsync(long accountId, IReadOnlyList<long> proxyIds,
-        ProxyMode? mode, CancellationToken ct = default);
-
     /// <summary>
     /// Persist cờ <c>ProxyOverrideEnabled</c> của AC + tập proxy trực tiếp — một unit of work:
     /// cờ và junction luôn đồng bộ (spec §A1).
@@ -74,19 +68,6 @@ public interface IProxyService
     /// </summary>
     Task<IReadOnlyDictionary<long, IReadOnlyList<ProxyUsage>>> GetReverseAssignmentsAsync(
         CancellationToken ct = default);
-
-    /// <summary>
-    /// Mọi hàng override của AC (tập proxy + mode) — cây reverse dùng để phân biệt
-    /// "chưa override (kế thừa provider)" với "đã override nhưng proxy ngoài tập" (D1).
-    /// </summary>
-    Task<IReadOnlyList<ProxyAssignment>> GetAccountOverridesAsync(CancellationToken ct = default);
-
-    /// <summary>
-    /// Đưa mọi AC của provider về kế thừa — xóa hàng override + mode trong 1 transaction.
-    /// </summary>
-    /// <returns>Số AC đã reset (0 nếu không có override nào).</returns>
-    /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/>.</exception>
-    Task<int> ResetAccountOverridesAsync(long providerId, CancellationToken ct = default);
 
     /// <summary>
     /// Ma trận gán đầy đủ (mọi provider + mọi account) cho cây gán UI — EF projection,

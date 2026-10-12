@@ -434,7 +434,7 @@ public class ProxyServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task AssignAccountProxies_OverridesProvider()
+    public async Task SetAccountProxyOverride_OverridesProviderSet_WithoutTouchingIt()
     {
         var service = CreateService();
         var proxyA = await AddProxyAsync(port: 9503);
@@ -444,15 +444,18 @@ public class ProxyServiceTests : IDisposable
 
         await service.AssignProviderProxiesAsync(providerId, new[] { proxyA }, ProxyMode.RoundRobin);
         // Account override provider (D1): gán account không xóa tập của provider.
-        await service.AssignAccountProxiesAsync(accountId, new[] { proxyB }, ProxyMode.Fallback);
+        await service.SetAccountProxyOverrideAsync(accountId, new[] { proxyB }, overrideEnabled: true);
 
         var assignments = await service.GetAssignmentsAsync(providerId);
 
+        var provider = assignments.Single(a => a.IsProvider);
         var account = assignments.Single(a => !a.IsProvider);
 
+        Assert.Equal(new[] { proxyA }, provider.ProxyIds);
         Assert.Equal(new[] { proxyB }, account.ProxyIds);
-        Assert.Equal(ProxyMode.Fallback, account.Mode);
         Assert.False(account.IsProvider);
+        // Mode là lựa chọn cấp provider — SetAccountProxyOverrideAsync luôn đưa mode AC về null
+        Assert.Null(account.Mode);
     }
 
     [Fact]
@@ -464,7 +467,7 @@ public class ProxyServiceTests : IDisposable
         var accountId = await AddAccountAsync(providerId);
 
         await service.AssignProviderProxiesAsync(providerId, new[] { proxy }, ProxyMode.Fallback);
-        await service.AssignAccountProxiesAsync(accountId, new[] { proxy }, ProxyMode.RoundRobin);
+        await service.SetAccountProxyOverrideAsync(accountId, new[] { proxy }, overrideEnabled: true);
 
         var assignments = await service.GetAssignmentsAsync(providerId);
 
@@ -481,7 +484,8 @@ public class ProxyServiceTests : IDisposable
         Assert.Equal(accountId, account.Id);
         Assert.Equal("Acc", account.Name);
         Assert.False(account.IsProvider);
-        Assert.Equal(ProxyMode.RoundRobin, account.Mode);
+        // API mới không ghi mode AC (spec A3 — mode cấp provider) → luôn null
+        Assert.Null(account.Mode);
         Assert.Equal(new[] { proxy }, account.ProxyIds);
     }
 
@@ -494,7 +498,7 @@ public class ProxyServiceTests : IDisposable
         var accountId = await AddAccountAsync(providerId);
 
         await service.AssignProviderProxiesAsync(providerId, [proxy], ProxyMode.RoundRobin);
-        await service.AssignAccountProxiesAsync(accountId, [proxy], ProxyMode.Fallback);
+        await service.SetAccountProxyOverrideAsync(accountId, [proxy], overrideEnabled: true);
 
         var result = await service.GetReverseAssignmentsAsync();
 
@@ -507,7 +511,8 @@ public class ProxyServiceTests : IDisposable
         var accountUsage = usages.Single(u => !u.IsProvider);
         Assert.Equal(accountId, accountUsage.ScopeId);
         Assert.Equal("Acc", accountUsage.ScopeName);
-        Assert.Equal(ProxyMode.Fallback, accountUsage.Mode);
+        // Mode AC luôn null trong model mới — reverse chỉ còn pass-through data cũ
+        Assert.Null(accountUsage.Mode);
     }
 
     [Fact]
@@ -523,61 +528,6 @@ public class ProxyServiceTests : IDisposable
 
         Assert.True(result.ContainsKey(assigned));
         Assert.False(result.ContainsKey(unassigned));
-    }
-
-    [Fact]
-    public async Task ResetAccountOverrides_WithOverrides_DeletesRowsAndReturnsCount()
-    {
-        var service = CreateService();
-        var proxyA = await AddProxyAsync(port: 9520);
-        var proxyB = await AddProxyAsync(port: 9521);
-        var providerId = await AddProviderAsync();
-        var acc1 = await AddAccountAsync(providerId, "acc-1");
-        var acc2 = await AddAccountAsync(providerId, "acc-2");
-
-        await service.AssignProviderProxiesAsync(providerId, [proxyA], ProxyMode.RoundRobin);
-        await service.AssignAccountProxiesAsync(acc1, [proxyB], ProxyMode.Fallback);
-        await service.AssignAccountProxiesAsync(acc2, [proxyA, proxyB], null);
-
-        var reset = await service.ResetAccountOverridesAsync(providerId);
-
-        Assert.Equal(2, reset);
-        using var db = _factory.CreateDbContext();
-        Assert.Empty(await db.Set<ProviderAccountProxy>().AsNoTracking()
-            .Where(x => x.AccountId == acc1 || x.AccountId == acc2).ToListAsync());
-        var accounts = await db.ProviderAccounts.AsNoTracking()
-            .Where(a => a.Id == acc1 || a.Id == acc2).ToListAsync();
-        Assert.All(accounts, a => Assert.Null(a.ProxyMode));
-        // Gán cấp provider không bị đụng
-        Assert.Single(await db.Set<ProviderProxy>().AsNoTracking()
-            .Where(x => x.ProviderId == providerId).ToListAsync());
-    }
-
-    [Fact]
-    public async Task ResetAccountOverrides_NoOverrides_ReturnsZeroAndKeepsProviderAssignment()
-    {
-        var service = CreateService();
-        var proxy = await AddProxyAsync(port: 9522);
-        var providerId = await AddProviderAsync();
-        await AddAccountAsync(providerId);
-        await service.AssignProviderProxiesAsync(providerId, [proxy], ProxyMode.Fallback);
-        var invalidationsBefore = _pool.Invalidations;
-
-        var reset = await service.ResetAccountOverridesAsync(providerId);
-
-        Assert.Equal(0, reset);
-        using var db = _factory.CreateDbContext();
-        var provider = await db.Providers.AsNoTracking().SingleAsync(p => p.Id == providerId);
-        Assert.Equal(ProxyMode.Fallback, provider.ProxyMode);
-        // Không có gì để xóa → không SaveChanges, không invalidate pool
-        Assert.Equal(invalidationsBefore, _pool.Invalidations);
-    }
-
-    [Fact]
-    public async Task ResetAccountOverrides_UnknownProvider_Throws()
-    {
-        await Assert.ThrowsAsync<KeyNotFoundException>(
-            () => CreateService().ResetAccountOverridesAsync(99999));
     }
 
     [Fact]

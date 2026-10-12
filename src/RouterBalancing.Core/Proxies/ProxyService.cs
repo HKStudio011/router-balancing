@@ -209,34 +209,6 @@ public sealed class ProxyService : IProxyService
     }
 
     /// <inheritdoc/>
-    public async Task AssignAccountProxiesAsync(long accountId, IReadOnlyList<long> proxyIds,
-        ProxyMode? mode, CancellationToken ct = default)
-    {
-        using var db = _db.CreateDbContext();
-        // Include junction: cần hàng cũ để diff (không include thì EF không biết remove gì)
-        var account = await db.ProviderAccounts
-            .Include(a => a.AccountProxies)
-            .FirstOrDefaultAsync(a => a.Id == accountId, ct)
-            ?? throw new KeyNotFoundException($"Account {accountId} not found.");
-        await ValidateProxyIdsAsync(db, proxyIds, ct);
-
-        // Diff-update thay whole-set replacement (D-A1): hàng cũ không trong tập mới → Remove,
-        // hàng mới → Add, hàng trùng → giữ nguyên. Re-save cùng tập = không thao tác → idempotent,
-        // không đụng hàng đang track nên không ném InvalidOperationException trùng PK.
-        var wanted = proxyIds.ToHashSet();
-        foreach (var row in account.AccountProxies.Where(r => !wanted.Contains(r.ProxyId)).ToList())
-            account.AccountProxies.Remove(row);
-        var existing = account.AccountProxies.Select(r => r.ProxyId).ToHashSet();
-        foreach (var id in wanted.Where(id => !existing.Contains(id)))
-            account.AccountProxies.Add(new ProviderAccountProxy { AccountId = account.Id, ProxyId = id });
-
-        account.ProxyMode = mode;
-        account.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
-        _pool.Invalidate();
-    }
-
-    /// <inheritdoc/>
     public async Task SetAccountProxyOverrideAsync(long accountId, IReadOnlyList<long> proxyIds,
         bool overrideEnabled, CancellationToken ct = default)
     {
@@ -342,54 +314,6 @@ public sealed class ProxyService : IProxyService
             AddUsage(map, a.ProxyIds, new ProxyUsage(a.Id, a.Name, IsProvider: false, a.Mode));
 
         return map.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<ProxyUsage>)kv.Value);
-    }
-
-    /// <inheritdoc/>
-    public async Task<IReadOnlyList<ProxyAssignment>> GetAccountOverridesAsync(
-        CancellationToken ct = default)
-    {
-        using var db = _db.CreateDbContext();
-        // EF projection — 1 query tổng, không Include (D-A6)
-        return await db.ProviderAccounts.AsNoTracking()
-            .Where(a => a.AccountProxies.Count > 0)
-            .Select(a => new ProxyAssignment
-            {
-                Id = a.Id,
-                Name = a.Name,
-                IsProvider = false,
-                Mode = a.ProxyMode,
-                ProxyIds = a.AccountProxies.Select(x => x.ProxyId).ToList(),
-            })
-            .ToListAsync(ct);
-    }
-
-    /// <inheritdoc/>
-    public async Task<int> ResetAccountOverridesAsync(long providerId, CancellationToken ct = default)
-    {
-        using var db = _db.CreateDbContext();
-        // Include junction + accounts: cần hàng cũ để xóa (không include thì EF không biết remove gì)
-        var provider = await db.Providers
-            .Include(p => p.Accounts)
-                .ThenInclude(a => a.AccountProxies)
-            .FirstOrDefaultAsync(p => p.Id == providerId, ct)
-            ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
-
-        var reset = 0;
-        foreach (var account in provider.Accounts
-            .Where(a => a.AccountProxies.Count > 0 || a.ProxyMode is not null))
-        {
-            account.AccountProxies.Clear();
-            account.ProxyMode = null;
-            account.UpdatedAt = DateTimeOffset.UtcNow;
-            reset++;
-        }
-
-        if (reset > 0)
-        {
-            await db.SaveChangesAsync(ct);
-            _pool.Invalidate();
-        }
-        return reset;
     }
 
     /// <inheritdoc/>
