@@ -235,6 +235,8 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     {
         // Bridge qua app.Services đúng pattern QueuedSnapshot — queue chỉ sống trong
         // container DI của proxy, coordinator MAUI không có đường đọc trực tiếp.
+        // Coordinator chỉ gọi khi IsRunning (spec §9.2); nhánh null dưới đây là chống
+        // race StopAsync giữa check IsRunning và gọi — coi như ghi fail, update abort an toàn.
         var app = _app;
         if (app is null)
             return false;

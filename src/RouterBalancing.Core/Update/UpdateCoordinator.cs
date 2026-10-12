@@ -232,22 +232,28 @@ public sealed class UpdateCoordinator : IDisposable
 
         Changed?.Invoke();
 
-        bool wrote;
-        try
+        // Spec §9.2: proxy chưa dừng (Stop/Start từ Dashboard, hoặc chưa StartAsync lúc
+        // startup) → không có queue nào để persist — bỏ qua snapshot thay vì báo lỗi
+        // "ghi snapshot thất bại" sai bản chất và chặn update oan.
+        if (_proxy.IsRunning)
         {
-            wrote = await _proxy.TryWriteQueueSnapshotAsync();
-        }
-        catch (Exception ex)
-        {
-            // Chi tiết exception vào thẳng message của Fail — chỉ một lần Warn, không nuốt lỗi
-            Fail(UpdateError.SnapshotFailed, $"Update aborted: queue snapshot write failed: {ex.Message}");
-            return;
-        }
+            bool wrote;
+            try
+            {
+                wrote = await _proxy.TryWriteQueueSnapshotAsync();
+            }
+            catch (Exception ex)
+            {
+                // Chi tiết exception vào thẳng message của Fail — chỉ một lần Warn, không nuốt lỗi
+                Fail(UpdateError.SnapshotFailed, $"Update aborted: queue snapshot write failed: {ex.Message}");
+                return;
+            }
 
-        if (!wrote)
-        {
-            Fail(UpdateError.SnapshotFailed, "Update aborted: queue snapshot write failed.");
-            return;
+            if (!wrote)
+            {
+                Fail(UpdateError.SnapshotFailed, "Update aborted: queue snapshot write failed.");
+                return;
+            }
         }
 
         bool installed;
@@ -279,7 +285,11 @@ public sealed class UpdateCoordinator : IDisposable
             // Quit lỗi = process vẫn sống: không được để finalise giữ gate đóng vĩnh viễn.
             // Update thật sự đã thành công (updater đã launch) nên chỉ Warn + mở lại gate +
             // reset — không bắn Failed (báo "cập nhật thất bại" sẽ sai sự thật).
+            // Snapshot cũng phải xoá như các nhánh install-fail (spec §7): updater có thể
+            // đã cài xong hoặc sẽ fail — dù sao lần boot sau không được restore oan queue
+            // của phiên bản cũ.
             _log.Warn($"Application quit failed after update install: {ex.Message}");
+            DeleteSnapshot();
             ReleaseDrainAndReset(runId);
         }
     }

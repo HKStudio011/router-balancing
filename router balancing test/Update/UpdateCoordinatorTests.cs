@@ -144,6 +144,24 @@ public class UpdateCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task StartUpdateAsync_WhenProxyNotRunning_SkipsSnapshotAndProceedsToInstall()
+    {
+        // Spec §9.2: proxy Stop/Start từ Dashboard (hoặc chưa StartAsync lúc startup) —
+        // không có queue để persist, gate 2 phải "xong ngay", update vẫn cài được.
+        using var fx = CreateFixtures();
+        fx.Proxy.IsRunning = false;
+        fx.Updates.CompleteDownload(Path.Combine(_directory, "app-9.9.9.zip"));
+
+        await fx.Coordinator.StartUpdateAsync(Release());
+
+        Assert.Equal(0, fx.Proxy.WriteCalls); // không gọi TryWrite khi host chưa chạy
+        Assert.False(File.Exists(SnapshotPath));
+        Assert.Equal(1, fx.Updates.InstallCalls);
+        Assert.Equal(1, fx.Shutdown.QuitCount);
+        // Sau Quit thành công state không reset (process phải chết) — không assert gate/flags
+    }
+
+    [Fact]
     public async Task CancelUpdate_BeforeFinalize_CancelsDownloadAndResumes()
     {
         using var fx = CreateFixtures();
@@ -383,6 +401,9 @@ public class UpdateCoordinatorTests : IDisposable
         // Update thật sự đã thành công trước khi Quit lỗi
         Assert.Equal(1, fx.Updates.InstallCalls);
         Assert.Equal(1, fx.Proxy.WriteCalls);
+        // Quit lỗi = process vẫn sống — snapshot phải bị xoá như các nhánh install-fail,
+        // lần boot sau không được restore oan queue của phiên bản cũ
+        Assert.False(File.Exists(SnapshotPath));
     }
 
     // ===== Test doubles =====
@@ -455,6 +476,9 @@ public class UpdateCoordinatorTests : IDisposable
 
         public bool WriteResult { get; set; } = true;
 
+        /// <summary>Trạng thái host — coordinator bỏ qua snapshot khi false (spec §9.2).</summary>
+        public bool IsRunning { get; set; } = true;
+
         public int WriteCalls => Volatile.Read(ref _writeCalls);
 
         /// <summary>
@@ -501,8 +525,6 @@ public class UpdateCoordinatorTests : IDisposable
         }
 
         public int? Port => throw new NotSupportedException();
-
-        public bool IsRunning => throw new NotSupportedException();
 
         public event Action? StateChanged
         {

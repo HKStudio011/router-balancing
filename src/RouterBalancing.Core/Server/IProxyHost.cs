@@ -61,8 +61,10 @@ public interface IProxyHost : IAsyncDisposable
     /// Ghi snapshot request chưa dispatch xuống <c>queue-snapshot.json</c> — cầu nối để
     /// coordinator (MAUI) persist queue trước khi restart cài update; queue sống trong
     /// container DI của proxy nên MAUI không đọc được trực tiếp (spec §8).
+    /// Coordinator chỉ gọi khi <see cref="IsRunning"/> — host chưa chạy không còn là
+    /// <see langword="false"/> ở đây (spec §9.2: bỏ qua bước snapshot).
     /// </summary>
-    /// <returns><see langword="true"/> khi ghi thành công; <see langword="false"/> khi host chưa chạy hoặc ghi file thất bại (đã log Warn).</returns>
+    /// <returns><see langword="true"/> khi ghi thành công; <see langword="false"/> khi ghi file thất bại (đã log Warn).</returns>
     Task<bool> TryWriteQueueSnapshotAsync();
 }
 
