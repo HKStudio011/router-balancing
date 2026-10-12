@@ -193,20 +193,28 @@ else
                         }
                         else
                         {
-                            <div class="mt-1 flex flex-col gap-1">
-                                @foreach (var option in MatchSearch(pool))
-                                {
-                                    @* Proxy tắt vẫn thêm được — pool tự lọc khi chạy (D-A2) *@
-                                    <button type="button" class="pt-add" disabled="@_busy"
-                                            @onclick="() => AddProxyAsync(node.Provider.Id, option.Id)">
-                                        @EndpointOf(option)
-                                        @if (!option.Enabled)
-                                        {
-                                            <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
-                                        }
-                                    </button>
-                                }
-                            </div>
+                            var matches = MatchSearch(pool).ToList();
+                            if (matches.Count == 0)
+                            {
+                                <p class="pt-empty mt-1">@L["proxies.tree.searchEmpty"]</p>
+                            }
+                            else
+                            {
+                                <div class="mt-1 flex flex-col gap-1">
+                                    @foreach (var option in matches)
+                                    {
+                                        @* Proxy tắt vẫn thêm được — pool tự lọc khi chạy (D-A2) *@
+                                        <button type="button" class="pt-add" disabled="@_busy"
+                                                @onclick="() => AddProxyAsync(node.Provider.Id, option.Id)">
+                                            @EndpointOf(option)
+                                            @if (!option.Enabled)
+                                            {
+                                                <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
+                                            }
+                                        </button>
+                                    }
+                                </div>
+                            }
                         }
                     </div>
                 }
@@ -346,6 +354,9 @@ else
     private List<Provider> _providers = [];
     // Ma trận gán (B4) — nguồn tập hiệu lực + cờ override; tick/lưu luôn đọc từ đây, không từ DOM
     private ProxyAssignmentMatrix _matrix = new([], []);
+    // Matrix nạp được chưa — chỉ true khi await thành công; false → chặn mọi thao tác ghi
+    // để không ghi đè mất tập gán cũ khi nguồn best-effort hỏng (cùng lớp với _scopeLoaded cũ)
+    private bool _matrixLoaded;
     // Cây hiển thị — tính lại sau mỗi ReloadAsync
     private IReadOnlyList<ProviderTreeNode> _tree = [];
     // Node provider đang mở (null = tất cả đóng) — chỉ 1 node mở tại một thời điểm (spec C1)
@@ -400,10 +411,15 @@ else
         try
         {
             _matrix = await matrixTask;
+            _matrixLoaded = true;
         }
         catch (Exception ex)
         {
+            // Matrix là nguồn tính set khi ghi — lỗi phải toast, không được im lặng để
+            // cây render rỗng + handler ghi đè mất tập gán cũ
+            _matrixLoaded = false;
             Log.Error("Không tải được ma trận gán proxy.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
         }
 
         _tree = ProviderAssignmentTree.Build(_providers, _rows, _matrix);
@@ -600,6 +616,7 @@ else
     /// <summary>Mở/đóng node provider — chỉ 1 node mở tại một thời điểm (spec C1); đổi node reset search-add.</summary>
     private Task ToggleExpandAsync(long providerId)
     {
+        if (_busy) return Task.CompletedTask;
         _expandedProviderId = _expandedProviderId == providerId ? null : providerId;
         _addSearch = string.Empty;
         return Task.CompletedTask;
@@ -610,10 +627,23 @@ else
             ? SetModeAsync(providerId, mode)
             : Task.CompletedTask;
 
+    /// <summary>
+    /// Chặn thao tác ghi gán khi ma trận chưa nạp được — chỉ toast, không đổi state,
+    /// để không ghi đè mất tập gán cũ khi nguồn best-effort hỏng (cùng lớp với _scopeLoaded cũ).
+    /// </summary>
+    /// <returns><see langword="true"/> nếu ma trận sẵn sàng; <see langword="false"/> nếu chưa và đã toast lỗi.</returns>
+    private bool EnsureMatrixLoaded()
+    {
+        if (_matrixLoaded) return true;
+        Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        return false;
+    }
+
     /// <summary>Đổi mode rr/fb của provider — giữ nguyên tập proxy (spec C3).</summary>
     private async Task SetModeAsync(long providerId, ProxyMode mode)
     {
         if (_busy) return;
+        if (!EnsureMatrixLoaded()) return;
         var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
         await SaveProviderAssignmentAsync(providerId, row?.ProxyIds ?? [], mode);
     }
@@ -622,6 +652,7 @@ else
     private async Task AddProxyAsync(long providerId, long proxyId)
     {
         if (_busy) return;
+        if (!EnsureMatrixLoaded()) return;
         var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
         var set = new HashSet<long>(row?.ProxyIds ?? []) { proxyId };
         await SaveProviderAssignmentAsync(providerId, set.OrderBy(id => id).ToList(), row?.Mode);
@@ -631,6 +662,7 @@ else
     private async Task RemoveProxyAsync(long providerId, long proxyId)
     {
         if (_busy) return;
+        if (!EnsureMatrixLoaded()) return;
         var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
         var set = new HashSet<long>(row?.ProxyIds ?? []);
         set.Remove(proxyId);
@@ -640,10 +672,12 @@ else
     /// <summary>
     /// Lưu gán cấp provider — single-flight (_busy chặn double-click), không toast thành công;
     /// lỗi KeyNotFound = scope bị xóa nơi khác (spec C3) → toast riêng, còn lại toast chung.
+    /// Chốt chặn cuối: mọi ghi cấp provider phải qua matrix đã nạp (EnsureMatrixLoaded).
     /// </summary>
     private async Task SaveProviderAssignmentAsync(
         long providerId, IReadOnlyList<long> proxyIds, ProxyMode? mode)
     {
+        if (!EnsureMatrixLoaded()) return;
         _busy = true;
         try
         {
@@ -676,6 +710,7 @@ else
         AccountTickNode accountNode, bool checking)
     {
         if (_busy) return;
+        if (!EnsureMatrixLoaded()) return;
         _busy = true;
         try
         {

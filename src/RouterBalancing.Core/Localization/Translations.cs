@@ -412,6 +412,7 @@ public static class Translations
         ["proxies.tree.addPlaceholder"] = "Search proxy to add…",
         ["proxies.tree.addEmpty"] = "All proxies are already assigned.",
         ["proxies.tree.empty"] = "No proxy assigned yet.",
+        ["proxies.tree.searchEmpty"] = "No matching proxy.",
         ["proxies.tree.remove"] = "Unassign from provider",
 
         // Dashboard stats (Task 5, spec dashboard-stats §7)
@@ -870,6 +871,7 @@ public static class Translations
         ["proxies.tree.addPlaceholder"] = "Tìm proxy để thêm…",
         ["proxies.tree.addEmpty"] = "Tất cả proxy đã được gán.",
         ["proxies.tree.empty"] = "Chưa gán proxy nào.",
+        ["proxies.tree.searchEmpty"] = "Không có proxy khớp tìm kiếm.",
         ["proxies.tree.remove"] = "Bỏ gán khỏi provider",
 
         // Dashboard stats (Task 5, spec dashboard-stats §7)
