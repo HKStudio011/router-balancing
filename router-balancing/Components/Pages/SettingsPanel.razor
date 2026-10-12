@@ -636,6 +636,9 @@
         // giữa lúc render nút và lúc bấm — nếu chạy với release null sẽ bắt đầu một
         // update "ma" (drain + modal) rồi fail ở download, toast "tải thất bại" sai bản chất
         if (Check.AvailableRelease is not { } release) return;
+        // Double-click trước khi modal render: StartUpdateAsync lần 2 throw
+        // InvalidOperationException trên task fire-and-forget (unobserved) — chặn sớm tại UI
+        if (Coordinator.UpdateInProgress) return;
         // Fire-and-forget: await sẽ giữ handler mở suốt thời gian download —
         // modal hiển thị qua UpdateCoordinator.UpdateInProgress + event Changed
         _ = Coordinator.StartUpdateAsync(release);

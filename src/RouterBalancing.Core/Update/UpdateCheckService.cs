@@ -41,6 +41,11 @@ public sealed class UpdateCheckService : IAsyncDisposable
     private Task? _loop;
     private ReleaseInfo? _availableRelease;
 
+    // Guard chống check chồng lấp (spec §9.4): 24h loop + nút "Kiểm tra cập nhật" của
+    // Settings có thể chạy song song — mỗi lần là một HTTP request thừa. Try-acquire
+    // không chờ: đang có check chạy thì lần kia trả trạng thái hiện tại ngay.
+    private readonly SemaphoreSlim _checkGate = new(1, 1);
+
     /// <summary>
     /// Tạo service — vòng lặp nền chỉ khởi động khi gọi <see cref="Start"/>.
     /// </summary>
@@ -121,9 +126,32 @@ public sealed class UpdateCheckService : IAsyncDisposable
     /// Kiểm tra một lần (nút "Kiểm tra cập nhật" trong Settings gọi thẳng) —
     /// thất bại trả <see cref="UpdateCheckResult.Failed"/> và GIỮ nguyên trạng thái:
     /// một lần check lỗi không được xoá badge của bản update đã phát hiện trước đó.
+    /// Đã có lần check đang chạy (24h loop + manual chồng lấp, spec §9.4) → trả trạng
+    /// thái hiện tại ngay, không gửi HTTP lần thứ hai.
     /// </summary>
     /// <returns>Kết quả lần kiểm tra.</returns>
     public async Task<UpdateCheckResult> CheckOnceAsync()
+    {
+        // Try-acquire không chờ: đang có check chạy thì không duplicate HTTP — trả
+        // trạng thái badge đã biết (Available) hoặc Failed (im lặng, giữ nguyên state)
+        if (!_checkGate.Wait(0))
+        {
+            return AvailableRelease is not null
+                ? UpdateCheckResult.UpdateAvailable
+                : UpdateCheckResult.Failed;
+        }
+
+        try
+        {
+            return await CheckOnceCoreAsync();
+        }
+        finally
+        {
+            _checkGate.Release();
+        }
+    }
+
+    private async Task<UpdateCheckResult> CheckOnceCoreAsync()
     {
         ReleaseInfo? release;
         try

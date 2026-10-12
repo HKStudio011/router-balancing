@@ -108,6 +108,59 @@ public class UpdateCheckServiceTests
         await service.DisposeAsync(); // dispose ngay — không ném
     }
 
+    [Fact]
+    public async Task CheckOnceAsync_WhileAnotherCheckInFlight_ReturnsCurrentStateWithoutSecondHttpCall()
+    {
+        // Spec §9.4: check thủ công + 24h loop chồng lấp — lần 2 không được gửi HTTP thứ hai
+        var updates = new FakeAppUpdateService
+        {
+            NextRelease = Release(),
+            CheckGate = new TaskCompletionSource<bool>(),
+        };
+        await using var service = new UpdateCheckService(updates, new NullLog());
+
+        var first = service.CheckOnceAsync();
+        for (var i = 0; i < 100 && updates.CheckCalls == 0; i++)
+            await Task.Delay(20);
+        Assert.Equal(1, updates.CheckCalls);
+
+        // Chưa từng có kết quả → "không biết gì" — trả Failed (im lặng), giữ nguyên state
+        var overlapped = await service.CheckOnceAsync();
+        Assert.Equal(UpdateCheckResult.Failed, overlapped);
+        Assert.Equal(1, updates.CheckCalls);
+
+        updates.CheckGate.TrySetResult(true);
+        Assert.Equal(UpdateCheckResult.UpdateAvailable, await first);
+        Assert.True(service.IsUpdateAvailable);
+
+        // Lần check đang chạy đã kết thúc — lần mới gửi HTTP bình thường
+        updates.CheckGate = null;
+        Assert.Equal(UpdateCheckResult.UpdateAvailable, await service.CheckOnceAsync());
+        Assert.Equal(2, updates.CheckCalls);
+    }
+
+    [Fact]
+    public async Task CheckOnceAsync_WhileAnotherCheckInFlight_ReturnsUpdateAvailableWhenBadgeKnown()
+    {
+        var updates = new FakeAppUpdateService { NextRelease = Release() };
+        await using var service = new UpdateCheckService(updates, new NullLog());
+        await service.CheckOnceAsync();
+        Assert.True(service.IsUpdateAvailable);
+
+        updates.CheckGate = new TaskCompletionSource<bool>();
+        var blocked = service.CheckOnceAsync();
+        for (var i = 0; i < 100 && updates.CheckCalls < 2; i++)
+            await Task.Delay(20);
+
+        // Badge đã biết → trả UpdateAvailable ngay, không HTTP lần thứ ba
+        var overlapped = await service.CheckOnceAsync();
+        Assert.Equal(UpdateCheckResult.UpdateAvailable, overlapped);
+        Assert.Equal(2, updates.CheckCalls);
+
+        updates.CheckGate.TrySetResult(true);
+        await blocked;
+    }
+
     // ===== Test doubles =====
 
     /// <summary>Fake IAppUpdateService — check trả release set được, cờ IsUpdateAvailable điều khiển được.</summary>
@@ -126,10 +179,18 @@ public class UpdateCheckServiceTests
 
         public string? DownloadedZipPath { get; set; }
 
-        public Task<ReleaseInfo?> CheckForUpdatesAsync()
+        /// <summary>Chặn CheckForUpdatesAsync cho tới khi test giải phóng — giữ lần check "đang chạy".</summary>
+        public TaskCompletionSource<bool>? CheckGate { get; set; }
+
+        public async Task<ReleaseInfo?> CheckForUpdatesAsync()
         {
             Interlocked.Increment(ref _checkCalls);
-            return Task.FromResult(NextRelease);
+            var gate = CheckGate;
+            if (gate is not null)
+            {
+                await gate.Task;
+            }
+            return NextRelease;
         }
 
         public bool IsUpdateAvailable(ReleaseInfo release) => NewerAvailable;
