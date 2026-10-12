@@ -55,6 +55,16 @@ public class GitHubAppUpdateServiceTests
     }
 
     [Fact]
+    public async Task CheckForUpdatesAsync_ReturnsNull_WhenNonJsonResponse()
+    {
+        // Spec §12: API trả HTML/gián đoạn (rate limit page, proxy error...) —
+        // deserialize ném JsonException, service phải trả null chứ không ném ra caller.
+        var service = ServiceWith(new JsonHandler("<html>gateway timeout</html>"));
+
+        Assert.Null(await service.CheckForUpdatesAsync());
+    }
+
+    [Fact]
     public void IsUpdateAvailable_True_WhenTagNewer()
     {
         var service = ServiceWith(new JsonHandler("{}"), "1.0.0.0");
