@@ -28,5 +28,20 @@ public class AppVersionFormatterTests
 
     [Fact]
     public void Format_WhenVersionNull_Throws()
-        => Assert.Throws<ArgumentNullException>(() => AppVersionFormatter.Format(null!));
+        => Assert.Throws<ArgumentNullException>(() => AppVersionFormatter.Format((Version)null!));
+
+    [Theory]
+    [InlineData("1.0.0.0", "1.0")]
+    [InlineData("1.0.3.0", "1.0.3")]
+    [InlineData("2.5", "2.5")]
+    public void Format_ParsesStringThenFormats(string input, string expected)
+        => Assert.Equal(expected, AppVersionFormatter.Format(input));
+
+    [Fact]
+    public void Format_WhenStringUnparsable_Throws()
+        => Assert.Throws<ArgumentException>(() => AppVersionFormatter.Format("not-a-version"));
+
+    [Fact]
+    public void Format_WhenStringNull_Throws()
+        => Assert.Throws<ArgumentNullException>(() => AppVersionFormatter.Format((string)null!));
 }

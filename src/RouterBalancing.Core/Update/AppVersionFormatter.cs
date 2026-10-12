@@ -7,6 +7,21 @@ namespace RouterBalancing.Core.Update;
 public static class AppVersionFormatter
 {
     /// <summary>
+    /// Parse chuỗi version rồi định dạng dạng ngắn — convenience cho
+    /// <c>IAppUpdateService.CurrentVersion</c> (UI không cần tự <c>Version.Parse</c>).
+    /// </summary>
+    /// <param name="version">Chuỗi version hợp lệ theo <see cref="Version.Parse(string)"/> (vd. "1.0.3.0").</param>
+    /// <returns>Chuỗi version dạng ngắn, tối thiểu 2 phần (Major.Minor).</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="version"/> là null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="version"/> không parse được thành <see cref="Version"/>.</exception>
+    public static string Format(string version)
+    {
+        ArgumentNullException.ThrowIfNull(version);
+
+        return Format(Version.Parse(version));
+    }
+
+    /// <summary>
     /// Chuyển version sang dạng ngắn: 1.0.0.0 → "1.0", 1.0.3.0 → "1.0.3", 1.0.0.4 → "1.0.0.4".
     /// </summary>
     /// <param name="version">Version cần định dạng; không nhận null.</param>

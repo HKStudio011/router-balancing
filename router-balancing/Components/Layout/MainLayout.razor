@@ -59,7 +59,7 @@
         UpdateCheck.UpdateFound += OnUpdateFound;
         Coordinator.Failed += OnUpdateFailed;
         Coordinator.Cancelled += OnUpdateCancelled;
-        _appVersion = AppVersionFormatter.Format(Version.Parse(Updates.CurrentVersion));
+        _appVersion = AppVersionFormatter.Format(Updates.CurrentVersion);
         UpdateBadge();
         try
         {

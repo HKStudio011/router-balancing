@@ -339,7 +339,7 @@
         _draft = LoadDraft();
         L.LanguageChanged += OnLanguageChanged;
         Check.StateChanged += OnCheckStateChanged;
-        _appVersion = AppVersionFormatter.Format(Version.Parse(Updates.CurrentVersion));
+        _appVersion = AppVersionFormatter.Format(Updates.CurrentVersion);
         await ReloadKeysAsync();
     }
 
