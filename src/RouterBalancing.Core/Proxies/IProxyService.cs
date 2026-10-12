@@ -54,7 +54,8 @@ public interface IProxyService
     /// vì flag=false nghĩa là kế thừa và cây gán ngừng đọc junction.
     /// Mode của AC luôn về null — mode là lựa chọn cấp provider trong model mới.
     /// </remarks>
-    /// <exception cref="KeyNotFoundException">Không có account với <paramref name="accountId"/> hoặc proxy không tồn tại.</exception>
+    /// <exception cref="KeyNotFoundException">Không có account với <paramref name="accountId"/>, hoặc
+    /// <paramref name="overrideEnabled"/> = true và có proxy không tồn tại.</exception>
     Task SetAccountProxyOverrideAsync(long accountId, IReadOnlyList<long> proxyIds,
         bool overrideEnabled, CancellationToken ct = default);
 

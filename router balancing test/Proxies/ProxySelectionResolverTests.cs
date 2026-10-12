@@ -83,6 +83,18 @@ public class ProxySelectionResolverTests
     }
 
     [Fact]
+    public void Resolve_AccountFlagOffWithStaleJunctions_NoProviderProxies_ReturnsDirect()
+    {
+        // Kế thừa mà provider không có junction → Direct; junction rác của account không được "cứu" selection
+        var provider = ProviderWithProxies();
+        var account = AccountWithProxies(200);
+        account.ProxyOverrideEnabled = false;
+        var sel = Resolver.Resolve(provider, account);
+        Assert.Same(ProxySelection.Direct, sel);
+        Assert.True(sel.IsDirect);
+    }
+
+    [Fact]
     public void Resolve_AccountOverrideEmptySet_ReturnsDirect()
     {
         var provider = ProviderWithProxies(100);

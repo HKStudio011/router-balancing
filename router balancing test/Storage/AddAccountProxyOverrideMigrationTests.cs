@@ -64,16 +64,17 @@ public class AddAccountProxyOverrideMigrationTests : IDisposable
 
         db.GetService<IMigrator>().Migrate(TargetId);
 
-        // Cột tồn tại, NOT NULL (AddColumn sinh INTEGER NOT NULL DEFAULT 0)
+        // Cột tồn tại, NOT NULL INTEGER DEFAULT 0 (AddColumn sinh INTEGER NOT NULL DEFAULT 0)
         Assert.Equal(1L, Convert.ToInt64(Scalar(
             "SELECT COUNT(*) FROM pragma_table_info('ProviderAccounts') "
-            + "WHERE name='ProxyOverrideEnabled' AND \"notnull\"=1")));
+            + "WHERE name='ProxyOverrideEnabled' AND type='INTEGER' AND \"dflt_value\"='0' AND \"notnull\"=1")));
 
         // Backfill: account có junction → 1, không junction → 0
         Assert.Equal(1L, Convert.ToInt64(Scalar(
             "SELECT ProxyOverrideEnabled FROM ProviderAccounts WHERE Id = 1")));
-        Assert.Equal(0L, Convert.ToInt64(Scalar(
-            "SELECT ProxyOverrideEnabled FROM ProviderAccounts WHERE Id = 2")));
+        // COUNT form: SELECT giá trị sẽ trả NULL (→ 0) khi hàng vắng — false-pass nếu backfill hỏng
+        Assert.Equal(1L, Convert.ToInt64(Scalar(
+            "SELECT COUNT(*) FROM ProviderAccounts WHERE Id = 2 AND ProxyOverrideEnabled = 0")));
         Assert.Equal(1L, Convert.ToInt64(Scalar(
             "SELECT ProxyOverrideEnabled FROM ProviderAccounts WHERE Id = 3")));
 

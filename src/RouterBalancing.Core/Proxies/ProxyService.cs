@@ -218,16 +218,19 @@ public sealed class ProxyService : IProxyService
             .Include(a => a.AccountProxies)
             .FirstOrDefaultAsync(a => a.Id == accountId, ct)
             ?? throw new KeyNotFoundException($"Account {accountId} not found.");
-        await ValidateProxyIdsAsync(db, proxyIds, ct);
 
         if (!overrideEnabled)
         {
             // Flag=false = kế thừa toàn bộ: junction phải sạch để cây gán không đọc nhầm hàng rác
-            // (stale rows không được sống sót — proxyIds bị bỏ qua ở nhánh này).
+            // (stale rows không được sống sót — proxyIds bị bỏ qua ở nhánh này, không validate).
             account.AccountProxies.Clear();
         }
         else
         {
+            // Chỉ validate khi tập thực sự được persist — caller tắt override không được ném
+            // KeyNotFoundException vì id đã bị xóa của input đang bỏ qua.
+            await ValidateProxyIdsAsync(db, proxyIds, ct);
+
             // Diff-update thay whole-set replacement (D-A1): hàng cũ không trong tập mới → Remove,
             // hàng mới → Add, hàng trùng → giữ nguyên. Re-save cùng tập = không thao tác → idempotent,
             // không đụng hàng đang track nên không ném InvalidOperationException trùng PK.

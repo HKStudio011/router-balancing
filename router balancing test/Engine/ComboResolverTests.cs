@@ -106,7 +106,7 @@ public class ComboResolverTests : IDisposable
         db.SaveChanges();
     }
 
-    /// <summary>Tạo account + hàng junction Account↔Proxy — trả về account Id.</summary>
+    /// <summary>Tạo account override (cờ bật) + hàng junction Account↔Proxy — trả về account Id.</summary>
     private long AddAccountWithProxy(long providerId, long proxyId)
     {
         using var db = _db.CreateFactory().CreateDbContext();
@@ -116,6 +116,8 @@ public class ComboResolverTests : IDisposable
             Name = "a1",
             ApiKeyEncrypted = "enc",
             Enabled = true,
+            // Flag là nguồn sự thật: cờ tắt thì resolver bỏ qua junction kể cả khi hàng còn trong DB
+            ProxyOverrideEnabled = true,
         };
         db.ProviderAccounts.Add(account);
         db.SaveChanges();

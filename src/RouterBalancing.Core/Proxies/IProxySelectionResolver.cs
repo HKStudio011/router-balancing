@@ -3,8 +3,9 @@ using RouterBalancing.Core.Domain;
 namespace RouterBalancing.Core.Proxies;
 
 /// <summary>
-/// Chọn proxy theo Provider + Account (most-specific-wins, D1): account có proxy →
-/// override provider; không thì provider; không thì Direct.
+/// Chọn proxy theo cờ <c>ProviderAccount.ProxyOverrideEnabled</c> — nguồn sự thật (3 trạng thái):
+/// flag tắt = kế thừa tập provider (junction của account bị bỏ qua); flag bật + junction = tập
+/// override của account; flag bật + junction rỗng = Direct.
 /// </summary>
 public interface IProxySelectionResolver
 {
