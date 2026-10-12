@@ -1,0 +1,96 @@
+name: Build Release
+
+permissions:
+  contents: write
+
+on:
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  PROJECT_PATH: router-balancing/router-balancing.csproj
+  OUTPUT_DIR: publish
+  # Job-level để if của bước Sign đọc được (step-level env không có trong if) —
+  # true khi khai Azure Key Vault secrets, false → bỏ qua signing
+  HAS_AZURE_SECRETS: ${{ secrets.AZURE_KEY_VAULT_URI != '' }}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install MAUI workload
+        run: dotnet workload install maui
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.PROJECT_PATH }}
+
+      # Updater exe tự vào output khi publish qua ProjectReference
+      # OutputItemType=Content trong router-balancing.csproj — không cần build/copy riêng
+      - name: Publish router-balancing (Windows)
+        run: |
+          dotnet publish ${{ env.PROJECT_PATH }} `
+            -f net10.0-windows10.0.19041.0 `
+            -c Release `
+            --self-contained `
+            -o ${{ env.OUTPUT_DIR }}
+
+      # Updater bắt buộc phải cạnh app exe (InstallUpdateAsync tìm theo tên) — fail sớm nếu mất
+      - name: Verify updater exe in publish output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${{ env.OUTPUT_DIR }}/RouterBalancing.Updater.exe")) {
+            throw "RouterBalancing.Updater.exe missing from publish output"
+          }
+          if (-not (Test-Path "${{ env.OUTPUT_DIR }}/router-balancing.exe")) {
+            throw "router-balancing.exe missing from publish output"
+          }
+
+      - name: Sign binaries (optional)
+        if: env.HAS_AZURE_SECRETS == 'true'
+        env:
+          AZURE_KEY_VAULT_URI: ${{ secrets.AZURE_KEY_VAULT_URI }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_CERT_NAME: ${{ secrets.AZURE_CERT_NAME }}
+        shell: pwsh
+        run: |
+          Write-Host "Signing with Azure Code Signing..."
+          dotnet tool install --global AzureSignTool --version 6.0.1
+          AzureSignTool sign `
+            -kvu "$env:AZURE_KEY_VAULT_URI" `
+            -kvi "$env:AZURE_CLIENT_ID" `
+            -kvt "$env:AZURE_TENANT_ID" `
+            -kvs "$env:AZURE_CLIENT_SECRET" `
+            -kvc "$env:AZURE_CERT_NAME" `
+            -tr "http://timestamp.digicert.com" `
+            -v "${{ env.OUTPUT_DIR }}/router-balancing.exe" `
+            "${{ env.OUTPUT_DIR }}/RouterBalancing.Updater.exe"
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.event_name }}" -eq "release") {
+            "${{ github.ref_name }}"
+          } else {
+            "$(Get-Date -Format 'yyyyMMdd.HHmm')"
+          }
+          Compress-Archive -Path ${{ env.OUTPUT_DIR }}/* -DestinationPath "router-balancing-$version-win.zip"
+
+      # Chỉ upload khi trigger bởi release published — workflow_dispatch chạy trên branch
+      # nên ref_name không phải tag release, gh release upload sẽ fail
+      - name: Upload Release Asset
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" router-balancing-*.zip --clobber
