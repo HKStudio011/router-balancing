@@ -424,6 +424,9 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<int?>("ProxyMode")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("ProxyOverrideEnabled")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long>("RequestsUsed")
                         .HasColumnType("INTEGER");
 

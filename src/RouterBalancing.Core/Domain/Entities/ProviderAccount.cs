@@ -62,4 +62,7 @@ public class ProviderAccount
 
     /// <summary>Mode dùng tập proxy trên; null = kế thừa provider.</summary>
     public ProxyMode? ProxyMode { get; set; }
+
+    /// <summary>true = AC dùng tập proxy riêng của mình (rỗng = direct); false = kế thừa provider.</summary>
+    public bool ProxyOverrideEnabled { get; set; }
 }
