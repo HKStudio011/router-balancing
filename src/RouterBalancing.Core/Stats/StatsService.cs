@@ -50,6 +50,11 @@ public sealed class StatsService : IStatsService
             .Select(e => new UsageRow(e.RequestId, e.PromptTokens, e.CompletionTokens))
             .ToListAsync(ct);
 
+        // Id → Name cho breakdown client key — journal chỉ lưu ClientKeyId, UI hiển thị tên
+        var clientKeyNames = await db.ClientKeys.AsNoTracking()
+            .Select(k => new { k.Id, k.Name })
+            .ToDictionaryAsync(k => k.Id, k => k.Name, ct);
+
         var ok = terminals.Count(t => t.Outcome == RequestOutcome.Ok);
         var errors = terminals.Count(t => t.Outcome == RequestOutcome.Error);
         var cancelled = terminals.Count(t => t.Outcome == RequestOutcome.Cancelled);
@@ -65,11 +70,13 @@ public sealed class StatsService : IStatsService
         int? avgLatency = durations.Count == 0 ? null : (int)Math.Round(durations.Average());
         int? p95Latency = durations.Count == 0 ? null : NearestRankP95(durations);
 
-        var buckets = BuildBuckets(terminals, from, bucketCount, bucketStep);
         var tokensByRequest = IndexTokensByRequestId(usages);
+        var buckets = BuildBuckets(terminals, tokensByRequest, from, bucketCount, bucketStep);
         var byProvider = BuildBreakdown(terminals, t => t.ProviderKey ?? "—", tokensByRequest);
         var byModel = BuildBreakdown(terminals, t => t.ModelKey ?? "—", tokensByRequest);
-        var byClientKey = BuildBreakdown(terminals, t => t.ClientKeyId?.ToString() ?? "—", tokensByRequest);
+        var byClientKey = BuildBreakdown(terminals,
+            t => t.ClientKeyId is not { } id ? "—" : clientKeyNames.GetValueOrDefault(id, id.ToString()),
+            tokensByRequest);
 
         return new StatsSnapshot(
             from, now,
@@ -114,17 +121,24 @@ public sealed class StatsService : IStatsService
         return durations[(int)Math.Ceiling(0.95 * durations.Count) - 1];
     }
 
-    /// <summary>Sinh đủ bucket rỗng rồi điền Requests/Errors theo Timestamp của dòng terminal.</summary>
+    /// <summary>
+    /// Sinh đủ bucket rỗng rồi điền Requests/Errors theo Timestamp và token join theo
+    /// RequestId của dòng terminal — usage không correlate được terminal chỉ vào tổng snapshot.
+    /// </summary>
     /// <param name="terminals">Dòng terminal trong cửa sổ.</param>
+    /// <param name="tokensByRequest">Index token theo RequestId (dùng chung với breakdown).</param>
     /// <param name="from">Đầu cửa sổ — cũng là BucketStart[0].</param>
     /// <param name="bucketCount">24 (giờ) hoặc 7/30 (ngày).</param>
     /// <param name="bucketStep">Kích thước bucket (1 giờ hoặc 1 ngày UTC).</param>
     /// <returns>Danh sách bucket đầy đủ, thứ tự tăng dần theo thời gian.</returns>
     private static IReadOnlyList<StatsBucket> BuildBuckets(IReadOnlyList<TerminalRow> terminals,
+        IReadOnlyDictionary<string, (long Prompt, long Completion)> tokensByRequest,
         DateTimeOffset from, int bucketCount, TimeSpan bucketStep)
     {
         var requests = new int[bucketCount];
         var errors = new int[bucketCount];
+        var promptTokens = new long[bucketCount];
+        var completionTokens = new long[bucketCount];
         foreach (var t in terminals)
         {
             // Chia theo khoảng từ đầu cửa sổ — Timestamp đã bị WHERE kẹp trong window nên
@@ -133,11 +147,17 @@ public sealed class StatsService : IStatsService
             if (index < 0 || index >= bucketCount) continue;
             requests[index]++;
             if (t.Outcome == RequestOutcome.Error) errors[index]++;
+            if (t.RequestId is not null && tokensByRequest.TryGetValue(t.RequestId, out var tks))
+            {
+                promptTokens[index] += tks.Prompt;
+                completionTokens[index] += tks.Completion;
+            }
         }
 
         var buckets = new StatsBucket[bucketCount];
         for (var i = 0; i < bucketCount; i++)
-            buckets[i] = new StatsBucket(from + bucketStep * i, requests[i], errors[i]);
+            buckets[i] = new StatsBucket(from + bucketStep * i, requests[i], errors[i],
+                promptTokens[i], completionTokens[i]);
         return buckets;
     }
 

@@ -55,4 +55,17 @@ public interface IProxyService
     /// </summary>
     Task<IReadOnlyDictionary<long, IReadOnlyList<ProxyUsage>>> GetReverseAssignmentsAsync(
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Mọi hàng override của AC (tập proxy + mode) — cây reverse dùng để phân biệt
+    /// "chưa override (kế thừa provider)" với "đã override nhưng proxy ngoài tập" (D1).
+    /// </summary>
+    Task<IReadOnlyList<ProxyAssignment>> GetAccountOverridesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Đưa mọi AC của provider về kế thừa — xóa hàng override + mode trong 1 transaction.
+    /// </summary>
+    /// <returns>Số AC đã reset (0 nếu không có override nào).</returns>
+    /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/>.</exception>
+    Task<int> ResetAccountOverridesAsync(long providerId, CancellationToken ct = default);
 }

@@ -4,7 +4,10 @@ namespace RouterBalancing.Core.Stats;
 /// <param name="BucketStart">Đầu bucket, luôn UTC (giờ 00h…23h cho Hôm nay; nửa đêm cho bucket ngày).</param>
 /// <param name="Requests">Số dòng terminal trong bucket.</param>
 /// <param name="Errors">Số dòng terminal có <c>Outcome=Error</c> trong bucket.</param>
-public sealed record StatsBucket(DateTimeOffset BucketStart, int Requests, int Errors);
+/// <param name="PromptTokens">Tổng PromptTokens join từ dòng usage theo RequestId của các terminal trong bucket.</param>
+/// <param name="CompletionTokens">Tổng CompletionTokens join từ dòng usage theo RequestId của các terminal trong bucket.</param>
+public sealed record StatsBucket(DateTimeOffset BucketStart, int Requests, int Errors,
+    long PromptTokens, long CompletionTokens);
 
 /// <summary>Một dòng breakdown theo key Provider/Model/Client key — sort Requests desc (spec §3.4).</summary>
 /// <param name="Key">Nhóm key; "—" cho giá trị NULL (request hủy trước khi chọn route…).</param>
@@ -31,7 +34,7 @@ public sealed record StatsBreakdownRow(string Key, int Requests, int Errors, lon
 /// <param name="Buckets">24 bucket giờ UTC (Hôm nay) hoặc 7/30 bucket ngày UTC; bucket rỗng trả 0.</param>
 /// <param name="ByProvider">Breakdown theo <c>ProviderKey ?? "—"</c>, sort Requests desc.</param>
 /// <param name="ByModel">Breakdown theo <c>ModelKey ?? "—"</c>, sort Requests desc.</param>
-/// <param name="ByClientKey">Breakdown theo <c>ClientKeyId?.ToString() ?? "—"</c>, sort Requests desc.</param>
+/// <param name="ByClientKey">Breakdown theo tên client key (Name); "—" khi ClientKeyId NULL; id khi key đã bị xóa khỏi bảng — sort Requests desc.</param>
 public sealed record StatsSnapshot(
     DateTimeOffset From, DateTimeOffset To,
     int Requests, int Ok, int Errors, int Cancelled,

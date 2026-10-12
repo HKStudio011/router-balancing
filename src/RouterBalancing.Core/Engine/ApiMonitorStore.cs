@@ -4,8 +4,8 @@ using RouterBalancing.Core.Logging;
 namespace RouterBalancing.Core.Engine;
 
 /// <summary>
-/// Triển khai <see cref="IApiMonitorStore"/>: ring 50 record theo thứ tự thấy lần đầu
-/// (mutation dưới lock, fire <see cref="IApiMonitorStore.Changed"/> ngoài lock) + tiêu thụ
+/// Triển khai <see cref="IApiMonitorStore"/>: ring 50 record — thêm theo thứ tự thấy lần đầu,
+/// record đổi State được đẩy lên đầu (activity-feed) + tiêu thụ
 /// <see cref="ITraceFeed.Published"/> để lấy State/Status/Success/CompletedAt (H4 authoritative).
 /// Mọi entry point bọc try/catch + log — không bao giờ ném exception ra caller (contract fail-open).
 /// </summary>
@@ -79,7 +79,7 @@ public sealed class ApiMonitorStore : IApiMonitorStore
         lock (_gate)
         {
             var snapshot = _calls.ToArray();
-            // List giữ thứ tự first-seen → đảo lại để UI hiển thị mới nhất trước
+            // List giữ thứ tự activity (state-change mới nhất nằm cuối) → đảo lại để UI hiển thị trên đầu
             Array.Reverse(snapshot);
             return snapshot;
         }
@@ -238,7 +238,18 @@ public sealed class ApiMonitorStore : IApiMonitorStore
                     TraceStage.Parked => current,
                     _ => current,
                 };
-                _calls[index] = updated;
+
+                // Activity-feed: chỉ đổi State MỚI mới đưa record lên đầu ring (cuối _calls) —
+                // update không đổi state (Received/Parked/Attempt đè route) giữ vị trí first-seen
+                if (updated.State == current.State)
+                {
+                    _calls[index] = updated;
+                }
+                else
+                {
+                    _calls.RemoveAt(index);
+                    _calls.Add(updated);
+                }
             }
         }
         catch (Exception ex)
@@ -263,11 +274,14 @@ public sealed class ApiMonitorStore : IApiMonitorStore
         return _calls.Count - 1;
     }
 
-    /// <summary>Thêm record vào cuối ring (thứ tự first-seen) và drop bớt nếu vượt cap.</summary>
+    /// <summary>
+    /// Thêm record vào cuối ring (activity-order) và drop bớt nếu vượt cap —
+    /// cuối list = hoạt động mới nhất (vừa thấy hoặc vừa đổi state).
+    /// </summary>
     private void Add(ApiCallRecord record)
     {
         _calls.Add(record);
-        // Cũ nhất luôn đứng đầu list → drop từ đầu cho tới khi về cap
+        // Ít hoạt động nhất luôn đứng đầu list → drop từ đầu cho tới khi về cap
         while (_calls.Count > RingCap)
             _calls.RemoveAt(0);
     }

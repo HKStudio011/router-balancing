@@ -89,6 +89,7 @@ public class StatsServiceTests : IDisposable
     public async Task Breakdown_JoinsUsageTokensByRequestId()
     {
         var at = MidnightUtc.AddHours(10);
+        SeedClientKey(7, "app-7");
         Seed(
             Terminal(RequestOutcome.Ok, at, durationMs: 50, providerKey: "p1", modelKey: "m1",
                 clientKeyId: 7, requestId: "r1"),
@@ -105,10 +106,55 @@ public class StatsServiceTests : IDisposable
         Assert.Equal(0, provider.Errors);
         Assert.Equal(180L, provider.Tokens); // 150 prompt + 30 completion của r1
         Assert.Equal(180L, Assert.Single(snapshot.ByModel).Tokens);
-        Assert.Equal(180L, Assert.Single(snapshot.ByClientKey).Tokens);
+        // Breakdown client key hiển thị TÊN (Name), không phải id
+        var clientKey = Assert.Single(snapshot.ByClientKey);
+        Assert.Equal("app-7", clientKey.Key);
+        Assert.Equal(180L, clientKey.Tokens);
         // Tổng snapshot = mọi dòng usage trong cửa sổ (kể cả r2 không join được terminal)
         Assert.Equal(157, snapshot.PromptTokens);
         Assert.Equal(33, snapshot.CompletionTokens);
+    }
+
+    [Fact]
+    public async Task Breakdown_ClientKey_DeletedKeyFallsBackToId()
+    {
+        // Key đã bị xóa khỏi bảng ClientKeys nhưng journal còn ClientKeyId mồ côi
+        Seed(Terminal(RequestOutcome.Ok, MidnightUtc.AddHours(5), clientKeyId: 99));
+
+        var snapshot = await _service.GetRangeAsync(StatsRange.Today);
+
+        Assert.Equal("99", Assert.Single(snapshot.ByClientKey).Key);
+    }
+
+    [Fact]
+    public async Task Buckets_JoinUsageTokensByRequestId()
+    {
+        var hour3 = MidnightUtc.AddHours(3);
+        var hour10 = MidnightUtc.AddHours(10);
+        Seed(
+            Terminal(RequestOutcome.Ok, hour3, durationMs: 50, requestId: "r1"),
+            Usage("r1", promptTokens: 100, completionTokens: 20, hour3),
+            Usage("r1", promptTokens: 50, completionTokens: 10, hour3),
+            Terminal(RequestOutcome.Ok, hour10, durationMs: 80, requestId: "r2"),
+            Usage("r2", promptTokens: 7, completionTokens: 3, hour10),
+            // Usage không có terminal — vào tổng snapshot nhưng không vào bucket
+            Usage("r3", promptTokens: 999, completionTokens: 111, hour3));
+
+        var snapshot = await _service.GetRangeAsync(StatsRange.Today);
+
+        // Bucket theo Timestamp của dòng terminal; token join theo RequestId (cùng rule breakdown)
+        Assert.Equal(150L, snapshot.Buckets[3].PromptTokens);
+        Assert.Equal(30L, snapshot.Buckets[3].CompletionTokens);
+        Assert.Equal(7L, snapshot.Buckets[10].PromptTokens);
+        Assert.Equal(3L, snapshot.Buckets[10].CompletionTokens);
+        Assert.All(snapshot.Buckets.Where(b => b.BucketStart != hour3 && b.BucketStart != hour10), b =>
+        {
+            Assert.Equal(0L, b.PromptTokens);
+            Assert.Equal(0L, b.CompletionTokens);
+        });
+        // Tổng snapshot vẫn cộng mọi usage trong cửa sổ (r3 không join được terminal)
+        Assert.Equal(1156, snapshot.PromptTokens);
+        Assert.Equal(144, snapshot.CompletionTokens);
     }
 
     [Fact]
@@ -130,6 +176,8 @@ public class StatsServiceTests : IDisposable
         {
             Assert.Equal(0, b.Requests);
             Assert.Equal(0, b.Errors);
+            Assert.Equal(0L, b.PromptTokens);
+            Assert.Equal(0L, b.CompletionTokens);
         });
         Assert.Empty(snapshot.ByProvider);
         Assert.Empty(snapshot.ByModel);
@@ -167,6 +215,19 @@ public class StatsServiceTests : IDisposable
     {
         using var db = _factory.CreateDbContext();
         db.LogEntries.AddRange(entries);
+        db.SaveChanges();
+    }
+
+    private void SeedClientKey(long id, string name)
+    {
+        using var db = _factory.CreateDbContext();
+        db.ClientKeys.Add(new ClientKey
+        {
+            Id = id,
+            Name = name,
+            KeyHash = new string('0', 64),
+            KeyMask = "sk-rb-…test",
+        });
         db.SaveChanges();
     }
 

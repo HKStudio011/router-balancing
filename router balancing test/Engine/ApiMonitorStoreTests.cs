@@ -49,6 +49,39 @@ public class ApiMonitorStoreTests
     }
 
     [Fact]
+    public void FeedStateChanged_PromotesRecordToTop()
+    {
+        _store.StartRequest("r1", "m1", Bytes(Prompt));
+        _store.StartRequest("r2", "m2", Bytes(Prompt));
+        Assert.Equal(["r2", "r1"], _store.Snapshot().Select(r => r.RequestId));
+
+        // r1 Queued → Running — hoạt động mới nhất phải lên đầu
+        _feed.Publish(Ev("r1", TraceStage.DispatchStarted, "m1", At, mode: "balancer"));
+        Assert.Equal(["r1", "r2"], _store.Snapshot().Select(r => r.RequestId));
+
+        // r2 Running → Done — tiếp tục nhảy lên đầu
+        _feed.Publish(Ev("r2", TraceStage.Finished, "m2", At.AddSeconds(1), status: 200, success: true));
+        Assert.Equal(["r2", "r1"], _store.Snapshot().Select(r => r.RequestId));
+    }
+
+    [Fact]
+    public void FeedAttemptSameState_KeepsPosition()
+    {
+        _store.StartRequest("r1", "m1", Bytes(Prompt));
+        _store.StartRequest("r2", "m2", Bytes(Prompt));
+        _feed.Publish(Ev("r1", TraceStage.DispatchStarted, "m1", At, mode: "balancer"));
+        _feed.Publish(Ev("r2", TraceStage.DispatchStarted, "m2", At, mode: "balancer"));
+        Assert.Equal(["r2", "r1"], _store.Snapshot().Select(r => r.RequestId));
+
+        // Attempt cập nhật route nhưng State vẫn Running — không reorder
+        _feed.Publish(Ev("r1", TraceStage.Attempt, "m1", At.AddSeconds(1),
+            route: new TraceRoute("c1", "p1", "a1")));
+
+        Assert.Equal(["r2", "r1"], _store.Snapshot().Select(r => r.RequestId));
+        Assert.Equal("p1", _store.Find("r1")!.Provider);
+    }
+
+    [Fact]
     public void StartRequest_LongPrompt_TruncatesAt64KWithMarker()
     {
         _store.StartRequest("r1", "m1", Bytes(new string('a', 70 * 1024)));

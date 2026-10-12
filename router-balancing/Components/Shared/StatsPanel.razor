@@ -95,6 +95,16 @@
         font-variant-numeric: tabular-nums;
     }
 
+    /* Phân cách "in / out" trong card Tokens — slash mờ, out tím (bảng màu trace) */
+    .stats-kpi__slash {
+        opacity: .4;
+        font-weight: 400;
+    }
+
+    .stats-kpi__out {
+        color: #a78bfa;
+    }
+
     .stats-kpi__sub {
         font-size: 11px;
         opacity: .6;
@@ -231,8 +241,18 @@
             <div class="stats-kpi__sub">@P95Text</div>
         </div>
         <div class="stats-kpi">
-            <div class="stats-kpi__label">@L["stats.kpi.tokens"]</div>
-            <div class="stats-kpi__value">@(_snapshot is { } tok ? MonitorFormat.Compact(tok.PromptTokens + tok.CompletionTokens) : "—")</div>
+            <div class="stats-kpi__label">@L["stats.kpi.tokensInOut"]</div>
+            <div class="stats-kpi__value">
+                @* In/out tách riêng theo mockup — out nhấn màu violet cho dễ phân biệt *@
+                @if (_snapshot is { } tok)
+                {
+                    @MonitorFormat.Compact(tok.PromptTokens)<span class="stats-kpi__slash">/</span><span class="stats-kpi__out">@MonitorFormat.Compact(tok.CompletionTokens)</span>
+                }
+                else
+                {
+                    @Missing
+                }
+            </div>
         </div>
     </div>
 

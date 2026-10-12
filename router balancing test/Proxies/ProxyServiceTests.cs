@@ -54,13 +54,13 @@ public class ProxyServiceTests : IDisposable
     }
 
     /// <summary>Gán account vào DB cho provider (ProxyService không quản lý account).</summary>
-    private async Task<long> AddAccountAsync(long providerId)
+    private async Task<long> AddAccountAsync(long providerId, string name = "Acc")
     {
         using var db = _factory.CreateDbContext();
         var account = new ProviderAccount
         {
             ProviderId = providerId,
-            Name = "Acc",
+            Name = name,
             ApiKeyEncrypted = _protector.Protect("secret"),
         };
         db.ProviderAccounts.Add(account);
@@ -523,6 +523,61 @@ public class ProxyServiceTests : IDisposable
 
         Assert.True(result.ContainsKey(assigned));
         Assert.False(result.ContainsKey(unassigned));
+    }
+
+    [Fact]
+    public async Task ResetAccountOverrides_WithOverrides_DeletesRowsAndReturnsCount()
+    {
+        var service = CreateService();
+        var proxyA = await AddProxyAsync(port: 9520);
+        var proxyB = await AddProxyAsync(port: 9521);
+        var providerId = await AddProviderAsync();
+        var acc1 = await AddAccountAsync(providerId, "acc-1");
+        var acc2 = await AddAccountAsync(providerId, "acc-2");
+
+        await service.AssignProviderProxiesAsync(providerId, [proxyA], ProxyMode.RoundRobin);
+        await service.AssignAccountProxiesAsync(acc1, [proxyB], ProxyMode.Fallback);
+        await service.AssignAccountProxiesAsync(acc2, [proxyA, proxyB], null);
+
+        var reset = await service.ResetAccountOverridesAsync(providerId);
+
+        Assert.Equal(2, reset);
+        using var db = _factory.CreateDbContext();
+        Assert.Empty(await db.Set<ProviderAccountProxy>().AsNoTracking()
+            .Where(x => x.AccountId == acc1 || x.AccountId == acc2).ToListAsync());
+        var accounts = await db.ProviderAccounts.AsNoTracking()
+            .Where(a => a.Id == acc1 || a.Id == acc2).ToListAsync();
+        Assert.All(accounts, a => Assert.Null(a.ProxyMode));
+        // Gán cấp provider không bị đụng
+        Assert.Single(await db.Set<ProviderProxy>().AsNoTracking()
+            .Where(x => x.ProviderId == providerId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ResetAccountOverrides_NoOverrides_ReturnsZeroAndKeepsProviderAssignment()
+    {
+        var service = CreateService();
+        var proxy = await AddProxyAsync(port: 9522);
+        var providerId = await AddProviderAsync();
+        await AddAccountAsync(providerId);
+        await service.AssignProviderProxiesAsync(providerId, [proxy], ProxyMode.Fallback);
+        var invalidationsBefore = _pool.Invalidations;
+
+        var reset = await service.ResetAccountOverridesAsync(providerId);
+
+        Assert.Equal(0, reset);
+        using var db = _factory.CreateDbContext();
+        var provider = await db.Providers.AsNoTracking().SingleAsync(p => p.Id == providerId);
+        Assert.Equal(ProxyMode.Fallback, provider.ProxyMode);
+        // Không có gì để xóa → không SaveChanges, không invalidate pool
+        Assert.Equal(invalidationsBefore, _pool.Invalidations);
+    }
+
+    [Fact]
+    public async Task ResetAccountOverrides_UnknownProvider_Throws()
+    {
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => CreateService().ResetAccountOverridesAsync(99999));
     }
 
     /// <summary>Echo theo script — lambda throw được nên test giả lập được cả nhánh lỗi.</summary>

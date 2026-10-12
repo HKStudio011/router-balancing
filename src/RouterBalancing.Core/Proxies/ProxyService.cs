@@ -305,6 +305,54 @@ public sealed class ProxyService : IProxyService
         return map.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<ProxyUsage>)kv.Value);
     }
 
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<ProxyAssignment>> GetAccountOverridesAsync(
+        CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+        // EF projection — 1 query tổng, không Include (D-A6)
+        return await db.ProviderAccounts.AsNoTracking()
+            .Where(a => a.AccountProxies.Count > 0)
+            .Select(a => new ProxyAssignment
+            {
+                Id = a.Id,
+                Name = a.Name,
+                IsProvider = false,
+                Mode = a.ProxyMode,
+                ProxyIds = a.AccountProxies.Select(x => x.ProxyId).ToList(),
+            })
+            .ToListAsync(ct);
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> ResetAccountOverridesAsync(long providerId, CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+        // Include junction + accounts: cần hàng cũ để xóa (không include thì EF không biết remove gì)
+        var provider = await db.Providers
+            .Include(p => p.Accounts)
+                .ThenInclude(a => a.AccountProxies)
+            .FirstOrDefaultAsync(p => p.Id == providerId, ct)
+            ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
+
+        var reset = 0;
+        foreach (var account in provider.Accounts
+            .Where(a => a.AccountProxies.Count > 0 || a.ProxyMode is not null))
+        {
+            account.AccountProxies.Clear();
+            account.ProxyMode = null;
+            account.UpdatedAt = DateTimeOffset.UtcNow;
+            reset++;
+        }
+
+        if (reset > 0)
+        {
+            await db.SaveChangesAsync(ct);
+            _pool.Invalidate();
+        }
+        return reset;
+    }
+
     /// <summary>1 proxy có nhiều scope — cộng dồn usage thay vì ghi đè theo key proxy.</summary>
     private static void AddUsage(Dictionary<long, List<ProxyUsage>> map, List<long> proxyIds, ProxyUsage usage)
     {

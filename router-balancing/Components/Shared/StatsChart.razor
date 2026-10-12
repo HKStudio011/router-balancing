@@ -4,12 +4,21 @@
 
 <style>
     /* Biểu đồ stats tự vẽ bằng SVG — không thêm JS chart library (quyết định thiết kế
-       dashboard-stats §1.4); màu bar theo bảng màu trace (spec §7): requests xanh, errors đỏ. */
+       dashboard-stats §1.4); màu bar theo bảng màu trace (spec §7): requests xanh, errors đỏ;
+       token in xanh, out tím (#a78bfa mirror accent KPI). */
+    .stats-chart__header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+
     .stats-chart__legend {
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
-        margin-bottom: 6px;
         font-size: 11px;
     }
 
@@ -23,6 +32,58 @@
         width: 10px;
         height: 10px;
         border-radius: 2px;
+    }
+
+    /* Toggle requests|tokens — mirror stats-tabs (StatsPanel) */
+    .stats-chart__toggle {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        overflow: hidden;
+    }
+
+    .stats-chart__toggle-btn {
+        font-size: 11px;
+        padding: 3px 10px;
+        background: transparent;
+        border: none;
+        color: inherit;
+        cursor: pointer;
+        opacity: .7;
+    }
+
+    .stats-chart__toggle-btn + .stats-chart__toggle-btn {
+        border-left: 1px solid var(--border);
+    }
+
+    .stats-chart__toggle-btn--active {
+        background: rgba(59, 130, 246, .15);
+        color: #3b82f6;
+        font-weight: 600;
+        opacity: 1;
+    }
+
+    /* Cột nhãn trục Y bên trái svg — flex column space-between để nhãn tự căn theo
+       gridline (nice-scale chia đều nên spacing đều nhau); plot flex-1 giữ % width. */
+    .stats-chart__body {
+        display: flex;
+        gap: 6px;
+    }
+
+    .stats-chart__yaxis {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        align-items: flex-end;
+        flex: none;
+        font-size: 9px;
+        opacity: .55;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .stats-chart__plot {
+        flex: 1;
+        min-width: 0;
     }
 
     /* Không viewBox: width theo % của panel còn font-size giữ cố định — tránh chữ
@@ -53,48 +114,112 @@ else
 {
     var buckets = Buckets!;
     <div class="stats-chart">
-        <div class="stats-chart__legend">
-            <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#3b82f6"></i>@L["stats.chart.requests"]</span>
-            <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#ef4444"></i>@L["stats.chart.errors"]</span>
+        <div class="stats-chart__header">
+            <div class="stats-chart__legend">
+                @if (_mode == ChartMode.Requests)
+                {
+                    <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#3b82f6"></i>@L["stats.chart.requests"]</span>
+                    <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#ef4444"></i>@L["stats.chart.errors"]</span>
+                }
+                else
+                {
+                    <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#3b82f6"></i>@L["stats.chart.in"]</span>
+                    <span class="stats-chart__item"><i class="stats-chart__dot" style="background:#a78bfa"></i>@L["stats.chart.out"]</span>
+                }
+            </div>
+
+            <div class="stats-chart__toggle">
+                <button type="button"
+                        class="stats-chart__toggle-btn @(_mode == ChartMode.Requests ? "stats-chart__toggle-btn--active" : "")"
+                        @onclick="() => _mode = ChartMode.Requests">
+                    @L["stats.chart.requests"]
+                </button>
+                <button type="button"
+                        class="stats-chart__toggle-btn @(_mode == ChartMode.Tokens ? "stats-chart__toggle-btn--active" : "")"
+                        @onclick="() => _mode = ChartMode.Tokens">
+                    @L["stats.chart.tokens"]
+                </button>
+            </div>
         </div>
 
-        <svg class="stats-chart__svg" height="@PlotHeight">
-            @* Đường baseline mảnh — mốc 0 cho các bar, currentColor theo theme *@
-            <line x1="0" y1="@PlotHeight" x2="100%" y2="@PlotHeight" stroke="currentColor" stroke-opacity=".15" />
-            @for (var i = 0; i < buckets.Count; i++)
-            {
-                var bucket = buckets[i];
-                // Requests ĐÃ bao gồm Errors (Errors ⊂ Requests, StatsService) — blue chỉ
-                // vẽ phần thành công, red chồng đúng phần errors. Vẽ blue = toàn Requests
-                // rồi cộng Errors lên trên sẽ đếm lỗi 2 lần: bucket 100%-error cao gấp 2 lần
-                // bucket lành mạnh cùng volume.
-                var okHeight = BarHeight(Math.Max(bucket.Requests - bucket.Errors, 0));
-                var errorHeight = BarHeight(bucket.Errors);
-                var x = BarXPercent(i);
-
-                @* Bar 0 không vẽ segment nhưng nhãn vẫn hiển thị (bucket rỗng trả 0 — spec §5) *@
-                if (okHeight > 0)
+        <div class="stats-chart__body">
+            <div class="stats-chart__yaxis" style="height:@(PlotHeight)px">
+                @for (var k = TickCount; k >= 0; k--)
                 {
-                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - okHeight)"
-                          height="@Num(okHeight)" fill="#3b82f6" />
+                    <span>@TickLabel(k * Scale.Step)</span>
                 }
+            </div>
 
-                @* Errors chồng lên phần thành công — stacked bar theo spec §7 *@
-                if (errorHeight > 0)
-                {
-                    <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - okHeight - errorHeight)"
-                          height="@Num(errorHeight)" fill="#ef4444" />
-                }
-            }
-        </svg>
+            <div class="stats-chart__plot">
+                <svg class="stats-chart__svg" height="@PlotHeight">
+                    @* Gridline mỗi mốc nice-scale — nhãn tương ứng nằm trong cột yaxis bên trái *@
+                    @for (var k = 1; k <= TickCount; k++)
+                    {
+                        var y = Num(PlotHeight - k * Scale.Step * PlotHeight / Scale.Max);
+                        <line x1="0" y1="@y" x2="100%" y2="@y" stroke="currentColor" stroke-opacity=".1" />
+                    }
 
-        @* Nhãn ngoài svg (Razor reserved tag `<text>` không nhận attribute — RZ1023);
-           flex-1 mỗi cột = 1 slot nên luôn căn giữa bar tương ứng *@
-        <div class="stats-chart__labels">
-            @foreach (var bucket in buckets)
-            {
-                <span>@Label(bucket)</span>
-            }
+                    @* Đường baseline mảnh — mốc 0 cho các bar, currentColor theo theme *@
+                    <line x1="0" y1="@PlotHeight" x2="100%" y2="@PlotHeight" stroke="currentColor" stroke-opacity=".15" />
+                    @for (var i = 0; i < buckets.Count; i++)
+                    {
+                        var bucket = buckets[i];
+                        var x = BarXPercent(i);
+
+                        if (_mode == ChartMode.Requests)
+                        {
+                            // Requests ĐÃ bao gồm Errors (Errors ⊂ Requests, StatsService) — blue chỉ
+                            // vẽ phần thành công, red chồng đúng phần errors. Vẽ blue = toàn Requests
+                            // rồi cộng Errors lên trên sẽ đếm lỗi 2 lần: bucket 100%-error cao gấp 2 lần
+                            // bucket lành mạnh cùng volume.
+                            var okHeight = BarHeight(Math.Max(bucket.Requests - bucket.Errors, 0));
+                            var errorHeight = BarHeight(bucket.Errors);
+
+                            @* Bar 0 không vẽ segment nhưng nhãn vẫn hiển thị (bucket rỗng trả 0 — spec §5) *@
+                            if (okHeight > 0)
+                            {
+                                <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - okHeight)"
+                                      height="@Num(okHeight)" fill="#3b82f6" />
+                            }
+
+                            @* Errors chồng lên phần thành công — stacked bar theo spec §7 *@
+                            if (errorHeight > 0)
+                            {
+                                <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - okHeight - errorHeight)"
+                                      height="@Num(errorHeight)" fill="#ef4444" />
+                            }
+                        }
+                        else
+                        {
+                            // In/out là 2 phần rời rạc (không subset như Errors) — stacked
+                            // in dưới, out chồng lên; scale.Max ≥ max(in+out) nên không tràn
+                            var inHeight = BarHeight(bucket.PromptTokens);
+                            var outHeight = BarHeight(bucket.CompletionTokens);
+
+                            if (inHeight > 0)
+                            {
+                                <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - inHeight)"
+                                      height="@Num(inHeight)" fill="#3b82f6" />
+                            }
+
+                            if (outHeight > 0)
+                            {
+                                <rect x="@Pct(x)" width="@Pct(BarWidthPercent)" y="@Num(PlotHeight - inHeight - outHeight)"
+                                      height="@Num(outHeight)" fill="#a78bfa" />
+                            }
+                        }
+                    }
+                </svg>
+
+                @* Nhãn ngoài svg (Razor reserved tag `<text>` không nhận attribute — RZ1023);
+                   flex-1 mỗi cột = 1 slot nên luôn căn giữa bar tương ứng *@
+                <div class="stats-chart__labels">
+                    @foreach (var bucket in buckets)
+                    {
+                        <span>@Label(bucket)</span>
+                    }
+                </div>
+            </div>
         </div>
     </div>
 }
@@ -106,24 +231,48 @@ else
     /// </summary>
     [Parameter] public IReadOnlyList<StatsBucket>? Buckets { get; set; }
 
+    private enum ChartMode { Requests, Tokens }
+
     // Chiều cao vùng vẽ bar (px) — nhãn trục X là dải HTML riêng bên dưới svg
     private const int PlotHeight = 120;
 
+    // Số khoảng chia trục Y — 5 khoảng = 6 nhãn (mockup A: max 47 → mốc 0..50 bước 10)
+    private const int ScaleIntervals = 5;
+
+    // Mode hiện tại — mặc định requests để giữ hành vi biểu đồ cũ khi mount
+    private ChartMode _mode = ChartMode.Requests;
+
+    /// <summary>Max dữ liệu theo mode: requests (đã gồm errors) hoặc tổng in+out.</summary>
+    private long DataMax => _mode == ChartMode.Tokens
+        ? Buckets!.Max(b => b.PromptTokens + b.CompletionTokens)
+        : Buckets!.Max(b => (long)b.Requests);
+
     /// <summary>
-    /// Thang vẽ stacked: cao nhất trong các bucket — bằng chính <c>Requests</c> vì
-    /// Requests đã bao gồm Errors (Errors ⊂ Requests); cộng thêm Errors nữa sẽ đếm
-    /// lỗi 2 lần và thổi phồng thang. Toàn bucket rỗng → trả 1 để tránh chia 0
-    /// (không segment nào được vẽ anyway). Clamp int.MaxValue: bucket &gt; 2B làm
-    /// cast (int) wrap số âm → BarHeight âm.
+    /// Thang nice-number (1–2–5×10ᵏ) tính từ max — ước lượng trực quan thay vì
+    /// max "lệch" (47) làm top; step clamp ≥ 1 vì count/token đều số nguyên.
+    /// Toàn dữ liệu 0 → (1, 1) để không chia 0 (token mode khi mọi bucket 0).
     /// </summary>
-    private int ScaleMax
+    private (double Max, double Step) Scale
     {
         get
         {
-            var max = Buckets?.Max(b => (long)b.Requests) ?? 0;
-            return max <= 0 ? 1 : (int)Math.Min(max, int.MaxValue);
+            if (DataMax <= 0)
+            {
+                return (1, 1);
+            }
+
+            var rawStep = DataMax / (double)ScaleIntervals;
+            var magnitude = Math.Pow(10, Math.Floor(Math.Log10(rawStep)));
+            var normalized = rawStep / magnitude;
+            var nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+            var step = Math.Max(nice * magnitude, 1);
+            var max = Math.Ceiling(DataMax / step) * step;
+            return (max, step);
         }
     }
+
+    /// <summary>Số khoảng của trục Y = max/step; nhãn = TickCount+1.</summary>
+    private int TickCount => (int)(Scale.Max / Scale.Step);
 
     private double SlotPercent => 100.0 / (Buckets?.Count ?? 1);
 
@@ -132,7 +281,13 @@ else
 
     private double BarXPercent(int index) => index * SlotPercent + SlotPercent * 0.14;
 
-    private double BarHeight(int value) => value * (double)PlotHeight / ScaleMax;
+    private double BarHeight(double value) => value * PlotHeight / Scale.Max;
+
+    /// <summary>Nhãn mốc trục Y — requests dạng N0, tokens rút gọn theo Compact (20k, 1,2M…).</summary>
+    private string TickLabel(double tick) =>
+        _mode == ChartMode.Tokens
+            ? MonitorFormat.Compact((long)tick)
+            : ((long)tick).ToString("N0");
 
     /// <summary>
     /// Nhãn trục X tự suy từ số bucket: 24 bucket giờ UTC → "{hour:00}h" (Hôm nay);

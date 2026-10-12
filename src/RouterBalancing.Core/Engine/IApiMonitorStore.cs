@@ -21,7 +21,7 @@ public enum ApiCallState
 
 /// <summary>
 /// Một dòng theo dõi API call — immutable; upsert theo RequestId
-/// (nhiều attempt vẫn là 1 record, vị trí giữ theo thứ tự thấy lần đầu).
+/// (nhiều attempt vẫn là 1 record; record đổi State được đưa lên đầu ring).
 /// </summary>
 /// <param name="RequestId">Id duy nhất — key join với trail trace.</param>
 /// <param name="Model">Model alias client gửi.</param>
@@ -65,7 +65,7 @@ public interface IApiMonitorStore
     /// <summary>Tổng prompt+completion của các response trong ngày UTC hiện tại — tile "Token hôm nay".</summary>
     long TodayTokens { get; }
 
-    /// <summary>Ảnh chụp tối đa 50 record, mới nhất trước; record được cập nhật không đổi vị trí.</summary>
+    /// <summary>Ảnh chụp tối đa 50 record, hoạt động mới nhất trước — record đổi trạng thái được đưa lên đầu, update không đổi trạng thái giữ vị trí.</summary>
     /// <returns>Danh sách record theo thứ tự mới → cũ.</returns>
     IReadOnlyList<ApiCallRecord> Snapshot();
 

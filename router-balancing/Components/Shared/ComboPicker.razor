@@ -1,0 +1,274 @@
+@using Microsoft.JSInterop
+@using RouterBalancing.Core.Domain
+@inject LocalizationService L
+@inject IJSRuntime JS
+
+<style>
+    /* Picker chọn combo con (tương tự ModelCombo): search live theo tên, list phẳng
+       (không nhóm), ô đang chọn 2 dòng — tên xanh + "mode · N thành phần". Menu position
+       fixed theo trigger qua rbCombo.place để không bị overflow-y-auto của Modal cắt. */
+    .combopicker {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .combopicker__control {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+        padding: 5px 8px;
+        font-size: 13px;
+        text-align: left;
+        color: inherit;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+    .combopicker__value {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        line-height: 1.25;
+        padding-left: 4px;
+    }
+
+    .combopicker__name {
+        color: #3b82f6;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .combopicker__meta {
+        font-size: 11px;
+        opacity: .6;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .combopicker__chev {
+        opacity: .5;
+        flex: none;
+    }
+
+    /* Overlay toàn khung dialog — bắt click ngoài dropdown; stopPropagation ở dialog
+       nên Modal backdrop không bị đóng theo (xem Modal.razor). */
+    .combopicker__overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+    }
+
+    .combopicker__menu {
+        /* Fallback absolute dưới trigger — rbCombo.place sẽ chuyển sang fixed + tọa độ */
+        position: absolute;
+        z-index: 50;
+        top: calc(100% + 4px);
+        left: 0;
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        max-height: 260px;
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, .22);
+        overflow: hidden;
+    }
+
+    .combopicker__search {
+        box-sizing: border-box;
+        flex: none;
+        width: 100%;
+        padding: 7px 10px;
+        font-size: 13px;
+        color: inherit;
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid var(--border);
+        outline: none;
+    }
+
+    .combopicker__list {
+        overflow-y: auto;
+    }
+
+    .combopicker__opt {
+        padding: 7px 10px;
+        font-size: 13px;
+        cursor: pointer;
+    }
+
+    .combopicker__opt:hover {
+        background: rgba(59, 130, 246, .12);
+    }
+
+    .combopicker__empty {
+        padding: 12px;
+        font-size: 12px;
+        text-align: center;
+        opacity: .55;
+    }
+</style>
+
+<div class="combopicker">
+    <button type="button" class="combopicker__control" @ref="_controlRef" @onclick="ToggleAsync">
+        <span class="combopicker__value">
+            <span class="combopicker__name">@SelectedNameText</span>
+            @if (SelectedMetaText is { } meta)
+            {
+                <span class="combopicker__meta">@meta</span>
+            }
+        </span>
+        <span class="combopicker__chev">▾</span>
+    </button>
+
+    @if (_open)
+    {
+        <div class="combopicker__overlay" @onclick="Close"></div>
+        <div class="combopicker__menu" @ref="_menuRef">
+            <input @ref="_searchRef" class="combopicker__search"
+                   placeholder="@L["combos.combo.comboSearch"]"
+                   @bind="_search" @bind:event="oninput"
+                   @onkeydown="OnSearchKeyDownAsync" @onkeydown:stopPropagation="true" />
+            <div class="combopicker__list">
+                <div class="combopicker__opt" @onclick="() => SelectAsync(null)">—</div>
+                @foreach (var combo in FilteredCombos)
+                {
+                    var c = combo;
+                    <div class="combopicker__opt" @onclick="() => SelectAsync(c.Id)">@c.Name</div>
+                }
+                @if (!FilteredCombos.Any())
+                {
+                    <div class="combopicker__empty">@L["combos.combo.emptyCombo"]</div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>Danh sách combo hợp lệ (đã loại self + tổ tiên ở trang gọi) — nguồn option.</summary>
+    [Parameter] public IReadOnlyList<Combo> Combos { get; set; } = [];
+
+    /// <summary>Combo đang chọn — null = chưa chọn.</summary>
+    [Parameter] public long? Value { get; set; }
+
+    /// <summary>Phát khi người dùng chọn/bỏ chọn combo.</summary>
+    [Parameter] public EventCallback<long?> ValueChanged { get; set; }
+
+    private bool _open;
+    private string _search = string.Empty;
+    private bool _focusSearch;
+    private ElementReference _controlRef;
+    private ElementReference _searchRef;
+    private ElementReference _menuRef;
+
+    /// <summary>Dòng 1 của ô đang chọn — tên combo; "—" khi chưa chọn hoặc không còn trong danh sách.</summary>
+    private string SelectedNameText => FindSelected()?.Name ?? "—";
+
+    /// <summary>Dòng 2 của ô đang chọn — "mode · N thành phần"; null khi chưa chọn.</summary>
+    private string? SelectedMetaText =>
+        FindSelected() is { } c
+            ? $"{ModeLabel(c)} · {c.Items.Count}"
+            : null;
+
+    private Combo? FindSelected()
+    {
+        if (Value is not { } id)
+        {
+            return null;
+        }
+
+        foreach (var combo in Combos)
+        {
+            if (combo.Id == id)
+            {
+                return combo;
+            }
+        }
+        return null;
+    }
+
+    private string ModeLabel(Combo combo) =>
+        combo.Mode == ComboMode.RoundRobin
+            ? L["combos.mode.roundRobin"]
+            : L["combos.mode.fallback"];
+
+    /// <summary>Filter theo tên combo — không phân biệt hoa/thường; rỗng → tất cả.</summary>
+    private IEnumerable<Combo> FilteredCombos
+    {
+        get
+        {
+            var term = _search.Trim();
+            foreach (var combo in Combos)
+            {
+                if (term.Length == 0 || combo.Name.Contains(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return combo;
+                }
+            }
+        }
+    }
+
+    private async Task ToggleAsync()
+    {
+        _open = !_open;
+        _search = string.Empty;
+        _focusSearch = _open;
+        if (_open)
+        {
+            // Render menu xong mới focus được input — chờ frame render kế tiếp
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Close() => _open = false;
+
+    /// <summary>Esc trong ô search đóng dropdown (không đóng modal — đã stopPropagation).</summary>
+    private Task OnSearchKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            _open = false;
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task SelectAsync(long? comboId)
+    {
+        _open = false;
+        if (comboId != Value)
+        {
+            Value = comboId;
+            await ValueChanged.InvokeAsync(comboId);
+        }
+    }
+
+    /// <summary>Focus ô search + place menu fixed theo trigger sau khi menu vừa render.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusSearch)
+        {
+            _focusSearch = false;
+            await _searchRef.FocusAsync();
+            // Place sau focus để tránh browser tự scroll container làm lệch tọa độ
+            try
+            {
+                await JS.InvokeVoidAsync("rbCombo.place", _controlRef, _menuRef);
+            }
+            catch (JSException)
+            {
+                // JS không load được — giữ fallback CSS absolute (menu vẫn mở dưới trigger)
+            }
+        }
+    }
+}
