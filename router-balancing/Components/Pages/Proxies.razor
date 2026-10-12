@@ -255,7 +255,12 @@ else
                         @foreach (var account in proxyNode.Accounts)
                         {
                             @* Tick = tập hiệu lực (matrix), không phải state DOM — save ghi ngay (spec C4) *@
-                            <label @key="account.Account.Id" class="pt-leaf">
+                            @* Key phải UNIQUE giữa siblings: label là con của <details> chứ không nằm
+                               trong div proxy, và 1 AC lặp lại dưới MỌI proxy của provider — key chỉ
+               bằng account.Id sẽ trùng (cả va chạm long proxyId vs accountId) → keyed-diff hỏng
+               "Attempting to return wrong pooled instance" (dotnet/aspnetcore#42433).
+               Composite proxyId-accountId + string type ≠ key long của div → không trùng. *@
+                            <label @key="@($"{proxyNode.Proxy.Id}-{account.Account.Id}")" class="pt-leaf">
                                 <input type="checkbox" checked="@account.Tick"
                                        disabled="@(!proxyNode.Proxy.Enabled || _busy)"
                                        @onchange="args => ToggleAccountAsync(node, proxyNode, account, args.Value is true)" />
