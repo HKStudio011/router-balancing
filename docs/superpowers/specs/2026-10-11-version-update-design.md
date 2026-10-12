@@ -156,7 +156,8 @@ CẢ HAI gate xong → snapshot queue (bao gồm request tích trong lúc đóng
 - Gọi từ MAUI side qua **bridge của `ProxyHost`** (queue chỉ sống trong proxy DI container — đúng pattern `QueuedSnapshot()` sẵn có):
 
 ```csharp
-// IProxyHost — trả false nếu ghi fail (coordinator huỷ update theo §7)
+// IProxyHost — false CHỈ khi ghi fail (coordinator huỷ update theo §7);
+// host chưa chạy không gọi method này — coordinator skip theo §9.2
 Task<bool> TryWriteQueueSnapshotAsync();
 // implementation: resolve IRequestQueue từ app.Services → QueueSnapshotWriter.WriteAsync(snapshot, path)
 ```
@@ -185,10 +186,11 @@ public sealed class UpdateCoordinator
 4. Poll mỗi 500 ms: nếu **(download xong)** ∧ **(`proxyHost.GetTotalInFlight() == 0`)** → sang snapshot.
    - Download fail giữa chừng → `CancelDrain()` + toast lỗi → abort.
 5. `proxyHost.TryWriteQueueSnapshotAsync()` (bridge §6.3):
+   - proxy chưa chạy (`!IsRunning`) → **bỏ qua snapshot** (không có gì để persist — §9.2) → sang `InstallUpdateAsync()` luôn.
    - `true` → `InstallUpdateAsync()`:
-     - `true` → modal sang trạng thái khoá (không Hủy) → `Application.Current.Quit()`.
-     - `false` → **xoá snapshot file** (tránh restore oan ở lần boot sau) + `CancelDrain()` + toast lỗi.
-   - `false` → `CancelDrain()` + toast lỗi → abort.
+      - `true` → modal sang trạng thái khoá (không Hủy) → `Application.Current.Quit()`.
+      - `false` → **xoá snapshot file** (tránh restore oan ở lần boot sau) + `CancelDrain()` + toast lỗi.
+   - `false` (ghi fail thật) → `CancelDrain()` + toast lỗi → abort.
 6. `CancelUpdate()`: huỷ download CTS + `drainGate.CancelDrain()` + toast "Đã hủy cập nhật" — dispatcher resume đẩy queue → thực thi bình thường, không snapshot.
 
 **Bridge đếm in-flight:** thêm `int GetTotalInFlight()` vào `IProxyHost`/`ProxyHost` — resolve `IExecutionList` từ `app.Services` (cùng pattern `QueuedSnapshot()` sẵn có), trả 0 khi proxy chưa chạy. Coordinator poll qua bridge này (không cần event mới).

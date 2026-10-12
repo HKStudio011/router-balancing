@@ -262,7 +262,7 @@ public static class QueueSnapshotStore
 ```csharp
 // IProxyHost thêm:
 int GetTotalInFlight();                                  // 0 khi proxy chưa chạy
-Task<bool> TryWriteQueueSnapshotAsync();                 // false khi proxy chưa chạy hoặc ghi fail
+Task<bool> TryWriteQueueSnapshotAsync();                 // false CHỈ khi ghi fail — host chưa chạy: coordinator skip (spec §9.2)
 ```
 
 - [ ] **Step 1: Test failing** — `GetTotalInFlight_ReturnsZero_WhenNotRunning`; `TryWriteQueueSnapshotAsync_ReturnsFalse_WhenNotRunning`.
@@ -349,7 +349,7 @@ Chạy lại toàn bộ test (ProxyHostTests không regress). **Step 6: Commit**
 - Produces (Task 12):
 
 ```csharp
-public enum UpdateError { DownloadFailed, SnapshotFailed, InstallFailed }
+public enum UpdateError { DownloadFailed, SnapshotFailed, InstallFailed, DrainFailed } // DrainFailed: fix round Task 9 (append-only, UI xử lý đủ 4 giá trị)
 public interface IAppShutdown { void Quit(); }
 
 public sealed class UpdateCoordinator : IDisposable
@@ -399,7 +399,7 @@ pollTask = Task.Run: loop 500ms until cts cancelled:
 await WhenAny(pollTask, cts) → cancelled → return
 nếu download fail (null path) → Fail(DownloadFailed): gate.CancelDrain(); ResetState(); return
 IsFinalizing=true; Changed?.Invoke()
-nếu !await proxy.TryWriteQueueSnapshotAsync() → Fail(SnapshotFailed) như trên
+nếu proxy.IsRunning && !await proxy.TryWriteQueueSnapshotAsync() → Fail(SnapshotFailed) như trên; proxy chưa chạy → skip snapshot, tiếp tục install (spec §9.2 — final-review I1)
 nếu !await updates.InstallUpdateAsync() → File.Delete(snapshotPath) bọc try/catch; Fail(InstallFailed); return
 shutdown.Quit()
 ```
