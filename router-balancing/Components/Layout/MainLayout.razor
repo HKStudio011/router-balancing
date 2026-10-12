@@ -11,8 +11,14 @@
 @inject UpdateCoordinator Coordinator
 
 <div class="flex h-screen overflow-hidden bg-background text-text">
-    <aside class="w-56 shrink-0 border-r border-border bg-surface">
-        <NavMenu />
+    <aside class="flex w-56 shrink-0 flex-col border-r border-border bg-surface">
+        <div class="flex-1 overflow-auto">
+            <NavMenu />
+        </div>
+        @* Footer version — format ngắn qua AppVersionFormatter (spec §9.3), ghim đáy navbar *@
+        <footer class="border-t border-border px-4 py-1 text-xs text-neutral-500">
+            v@_appVersion
+        </footer>
     </aside>
 
     <div class="flex min-w-0 flex-1 flex-col">
@@ -24,11 +30,6 @@
         <main class="flex-1 overflow-auto p-4">
             @Body
         </main>
-
-        @* Footer version — format ngắn qua AppVersionFormatter (spec §9.3) *@
-        <footer class="border-t border-border bg-surface px-4 py-1 text-right text-xs text-neutral-500">
-            v@_appVersion
-        </footer>
     </div>
 
     @* Modal update toàn màn hình — tự render rỗng khi không có update đang chạy *@
