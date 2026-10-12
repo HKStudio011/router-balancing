@@ -16,10 +16,30 @@ namespace router_balancing.WinUI
         /// </summary>
         public App()
         {
+            // Exception trên UI thread WinUI làm crash cứng app mà ILogService (DB) không kịp ghi —
+            // ghi file độc lập DB để chẩn đoán sau khi app đã chết
+            this.UnhandledException += (_, args) =>
+            {
+                try
+                {
+                    var dir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                        "router-balancing");
+                    Directory.CreateDirectory(dir);
+                    File.AppendAllText(
+                        Path.Combine(dir, "ui-crash.log"),
+                        $"[{DateTimeOffset.Now:O}] {args.Exception}\n\n");
+                }
+                catch
+                {
+                    // Last resort: không được ném tiếp từ handler này
+                }
+            };
             this.InitializeComponent();
         }
 
         protected override MauiApp CreateMauiApp() => MauiProgram.CreateMauiApp();
+
     }
 
 }

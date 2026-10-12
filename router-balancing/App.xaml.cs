@@ -49,6 +49,31 @@ namespace router_balancing
 
             _log.Info("router-balancing khởi động.");
 
+            // Chặn crash âm thầm: exception ngoài luồng render (event handler Blazor Hybrid,
+            // background task) không có ErrorBoundary nào bắt — ghi vào DB trước khi process chết
+            AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            {
+                try
+                {
+                    _log.Error("Unhandled exception (AppDomain).", args.ExceptionObject as Exception);
+                }
+                catch
+                {
+                    // Last resort: không được ném tiếp từ handler này
+                }
+            };
+            TaskScheduler.UnobservedTaskException += (_, args) =>
+            {
+                try
+                {
+                    _log.Error("Unobserved task exception.", args.Exception);
+                    args.SetObserved();
+                }
+                catch
+                {
+                }
+            };
+
             // Dọn log quá hạn ngay khi mở app rồi lặp 24h — retention không cần user bấm
             _retention.Start();
 
