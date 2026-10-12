@@ -57,7 +57,10 @@ public class ProviderAccount
     /// <summary>Thời điểm cập nhật gần nhất (UTC).</summary>
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    /// <summary>Proxy outbound gán cho account (override provider). Rỗng = kế thừa provider.</summary>
+    /// <summary>
+    /// Proxy outbound gán cho account (override provider). Ý nghĩa theo <see cref="ProxyOverrideEnabled"/>:
+    /// flag=false = hàng không đọc (kế thừa tập provider); flag=true + rỗng = direct.
+    /// </summary>
     public List<ProviderAccountProxy> AccountProxies { get; set; } = [];
 
     /// <summary>Mode dùng tập proxy trên; null = kế thừa provider.</summary>

@@ -33,7 +33,13 @@ public interface IProxyService
     /// <exception cref="KeyNotFoundException">Không có proxy với <paramref name="proxyId"/>.</exception>
     Task<ProxyTestResult> TestAsync(long proxyId, CancellationToken ct);
 
-    /// <summary>Gán proxy của provider (M2M) + mode. proxyIds rỗng = gỡ toàn bộ.</summary>
+    /// <summary>
+    /// Gán proxy của provider (M2M) + mode. proxyIds rỗng = gỡ toàn bộ.
+    /// Gỡ proxy khỏi tập cũng strip mọi override của AC cùng provider đang tham chiếu proxy
+    /// vừa gỡ — cùng một unit of work (invariant A1: tập override luôn là tập con tập provider).
+    /// Tập override thu nhỏ theo semantics C4: == tập mới → quay kế thừa (cờ false, junction
+    /// sạch); rỗng mà tập mới khác rỗng → direct (cờ true, junction sạch); còn lại → giữ tập thu nhỏ.
+    /// </summary>
     /// <param name="mode">Mode dùng tập proxy; null = kế thừa (account hoặc Robin).</param>
     /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/> hoặc proxy không tồn tại.</exception>
     Task AssignProviderProxiesAsync(long providerId, IReadOnlyList<long> proxyIds,

@@ -149,117 +149,128 @@ else
 <div class="mt-6 rounded border border-border bg-surface p-4">
     <h2 class="text-sm font-semibold mb-3">@L["proxies.assign.title"]</h2>
 
-    <div class="proxy-tree">
-        @foreach (var node in _tree)
-        {
-            <details @key="node.Provider.Id" class="pt-node"
-                     open="@(_expandedProviderId == node.Provider.Id ? "open" : null)">
-                @* preventDefault: click summary sẽ toggle native — state quản lý bằng
-                   _expandedProviderId để attr `open` luôn khớp (xem comment khối style ở trên). *@
-                <summary class="pt-summary"
-                         @onclick="() => ToggleExpandAsync(node.Provider.Id)"
-                         @onclick:preventDefault="true">
-                    <span class="pt-chev"></span>
-                    <span>@node.Provider.Name</span>
-                    @* stopPropagation + preventDefault: click vào <select> nằm trong <summary>
-                       sẽ bubble lên summary và collapse node nếu không chặn (cùng pattern
-                       nút ✎ trong summary trước đây). *@
-                    <select class="rounded border border-border bg-surface px-1 py-0.5 text-xs"
-                            value="@node.EffectiveMode" disabled="@_busy"
-                            @onclick:preventDefault="true" @onclick:stopPropagation="true"
-                            @onchange="args => OnModeChangedAsync(node.Provider.Id, args)">
-                        <option value="@ProxyMode.RoundRobin">@L["proxies.assign.mode_rr"]</option>
-                        <option value="@ProxyMode.Fallback">@L["proxies.assign.mode_fallback"]</option>
-                    </select>
-                    <span class="pt-badge">
-                        @(node.Proxies.Count == 0
-                            ? L["proxies.assign.none"]
-                            : string.Format(L["proxies.assign.badge_count"], node.Proxies.Count))
-                    </span>
-                </summary>
+    @if (!_matrixLoaded)
+    {
+        @* Matrix chưa nạp được lần nào → Build(matrix rỗng) sẽ khẳng định sai
+           "Chưa gán proxy nào" + badge "Chưa gán proxy" cho mọi provider đúng lúc
+           lỗi đang xảy ra — thay cả section bằng placeholder lỗi. Ghi vẫn bị
+           EnsureMatrixLoaded chặn ở mọi handler. *@
+        <p class="text-sm opacity-70">@L["proxies.tree.loadFailed"]</p>
+    }
+    else
+    {
+        <div class="proxy-tree">
+            @foreach (var node in _tree)
+            {
+                <details @key="node.Provider.Id" class="pt-node"
+                         open="@(_expandedProviderId == node.Provider.Id ? "open" : null)">
+                    @* preventDefault: click summary sẽ toggle native — state quản lý bằng
+                       _expandedProviderId để attr `open` luôn khớp (xem comment khối style ở trên). *@
+                    <summary class="pt-summary"
+                             @onclick="() => ToggleExpandAsync(node.Provider.Id)"
+                             @onclick:preventDefault="true">
+                        <span class="pt-chev"></span>
+                        <span>@node.Provider.Name</span>
+                        @* stopPropagation + preventDefault: click vào <select> nằm trong <summary>
+                           sẽ bubble lên summary và collapse node nếu không chặn (cùng pattern
+                           nút ✎ trong summary trước đây). *@
+                        <select class="rounded border border-border bg-surface px-1 py-0.5 text-xs"
+                                value="@node.EffectiveMode" disabled="@_busy"
+                                @onclick:preventDefault="true" @onclick:stopPropagation="true"
+                                @onchange="args => OnModeChangedAsync(node.Provider.Id, args)">
+                            <option value="@ProxyMode.RoundRobin">@L["proxies.assign.mode_rr"]</option>
+                            <option value="@ProxyMode.Fallback">@L["proxies.assign.mode_fallback"]</option>
+                        </select>
+                        <span class="pt-badge">
+                            @(node.Proxies.Count == 0
+                                ? L["proxies.assign.none"]
+                                : string.Format(L["proxies.assign.badge_count"], node.Proxies.Count))
+                        </span>
+                    </summary>
 
-                @* Search-add: chỉ render khi node mở — tránh N input/option list bind cùng một _addSearch *@
-                @if (_expandedProviderId == node.Provider.Id)
-                {
-                    var pool = UnassignedProxies(node);
-                    <div class="pt-panel">
-                        <input class="w-full rounded border border-border bg-surface px-2 py-1.5 text-sm"
-                               placeholder="@L["proxies.tree.addPlaceholder"]"
-                               disabled="@_busy"
-                               @bind="_addSearch" @bind:event="oninput" />
-                        @if (pool.Count == 0)
-                        {
-                            <p class="pt-empty">@L["proxies.tree.addEmpty"]</p>
-                        }
-                        else
-                        {
-                            var matches = MatchSearch(pool).ToList();
-                            if (matches.Count == 0)
+                    @* Search-add: chỉ render khi node mở — tránh N input/option list bind cùng một _addSearch *@
+                    @if (_expandedProviderId == node.Provider.Id)
+                    {
+                        var pool = UnassignedProxies(node);
+                        <div class="pt-panel">
+                            <input class="w-full rounded border border-border bg-surface px-2 py-1.5 text-sm"
+                                   placeholder="@L["proxies.tree.addPlaceholder"]"
+                                   disabled="@_busy"
+                                   @bind="_addSearch" @bind:event="oninput" />
+                            @if (pool.Count == 0)
                             {
-                                <p class="pt-empty mt-1">@L["proxies.tree.searchEmpty"]</p>
+                                <p class="pt-empty">@L["proxies.tree.addEmpty"]</p>
                             }
                             else
                             {
-                                <div class="mt-1 flex flex-col gap-1">
-                                    @foreach (var option in matches)
-                                    {
-                                        @* Proxy tắt vẫn thêm được — pool tự lọc khi chạy (D-A2) *@
-                                        <button type="button" class="pt-add" disabled="@_busy"
-                                                @onclick="() => AddProxyAsync(node.Provider.Id, option.Id)">
-                                            @EndpointOf(option)
-                                            @if (!option.Enabled)
-                                            {
-                                                <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
-                                            }
-                                        </button>
-                                    }
-                                </div>
+                                var matches = MatchSearch(pool).ToList();
+                                if (matches.Count == 0)
+                                {
+                                    <p class="pt-empty mt-1">@L["proxies.tree.searchEmpty"]</p>
+                                }
+                                else
+                                {
+                                    <div class="mt-1 flex flex-col gap-1">
+                                        @foreach (var option in matches)
+                                        {
+                                            @* Proxy tắt vẫn thêm được — pool tự lọc khi chạy (D-A2) *@
+                                            <button type="button" class="pt-add" disabled="@_busy"
+                                                    @onclick="() => AddProxyAsync(node.Provider.Id, option.Id)">
+                                                @EndpointOf(option)
+                                                @if (!option.Enabled)
+                                                {
+                                                    <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
+                                                }
+                                            </button>
+                                        }
+                                    </div>
+                                }
                             }
-                        }
-                    </div>
-                }
-
-                @if (node.Proxies.Count == 0)
-                {
-                    <div class="pt-empty">@L["proxies.tree.empty"]</div>
-                }
-
-                @foreach (var proxyNode in node.Proxies)
-                {
-                    <div @key="proxyNode.Proxy.Id" class="pt-endpoint">
-                        <span class="font-mono">@EndpointOf(proxyNode.Proxy)</span>
-                        @if (!proxyNode.Proxy.Enabled)
-                        {
-                            @* Proxy tắt vẫn gán/gỡ được — pool tự lọc (D-A2) *@
-                            <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
-                        }
-                        <span class="pt-meta">
-                            @* ✕ bật cả khi proxy tắt — chỉ chặn khi đang lưu (_busy) *@
-                            <button type="button" class="pt-edit" disabled="@_busy"
-                                    title="@L["proxies.tree.remove"]"
-                                    aria-label="@L["proxies.tree.remove"]"
-                                    @onclick="() => RemoveProxyAsync(node.Provider.Id, proxyNode.Proxy.Id)">✕</button>
-                        </span>
-                    </div>
-
-                    @foreach (var account in proxyNode.Accounts)
-                    {
-                        @* Tick = tập hiệu lực (matrix), không phải state DOM — save ghi ngay (spec C4) *@
-                        <label @key="account.Account.Id" class="pt-leaf">
-                            <input type="checkbox" checked="@account.Tick"
-                                   disabled="@(!proxyNode.Proxy.Enabled || _busy)"
-                                   @onchange="args => ToggleAccountAsync(node, proxyNode, account, args.Value is true)" />
-                            <span class="font-mono">@account.Account.Name</span>
-                            @if (account.IsOverride)
-                            {
-                                <span class="pt-badge">@L["proxies.assign.override"]</span>
-                            }
-                        </label>
+                        </div>
                     }
-                }
-            </details>
-        }
-    </div>
+
+                    @if (node.Proxies.Count == 0)
+                    {
+                        <div class="pt-empty">@L["proxies.tree.empty"]</div>
+                    }
+
+                    @foreach (var proxyNode in node.Proxies)
+                    {
+                        <div @key="proxyNode.Proxy.Id" class="pt-endpoint">
+                            <span class="font-mono">@EndpointOf(proxyNode.Proxy)</span>
+                            @if (!proxyNode.Proxy.Enabled)
+                            {
+                                @* Proxy tắt vẫn gán/gỡ được — pool tự lọc (D-A2) *@
+                                <span class="pt-badge">@L["proxies.assign.disabledSuffix"]</span>
+                            }
+                            <span class="pt-meta">
+                                @* ✕ bật cả khi proxy tắt — chỉ chặn khi đang lưu (_busy) *@
+                                <button type="button" class="pt-edit" disabled="@_busy"
+                                        title="@L["proxies.tree.remove"]"
+                                        aria-label="@L["proxies.tree.remove"]"
+                                        @onclick="() => RemoveProxyAsync(node.Provider.Id, proxyNode.Proxy.Id)">✕</button>
+                            </span>
+                        </div>
+
+                        @foreach (var account in proxyNode.Accounts)
+                        {
+                            @* Tick = tập hiệu lực (matrix), không phải state DOM — save ghi ngay (spec C4) *@
+                            <label @key="account.Account.Id" class="pt-leaf">
+                                <input type="checkbox" checked="@account.Tick"
+                                       disabled="@(!proxyNode.Proxy.Enabled || _busy)"
+                                       @onchange="args => ToggleAccountAsync(node, proxyNode, account, args.Value is true)" />
+                                <span class="font-mono">@account.Account.Name</span>
+                                @if (account.IsOverride)
+                                {
+                                    <span class="pt-badge">@L["proxies.assign.override"]</span>
+                                }
+                            </label>
+                        }
+                    }
+                </details>
+            }
+        </div>
+    }
 </div>
 
 <Modal Visible="@(_editing is not null)"
@@ -639,13 +650,30 @@ else
         return false;
     }
 
+    /// <summary>
+    /// Lấy hàng provider của <paramref name="providerId"/> từ matrix đã nạp.
+    /// Hàng thiếu (race nạp lại giữa 2 thao tác) → toast lỗi + reload, trả <see langword="null"/>
+    /// để caller hủy — lưu với tập rỗng từ hàng null sẽ wipe tập gán hiện có của provider.
+    /// </summary>
+    private async Task<ProviderAssignmentRow?> TryGetProviderRowAsync(long providerId)
+    {
+        var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
+        if (row is null)
+        {
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            await ReloadAsync();
+        }
+        return row;
+    }
+
     /// <summary>Đổi mode rr/fb của provider — giữ nguyên tập proxy (spec C3).</summary>
     private async Task SetModeAsync(long providerId, ProxyMode mode)
     {
         if (_busy) return;
         if (!EnsureMatrixLoaded()) return;
-        var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
-        await SaveProviderAssignmentAsync(providerId, row?.ProxyIds ?? [], mode);
+        var row = await TryGetProviderRowAsync(providerId);
+        if (row is null) return;
+        await SaveProviderAssignmentAsync(providerId, row.ProxyIds, mode);
     }
 
     /// <summary>Thêm 1 proxy vào tập của provider — cộng tập, giữ nguyên mode.</summary>
@@ -653,9 +681,10 @@ else
     {
         if (_busy) return;
         if (!EnsureMatrixLoaded()) return;
-        var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
-        var set = new HashSet<long>(row?.ProxyIds ?? []) { proxyId };
-        await SaveProviderAssignmentAsync(providerId, set.OrderBy(id => id).ToList(), row?.Mode);
+        var row = await TryGetProviderRowAsync(providerId);
+        if (row is null) return;
+        var set = new HashSet<long>(row.ProxyIds) { proxyId };
+        await SaveProviderAssignmentAsync(providerId, set.OrderBy(id => id).ToList(), row.Mode);
     }
 
     /// <summary>Gỡ 1 proxy khỏi tập của provider — trừ tập, giữ nguyên mode (✕ bật cả khi proxy tắt).</summary>
@@ -663,10 +692,11 @@ else
     {
         if (_busy) return;
         if (!EnsureMatrixLoaded()) return;
-        var row = _matrix.Providers.FirstOrDefault(r => r.Id == providerId);
-        var set = new HashSet<long>(row?.ProxyIds ?? []);
+        var row = await TryGetProviderRowAsync(providerId);
+        if (row is null) return;
+        var set = new HashSet<long>(row.ProxyIds);
         set.Remove(proxyId);
-        await SaveProviderAssignmentAsync(providerId, set.OrderBy(id => id).ToList(), row?.Mode);
+        await SaveProviderAssignmentAsync(providerId, set.OrderBy(id => id).ToList(), row.Mode);
     }
 
     /// <summary>

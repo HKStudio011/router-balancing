@@ -414,6 +414,7 @@ public static class Translations
         ["proxies.tree.empty"] = "No proxy assigned yet.",
         ["proxies.tree.searchEmpty"] = "No matching proxy.",
         ["proxies.tree.remove"] = "Unassign from provider",
+        ["proxies.tree.loadFailed"] = "Couldn't load assignment data. See Logs for details.",
 
         // Dashboard stats (Task 5, spec dashboard-stats §7)
         ["stats.title"] = "Statistics",
@@ -873,6 +874,7 @@ public static class Translations
         ["proxies.tree.empty"] = "Chưa gán proxy nào.",
         ["proxies.tree.searchEmpty"] = "Không có proxy khớp tìm kiếm.",
         ["proxies.tree.remove"] = "Bỏ gán khỏi provider",
+        ["proxies.tree.loadFailed"] = "Không tải được dữ liệu gán. Xem Nhật ký để biết chi tiết.",
 
         // Dashboard stats (Task 5, spec dashboard-stats §7)
         ["stats.title"] = "Thống kê",

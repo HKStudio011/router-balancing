@@ -434,6 +434,97 @@ public class ProxyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AssignProviderProxies_RemovedProxy_StripsAccountOverrides()
+    {
+        var service = CreateService();
+        var proxyA = await AddProxyAsync(port: 9540);
+        var proxyB = await AddProxyAsync(port: 9541);
+        var proxyC = await AddProxyAsync(port: 9542);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+        await service.AssignProviderProxiesAsync(providerId, [proxyA, proxyB], ProxyMode.RoundRobin);
+        // C ngoài tập provider — chỉ id bị gỡ (B) được strip, id còn lại giữ nguyên
+        await service.SetAccountProxyOverrideAsync(accountId, [proxyB, proxyC], overrideEnabled: true);
+
+        await service.AssignProviderProxiesAsync(providerId, [proxyA], ProxyMode.RoundRobin);
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .SingleAsync(a => a.Id == accountId);
+        // Ghost id B không được sống sót (invariant A1), C không bị đụng
+        Assert.DoesNotContain(row.AccountProxies, r => r.ProxyId == proxyB);
+        Assert.Contains(row.AccountProxies, r => r.ProxyId == proxyC);
+        Assert.True(row.ProxyOverrideEnabled); // tập thu nhỏ ≠ tập mới → vẫn override
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_RemovedLastProxy_OverrideBecomesInherit()
+    {
+        var service = CreateService();
+        var proxyA = await AddProxyAsync(port: 9543);
+        var proxyB = await AddProxyAsync(port: 9544);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+        await service.AssignProviderProxiesAsync(providerId, [proxyA, proxyB], ProxyMode.RoundRobin);
+        await service.SetAccountProxyOverrideAsync(accountId, [proxyB], overrideEnabled: true);
+
+        // Gỡ hết proxy (✕ proxy cuối) — tập thu nhỏ == tập provider mới (cả rỗng) → kế thừa (C4)
+        await service.AssignProviderProxiesAsync(providerId, [], ProxyMode.RoundRobin);
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .SingleAsync(a => a.Id == accountId);
+        Assert.False(row.ProxyOverrideEnabled);
+        Assert.Empty(row.AccountProxies); // junction sạch — flag=false nghĩa là kế thừa
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_RemovedProxy_OverrideShrinksToEmpty_BecomesDirect()
+    {
+        var service = CreateService();
+        var proxyA = await AddProxyAsync(port: 9545);
+        var proxyB = await AddProxyAsync(port: 9546);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+        await service.AssignProviderProxiesAsync(providerId, [proxyA, proxyB], ProxyMode.RoundRobin);
+        await service.SetAccountProxyOverrideAsync(accountId, [proxyB], overrideEnabled: true);
+
+        await service.AssignProviderProxiesAsync(providerId, [proxyA], ProxyMode.RoundRobin);
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .SingleAsync(a => a.Id == accountId);
+        // Thu nhỏ còn rỗng mà tập provider mới khác rỗng → direct: cờ true + junction sạch
+        Assert.True(row.ProxyOverrideEnabled);
+        Assert.Empty(row.AccountProxies);
+    }
+
+    [Fact]
+    public async Task AssignProviderProxies_RemovedProxy_OverrideEqualToNewProviderSet_TurnsOffFlag()
+    {
+        var service = CreateService();
+        var proxyA = await AddProxyAsync(port: 9547);
+        var proxyB = await AddProxyAsync(port: 9548);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+        await service.AssignProviderProxiesAsync(providerId, [proxyA, proxyB], ProxyMode.RoundRobin);
+        await service.SetAccountProxyOverrideAsync(accountId, [proxyA, proxyB], overrideEnabled: true);
+
+        // Gỡ B → tập thu nhỏ còn đúng [A] == tập provider mới → quay kế thừa, junction sạch
+        await service.AssignProviderProxiesAsync(providerId, [proxyA], ProxyMode.RoundRobin);
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .SingleAsync(a => a.Id == accountId);
+        Assert.False(row.ProxyOverrideEnabled);
+        Assert.Empty(row.AccountProxies);
+    }
+
+    [Fact]
     public async Task SetAccountProxyOverride_OverridesProviderSet_WithoutTouchingIt()
     {
         var service = CreateService();
@@ -609,6 +700,17 @@ public class ProxyServiceTests : IDisposable
     public async Task SetAccountProxyOverride_UnknownAccount_Throws()
         => await Assert.ThrowsAsync<KeyNotFoundException>(
             () => CreateService().SetAccountProxyOverrideAsync(999_999, [], true));
+
+    [Fact]
+    public async Task SetAccountProxyOverride_UnknownProxy_Throws()
+    {
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+
+        // Contract IProxyService: overrideEnabled = true + id không tồn tại → KeyNotFoundException
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => CreateService().SetAccountProxyOverrideAsync(accountId, [999_999], overrideEnabled: true));
+    }
 
     [Fact]
     public async Task GetAssignmentMatrix_ReturnsAllProvidersAndOverrides()

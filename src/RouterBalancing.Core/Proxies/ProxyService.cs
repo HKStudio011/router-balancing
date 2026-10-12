@@ -196,16 +196,72 @@ public sealed class ProxyService : IProxyService
         // hàng mới → Add, hàng trùng → giữ nguyên. Re-save cùng tập = không thao tác → idempotent,
         // không đụng hàng đang track nên không ném InvalidOperationException trùng PK.
         var wanted = proxyIds.ToHashSet();
+        var removedIds = provider.ProviderProxies
+            .Where(r => !wanted.Contains(r.ProxyId))
+            .Select(r => r.ProxyId)
+            .ToHashSet();
         foreach (var row in provider.ProviderProxies.Where(r => !wanted.Contains(r.ProxyId)).ToList())
             provider.ProviderProxies.Remove(row);
         var existing = provider.ProviderProxies.Select(r => r.ProxyId).ToHashSet();
         foreach (var id in wanted.Where(id => !existing.Contains(id)))
             provider.ProviderProxies.Add(new ProviderProxy { ProviderId = provider.Id, ProxyId = id });
 
+        if (removedIds.Count > 0)
+        {
+            await StripRemovedProxiesFromAccountOverrides(db, providerId, removedIds, wanted, ct);
+        }
+
         provider.ProxyMode = mode;
         provider.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         _pool.Invalidate();
+    }
+
+    /// <summary>
+    /// Gỡ ghost id khỏi override của AC cùng provider khi provider gỡ proxy — cùng unit of work
+    /// (SaveChanges chung) với diff tập provider.
+    /// </summary>
+    /// <remarks>
+    /// Invariant A1 không điều kiện: tập override của AC luôn là tập con của tập provider.
+    /// Để nguyên override tham chiếu proxy vừa gỡ thì ghost id không bao giờ tự thoát được:
+    /// resolver vẫn route AC qua proxy "đã gỡ", đồng thời node proxy biến mất trên cây nên
+    /// checkbox không còn tồn tại để user gỡ (ToggleAccountAsync không với tới id đó).
+    /// </remarks>
+    private static async Task StripRemovedProxiesFromAccountOverrides(
+        RouterBalancingDbContext db, long providerId, HashSet<long> removedIds,
+        HashSet<long> wanted, CancellationToken ct)
+    {
+        // Chỉ AC đang override (flag=true) — hàng junction của AC kế thừa là rác không đọc,
+        // không đụng để không vô tình bật lại semantic cũ "junction ≠ rỗng = override".
+        var overrideAccounts = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .Where(a => a.ProviderId == providerId && a.ProxyOverrideEnabled)
+            .ToListAsync(ct);
+
+        foreach (var account in overrideAccounts)
+        {
+            if (!account.AccountProxies.Any(r => removedIds.Contains(r.ProxyId)))
+                continue;
+
+            foreach (var row in account.AccountProxies
+                .Where(r => removedIds.Contains(r.ProxyId)).ToList())
+                account.AccountProxies.Remove(row);
+
+            // Tính lại theo semantics C4 (cùng thứ tự ưu tiên ToggleAccountAsync):
+            // == tập provider mới → quay kế thừa (cờ false, junction phải sạch — kể cả
+            // rỗng == rỗng khi gỡ hết proxy); rỗng mà tập provider mới khác rỗng → direct
+            // (cờ true giữ nguyên, junction đã sạch); còn lại → giữ tập thu nhỏ, cờ true.
+            var reduced = account.AccountProxies.Select(r => r.ProxyId).ToList();
+            if (wanted.SetEquals(reduced))
+            {
+                account.ProxyOverrideEnabled = false;
+                account.AccountProxies.Clear();
+            }
+
+            // Cùng semantics SetAccountProxyOverrideAsync: mode là lựa chọn cấp provider
+            account.ProxyMode = null;
+            account.UpdatedAt = DateTimeOffset.UtcNow;
+        }
     }
 
     /// <inheritdoc/>
