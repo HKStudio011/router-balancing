@@ -128,6 +128,19 @@ namespace router_balancing
 #endif
         }
 
+        /// <summary>
+        /// Đánh dấu thoát thật (update install) — cho phép <c>OnMainWindowClosing</c> (Windows)
+        /// đóng thay vì ẩn về khay. Đường update gọi qua <c>MauiAppShutdown.Quit()</c>;
+        /// nếu close event WinUI có nhận được lần thoát này mà cờ chưa đặt, CloseToTray
+        /// sẽ hủy đóng → app ẩn thay vì thoát, updater chờ 60s rồi fail (spec §7/§10).
+        /// </summary>
+        internal void MarkReallyExiting()
+        {
+#if WINDOWS
+            _reallyExiting = true;
+#endif
+        }
+
         /// <summary>Thoát hẳn từ menu tray: dừng proxy trước, giải phóng icon, rồi quit.</summary>
         private async void ExitFromTray()
         {
