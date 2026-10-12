@@ -237,6 +237,45 @@ public sealed class ProxyService : IProxyService
     }
 
     /// <inheritdoc/>
+    public async Task SetAccountProxyOverrideAsync(long accountId, IReadOnlyList<long> proxyIds,
+        bool overrideEnabled, CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+        // Include junction: cần hàng cũ để diff/clear (không include thì EF không biết remove gì)
+        var account = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .FirstOrDefaultAsync(a => a.Id == accountId, ct)
+            ?? throw new KeyNotFoundException($"Account {accountId} not found.");
+        await ValidateProxyIdsAsync(db, proxyIds, ct);
+
+        if (!overrideEnabled)
+        {
+            // Flag=false = kế thừa toàn bộ: junction phải sạch để cây gán không đọc nhầm hàng rác
+            // (stale rows không được sống sót — proxyIds bị bỏ qua ở nhánh này).
+            account.AccountProxies.Clear();
+        }
+        else
+        {
+            // Diff-update thay whole-set replacement (D-A1): hàng cũ không trong tập mới → Remove,
+            // hàng mới → Add, hàng trùng → giữ nguyên. Re-save cùng tập = không thao tác → idempotent,
+            // không đụng hàng đang track nên không ném InvalidOperationException trùng PK.
+            var wanted = proxyIds.ToHashSet();
+            foreach (var row in account.AccountProxies.Where(r => !wanted.Contains(r.ProxyId)).ToList())
+                account.AccountProxies.Remove(row);
+            var existing = account.AccountProxies.Select(r => r.ProxyId).ToHashSet();
+            foreach (var id in wanted.Where(id => !existing.Contains(id)))
+                account.AccountProxies.Add(new ProviderAccountProxy { AccountId = account.Id, ProxyId = id });
+        }
+
+        // Mode chuyển về cấp provider trong model mới — AccountAssignmentRow không còn Mode
+        account.ProxyMode = null;
+        account.ProxyOverrideEnabled = overrideEnabled;
+        account.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        _pool.Invalidate();
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<ProxyAssignment>> GetAssignmentsAsync(long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
@@ -351,6 +390,46 @@ public sealed class ProxyService : IProxyService
             _pool.Invalidate();
         }
         return reset;
+    }
+
+    /// <inheritdoc/>
+    public async Task<ProxyAssignmentMatrix> GetAssignmentMatrixAsync(CancellationToken ct = default)
+    {
+        using var db = _db.CreateDbContext();
+
+        // EF projection (không Include) — đúng 2 query tổng, không N+1 (D-A6)
+        var providerRows = await db.Providers.AsNoTracking()
+            .OrderBy(p => p.Id)
+            .Select(p => new
+            {
+                p.Id,
+                p.Name,
+                p.ProxyMode,
+                ProxyIds = p.ProviderProxies.Select(x => x.ProxyId).ToList(),
+            })
+            .ToListAsync(ct);
+        var accountRows = await db.ProviderAccounts.AsNoTracking()
+            .OrderBy(a => a.Id)
+            .Select(a => new
+            {
+                a.Id,
+                a.ProviderId,
+                a.ProxyOverrideEnabled,
+                ProxyIds = a.AccountProxies.Select(x => x.ProxyId).ToList(),
+            })
+            .ToListAsync(ct);
+
+        return new ProxyAssignmentMatrix(
+            providerRows
+                .Select(p => new ProviderAssignmentRow(p.Id, p.Name, p.ProxyMode, p.ProxyIds))
+                .ToList(),
+            accountRows
+                .Select(a => new AccountAssignmentRow(
+                    a.Id, a.ProviderId, a.ProxyOverrideEnabled,
+                    // Kế thừa (flag=false) → tập rỗng bất kể hàng junction rác còn sót trong DB;
+                    // true + rỗng = direct — cờ là thứ phân biệt 2 trường hợp với tree builder.
+                    a.ProxyOverrideEnabled ? a.ProxyIds : []))
+                .ToList());
     }
 
     /// <summary>1 proxy có nhiều scope — cộng dồn usage thay vì ghi đè theo key proxy.</summary>

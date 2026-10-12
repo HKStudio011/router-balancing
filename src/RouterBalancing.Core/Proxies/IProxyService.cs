@@ -45,6 +45,25 @@ public interface IProxyService
     Task AssignAccountProxiesAsync(long accountId, IReadOnlyList<long> proxyIds,
         ProxyMode? mode, CancellationToken ct = default);
 
+    /// <summary>
+    /// Persist cờ <c>ProxyOverrideEnabled</c> của AC + tập proxy trực tiếp — một unit of work:
+    /// cờ và junction luôn đồng bộ (spec §A1).
+    /// </summary>
+    /// <param name="accountId">Account cần gán.</param>
+    /// <param name="proxyIds">Tập proxy trực tiếp; bị bỏ qua khi <paramref name="overrideEnabled"/> = false.</param>
+    /// <param name="overrideEnabled">
+    /// true = AC dùng tập riêng (<paramref name="proxyIds"/> rỗng = direct);
+    /// false = kế thừa provider.
+    /// </param>
+    /// <remarks>
+    /// <c>overrideEnabled = false</c> xóa sạch junction — hàng rác sót phải không sống sót,
+    /// vì flag=false nghĩa là kế thừa và cây gán ngừng đọc junction.
+    /// Mode của AC luôn về null — mode là lựa chọn cấp provider trong model mới.
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">Không có account với <paramref name="accountId"/> hoặc proxy không tồn tại.</exception>
+    Task SetAccountProxyOverrideAsync(long accountId, IReadOnlyList<long> proxyIds,
+        bool overrideEnabled, CancellationToken ct = default);
+
     /// <summary>Gán proxy hiện tại (provider + account) cho UI.</summary>
     /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/>.</exception>
     Task<IReadOnlyList<ProxyAssignment>> GetAssignmentsAsync(long providerId, CancellationToken ct = default);
@@ -68,4 +87,14 @@ public interface IProxyService
     /// <returns>Số AC đã reset (0 nếu không có override nào).</returns>
     /// <exception cref="KeyNotFoundException">Không có provider với <paramref name="providerId"/>.</exception>
     Task<int> ResetAccountOverridesAsync(long providerId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ma trận gán đầy đủ (mọi provider + mọi account) cho cây gán UI — EF projection,
+    /// không Include, không N+1 (D-A6).
+    /// </summary>
+    /// <remarks>
+    /// AC có <c>OverrideEnabled = false</c> trả <c>ProxyIds</c> rỗng (kế thừa — cây tự
+    /// resolve tập hiệu lực từ provider); AC direct (true + rỗng) cũng rỗng — cờ phân biệt.
+    /// </remarks>
+    Task<ProxyAssignmentMatrix> GetAssignmentMatrixAsync(CancellationToken ct = default);
 }

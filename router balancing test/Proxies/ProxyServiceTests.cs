@@ -580,6 +580,118 @@ public class ProxyServiceTests : IDisposable
             () => CreateService().ResetAccountOverridesAsync(99999));
     }
 
+    [Fact]
+    public async Task SetAccountProxyOverride_Enable_NonEmpty_ReplacesJunctionsAndSetsFlag()
+    {
+        var service = CreateService();
+        var p1 = await AddProxyAsync(port: 9530);
+        var p2 = await AddProxyAsync(port: 9531);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+        // Seed trực tiếp (không qua API legacy sắp bị Task 5 gỡ): hàng junction cũ + mode
+        // để chứng minh SetAccountProxyOverrideAsync thay tập và đưa mode về null.
+        using (var seed = _factory.CreateDbContext())
+        {
+            var account = await seed.ProviderAccounts
+                .Include(a => a.AccountProxies)
+                .SingleAsync(a => a.Id == accountId);
+            account.AccountProxies.Add(new ProviderAccountProxy { ProxyId = p1 });
+            account.ProxyMode = ProxyMode.Fallback;
+            await seed.SaveChangesAsync();
+        }
+
+        await service.SetAccountProxyOverrideAsync(accountId, [p2], overrideEnabled: true);
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .SingleAsync(a => a.Id == accountId);
+        Assert.Equal(new[] { p2 }, row.AccountProxies.Select(x => x.ProxyId).ToList());
+        Assert.True(row.ProxyOverrideEnabled);
+        Assert.Null(row.ProxyMode);
+    }
+
+    [Fact]
+    public async Task SetAccountProxyOverride_Disable_ClearsJunctionsAndFlag()
+    {
+        var service = CreateService();
+        var p1 = await AddProxyAsync(port: 9532);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+        using (var seed = _factory.CreateDbContext())
+        {
+            var account = await seed.ProviderAccounts
+                .Include(a => a.AccountProxies)
+                .SingleAsync(a => a.Id == accountId);
+            account.AccountProxies.Add(new ProviderAccountProxy { ProxyId = p1 });
+            account.ProxyOverrideEnabled = true;
+            await seed.SaveChangesAsync();
+        }
+
+        await service.SetAccountProxyOverrideAsync(accountId, [], overrideEnabled: false);
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .SingleAsync(a => a.Id == accountId);
+        Assert.False(row.ProxyOverrideEnabled);
+        Assert.Empty(row.AccountProxies); // hàng rác không được sống sót — flag=false nghĩa là kế thừa
+    }
+
+    [Fact]
+    public async Task SetAccountProxyOverride_Enable_EmptySet_KeepsFlagTrue()
+    {
+        var service = CreateService();
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+
+        await service.SetAccountProxyOverrideAsync(accountId, [], overrideEnabled: true);
+
+        using var db = _factory.CreateDbContext();
+        var row = await db.ProviderAccounts
+            .Include(a => a.AccountProxies)
+            .SingleAsync(a => a.Id == accountId);
+        Assert.True(row.ProxyOverrideEnabled);
+        Assert.Empty(row.AccountProxies); // direct: flag=true + tập rỗng
+    }
+
+    [Fact]
+    public async Task SetAccountProxyOverride_UnknownAccount_Throws()
+        => await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => CreateService().SetAccountProxyOverrideAsync(999_999, [], true));
+
+    [Fact]
+    public async Task GetAssignmentMatrix_ReturnsAllProvidersAndOverrides()
+    {
+        var service = CreateService();
+        var p1 = await AddProxyAsync(port: 9533);
+        var provider1 = await AddProviderAsync();
+        var provider2 = await AddProviderAsync();
+        var a1 = await AddAccountAsync(provider1, "a1");
+        var a2 = await AddAccountAsync(provider1, "a2");
+        await service.AssignProviderProxiesAsync(provider1, [p1], ProxyMode.Fallback);
+        await service.SetAccountProxyOverrideAsync(a1, [p1], overrideEnabled: true);
+
+        var matrix = await service.GetAssignmentMatrixAsync();
+
+        // DB test có sẵn 4 provider preset (SeedFreeProviders) — truy vết theo Id, không theo count
+        var row1 = matrix.Providers.Single(p => p.Id == provider1);
+        var row2 = matrix.Providers.Single(p => p.Id == provider2);
+        Assert.Equal(new[] { p1 }, row1.ProxyIds);
+        Assert.Equal(ProxyMode.Fallback, row1.Mode);
+        Assert.Empty(row2.ProxyIds);
+        Assert.Null(row2.Mode);
+
+        Assert.Equal(2, matrix.Accounts.Count);
+        var acc1 = matrix.Accounts.Single(a => a.Id == a1);
+        var acc2 = matrix.Accounts.Single(a => a.Id == a2);
+        Assert.Equal(provider1, acc1.ProviderId);
+        Assert.True(acc1.OverrideEnabled);
+        Assert.Equal(new[] { p1 }, acc1.ProxyIds);
+        Assert.False(acc2.OverrideEnabled);
+        Assert.Empty(acc2.ProxyIds); // kế thừa → tập rỗng, cây tự resolve tập hiệu lực
+    }
+
     /// <summary>Echo theo script — lambda throw được nên test giả lập được cả nhánh lỗi.</summary>
     private sealed class StubEchoClient(Func<ProxyTestResult> script) : IProxyEchoClient
     {
