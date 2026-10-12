@@ -622,7 +622,12 @@
             {
                 Toast.Show(L["update.latest"]);
             }
-            // Failed: im lặng (spec §11) — không toast lỗi, badge cũ (nếu có) được giữ nguyên
+            else if (result == UpdateCheckResult.Failed)
+            {
+                // User chủ động bấm Check → cần feedback lỗi (user override spec §11 im lặng);
+                // check nền 24h vẫn im lặng vì không có ai xem toast
+                Toast.Show(L["update.checkFailed"], ToastSeverity.Error);
+            }
         }
         finally
         {

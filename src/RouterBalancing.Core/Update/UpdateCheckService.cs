@@ -4,8 +4,9 @@ namespace RouterBalancing.Core.Update;
 
 /// <summary>
 /// Kết quả một lần kiểm tra update — UI chọn cách phản hồi: toast khi
-/// <see cref="UpdateAvailable"/>, im lặng khi <see cref="AlreadyLatest"/>,
-/// không toast lỗi khi <see cref="Failed"/> (người dùng không cần biết mạng đang hỏng).
+/// <see cref="UpdateAvailable"/> (hoặc MainLayout qua <see cref="UpdateCheckService.UpdateFound"/>
+/// ở lần phát hiện đầu), toast khi <see cref="AlreadyLatest"/>, toast lỗi khi
+/// <see cref="Failed"/> với nút Check thủ công; check nền vẫn im lặng.
 /// </summary>
 public enum UpdateCheckResult
 {

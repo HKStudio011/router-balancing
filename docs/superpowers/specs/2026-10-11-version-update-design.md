@@ -215,7 +215,7 @@ public sealed class UpdateCoordinator
 
 - Version (đã format) — luôn thấy.
 - Badge **"Update available"** — hiện khi lần check gần nhất tìm thấy release mới (state giữ trong `UpdateCheckState` singleton).
-- Nút **"Kiểm tra cập nhật"** — check thủ công: đang check thì disabled + toast kết quả (có update / đã là bản mới nhất / check fail → im lặng log, không toast lỗi).
+- Nút **"Kiểm tra cập nhật"** — check thủ công: đang check thì disabled + toast kết quả (có update / đã là bản mới nhất / check fail → toast lỗi; user override: mọi kết quả đều thông báo).
 - Nút **"Cập nhật ngay"** — chỉ render khi badge hiện → mở modal cập nhật + `StartUpdateAsync()`.
 
 ### 9.2 Modal cập nhật (component Blazor, overlay full-screen, không đóng được bằng click ngoài)
