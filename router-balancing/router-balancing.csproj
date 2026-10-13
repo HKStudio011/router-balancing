@@ -36,9 +36,9 @@
 
         <!-- Versions -->
         <!-- Version 4 phần cho assembly/updater; ApplicationDisplayVersion phải là semver 3 phần (bắt buộc bởi Maui.Resizetizer) -->
-        <Version>1.1.0.0</Version>
-        <ApplicationDisplayVersion>1.1.0</ApplicationDisplayVersion>
-        <ApplicationVersion>2</ApplicationVersion>
+        <Version>1.1.1.0</Version>
+        <ApplicationDisplayVersion>1.1.1</ApplicationDisplayVersion>
+        <ApplicationVersion>3</ApplicationVersion>
 
         <!-- To develop, package, and publish an app to the Microsoft Store, see: https://aka.ms/MauiTemplateUnpackaged -->
         <WindowsPackageType>None</WindowsPackageType>
