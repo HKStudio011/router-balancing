@@ -159,10 +159,22 @@ public sealed class ProxyRequestHandler(
                     // 2xx giữ nguyên 3A/3B: stream thẳng — tee quét usage trong lúc copy (spec §6.1)
                     // Sau flush point (stream) head đã gửi — set status/content-type vô nghĩa,
                     // chỉ ghi khi chưa commit; non-stream không bao giờ có pipe → luôn vào đây (như cũ).
+                    var upstreamSse = string.Equals(
+                        response.Content.Headers.ContentType?.MediaType, "text/event-stream",
+                        StringComparison.OrdinalIgnoreCase);
+                    var hasPipe = ctx.Items.TryGetValue(SsePipeItems.Key, out var pipeObj);
+                    Stream dest = hasPipe
+                        ? ((Pipe)pipeObj!).Writer.AsStream()
+                        : ctx.Response.Body;
+                    // Client non-stream nhưng upstream trả SSE (fingerprint force stream —
+                    // OpenCode gate 403 stream:false) → aggregate về JSON giữ contract non-stream
+                    var aggregate = upstreamSse && !hasPipe;
                     if (!ctx.Response.HasStarted)
                     {
                         ctx.Response.StatusCode = (int)response.StatusCode;
-                        if (response.Content.Headers.ContentType is { } okType)
+                        if (aggregate)
+                            ctx.Response.ContentType = "application/json";
+                        else if (response.Content.Headers.ContentType is { } okType)
                             ctx.Response.ContentType = okType.ToString();
                     }
                     // Rethrow: KHÔNG đổi hành vi xử lý lỗi cho pipeline — dispatcher vẫn map
@@ -175,10 +187,9 @@ public sealed class ProxyRequestHandler(
                         // Stream sau flush: dest là pipe endpoint đặt tại flush point — endpoint
                         // là tay duy nhất ghi Response.Body và completer duy nhất của pipe, nên
                         // handler KHÔNG dispose/Complete writer ở đây (spec early-headers §3.2).
-                        Stream dest = ctx.Items.TryGetValue(SsePipeItems.Key, out var pipeObj)
-                            ? ((Pipe)pipeObj!).Writer.AsStream()
-                            : ctx.Response.Body;
-                        tee = await protocol.TeeAsync(response.Content, dest, ct);
+                        tee = aggregate
+                            ? await protocol.AggregateSseAsync(response.Content, dest, ct)
+                            : await protocol.TeeAsync(response.Content, dest, ct);
                     }
                     catch
                     {

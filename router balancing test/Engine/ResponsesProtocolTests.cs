@@ -317,4 +317,42 @@ public class ResponsesProtocolTests
                      result.ResponseBody.LastIndexOf("[truncated]", StringComparison.Ordinal)); // marker đúng 1 lần
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // client vẫn nhận đủ byte
     }
+
+    // ─── AggregateSseAsync: forced-stream fingerprint → JSON non-stream (OpenCode gate) ───
+
+    [Fact]
+    public async Task Aggregate_Stream_ExtractsTerminalResponseAsJson()
+    {
+        // Client non-stream nhưng upstream trả SSE (fingerprint force stream) —
+        // object response trong response.completed là JSON non-stream (spec §4.3)
+        using var content = new StringContent(CompletedSse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.AggregateSseAsync(content, dest, CancellationToken.None);
+
+        var written = Encoding.UTF8.GetString(dest.ToArray());
+        Assert.Equal(result.ResponseBody, written);
+        using var doc = JsonDocument.Parse(written);
+        Assert.Equal("resp_1", doc.RootElement.GetProperty("id").GetString());
+        Assert.Equal("completed", doc.RootElement.GetProperty("status").GetString());
+        Assert.Equal(11, doc.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32());
+        Assert.Equal(7, doc.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32());
+        Assert.NotNull(result.Usage);
+        Assert.NotNull(result.FirstTokenAt);
+    }
+
+    [Fact]
+    public async Task Aggregate_Stream_NoTerminalEvent_WritesEmptyObjectFailsOpen()
+    {
+        const string sse =
+            "event: response.output_text.delta\n" +
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.AggregateSseAsync(content, dest, CancellationToken.None);
+
+        Assert.Equal("{}", Encoding.UTF8.GetString(dest.ToArray()));
+        Assert.Null(result.Usage);
+    }
 }

@@ -432,10 +432,34 @@ public class ProxyRequestHandlerTests
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenUpstreamSse_PassesStreamBytesUnchanged()
+    public async Task ForwardAsync_WhenUpstreamSse_StreamClient_PassesBytesUnchanged()
     {
+        // Stream client (có pipe) + upstream SSE → byte-forward nguyên vẹn vào pipe
         var provider = SeedProvider();
         var sut = Create(new StubUpstream(() => Upstream(200, "data: {\"x\":1}\n\ndata: [DONE]\n\n",
+            "text/event-stream")));
+        var ctx = Ctx();
+        var pipe = new System.IO.Pipelines.Pipe();
+        ctx.Items[SsePipeItems.Key] = pipe;
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
+        await pipe.Writer.CompleteAsync();
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(0, ((MemoryStream)ctx.Response.Body).Length); // handler không viết Response.Body khi có pipe
+        using var reader = new StreamReader(pipe.Reader.AsStream(), Encoding.UTF8);
+        Assert.Equal("data: {\"x\":1}\n\ndata: [DONE]\n\n", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstreamSse_NonStreamClient_AggregatesToChatCompletionJson()
+    {
+        // Non-stream client + upstream SSE (fingerprint force stream) → aggregate
+        // về JSON chat.completion, content-type application/json (OpenCode gate contract)
+        var provider = SeedProvider();
+        var sut = Create(new StubUpstream(() => Upstream(200,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
             "text/event-stream")));
         var ctx = Ctx();
 
@@ -444,8 +468,9 @@ public class ProxyRequestHandlerTests
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var (status, contentType, body) = await ReadAsync(ctx);
         Assert.Equal(200, status);
-        Assert.StartsWith("text/event-stream", contentType);
-        Assert.Equal("data: {\"x\":1}\n\ndata: [DONE]\n\n", body);
+        Assert.Equal("application/json", contentType);
+        Assert.Contains("\"object\":\"chat.completion\"", body);
+        Assert.Contains("\"content\":\"hi\"", body);
     }
 
     [Fact]
@@ -526,8 +551,11 @@ public class ProxyRequestHandlerTests
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
-        var (_, _, body) = await ReadAsync(ctx);
-        Assert.Equal(sse, body);                                   // byte-forward nguyên vẹn
+        var (_, contentType, body) = await ReadAsync(ctx);
+        // Non-stream client + SSE upstream → aggregate JSON, usage vẫn parse được
+        Assert.Equal("application/json", contentType);
+        Assert.Contains("\"prompt_tokens\":11", body);
+        Assert.Contains("\"completion_tokens\":7", body);
         Assert.Equal(("abc12345", 42L, 11, 7), Assert.Single(log.Usages));
         Assert.Equal((42L, 11, 7), Assert.Single(sink.Records));
         Assert.Single(log.Infos);                                  // LogForwarded vẫn đúng 1 Info

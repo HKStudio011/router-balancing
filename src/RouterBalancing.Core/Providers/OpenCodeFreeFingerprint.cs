@@ -23,6 +23,13 @@ public static class OpenCodeFreeFingerprint
     /// </summary>
     private const string UserAgent = "opencode/1.18.31";
 
+    /// <summary>
+    /// Gate (probe live 2026-10-13) 403 FreeTierError cả với full header khi
+    /// <c>stream:false</c> — 9router luôn force <c>stream:true</c> và aggregate về
+    /// non-stream cho client tại handler layer (opencode-zen.js transformRequest).
+    /// </summary>
+    private const string SseAccept = "text/event-stream";
+
     private const string DecoyDescription = "This tool is currently unavailable and must not be used.";
 
     private const string Base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -80,8 +87,9 @@ public static class OpenCodeFreeFingerprint
         request.Headers.TryAddWithoutValidation("x-opencode-session", session);
         request.Headers.TryAddWithoutValidation("x-opencode-request", RequestIdFor(session, raw));
 
-        // Client không yêu cầu stream → Accept */* (không ép upstream trả SSE)
-        request.Headers.TryAddWithoutValidation("Accept", isStream ? "text/event-stream" : "*/*");
+        // Body chat JSON → luôn force stream:true nên Accept luôn SSE; body hỏng
+        // (không transform được) giữ */* để upstream tự quyết định
+        request.Headers.TryAddWithoutValidation("Accept", isStream ? SseAccept : "*/*");
     }
 
     /// <summary>
@@ -95,7 +103,25 @@ public static class OpenCodeFreeFingerprint
         var identity = apiKey.Length == 0
             ? string.Empty
             : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(apiKey)))[..16];
-        return Sessions.GetOrAdd(provider.BaseUrl + "\0" + identity, _ => RandomId("ses_"));
+        return Sessions.GetOrAdd(provider.BaseUrl + "\0" + identity, _ => MintSessionId());
+    }
+
+    /// <summary>
+    /// Mint <c>ses_&lt;12 hex&gt;&lt;14 base62&gt;</c> theo đúng scheme 9router
+    /// (<c>generateSessionId</c>): 6 byte đầu = byte cao của <c>~(unixMs * 0x1000 + 1)</c>
+    /// (inverted timestamp big-endian), 14 byte sau ngẫu nhiên. Gate (probe live 2026-10-13)
+    /// decode 12 hex đầu thành timestamp và 403 FreeTierError nếu không phải thời gian hợp lý
+    /// — hex ngẫu nhiên từ SHA256 thường decode ra "tương lai" → bị từ chối.
+    /// </summary>
+    private static string MintSessionId()
+    {
+        var current = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 0x1000UL + 1UL;
+        var inverted = ~current;
+        var buffer = new byte[20];
+        for (var i = 0; i < 6; i++)
+            buffer[i] = (byte)(inverted >> (40 - 8 * i));
+        RandomNumberGenerator.Fill(buffer.AsSpan(6));
+        return FormatId("ses_", buffer);
     }
 
     /// <summary>
@@ -228,7 +254,27 @@ public static class OpenCodeFreeFingerprint
             changed = true;
         }
 
+        // Gate 403 stream:false — luôn force stream:true như 9router; caller aggregate
+        // SSE → JSON cho client non-stream (xem ProxyRequestHandler.ShouldAggregateSse)
+        if (!isStream)
+        {
+            obj["stream"] = true;
+            isStream = true;
+            changed = true;
+            // Forced-stream chưa qua WithIncludeUsage (body gốc non-stream) → tự chèn
+            // usage chunk để counter token không mất
+            InjectIncludeUsage(obj);
+        }
+
         return changed ? Encoding.UTF8.GetBytes(obj.ToJsonString()) : raw;
+    }
+
+    /// <summary>Chèn <c>stream_options.include_usage=true</c> (tạo mới nếu thiếu) — usage chunk terminal.</summary>
+    private static void InjectIncludeUsage(JsonObject body)
+    {
+        var options = body["stream_options"] as JsonObject ?? new JsonObject();
+        options["include_usage"] = true;
+        body["stream_options"] = options;
     }
 
     /// <returns>Có thay đổi tools nào không.</returns>
