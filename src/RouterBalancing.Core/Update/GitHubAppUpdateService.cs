@@ -275,8 +275,11 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
     }
 
     /// <summary>
-    /// Copy file runtime của updater (exe/dll/deps/runtimeconfig, bỏ pdb) sang
-    /// <c>%TEMP%\RouterBalancing_Updater</c> để process mới không giữ khóa file trong appDir.
+    /// Copy file runtime của updater sang <c>%TEMP%\RouterBalancing_Updater</c> để process
+    /// mới không giữ khóa file trong appDir. Updater là self-contained (SelfContained flow
+    /// từ publish của app chính) nên phải copy kèm runtime files + host binaries — chỉ copy
+    /// 4 file app thì host chết với "hostpolicy.dll not found" trước khi managed code chạy
+    /// (xem <see cref="CopySelfContainedRuntime"/> cho cách liệt kê từ deps.json).
     /// </summary>
     /// <returns>Thư mục chứa bản copy; null khi copy thất bại (đĩa đầy/thiếu quyền).</returns>
     internal static string? PrepareUpdaterShadowCopy(string appDir)
@@ -296,12 +299,75 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
             }
 
             // Không có exe trong bản copy → updater không chạy được, coi như prepare fail
-            return File.Exists(Path.Combine(shadowDir, UpdaterFileName)) ? shadowDir : null;
+            if (!File.Exists(Path.Combine(shadowDir, UpdaterFileName)))
+                return null;
+
+            CopySelfContainedRuntime(appDir, shadowDir);
+            return shadowDir;
         }
         catch (Exception)
         {
             // Copy fail → caller trả false; thư mục dở dang best-effort để System temp dọn.
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Copy runtime files mà updater self-contained cần cạnh exe: host binaries implicit
+    /// (hostfxr/hostpolicy không nằm trong deps.json) + mọi managed/native file liệt kê
+    /// trong targets của deps.json. File thiếu trong appDir được bỏ qua (best-effort) —
+    /// updater đã chạy từ appDir trước đó nên nếu file thật sự cần mà thiếu thì update
+    /// đã hỏng từ lúc cài.
+    /// </summary>
+    private static void CopySelfContainedRuntime(string appDir, string shadowDir)
+    {
+        foreach (var host in new[] { "hostfxr.dll", "hostpolicy.dll" })
+        {
+            CopyIfExists(appDir, shadowDir, host);
+        }
+
+        var depsPath = Path.Combine(appDir, Path.GetFileNameWithoutExtension(UpdaterFileName) + ".deps.json");
+        if (!File.Exists(depsPath)) return;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(depsPath));
+            foreach (var target in doc.RootElement.GetProperty("targets").EnumerateObject())
+            {
+                foreach (var package in target.Value.EnumerateObject())
+                {
+                    // Key của runtime/native chính là tên file flattened trong appDir publish
+                    if (package.Value.TryGetProperty("runtime", out var runtime))
+                    {
+                        foreach (var file in runtime.EnumerateObject())
+                        {
+                            CopyIfExists(appDir, shadowDir, file.Name);
+                        }
+                    }
+
+                    if (package.Value.TryGetProperty("native", out var native))
+                    {
+                        foreach (var file in native.EnumerateObject())
+                        {
+                            CopyIfExists(appDir, shadowDir, file.Name);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // deps.json hỏng/không đọc được — giữ4 file app; updater sẽ fail rõ ràng
+            // (Event 1023) thay vì nuốt lỗi im lặng.
+        }
+    }
+
+    private static void CopyIfExists(string appDir, string shadowDir, string fileName)
+    {
+        var src = Path.Combine(appDir, fileName);
+        if (File.Exists(src))
+        {
+            File.Copy(src, Path.Combine(shadowDir, fileName), overwrite: true);
         }
     }
 

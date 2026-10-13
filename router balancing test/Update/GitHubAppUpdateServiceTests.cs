@@ -287,6 +287,73 @@ public class GitHubAppUpdateServiceTests
     }
 
     [Fact]
+    public void PrepareUpdaterShadowCopy_CopiesSelfContainedRuntime_Files()
+    {
+        // Regression hostpolicy.dll (Event 1023): updater là self-contained — chạy từ
+        // shadow dir phải có đủ runtime files (liệt kê trong deps.json) + host binaries,
+        // nếu không host chết trước khi managed code chạy (console flash, không lỗi).
+        var appDir = Path.Combine(Path.GetTempPath(), "rb-updater-src-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(appDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.exe"), "exe");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.dll"), "dll");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.runtimeconfig.json"), "{}");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.deps.json"), """
+                {
+                  "targets": {
+                    ".NETCoreApp,Version=v10.0": { },
+                    ".NETCoreApp,Version=v10.0/win-x64": {
+                      "RouterBalancing.Updater/1.0.0": {
+                        "runtime": { "RouterBalancing.Updater.dll": { } }
+                      },
+                      "runtimepack.Microsoft.NETCore.App.Runtime.win-x64/10.0.12": {
+                        "runtime": { "System.Fake.Runtime.dll": { } },
+                        "native": { "coreclr.dll": { } }
+                      }
+                    }
+                  }
+                }
+                """);
+
+            // Runtime + host files mà self-contained host cần cạnh exe
+            File.WriteAllText(Path.Combine(appDir, "System.Fake.Runtime.dll"), "rt");
+            File.WriteAllText(Path.Combine(appDir, "coreclr.dll"), "native");
+            File.WriteAllText(Path.Combine(appDir, "hostfxr.dll"), "host");
+            File.WriteAllText(Path.Combine(appDir, "hostpolicy.dll"), "host");
+
+            // Payload app chính — KHÔNG được copy vào shadow
+            File.WriteAllText(Path.Combine(appDir, "router-balancing.exe"), "app");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Core.dll"), "core");
+
+            var shadow = GitHubAppUpdateService.PrepareUpdaterShadowCopy(appDir);
+
+            try
+            {
+                Assert.NotNull(shadow);
+                Assert.True(File.Exists(Path.Combine(shadow, "RouterBalancing.Updater.exe")));
+                Assert.True(File.Exists(Path.Combine(shadow, "System.Fake.Runtime.dll")));
+                Assert.True(File.Exists(Path.Combine(shadow, "coreclr.dll")));
+                Assert.True(File.Exists(Path.Combine(shadow, "hostfxr.dll")));
+                Assert.True(File.Exists(Path.Combine(shadow, "hostpolicy.dll")));
+                Assert.False(File.Exists(Path.Combine(shadow, "router-balancing.exe")));
+                Assert.False(File.Exists(Path.Combine(shadow, "RouterBalancing.Core.dll")));
+            }
+            finally
+            {
+                if (shadow is not null)
+                {
+                    Directory.Delete(shadow, recursive: true);
+                }
+            }
+        }
+        finally
+        {
+            Directory.Delete(appDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DownloadUpdateAsync_FailureAfterSuccess_ClearsPathAndDeletesPartialFile()
     {
         // 30 bytes / chunk 10: attempt 1 tải trọn zip + sig; attempt 2 ghi zip rồi ném IOException giữa chừng
