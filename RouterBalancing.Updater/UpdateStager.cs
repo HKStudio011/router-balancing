@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text.Json;
 
 namespace RouterBalancing.Updater;
 
@@ -21,6 +22,33 @@ internal static class UpdateStager
 
         ZipFile.ExtractToDirectory(zipPath, staging, overwriteFiles: true);
         return staging;
+    }
+
+    /// <summary>
+    /// Zip phải là bản self-contained: runtimeconfig có <c>includedFrameworks</c>
+    /// và <c>hostfxr.dll</c> cạnh exe. Zip framework-dependent ghi đè lên appDir sẽ
+    /// chuyển cài đặt sang FDD giữa chừng — hostfxr self-contained cạnh exe lẫn lộn
+    /// với phân giải framework hệ thống → lỗi ".NET missing"/hostfxr ở máy không
+    /// cài runtime (bug đã từng xảy ra — xem comment class).
+    /// </summary>
+    internal static bool VerifySelfContained(string stagingDir)
+    {
+        var runtimeConfigPath = Path.Combine(stagingDir, "router-balancing.runtimeconfig.json");
+        if (!File.Exists(runtimeConfigPath) || !File.Exists(Path.Combine(stagingDir, "hostfxr.dll")))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(runtimeConfigPath));
+            return doc.RootElement.TryGetProperty("runtimeOptions", out var runtimeOptions)
+                && runtimeOptions.TryGetProperty("includedFrameworks", out var frameworks)
+                && frameworks.ValueKind == JsonValueKind.Array
+                && frameworks.GetArrayLength() > 0;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

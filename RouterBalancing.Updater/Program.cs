@@ -39,6 +39,16 @@ try
     // 1. Trích zip sang staging — appDir chưa bị ghi gì, trích fail không để lại hỗn độn.
     stagingDir = UpdateStager.ExtractToStaging(zipPath);
 
+    // 1b. Zip không phải bản self-contained → abort trước khi đụng appDir. Ghi đè zip
+    //     FDD sẽ chuyển cài đặt sang framework-dependent giữa chừng: hostfxr self-contained
+    //     cạnh exe lẫn lộn với runtime hệ thống → lỗi ".NET missing"/hostfxr khi khởi động.
+    if (!UpdateStager.VerifySelfContained(stagingDir))
+    {
+        Console.Error.WriteLine(
+            "Zip is not a self-contained build — update aborted, application folder untouched.");
+        goto error;
+    }
+
     // 2. Chờ mọi file đích hết lock. Vẫn lock sau timeout → abort với appDir nguyên vẹn
     //    (trước đây extract thẳng vào appDir dở dang giữa chừng làm lẫn runtime hai kiểu).
     if (!UpdateStager.WaitUntilWritable(stagingDir, appDir, TimeSpan.FromSeconds(60)))

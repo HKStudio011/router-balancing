@@ -147,4 +147,61 @@ public class UpdateStagerTests : IDisposable
         Assert.Equal("new", File.ReadAllText(Path.Combine(AppDir, "a.dll")));
         Assert.Equal("<html/>", File.ReadAllText(Path.Combine(AppDir, "wwwroot", "index.html")));
     }
+
+    private const string SelfContainedRuntimeConfig =
+        """{"runtimeOptions":{"tfm":"net10.0","includedFrameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.12"}]}}""";
+
+    private const string FrameworkDependentRuntimeConfig =
+        """{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"}]}}""";
+
+    /// <summary>Staging đúng layout self-contained: runtimeconfig includedFrameworks + hostfxr cạnh nhau.</summary>
+    private void CreateSelfContainedStaging(string runtimeConfig = SelfContainedRuntimeConfig, bool hostfxr = true)
+    {
+        Directory.CreateDirectory(StagingDir);
+        File.WriteAllText(Path.Combine(StagingDir, "router-balancing.runtimeconfig.json"), runtimeConfig);
+        if (hostfxr)
+            File.WriteAllText(Path.Combine(StagingDir, "hostfxr.dll"), "bin");
+    }
+
+    [Fact]
+    public void VerifySelfContained_WhenSelfContainedLayout_ReturnsTrue()
+    {
+        CreateSelfContainedStaging();
+
+        Assert.True(UpdateStager.VerifySelfContained(StagingDir));
+    }
+
+    [Fact]
+    public void VerifySelfContained_WhenFrameworkDependentRuntimeConfig_ReturnsFalse()
+    {
+        // Zip FDD ghi đè appDir = bug ".NET missing" — phải chặn trước khi copy
+        CreateSelfContainedStaging(runtimeConfig: FrameworkDependentRuntimeConfig);
+
+        Assert.False(UpdateStager.VerifySelfContained(StagingDir));
+    }
+
+    [Fact]
+    public void VerifySelfContained_WhenHostfxrMissing_ReturnsFalse()
+    {
+        CreateSelfContainedStaging(hostfxr: false);
+
+        Assert.False(UpdateStager.VerifySelfContained(StagingDir));
+    }
+
+    [Fact]
+    public void VerifySelfContained_WhenRuntimeConfigMissing_ReturnsFalse()
+    {
+        Directory.CreateDirectory(StagingDir);
+        File.WriteAllText(Path.Combine(StagingDir, "hostfxr.dll"), "bin");
+
+        Assert.False(UpdateStager.VerifySelfContained(StagingDir));
+    }
+
+    [Fact]
+    public void VerifySelfContained_WhenRuntimeConfigBrokenJson_ReturnsFalse()
+    {
+        CreateSelfContainedStaging(runtimeConfig: "{not json");
+
+        Assert.False(UpdateStager.VerifySelfContained(StagingDir));
+    }
 }
