@@ -36,8 +36,9 @@ internal sealed class TrayService : ITrayService
 
         _icon = new NotifyIcon
         {
-            // Icon hệ thống — Phase 1 chưa đóng gói .ico riêng
-            Icon = SystemIcons.Application,
+            // Icon app (appicon.ico cạnh exe, copy theo Content trong csproj) —
+            // fallback icon hệ thống khi file thiếu (build lỗi copy, user xóa tay).
+            Icon = LoadAppIcon() ?? SystemIcons.Application,
             Text = _localization["app.title"],
             ContextMenuStrip = menu,
             Visible = true,
@@ -45,6 +46,21 @@ internal sealed class TrayService : ITrayService
         _icon.DoubleClick += (_, _) => OpenRequested?.Invoke();
 
         _localization.LanguageChanged += UpdateMenuTexts;
+    }
+
+    /// <summary>Đọc appicon.ico cạnh exe; null khi file thiếu/hỏng (caller fallback SystemIcons).</summary>
+    private static Icon? LoadAppIcon()
+    {
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "appicon.ico");
+            return File.Exists(path) ? new Icon(path) : null;
+        }
+        catch (Exception ex) when (ex is IOException or System.Security.SecurityException or ArgumentException)
+        {
+            // File hỏng (icon không hợp lệ) hoặc không đọc được — không chặn app khởi động
+            return null;
+        }
     }
 
     private void UpdateMenuTexts()
