@@ -101,7 +101,7 @@ public class UpdateStagerTests : IDisposable
     }
 
     [Fact]
-    public void WaitUntilWritable_WhenLockReleasedDuringWait_ReturnsTrue()
+    public async Task WaitUntilWritable_WhenLockReleasedDuringWait_ReturnsTrue()
     {
         CreateDirs();
         File.WriteAllText(Path.Combine(StagingDir, "a.dll"), "new");
@@ -115,16 +115,10 @@ public class UpdateStagerTests : IDisposable
             handle.Dispose();
         });
 
-        try
-        {
-            var ok = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(10));
+        var ok = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(10));
+        await releaser;
 
-            Assert.True(ok);
-        }
-        finally
-        {
-            releaser.Wait();
-        }
+        Assert.True(ok);
     }
 
     [Fact]
