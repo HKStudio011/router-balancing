@@ -1,6 +1,10 @@
-# router-balancing
+<p align="center">
+  <img src="docs/design/logo/logo-badge.svg" width="128" height="128" alt="Router Balancing logo" />
+</p>
 
-**router-balancing** là ứng dụng desktop (.NET MAUI Blazor Hybrid, Windows-first) đóng vai **local proxy server** cân bằng tải request LLM: expose API chuẩn OpenAI tại `http://127.0.0.1:<port>` (mặc định **8317**), tự động chọn nhà cung cấp, kèm UI quản lý nhật ký và cài đặt.
+<h1 align="center">Router Balancing</h1>
+
+**Router Balancing** là ứng dụng desktop (.NET MAUI Blazor Hybrid, Windows-first) đóng vai **local proxy server** cân bằng tải request LLM: expose API chuẩn OpenAI tại `http://127.0.0.1:<port>` (mặc định **8317**), tự động chọn nhà cung cấp, kèm UI quản lý nhật ký và cài đặt.
 
 ## Yêu cầu
 

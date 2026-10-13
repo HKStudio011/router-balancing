@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>router-balancing — Logo mockups</title>
+<style>
+  :root {
+    --page: #f4f4f5;
+    --card: #ffffff;
+    --ink: #18181b;
+    --muted: #71717a;
+    --border: #e4e4e7;
+    --dark: #0b1220;
+    --dark-ink: #f4f4f5;
+    --dark-border: #1e293b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--ink);
+    padding: 40px 24px 80px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 36px; }
+  .variant { margin-bottom: 56px; }
+  .vhead { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  .vhead h2 { font-size: 16px; }
+  .vhead .desc { color: var(--muted); font-size: 13px; }
+  .stage { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 320px;
+  }
+  .card.light { background: var(--card); color: var(--ink); }
+  .card.dark { background: var(--dark); color: var(--dark-ink); border-color: var(--dark-border); }
+  .card svg { width: 240px; height: 240px; }
+  .sizes {
+    display: flex; align-items: flex-end; gap: 28px;
+    border: 1px solid var(--dark-border); border-radius: 12px;
+    background: var(--dark); color: var(--dark-ink);
+    padding: 20px 28px;
+  }
+  .sizes .item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .sizes .item span { font-size: 11px; color: #94a3b8; }
+  .sizes svg { display: block; }
+  .lockup {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px;
+  }
+  .lockup .row {
+    display: flex; align-items: center; gap: 16px;
+    border-radius: 12px; padding: 22px 28px;
+    font-weight: 600; font-size: 22px; letter-spacing: -0.02em;
+  }
+  .lockup .row.light { background: var(--card); border: 1px solid var(--border); }
+  .lockup .row.dark { background: var(--dark); color: var(--dark-ink); border: 1px solid var(--dark-border); }
+  .lockup svg { width: 44px; height: 44px; flex: none; }
+  .notes { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .notes b { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>router-balancing — 4 phương án logo</h1>
+  <p class="sub">Ý tưởng gốc: tam giác (router) + 3 cạnh kéo dài (đường đi tới các provider). Xem từng variant trên nền sáng/tối và ở các kích thước thật (128→16px). Trả về tên variant + ý tưởng chỉnh sửa nếu cần.</p>
+
+  <!-- ============ A — LINEART ============ -->
+  <section class="variant" id="a">
+    <div class="vhead">
+      <h2>A · Lineart</h2>
+      <span class="desc">Bản phác nguyên bản — một nét, không điểm nhấn. Sạch, tối giản, dễ nhận ở mọi kích thước.</span>
+    </div>
+    <div class="stage">
+      <div class="card light">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M50 16 L84 74 L16 74 Z"/>
+          <path d="M50 35 L67 63 L33 63 Z"/>
+          <path d="M50 16 V6"/>
+          <path d="M16 74 L8 88"/>
+          <path d="M84 74 L92 88"/>
+        </svg>
+      </div>
+      <div class="card dark">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M50 16 L84 74 L16 74 Z"/>
+          <path d="M50 35 L67 63 L33 63 Z"/>
+          <path d="M50 16 V6"/>
+          <path d="M16 74 L8 88"/>
+          <path d="M84 74 L92 88"/>
+        </svg>
+      </div>
+    </div>
+    <div class="sizes">
+      <div class="item"><svg width="128" height="128" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V6"/><path d="M16 74 L8 88"/><path d="M84 74 L92 88"/></svg><span>128</span></div>
+      <div class="item"><svg width="64" height="64" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V6"/><path d="M16 74 L8 88"/><path d="M84 74 L92 88"/></svg><span>64</span></div>
+      <div class="item"><svg width="32" height="32" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V6"/><path d="M16 74 L8 88"/><path d="M84 74 L92 88"/></svg><span>32</span></div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V6"/><path d="M16 74 L8 88"/><path d="M84 74 L92 88"/></svg><span>16</span></div>
+    </div>
+    <div class="lockup">
+      <div class="row light">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V6"/><path d="M16 74 L8 88"/><path d="M84 74 L92 88"/></svg>
+        <span>router-balancing</span>
+      </div>
+      <div class="row dark">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V6"/><path d="M16 74 L8 88"/><path d="M84 74 L92 88"/></svg>
+        <span>router-balancing</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ B — NODES ============ -->
+  <section class="variant" id="b">
+    <div class="vhead">
+      <h2>B · Nodes</h2>
+      <span class="desc">Lineart + 3 node đầu đường (provider) + node trung tâm (router). Kể đúng câu chuyện load balancing: 1 trung tâm → N endpoint.</span>
+    </div>
+    <div class="stage">
+      <div class="card light">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M50 16 L84 74 L16 74 Z"/>
+          <path d="M50 35 L67 63 L33 63 Z"/>
+          <path d="M50 16 V10"/>
+          <path d="M16 74 L10.5 83.5"/>
+          <path d="M84 74 L89.5 83.5"/>
+          <circle cx="50" cy="7" r="4.5" fill="currentColor" stroke="none"/>
+          <circle cx="8.5" cy="87" r="4.5" fill="currentColor" stroke="none"/>
+          <circle cx="91.5" cy="87" r="4.5" fill="currentColor" stroke="none"/>
+          <circle cx="50" cy="53" r="3.5" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+      <div class="card dark">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M50 16 L84 74 L16 74 Z"/>
+          <path d="M50 35 L67 63 L33 63 Z"/>
+          <path d="M50 16 V10"/>
+          <path d="M16 74 L10.5 83.5"/>
+          <path d="M84 74 L89.5 83.5"/>
+          <circle cx="50" cy="7" r="4.5" fill="currentColor" stroke="none"/>
+          <circle cx="8.5" cy="87" r="4.5" fill="currentColor" stroke="none"/>
+          <circle cx="91.5" cy="87" r="4.5" fill="currentColor" stroke="none"/>
+          <circle cx="50" cy="53" r="3.5" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+    </div>
+    <div class="sizes">
+      <div class="item"><svg width="128" height="128" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="4.5" fill="#e4e4e7" stroke="none"/><circle cx="8.5" cy="87" r="4.5" fill="#e4e4e7" stroke="none"/><circle cx="91.5" cy="87" r="4.5" fill="#e4e4e7" stroke="none"/><circle cx="50" cy="53" r="3.5" fill="#e4e4e7" stroke="none"/></svg><span>128</span></div>
+      <div class="item"><svg width="64" height="64" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="4.5" fill="#e4e4e7" stroke="none"/><circle cx="8.5" cy="87" r="4.5" fill="#e4e4e7" stroke="none"/><circle cx="91.5" cy="87" r="4.5" fill="#e4e4e7" stroke="none"/><circle cx="50" cy="53" r="3.5" fill="#e4e4e7" stroke="none"/></svg><span>64</span></div>
+      <div class="item"><svg width="32" height="32" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="5" fill="#e4e4e7" stroke="none"/><circle cx="8.5" cy="87" r="5" fill="#e4e4e7" stroke="none"/><circle cx="91.5" cy="87" r="5" fill="#e4e4e7" stroke="none"/><circle cx="50" cy="53" r="4" fill="#e4e4e7" stroke="none"/></svg><span>32</span></div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 100 100" fill="none" stroke="#e4e4e7" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 36 L66 62 L34 62 Z"/><path d="M50 16 V10"/><path d="M16 74 L11 83"/><path d="M84 74 L89 83"/><circle cx="50" cy="7" r="6" fill="#e4e4e7" stroke="none"/><circle cx="9" cy="87" r="6" fill="#e4e4e7" stroke="none"/><circle cx="91" cy="87" r="6" fill="#e4e4e7" stroke="none"/><circle cx="50" cy="53" r="5" fill="#e4e4e7" stroke="none"/></svg><span>16</span></div>
+    </div>
+    <div class="lockup">
+      <div class="row light">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="5" fill="currentColor" stroke="none"/><circle cx="8.5" cy="87" r="5" fill="currentColor" stroke="none"/><circle cx="91.5" cy="87" r="5" fill="currentColor" stroke="none"/><circle cx="50" cy="53" r="4" fill="currentColor" stroke="none"/></svg>
+        <span>router-balancing</span>
+      </div>
+      <div class="row dark">
+        <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="5" fill="currentColor" stroke="none"/><circle cx="8.5" cy="87" r="5" fill="currentColor" stroke="none"/><circle cx="91.5" cy="87" r="5" fill="currentColor" stroke="none"/><circle cx="50" cy="53" r="4" fill="currentColor" stroke="none"/></svg>
+        <span>router-balancing</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ C — GRADIENT ============ -->
+  <section class="variant" id="c">
+    <div class="vhead">
+      <h2>C · Gradient</h2>
+      <span class="desc">Nodes version + gradient indigo→tím. Trông "AI/dev tool" hơn, nổi trên nền tối; dùng làm icon app chính.</span>
+    </div>
+    <div class="stage">
+      <div class="card light">
+        <svg viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <defs>
+            <linearGradient id="gradC" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#6366F1"/>
+              <stop offset="1" stop-color="#A855F7"/>
+            </linearGradient>
+          </defs>
+          <g stroke="url(#gradC)" stroke-width="6">
+            <path d="M50 16 L84 74 L16 74 Z"/>
+            <path d="M50 35 L67 63 L33 63 Z"/>
+            <path d="M50 16 V10"/>
+            <path d="M16 74 L10.5 83.5"/>
+            <path d="M84 74 L89.5 83.5"/>
+          </g>
+          <g fill="url(#gradC)">
+            <circle cx="50" cy="7" r="4.5"/>
+            <circle cx="8.5" cy="87" r="4.5"/>
+            <circle cx="91.5" cy="87" r="4.5"/>
+            <circle cx="50" cy="53" r="3.5"/>
+          </g>
+        </svg>
+      </div>
+      <div class="card dark">
+        <svg viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <defs>
+            <linearGradient id="gradCd" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#818CF8"/>
+              <stop offset="1" stop-color="#C084FC"/>
+            </linearGradient>
+          </defs>
+          <g stroke="url(#gradCd)" stroke-width="6">
+            <path d="M50 16 L84 74 L16 74 Z"/>
+            <path d="M50 35 L67 63 L33 63 Z"/>
+            <path d="M50 16 V10"/>
+            <path d="M16 74 L10.5 83.5"/>
+            <path d="M84 74 L89.5 83.5"/>
+          </g>
+          <g fill="url(#gradCd)">
+            <circle cx="50" cy="7" r="4.5"/>
+            <circle cx="8.5" cy="87" r="4.5"/>
+            <circle cx="91.5" cy="87" r="4.5"/>
+            <circle cx="50" cy="53" r="3.5"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+    <div class="sizes">
+      <div class="item"><svg width="128" height="128" viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="gradCs" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#818CF8"/><stop offset="1" stop-color="#C084FC"/></linearGradient></defs><g stroke="url(#gradCs)" stroke-width="6"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/></g><g fill="url(#gradCs)"><circle cx="50" cy="7" r="4.5"/><circle cx="8.5" cy="87" r="4.5"/><circle cx="91.5" cy="87" r="4.5"/><circle cx="50" cy="53" r="3.5"/></g></svg><span>128</span></div>
+      <div class="item"><svg width="64" height="64" viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#A5B4FC" stroke-width="6"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/></g><g fill="#A5B4FC"><circle cx="50" cy="7" r="4.5"/><circle cx="8.5" cy="87" r="4.5"/><circle cx="91.5" cy="87" r="4.5"/><circle cx="50" cy="53" r="3.5"/></g></svg><span>64</span></div>
+      <div class="item"><svg width="32" height="32" viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#A5B4FC" stroke-width="7"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/></g><g fill="#A5B4FC"><circle cx="50" cy="7" r="5"/><circle cx="8.5" cy="87" r="5"/><circle cx="91.5" cy="87" r="5"/><circle cx="50" cy="53" r="4"/></g></svg><span>32</span></div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#A5B4FC" stroke-width="9"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 36 L66 62 L34 62 Z"/><path d="M50 16 V10"/><path d="M16 74 L11 83"/><path d="M84 74 L89 83"/></g><g fill="#A5B4FC"><circle cx="50" cy="7" r="6"/><circle cx="9" cy="87" r="6"/><circle cx="91" cy="87" r="6"/><circle cx="50" cy="53" r="5"/></g></svg><span>16</span></div>
+    </div>
+    <div class="lockup">
+      <div class="row light">
+        <svg viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="gradCl" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366F1"/><stop offset="1" stop-color="#A855F7"/></linearGradient></defs><g stroke="url(#gradCl)" stroke-width="7"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/></g><g fill="url(#gradCl)"><circle cx="50" cy="7" r="5"/><circle cx="8.5" cy="87" r="5"/><circle cx="91.5" cy="87" r="5"/><circle cx="50" cy="53" r="4"/></g></svg>
+        <span>router-balancing</span>
+      </div>
+      <div class="row dark">
+        <svg viewBox="0 0 100 100" fill="none" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="gradCdk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#818CF8"/><stop offset="1" stop-color="#C084FC"/></linearGradient></defs><g stroke="url(#gradCdk)" stroke-width="7"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/></g><g fill="url(#gradCdk)"><circle cx="50" cy="7" r="5"/><circle cx="8.5" cy="87" r="5"/><circle cx="91.5" cy="87" r="5"/><circle cx="50" cy="53" r="4"/></g></svg>
+        <span>router-balancing</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ D — BADGE (APP ICON) ============ -->
+  <section class="variant" id="d">
+    <div class="vhead">
+      <h2>D · Badge</h2>
+      <span class="desc">Dạng app icon: squircle gradient nền + mark trắng. Đây là format sẽ dùng cho icon Windows/Android/iOS.</span>
+    </div>
+    <div class="stage">
+      <div class="card light">
+        <svg viewBox="0 0 100 100" fill="none">
+          <defs>
+            <linearGradient id="bgD" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#6366F1"/>
+              <stop offset="1" stop-color="#A855F7"/>
+            </linearGradient>
+          </defs>
+          <rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgD)"/>
+          <g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M50 16 L84 74 L16 74 Z"/>
+            <path d="M50 35 L67 63 L33 63 Z"/>
+            <path d="M50 16 V10"/>
+            <path d="M16 74 L10.5 83.5"/>
+            <path d="M84 74 L89.5 83.5"/>
+            <circle cx="50" cy="7" r="4.5" fill="#ffffff" stroke="none"/>
+            <circle cx="8.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/>
+            <circle cx="91.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/>
+            <circle cx="50" cy="53" r="3.5" fill="#ffffff" stroke="none"/>
+          </g>
+        </svg>
+      </div>
+      <div class="card dark">
+        <svg viewBox="0 0 100 100" fill="none">
+          <defs>
+            <linearGradient id="bgDd" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#4F46E5"/>
+              <stop offset="1" stop-color="#9333EA"/>
+            </linearGradient>
+          </defs>
+          <rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgDd)"/>
+          <g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M50 16 L84 74 L16 74 Z"/>
+            <path d="M50 35 L67 63 L33 63 Z"/>
+            <path d="M50 16 V10"/>
+            <path d="M16 74 L10.5 83.5"/>
+            <path d="M84 74 L89.5 83.5"/>
+            <circle cx="50" cy="7" r="4.5" fill="#ffffff" stroke="none"/>
+            <circle cx="8.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/>
+            <circle cx="91.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/>
+            <circle cx="50" cy="53" r="3.5" fill="#ffffff" stroke="none"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+    <div class="sizes">
+      <div class="item"><svg width="128" height="128" viewBox="0 0 100 100" fill="none"><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgD)"/><g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="4.5" fill="#ffffff" stroke="none"/><circle cx="8.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/><circle cx="91.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/><circle cx="50" cy="53" r="3.5" fill="#ffffff" stroke="none"/></g></svg><span>128</span></div>
+      <div class="item"><svg width="64" height="64" viewBox="0 0 100 100" fill="none"><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgD)"/><g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="4.5" fill="#ffffff" stroke="none"/><circle cx="8.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/><circle cx="91.5" cy="87" r="4.5" fill="#ffffff" stroke="none"/><circle cx="50" cy="53" r="3.5" fill="#ffffff" stroke="none"/></g></svg><span>64</span></div>
+      <div class="item"><svg width="32" height="32" viewBox="0 0 100 100" fill="none"><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgD)"/><g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="5" fill="#ffffff" stroke="none"/><circle cx="8.5" cy="87" r="5" fill="#ffffff" stroke="none"/><circle cx="91.5" cy="87" r="5" fill="#ffffff" stroke="none"/><circle cx="50" cy="53" r="4" fill="#ffffff" stroke="none"/></g></svg><span>32</span></div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 100 100" fill="none"><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgD)"/><g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="8.5" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="6" fill="#ffffff" stroke="none"/><circle cx="8.5" cy="87" r="6" fill="#ffffff" stroke="none"/><circle cx="91.5" cy="87" r="6" fill="#ffffff" stroke="none"/><circle cx="50" cy="53" r="5" fill="#ffffff" stroke="none"/></g></svg><span>16</span></div>
+    </div>
+    <div class="lockup">
+      <div class="row light">
+        <svg viewBox="0 0 100 100" fill="none"><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgD)"/><g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="5" fill="#ffffff" stroke="none"/><circle cx="8.5" cy="87" r="5" fill="#ffffff" stroke="none"/><circle cx="91.5" cy="87" r="5" fill="#ffffff" stroke="none"/><circle cx="50" cy="53" r="4" fill="#ffffff" stroke="none"/></g></svg>
+        <span>router-balancing</span>
+      </div>
+      <div class="row dark">
+        <svg viewBox="0 0 100 100" fill="none"><rect x="2" y="2" width="96" height="96" rx="22" fill="url(#bgDd)"/><g transform="translate(50 50) scale(0.72) translate(-50 -50)" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 16 L84 74 L16 74 Z"/><path d="M50 35 L67 63 L33 63 Z"/><path d="M50 16 V10"/><path d="M16 74 L10.5 83.5"/><path d="M84 74 L89.5 83.5"/><circle cx="50" cy="7" r="5" fill="#ffffff" stroke="none"/><circle cx="8.5" cy="87" r="5" fill="#ffffff" stroke="none"/><circle cx="91.5" cy="87" r="5" fill="#ffffff" stroke="none"/><circle cx="50" cy="53" r="4" fill="#ffffff" stroke="none"/></g></svg>
+        <span>router-balancing</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="notes">
+    <b>Gợi ý chọn:</b> C là phương án "đầy đủ" nhất (gradient nổi trên dark UI của app) — D chính là C đặt trong squircle để làm icon platform.
+    A/B hợp nếu thích style monochrome tinh tế; B có thể ghép cùng gradient nếu muốn nodes nhiều màu (mỗi màu = 1 provider đang healthy).
+    <br><br>
+    <b>Bước tiếp theo sau khi chốt:</b> export SVG cuối + sinh bộ PNG icon (Windows .ico, Android mipmap, iOS,/wwwroot/favicon.svg) và gắn vào MAUI resources.
+  </div>
+</div>
+</body>
+</html>
