@@ -2,7 +2,10 @@
 @implements IDisposable
 
 <nav class="flex flex-col gap-1 p-3">
-    <div class="px-3 pb-2 text-base font-semibold">@L["app.title"]</div>
+    <div class="flex items-center gap-2 px-3 pb-2">
+        <img src="appicon.svg" alt="" class="size-6 rounded" />
+        <span class="text-base font-semibold">@L["app.title"]</span>
+    </div>
 
     <NavLink class="rounded px-3 py-2 text-sm no-underline hover:bg-background"
              href="" Match="NavLinkMatch.All">
