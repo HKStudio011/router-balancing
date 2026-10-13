@@ -34,10 +34,24 @@ public class SettingsValidatorTests
         Assert.Equal("settings.error.port", high[nameof(SettingsDraft.Port)]);
     }
 
-    [Fact]
-    public void Validate_WhenLanguageInvalid_ReturnsLanguageError()
+    [Theory]
+    [InlineData("fr")]
+    [InlineData("ja")]
+    [InlineData("zh-Hans")]
+    public void Validate_WhenLanguageIsIsoCode_ReturnsNoLanguageError(string language)
     {
-        var errors = SettingsValidator.Validate(ValidDraft() with { Language = "fr" });
+        var errors = SettingsValidator.Validate(ValidDraft() with { Language = language });
+
+        Assert.False(errors.ContainsKey(nameof(SettingsDraft.Language)));
+    }
+
+    [Theory]
+    [InlineData("French")]
+    [InlineData("JA")]
+    [InlineData("j")]
+    public void Validate_WhenLanguageNotIsoCode_ReturnsLanguageError(string language)
+    {
+        var errors = SettingsValidator.Validate(ValidDraft() with { Language = language });
 
         Assert.Equal("settings.error.language", errors[nameof(SettingsDraft.Language)]);
     }
