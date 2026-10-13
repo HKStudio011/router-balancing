@@ -39,12 +39,9 @@ try
     var backupPath = exePath + ".bak";
     try { File.Copy(exePath, backupPath, overwrite: true); } catch { }
 
-    // Tự move bản thân sang .old vì file đang chạy không thể bị ghi đè bởi zip;
-    // best-effort — bỏ qua lỗi để tiếp tục extract.
-    var selfPath = Path.Combine(appDir, "RouterBalancing.Updater.exe");
-    var selfBackup = selfPath + ".old";
-    try { File.Move(selfPath, selfBackup, overwrite: true); } catch { }
-
+    // Updater chạy từ shadow copy trong %TEMP% (InstallUpdateAsync đã copy trước) —
+    // không file nào trong appDir bị chính process này giữ khóa nên extract đè an toàn,
+    // kể cả RouterBalancing.Updater.dll/exe cũ.
     ZipFile.ExtractToDirectory(zipPath, appDir, overwriteFiles: true);
 
     Process.Start(new ProcessStartInfo
@@ -56,8 +53,31 @@ try
 
     // Dọn dẹp best-effort — file rác còn sót không ảnh hưởng functional của update.
     try { File.Delete(backupPath); } catch { }
-    try { File.Delete(selfBackup); } catch { }
     try { File.Delete(zipPath); } catch { }
+
+    // Dọn shadow copy temp của chính mình: dll/deps xóa được, exe đang chạy chỉ move được
+    // sang .old — System temp cleanup dọn nốt phần còn lại.
+    var selfDir = AppContext.BaseDirectory;
+    try
+    {
+        foreach (var file in Directory.EnumerateFiles(selfDir))
+        {
+            try
+            {
+                if (string.Equals(Path.GetFileName(file), Path.GetFileName(Environment.ProcessPath),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Move(file, file + ".old", overwrite: true);
+                }
+                else
+                {
+                    File.Delete(file);
+                }
+            }
+            catch { }
+        }
+    }
+    catch { }
 
     return 0;
 }

@@ -199,11 +199,16 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
         try
         {
             var appDir = AppContext.BaseDirectory;
-            var updaterPath = FindUpdaterPath(appDir);
-            if (updaterPath is null) return Task.FromResult(false);
+            if (FindUpdaterPath(appDir) is null) return Task.FromResult(false);
+
+            // Updater phải chạy từ shadow copy ngoài appDir: chạy từ chính appDir thì
+            // process giữ khóa RouterBalancing.Updater.dll → zip extract (overwrite)
+            // không ghi đè được chính dll đó → "file is being used by another process".
+            var shadowDir = PrepareUpdaterShadowCopy(appDir);
+            if (shadowDir is null) return Task.FromResult(false);
 
             var psi = BuildUpdaterStartInfo(DownloadedZipPath, Environment.ProcessId, appDir);
-            psi.FileName = updaterPath;
+            psi.FileName = Path.Combine(shadowDir, UpdaterFileName);
 
             Process.Start(psi);
             return Task.FromResult(true);
@@ -212,6 +217,37 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
         {
             // Không khởi động được updater (file hỏng, thiếu quyền...) → false để UI báo lỗi cài đặt.
             return Task.FromResult(false);
+        }
+    }
+
+    /// <summary>
+    /// Copy file runtime của updater (exe/dll/deps/runtimeconfig, bỏ pdb) sang
+    /// <c>%TEMP%\RouterBalancing_Updater</c> để process mới không giữ khóa file trong appDir.
+    /// </summary>
+    /// <returns>Thư mục chứa bản copy; null khi copy thất bại (đĩa đầy/thiếu quyền).</returns>
+    internal static string? PrepareUpdaterShadowCopy(string appDir)
+    {
+        try
+        {
+            var shadowDir = Path.Combine(
+                Path.GetTempPath(), "RouterBalancing_Updater", $"v{Environment.ProcessId}-{Environment.TickCount64}");
+            Directory.CreateDirectory(shadowDir);
+
+            foreach (var file in Directory.EnumerateFiles(appDir, "RouterBalancing.Updater.*"))
+            {
+                var name = Path.GetFileName(file);
+                if (name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                File.Copy(file, Path.Combine(shadowDir, name), overwrite: true);
+            }
+
+            // Không có exe trong bản copy → updater không chạy được, coi như prepare fail
+            return File.Exists(Path.Combine(shadowDir, UpdaterFileName)) ? shadowDir : null;
+        }
+        catch (Exception)
+        {
+            // Copy fail → caller trả false; thư mục dở dang best-effort để System temp dọn.
+            return null;
         }
     }
 
