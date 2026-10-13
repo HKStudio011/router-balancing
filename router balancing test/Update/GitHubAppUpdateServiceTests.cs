@@ -168,6 +168,63 @@ public class GitHubAppUpdateServiceTests
     }
 
     [Fact]
+    public void PrepareUpdaterShadowCopy_CopiesRuntimeFiles_SkipsPdbAndAppFiles()
+    {
+        var appDir = Path.Combine(Path.GetTempPath(), "rb-updater-src-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(appDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.exe"), "exe");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.dll"), "dll");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.deps.json"), "{}");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.runtimeconfig.json"), "{}");
+            File.WriteAllText(Path.Combine(appDir, "RouterBalancing.Updater.pdb"), "pdb");
+            File.WriteAllText(Path.Combine(appDir, "router-balancing.exe"), "app");
+
+            var shadow = GitHubAppUpdateService.PrepareUpdaterShadowCopy(appDir);
+
+            try
+            {
+                Assert.NotNull(shadow);
+                Assert.True(File.Exists(Path.Combine(shadow, "RouterBalancing.Updater.exe")));
+                Assert.True(File.Exists(Path.Combine(shadow, "RouterBalancing.Updater.dll")));
+                Assert.True(File.Exists(Path.Combine(shadow, "RouterBalancing.Updater.deps.json")));
+                Assert.True(File.Exists(Path.Combine(shadow, "RouterBalancing.Updater.runtimeconfig.json")));
+                Assert.False(File.Exists(Path.Combine(shadow, "RouterBalancing.Updater.pdb")));
+                Assert.False(File.Exists(Path.Combine(shadow, "router-balancing.exe")));
+            }
+            finally
+            {
+                if (shadow is not null)
+                {
+                    Directory.Delete(shadow, recursive: true);
+                }
+            }
+        }
+        finally
+        {
+            Directory.Delete(appDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PrepareUpdaterShadowCopy_ReturnsNull_WhenUpdaterFilesMissing()
+    {
+        var appDir = Path.Combine(Path.GetTempPath(), "rb-updater-src-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(appDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(appDir, "router-balancing.exe"), "app");
+
+            Assert.Null(GitHubAppUpdateService.PrepareUpdaterShadowCopy(appDir));
+        }
+        finally
+        {
+            Directory.Delete(appDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DownloadUpdateAsync_FailureAfterSuccess_ClearsPathAndDeletesPartialFile()
     {
         // 30 bytes / chunk 10: attempt 1 tải trọn; attempt 2 ghi 20 bytes rồi ném IOException giữa chừng
