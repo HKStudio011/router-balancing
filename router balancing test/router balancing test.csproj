@@ -27,6 +27,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\src\RouterBalancing.Core\RouterBalancing.Core.csproj" />
+    <!-- Compile trực tiếp UpdateStager (KHÔNG ProjectReference): reference assembly
+         sẽ kéo RouterBalancing.Updater.exe vào test bin, phá test
+         InstallUpdateAsync_False_WhenUpdaterMissing và có thể launch thật updater. -->
+    <Compile Include="..\RouterBalancing.Updater\UpdateStager.cs" Link="Update\UpdateStager.cs" />
   </ItemGroup>
 
 </Project>
