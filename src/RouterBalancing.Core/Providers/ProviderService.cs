@@ -75,6 +75,7 @@ public sealed class ProviderService : IProviderService
             Type = draft.Type,
             BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl),
             MaxConcurrent = draft.MaxConcurrent,
+            ExtraHeaders = SerializeExtraHeaders(draft.ExtraHeaders),
         };
 
         // Key ở create = tạo kèm account "Default" — key sống hoàn toàn ở ProviderAccount (spec §4.2).
@@ -107,10 +108,35 @@ public sealed class ProviderService : IProviderService
         provider.Type = draft.Type;
         provider.BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl);
         provider.MaxConcurrent = draft.MaxConcurrent;
+        provider.ExtraHeaders = SerializeExtraHeaders(draft.ExtraHeaders);
         // draft.ApiKey bị BỎ QUA khi update — key quản lý ở ProviderAccount (spec §4.2)
         provider.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Gộp dòng form thành JSON object (key đã trim); danh sách rỗng → null (không ghi cột).
+    /// Dòng key rỗng bị bỏ qua — form đã validate, nhánh này chỉ phòng service boundary.
+    /// </summary>
+    private static string? SerializeExtraHeaders(IReadOnlyList<ExtraHeaderEntry> entries)
+    {
+        if (entries.Count == 0)
+        {
+            return null;
+        }
+
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            var key = entry.Key.Trim();
+            if (key.Length > 0)
+            {
+                dict[key] = entry.Value;
+            }
+        }
+
+        return dict.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(dict);
     }
 
     /// <inheritdoc/>

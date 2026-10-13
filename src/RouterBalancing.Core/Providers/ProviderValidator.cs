@@ -44,6 +44,37 @@ public static partial class ProviderValidator
             errors[nameof(ProviderDraft.Identifier)] = "providers.error.identifierFormat";
         }
 
+        ValidateExtraHeaders(draft, errors);
+
         return errors;
+    }
+
+    /// <summary>
+    /// Header tùy chỉnh: key bắt buộc (trim), không trùng (HTTP header case-insensitive),
+    /// value không null (rỗng = hợp lệ). Key lỗi mang index dòng để UI trỏ đúng ô nhập.
+    /// </summary>
+    private static void ValidateExtraHeaders(ProviderDraft draft, Dictionary<string, string> errors)
+    {
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < draft.ExtraHeaders.Count; i++)
+        {
+            var entry = draft.ExtraHeaders[i];
+            var keyField = $"{nameof(ProviderDraft.ExtraHeaders)}.{i}.Key";
+            var valueField = $"{nameof(ProviderDraft.ExtraHeaders)}.{i}.Value";
+
+            if (string.IsNullOrWhiteSpace(entry.Key))
+            {
+                errors[keyField] = "providers.error.headerKey";
+            }
+            else if (!seenKeys.Add(entry.Key.Trim()))
+            {
+                errors[keyField] = "providers.error.headerDuplicate";
+            }
+
+            if (entry.Value is null)
+            {
+                errors[valueField] = "providers.error.headerValue";
+            }
+        }
     }
 }

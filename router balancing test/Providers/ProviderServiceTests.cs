@@ -279,4 +279,65 @@ public class ProviderServiceTests : IDisposable
         var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
         Assert.False(saved.Enabled);
     }
+
+    [Fact]
+    public async Task Create_WhenExtraHeadersSet_PersistsAsJsonObject()
+    {
+        var draft = Draft();
+        draft.ExtraHeaders =
+        [
+            new ExtraHeaderEntry { Key = " X-Custom ", Value = "a" },
+            new ExtraHeaderEntry { Key = "X-Other", Value = "b" },
+        ];
+
+        var provider = await _service.CreateAsync(draft);
+
+        var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
+            provider.ExtraHeaders!)!;
+        // Key đã trim khi serialize
+        Assert.Equal("a", dict["X-Custom"]);
+        Assert.Equal("b", dict["X-Other"]);
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
+        Assert.Equal(provider.ExtraHeaders, saved.ExtraHeaders);
+    }
+
+    [Fact]
+    public async Task Create_WhenExtraHeadersEmpty_PersistsNull()
+    {
+        var provider = await _service.CreateAsync(Draft());
+
+        Assert.Null(provider.ExtraHeaders);
+    }
+
+    [Fact]
+    public async Task Update_WhenExtraHeadersChanged_PersistsNewJson()
+    {
+        var provider = await _service.CreateAsync(Draft());
+        var update = Draft();
+        update.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-New", Value = "v" }];
+
+        await _service.UpdateAsync(provider.Id, update);
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
+        var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
+            saved.ExtraHeaders!)!;
+        Assert.Equal("v", dict["X-New"]);
+    }
+
+    [Fact]
+    public async Task Update_WhenExtraHeadersRemoved_PersistsNull()
+    {
+        var create = Draft();
+        create.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-Old", Value = "v" }];
+        var provider = await _service.CreateAsync(create);
+
+        await _service.UpdateAsync(provider.Id, Draft());
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
+        Assert.Null(saved.ExtraHeaders);
+    }
 }

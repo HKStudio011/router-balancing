@@ -105,4 +105,60 @@ public class ProviderValidatorTests
 
         Assert.False(errors.ContainsKey(nameof(ProviderDraft.Identifier)));
     }
+
+    [Fact]
+    public void Validate_WhenExtraHeadersValid_ReturnsNoHeaderError()
+    {
+        var draft = ValidDraft();
+        draft.ExtraHeaders =
+        [
+            new ExtraHeaderEntry { Key = "X-Custom", Value = "a" },
+            new ExtraHeaderEntry { Key = "X-Other", Value = string.Empty },
+        ];
+
+        Assert.Empty(ProviderValidator.Validate(draft));
+    }
+
+    [Fact]
+    public void Validate_WhenHeaderKeyBlank_ReturnsHeaderKeyErrorWithRowIndex()
+    {
+        var draft = ValidDraft();
+        draft.ExtraHeaders =
+        [
+            new ExtraHeaderEntry { Key = "X-Ok", Value = "a" },
+            new ExtraHeaderEntry { Key = "   ", Value = "b" },
+        ];
+
+        var errors = ProviderValidator.Validate(draft);
+
+        Assert.Equal("providers.error.headerKey", errors["ExtraHeaders.1.Key"]);
+    }
+
+    [Theory]
+    [InlineData("X-Api-Key")]   // trùng exact
+    [InlineData("x-api-key")]   // HTTP header case-insensitive
+    public void Validate_WhenHeaderKeyDuplicate_ReturnsHeaderDuplicate(string duplicateKey)
+    {
+        var draft = ValidDraft();
+        draft.ExtraHeaders =
+        [
+            new ExtraHeaderEntry { Key = "X-Api-Key", Value = "a" },
+            new ExtraHeaderEntry { Key = duplicateKey, Value = "b" },
+        ];
+
+        var errors = ProviderValidator.Validate(draft);
+
+        Assert.Equal("providers.error.headerDuplicate", errors["ExtraHeaders.1.Key"]);
+    }
+
+    [Fact]
+    public void Validate_WhenHeaderValueNull_ReturnsHeaderValueError()
+    {
+        var draft = ValidDraft();
+        draft.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-Custom", Value = null! }];
+
+        var errors = ProviderValidator.Validate(draft);
+
+        Assert.Equal("providers.error.headerValue", errors["ExtraHeaders.0.Value"]);
+    }
 }

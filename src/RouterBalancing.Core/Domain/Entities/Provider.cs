@@ -38,6 +38,10 @@ public class Provider
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
+    /// <summary>Header tùy chỉnh bổ sung cho mọi request tới provider (JSON object, plaintext).
+    /// Fingerprint/attributions thắng — chỉ thêm key chưa tồn tại (xem <c>ProviderRequestFactory</c>).</summary>
+    public string? ExtraHeaders { get; set; }
+
     public List<Model> Models { get; set; } = [];
 
     /// <summary>Proxy outbound gán cho provider (M2M). Rỗng = chưa gán → direct (D2).</summary>
