@@ -285,8 +285,9 @@ public class ProxyRetryIntegrationTests : IDisposable
         var response = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
 
         // Failover trong 1 request: client chỉ thấy 200 — 429 của p1 không lọt ra ngoài (§3.2)
+        // Non-stream client + SSE stub upstream → aggregate JSON (contract non-stream giữ nguyên)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("data:", await response.Content.ReadAsStringAsync());
+        Assert.Contains("\"object\":\"chat.completion\"", await response.Content.ReadAsStringAsync());
         Assert.Equal(2, upstream.Calls);
         Assert.Contains(_messages, m =>
             m.Contains("chuyển provider kế") && m.Contains("HTTP 429")); // Warn attempt fail §5
@@ -346,7 +347,8 @@ public class ProxyRetryIntegrationTests : IDisposable
         var response = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("data:", await response.Content.ReadAsStringAsync());
+        // Non-stream client + SSE stub upstream → aggregate JSON (contract non-stream giữ nguyên)
+        Assert.Contains("\"object\":\"chat.completion\"", await response.Content.ReadAsStringAsync());
         var records = upstream.Records;
         // Walk exhaustive (§6.2): đúng 2 attempt, cả 2 trên p1 với 2 TK khác nhau —
         // còn TK chưa thử thì KHÔNG nhảy sang provider B
@@ -368,7 +370,8 @@ public class ProxyRetryIntegrationTests : IDisposable
         var response = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("data:", await response.Content.ReadAsStringAsync());
+        // Non-stream client + SSE stub upstream → aggregate JSON (contract non-stream giữ nguyên)
+        Assert.Contains("\"object\":\"chat.completion\"", await response.Content.ReadAsStringAsync());
         var records = upstream.Records;
         // Quét hết 2 TK của p1 (401 cả 2, không lặp lại TK nào) rồi mới sang p2 serve (§6.2)
         Assert.Equal(3, records.Count);

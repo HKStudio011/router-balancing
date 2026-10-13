@@ -26,4 +26,16 @@ public sealed record ProviderDraft
     public bool NoKey { get; set; }
 
     public int MaxConcurrent { get; set; } = 4;
+
+    /// <summary>Header tùy chỉnh (key → value) sẽ áp cho mọi request tới provider.
+    /// Không đè header fingerprint/attributions — chỉ bổ sung key chưa tồn tại.</summary>
+    public List<ExtraHeaderEntry> ExtraHeaders { get; set; } = [];
+}
+
+/// <summary>Một dòng header tùy chỉnh trong form — mutable để Blazor <c>@bind</c>.</summary>
+public sealed class ExtraHeaderEntry
+{
+    public string Key { get; set; } = string.Empty;
+
+    public string Value { get; set; } = string.Empty;
 }

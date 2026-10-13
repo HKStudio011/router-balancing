@@ -78,6 +78,43 @@ public static class ProviderRequestFactory
             NvidiaRequestProfile.Apply(request, content);
         }
 
+        // Header tùy chỉnh người dùng (options.headers kiểu opencode.json) — áp cho mọi
+        // request kể cả GET probe. Fingerprint/attributions đã set ở trên thắng:
+        // chỉ bổ sung key chưa tồn tại, không đè Authorization/x-api-key/UA.
+        ApplyExtraHeaders(request, provider);
+
         return request;
+    }
+
+    /// <summary>
+    /// Parse JSON object trong <see cref="Provider.ExtraHeaders"/> và gắn từng entry
+    /// (TryAddWithoutValidation) khi header tương ứng chưa có. JSON hỏng (chỉnh tay DB)
+    /// → bỏ qua, không chặn traffic.
+    /// </summary>
+    private static void ApplyExtraHeaders(HttpRequestMessage request, Provider provider)
+    {
+        if (provider.ExtraHeaders is not { Length: > 0 })
+        {
+            return;
+        }
+
+        Dictionary<string, string> headers;
+        try
+        {
+            headers = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
+                provider.ExtraHeaders) ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return;
+        }
+
+        foreach (var (key, value) in headers)
+        {
+            if (!request.Headers.Contains(key))
+            {
+                request.Headers.TryAddWithoutValidation(key, value);
+            }
+        }
     }
 }

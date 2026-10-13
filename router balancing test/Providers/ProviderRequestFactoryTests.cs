@@ -88,4 +88,42 @@ public class ProviderRequestFactoryTests
         // anthropic-version bắt buộc kể cả không key
         Assert.Equal("2023-06-01", request.Headers.GetValues("anthropic-version").Single());
     }
+
+    [Fact]
+    public void Create_WhenExtraHeadersSet_AppliesOnGetProbe()
+    {
+        var provider = P("https://api.openai.com");
+        provider.ExtraHeaders = """{"X-Custom":"a","X-Other":"b"}""";
+
+        using var request = ProviderRequestFactory.Create(provider, "sk-test");
+
+        Assert.Equal("a", request.Headers.GetValues("X-Custom").Single());
+        Assert.Equal("b", request.Headers.GetValues("X-Other").Single());
+    }
+
+    [Fact]
+    public void Create_WhenExtraHeaderCollidesWithAuthorization_BuiltInWins()
+    {
+        // Fingerprint/attributions thắng — user chỉ bổ sung key chưa tồn tại
+        var provider = P("https://api.openai.com");
+        provider.ExtraHeaders = """{"Authorization":"Custom evil"}""";
+
+        using var request = ProviderRequestFactory.Create(provider, "sk-test");
+
+        Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
+        Assert.Equal("sk-test", request.Headers.Authorization.Parameter);
+    }
+
+    [Fact]
+    public void Create_WhenExtraHeadersJsonCorrupt_SkipsWithoutThrowing()
+    {
+        // JSON hỏng do chỉnh tay DB — fail-open, không chặn traffic
+        var provider = P("https://api.openai.com");
+        provider.ExtraHeaders = "{not json";
+
+        using var request = ProviderRequestFactory.Create(provider, "sk-test");
+
+        Assert.False(request.Headers.Contains("X-Custom"));
+        Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
+    }
 }

@@ -335,6 +335,9 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ExtraHeaders")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Identifier")
                         .HasMaxLength(50)
                         .HasColumnType("TEXT");

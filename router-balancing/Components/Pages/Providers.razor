@@ -396,6 +396,43 @@ else
         }
     </div>
 
+    @* Header tùy chỉnh (options.headers kiểu opencode.json) — áp mọi request, cả create lẫn edit *@
+    <div class="mt-3 flex flex-col gap-2 text-sm">
+        <div class="flex items-center justify-between">
+            <span class="font-semibold">@L["providers.field.extraHeaders"]</span>
+            <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                    @onclick="() => _draft.ExtraHeaders.Add(new ExtraHeaderEntry())">
+                @L["providers.extraHeaders.add"]
+            </button>
+        </div>
+        <span class="text-xs opacity-70">@L["providers.hint.extraHeaders"]</span>
+        @for (var i = 0; i < _draft.ExtraHeaders.Count; i++)
+        {
+            var index = i;
+            <div class="flex items-center gap-2" @key="index">
+                <input class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1.5"
+                       spellcheck="false" disabled="@_busy"
+                       placeholder="@L["providers.extraHeaders.keyPlaceholder"]"
+                       @bind="_draft.ExtraHeaders[index].Key" />
+                <input class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1.5"
+                       spellcheck="false" disabled="@_busy"
+                       placeholder="@L["providers.extraHeaders.valuePlaceholder"]"
+                       @bind="_draft.ExtraHeaders[index].Value" />
+                <button type="button" class="btn btn-outline-secondary" aria-label="Remove"
+                        disabled="@_busy"
+                        @onclick="() => _draft.ExtraHeaders.RemoveAt(index)">×</button>
+            </div>
+            @if (ModalError($"ExtraHeaders.{index}.Key") is { } headerKeyError)
+            {
+                <div class="text-sm text-danger">@L[headerKeyError]</div>
+            }
+            @if (ModalError($"ExtraHeaders.{index}.Value") is { } headerValueError)
+            {
+                <div class="text-sm text-danger">@L[headerValueError]</div>
+            }
+        }
+    </div>
+
     @if (ModalError(nameof(ProviderDraft.Name)) is { } nameError)
     {
         <div class="mt-1 text-sm text-danger">@L[nameError]</div>
@@ -1187,6 +1224,7 @@ else
             BaseUrl = provider.BaseUrl,
             ApiKey = string.Empty,
             MaxConcurrent = provider.MaxConcurrent,
+            ExtraHeaders = DeserializeExtraHeaders(provider.ExtraHeaders),
         };
         ResetModalState();
         _accountForm = null;
@@ -1213,6 +1251,28 @@ else
     /// <summary>Lấy key lỗi i18n của field; null nếu field không có lỗi (pattern SettingsPanel).</summary>
     private string? ModalError(string field) =>
         _errors.TryGetValue(field, out var key) ? key : null;
+
+    /// <summary>
+    /// Parse JSON cột ExtraHeaders về dòng form. Cột null/rỗng/JSON hỏng (chỉnh tay DB)
+    /// → danh sách rỗng, không chặn mở form.
+    /// </summary>
+    private static List<ExtraHeaderEntry> DeserializeExtraHeaders(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        try
+        {
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];
+            return [.. dict.Select(kv => new ExtraHeaderEntry { Key = kv.Key, Value = kv.Value })];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
 
     // NoKey trong signature: test pass rồi mới bật/tắt toggle → test mất hiệu lực, phải test lại
     private string DraftSignature() =>

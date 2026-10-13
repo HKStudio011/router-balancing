@@ -95,6 +95,40 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         return new UsageCapture.TeeResult(ParseRootUsage(payload), null, ApiMonitorStore.DecodeCapped(payload));
     }
 
+    /// <inheritdoc/>
+    public async Task<UsageCapture.TeeResult> AggregateSseAsync(HttpContent source, Stream dest,
+        CancellationToken ct)
+    {
+        // Gộp SSE → object JSON terminal: event response.completed chứa nguyên object
+        // Response đầy đủ — extract ra ghi một lần (upstream forced-stream do fingerprint,
+        // client non-stream vẫn nhận JSON đúng contract §4.3).
+        var stream = await source.ReadAsStreamAsync(ct);
+        var state = new ResponsesSseState();
+        var buffer = new byte[16 * 1024];
+        byte[] carry = [];
+        int read;
+        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+        {
+            var combined = new byte[carry.Length + read];
+            Buffer.BlockCopy(carry, 0, combined, 0, carry.Length);
+            Buffer.BlockCopy(buffer, 0, combined, carry.Length, read);
+
+            var lineStart = 0;
+            for (var i = 0; i < combined.Length; i++)
+            {
+                if (combined[i] != (byte)'\n') continue;
+                state.HandleLine(combined.AsSpan(lineStart, i - lineStart));
+                lineStart = i + 1;
+            }
+            carry = combined[lineStart..];
+        }
+        if (carry.Length > 0) state.HandleLine(carry);
+
+        var json = state.TerminalResponseJson ?? "{}";
+        await dest.WriteAsync(Encoding.UTF8.GetBytes(json), ct);
+        return new UsageCapture.TeeResult(state.Usage, state.FirstTokenAt, json);
+    }
+
     // Cap ResponseBody monitor — phải khớp ApiMonitorStore.BodyCap (DecodeCapped cắt tại đây)
     private const int BodyCapBytes = 64 * 1024;
 
@@ -160,6 +194,9 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         public UsageCapture.Usage? Usage { get; private set; }
         public DateTimeOffset? FirstTokenAt { get; private set; }
 
+        /// <summary>JSON của object <c>response</c> trong event terminal — input aggregate non-stream.</summary>
+        public string? TerminalResponseJson { get; private set; }
+
         public void HandleLine(ReadOnlySpan<byte> line)
         {
             // SSE CRLF: dòng trống tới đây là "\r" (đã tách theo \n) — IsEmpty không bao giờ
@@ -186,7 +223,28 @@ internal sealed class ResponsesProtocol : IProxyProtocol
             var payload = line["data:"u8.Length..];
             if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];   // 1 space theo SSE spec
             if (_eventName is "response.completed" or "response.incomplete" or "response.failed")
+            {
                 Usage = ParseTerminalUsage(payload) ?? Usage;
+                TerminalResponseJson = ExtractResponseObject(payload) ?? TerminalResponseJson;
+            }
+        }
+    }
+
+    // Extract nguyên object lồng `response` từ data terminal — serialize lại làm JSON non-stream
+    private static string? ExtractResponseObject(ReadOnlySpan<byte> data)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(data.ToArray());
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("response", out var response)
+                || response.ValueKind != JsonValueKind.Object)
+                return null;
+            return response.GetRawText();
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return null;
         }
     }
 

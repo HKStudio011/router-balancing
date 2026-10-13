@@ -94,14 +94,40 @@ public class OpenCodeFreeFingerprintTests
     }
 
     [Fact]
-    public void Create_OpenCodeFreeChat_StreamFalse_UsesWildcardAccept()
+    public async Task Create_OpenCodeFreeChat_StreamFalse_ForcesStreamAndSseAccept()
     {
+        // Gate (probe live 2026-10-13) 403 FreeTierError với stream:false —
+        // fingerprint force stream:true + Accept SSE, caller aggregate về JSON cho client
         var body = ChatBody.Replace("\"stream\":true", "\"stream\":false");
         using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
             "/v1/chat/completions", HttpMethod.Post, JsonBody(body));
 
-        Assert.Equal("*/*", Header(request, "Accept"));
+        Assert.Equal("text/event-stream", Header(request, "Accept"));
+        var parsed = await ContentJson(request);
+        Assert.True(parsed["stream"]!.GetValue<bool>());
+        // Forced-stream chưa qua WithIncludeUsage → tự chèn usage chunk
+        Assert.True(parsed["stream_options"]!["include_usage"]!.GetValue<bool>());
     }
+
+    [Fact]
+    public void Create_OpenCodeFreeChat_SessionHex_DecodesToRecentTimestamp()
+    {
+        // 12 hex đầu là inverted timestamp (9router generateSessionId) —
+        // hex ngẫu nhiên thường decode ra "tương lai" → gate 403. So sánh với cùng
+        // thuật toán encode: inversion đảo thứ tự nên v(now+Δ) < v(session) < v(now-Δ).
+        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
+            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
+
+        var session = Header(request, "x-opencode-session")!;
+        var value = Convert.ToUInt64(session[4..16], 16); // bỏ "ses_", 12 hex = 48-bit
+        Assert.InRange(value,
+            EncodeTimeHex(DateTimeOffset.UtcNow.AddMinutes(1)),
+            EncodeTimeHex(DateTimeOffset.UtcNow.AddHours(-1)));
+    }
+
+    /// <summary>Mirror <c>MintSessionId</c>: 48-bit cao của <c>~(unixMs * 0x1000 + 1)</c>.</summary>
+    private static ulong EncodeTimeHex(DateTimeOffset time) =>
+        ~((ulong)time.ToUnixTimeMilliseconds() * 0x1000UL + 1UL) & 0xFFFFFFFFFFFF;
 
     [Fact]
     public void Create_OpenCodeFreeProbe_NoFingerprintHeaders()

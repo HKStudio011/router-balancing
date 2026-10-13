@@ -38,6 +38,13 @@ public interface IProxyProtocol
 
     /// <summary>Tee stream/JSON upstream vào dest, trích usage + first-token + body (cap 64KB).</summary>
     Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct);
+
+    /// <summary>
+    /// Gộp SSE upstream về JSON non-stream rồi ghi một lần vào <paramref name="dest"/> —
+    /// dùng khi client yêu cầu non-stream nhưng fingerprint (vd. OpenCode gate) force
+    /// <c>stream:true</c> upstream; trả usage/TTFT như <see cref="TeeAsync"/>.
+    /// </summary>
+    Task<UsageCapture.TeeResult> AggregateSseAsync(HttpContent source, Stream dest, CancellationToken ct);
 }
 
 /// <summary>
