@@ -17,11 +17,22 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
 
     private readonly HttpClient _http;
 
+    /// <summary>
+    /// Public key (SPKI Base64) verify chữ ký zip update — production dùng
+    /// <see cref="PackageSignatureVerifier.ReleasePublicKeyBase64"/>; test inject keypair khác.
+    /// </summary>
+    private readonly string _signingPublicKeyBase64;
+
     /// <inheritdoc />
     public string CurrentVersion { get; }
 
     /// <inheritdoc />
     public string? DownloadedZipPath { get; private set; }
+
+    /// <summary>
+    /// Đường dẫn file chữ ký (.sig) đã tải kèm zip (nếu có).
+    /// </summary>
+    internal string? DownloadedSignaturePath { get; private set; }
 
     /// <summary>
     /// Tạo service với phiên bản lấy từ entry assembly của app.
@@ -34,13 +45,14 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
 
     // Overload nội bộ cho test: Assembly.GetEntryAssembly() trong test host trả về testhost
     // chứ không phải app — không ép được thì mọi assertion về version sẽ phụ thuộc runner.
-    internal GitHubAppUpdateService(HttpClient http, string currentVersion)
+    internal GitHubAppUpdateService(HttpClient http, string currentVersion, string? signingPublicKeyBase64 = null)
     {
         ArgumentNullException.ThrowIfNull(http);
         ArgumentNullException.ThrowIfNull(currentVersion);
 
         _http = http;
         CurrentVersion = currentVersion;
+        _signingPublicKeyBase64 = signingPublicKeyBase64 ?? PackageSignatureVerifier.ReleasePublicKeyBase64;
     }
 
     /// <inheritdoc />
@@ -114,8 +126,10 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
         // truncate zip cũ — nếu attempt này fail giữa chừng, path không được trỏ tới file rác
         // (InstallUpdateAsync chỉ check File.Exists nên sẽ cài bản hỏng).
         DownloadedZipPath = null;
+        DownloadedSignaturePath = null;
 
         string? zipPath = null;
+        string? signaturePath = null;
         try
         {
             var asset = release.Assets.FirstOrDefault(a =>
@@ -124,10 +138,21 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
 
             if (asset is null) return null;
 
+            // Fail-closed: release không có file .sig → không tin được zip, từ chối update.
+            // (Các release trước khi triển khai ký sẽ không cập nhật được — intended.)
+            var signatureAsset = release.Assets.FirstOrDefault(a =>
+                string.Equals(a.Name, asset.Name + ".sig", StringComparison.OrdinalIgnoreCase));
+            if (signatureAsset is null)
+            {
+                DeletePartialFile(zipPath);
+                return null;
+            }
+
             // Ghi đè (FileMode.Create) thay vì reuse — bản tải dở lần trước có thể đã hỏng.
             var tempDir = Path.Combine(Path.GetTempPath(), UpdateFolderName);
             Directory.CreateDirectory(tempDir);
             zipPath = Path.Combine(tempDir, asset.Name);
+            signaturePath = zipPath + ".sig";
 
             var request = new HttpRequestMessage(HttpMethod.Get, asset.BrowserDownloadUrl);
             request.Headers.UserAgent.ParseAdd($"RouterBalancing/{CurrentVersion}");
@@ -137,37 +162,54 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
 
             var totalBytes = response.Content.Headers.ContentLength ?? -1;
             using var contentStream = await response.Content.ReadAsStreamAsync();
-            await using var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None);
-
-            var buffer = new byte[81920];
-            long readBytes = 0;
-            var lastReported = 0;
-            int bytesRead;
-
-            while ((bytesRead = await contentStream.ReadAsync(buffer)) > 0)
+            await using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                await fileStream.WriteAsync(buffer, 0, bytesRead);
-                readBytes += bytesRead;
+                var buffer = new byte[81920];
+                long readBytes = 0;
+                var lastReported = 0;
+                int bytesRead;
 
-                // Chỉ báo khi % tăng — tránh spam progress với 81920 byte mỗi lần đọc.
-                if (totalBytes > 0 && progress is not null)
+                while ((bytesRead = await contentStream.ReadAsync(buffer)) > 0)
                 {
-                    var pct = (int)(readBytes * 100 / totalBytes);
-                    if (pct > lastReported)
+                    await fileStream.WriteAsync(buffer, 0, bytesRead);
+                    readBytes += bytesRead;
+
+                    // Chỉ báo khi % tăng — tránh spam progress với 81920 byte mỗi lần đọc.
+                    if (totalBytes > 0 && progress is not null)
                     {
-                        lastReported = pct;
-                        progress.Report(pct);
+                        var pct = (int)(readBytes * 100 / totalBytes);
+                        if (pct > lastReported)
+                        {
+                            lastReported = pct;
+                            progress.Report(pct);
+                        }
                     }
                 }
             }
 
+            // Tải chữ ký (file nhỏ, đọc trọn 1 lần — không cần progress)
+            var signatureRequest = new HttpRequestMessage(HttpMethod.Get, signatureAsset.BrowserDownloadUrl);
+            signatureRequest.Headers.UserAgent.ParseAdd($"RouterBalancing/{CurrentVersion}");
+
+            using var signatureResponse = await _http.SendAsync(signatureRequest);
+            if (!signatureResponse.IsSuccessStatusCode)
+            {
+                DeletePartialFile(zipPath);
+                return null;
+            }
+
+            var signatureBytes = await signatureResponse.Content.ReadAsByteArrayAsync();
+            await File.WriteAllBytesAsync(signaturePath, signatureBytes);
+
+            DownloadedSignaturePath = signaturePath;
             DownloadedZipPath = zipPath;
             return zipPath;
         }
         catch (Exception)
         {
-            // Lỗi mạng/đĩa → xóa zip dở dang (nếu đã mở file) rồi trả null để UI báo tải thất bại.
+            // Lỗi mạng/đĩa → xóa zip + sig dở dang rồi trả null để UI báo tải thất bại.
             DeletePartialFile(zipPath);
+            DeletePartialFile(signaturePath);
             return null;
         }
     }
@@ -195,6 +237,18 @@ public sealed class GitHubAppUpdateService : IAppUpdateService
         if (!OperatingSystem.IsWindows()) return Task.FromResult(false);
 
         if (DownloadedZipPath is null || !File.Exists(DownloadedZipPath)) return Task.FromResult(false);
+
+        // Verify chữ ký TRƯỚC khi khởi động updater (threat model: zip bị tamper trên đĩa
+        // sau khi tải hoặc release bị giả mạo) — fail-closed: không xác thực được thì xóa zip.
+        if (DownloadedSignaturePath is null ||
+            !PackageSignatureVerifier.Verify(DownloadedZipPath, DownloadedSignaturePath, _signingPublicKeyBase64))
+        {
+            DeletePartialFile(DownloadedZipPath);
+            DeletePartialFile(DownloadedSignaturePath);
+            DownloadedZipPath = null;
+            DownloadedSignaturePath = null;
+            return Task.FromResult(false);
+        }
 
         try
         {

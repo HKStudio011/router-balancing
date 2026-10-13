@@ -21,12 +21,12 @@ public class GitHubAppUpdateServiceTests
 
     private const string ZipAssetName = "router-balancing-test-payload.zip";
 
-    private static GitHubAppUpdateService ServiceWith(HttpMessageHandler handler, string currentVersion = "1.0.0.0") =>
-        new(new HttpClient(handler, disposeHandler: false), currentVersion);
+    private static GitHubAppUpdateService ServiceWith(HttpMessageHandler handler, string currentVersion = "1.0.0.0",
+        string? publicKeyBase64 = null) =>
+        new(new HttpClient(handler, disposeHandler: false), currentVersion, publicKeyBase64);
 
-    private static ReleaseInfo Release(string tag, ReleaseAsset? asset = null) =>
-        new(tag, $"https://github.com/HKStudio011/router-balancing/releases/tag/{tag}", null,
-            asset is null ? [] : [asset]);
+    private static ReleaseInfo Release(string tag, params ReleaseAsset[] assets) =>
+        new(tag, $"https://github.com/HKStudio011/router-balancing/releases/tag/{tag}", null, [.. assets]);
 
     [Fact]
     public async Task CheckForUpdatesAsync_ReturnsRelease_WhenSuccess()
@@ -92,12 +92,14 @@ public class GitHubAppUpdateServiceTests
     }
 
     [Fact]
-    public async Task DownloadUpdateAsync_WritesZip_AndReportsProgress()
+    public async Task DownloadUpdateAsync_WritesZipAndSignature_AndReportsProgress()
     {
         // 30 bytes, chunk 10 → đúng 3 lần đọc, progress tăng dần 33/66/100
         var payload = "0123456789ABCDEFGHIJ0123456789"u8.ToArray();
-        var release = Release("v1.2.3", new ReleaseAsset(ZipAssetName, "https://example.com/payload.zip"));
-        var service = ServiceWith(new ZipHandler(payload, chunkSize: 10));
+        using var key = new TestSigningKey();
+        var release = SignedRelease(payload, key, out var signatureBase64);
+        var service = ServiceWith(new SignedZipHandler(payload, signatureBase64, chunkSize: 10),
+            publicKeyBase64: key.PublicKeyBase64);
         var progress = new RecordingProgress();
 
         var path = await service.DownloadUpdateAsync(release, progress);
@@ -108,6 +110,9 @@ public class GitHubAppUpdateServiceTests
             Assert.True(File.Exists(path));
             Assert.Equal(payload, await File.ReadAllBytesAsync(path));
             Assert.Equal(path, service.DownloadedZipPath);
+            Assert.NotNull(service.DownloadedSignaturePath);
+            Assert.True(File.Exists(service.DownloadedSignaturePath));
+            Assert.Equal(signatureBase64, await File.ReadAllTextAsync(service.DownloadedSignaturePath));
             Assert.NotEmpty(progress.Reports);
             Assert.Equal(100, progress.Reports[^1]);
         }
@@ -116,6 +121,56 @@ public class GitHubAppUpdateServiceTests
             if (path is not null)
             {
                 File.Delete(path);
+            }
+            if (service.DownloadedSignaturePath is not null)
+            {
+                File.Delete(service.DownloadedSignaturePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadUpdateAsync_ReturnsNull_WhenSignatureAssetMissing()
+    {
+        // Fail-closed: release không có file .sig → không tin được zip, từ chối ngay lúc tải
+        var payload = "PK-zip"u8.ToArray();
+        using var key = new TestSigningKey();
+        var release = Release("v1.2.3", new ReleaseAsset(ZipAssetName, "https://example.com/payload.zip"));
+        var service = ServiceWith(new SignedZipHandler(payload, signatureBase64: null), publicKeyBase64: key.PublicKeyBase64);
+
+        Assert.Null(await service.DownloadUpdateAsync(release, null));
+        Assert.Null(service.DownloadedZipPath);
+    }
+
+    [Fact]
+    public async Task InstallUpdateAsync_FalseAndDeletesZip_WhenSignatureInvalid()
+    {
+        // Threat model: zip bị tamper hoặc ký sai key — verify fail → không khởi động updater, xóa zip rác
+        var payload = "PK-zip"u8.ToArray();
+        using var key = new TestSigningKey();
+        using var otherKey = new TestSigningKey();
+        var release = SignedRelease(payload, key, out var signatureBase64);
+        var service = ServiceWith(new SignedZipHandler(payload, signatureBase64),
+            publicKeyBase64: otherKey.PublicKeyBase64);
+        var downloaded = await service.DownloadUpdateAsync(release, null);
+
+        try
+        {
+            Assert.NotNull(downloaded);
+
+            Assert.False(await service.InstallUpdateAsync());
+            Assert.Null(service.DownloadedZipPath);
+            Assert.False(File.Exists(downloaded));
+        }
+        finally
+        {
+            if (downloaded is not null)
+            {
+                File.Delete(downloaded);
+            }
+            if (service.DownloadedSignaturePath is not null)
+            {
+                File.Delete(service.DownloadedSignaturePath);
             }
         }
     }
@@ -127,14 +182,17 @@ public class GitHubAppUpdateServiceTests
         Assert.False(File.Exists(Path.Combine(AppContext.BaseDirectory, "RouterBalancing.Updater.exe")));
 
         var payload = "PK-zip"u8.ToArray();
-        var release = Release("v1.2.3", new ReleaseAsset(ZipAssetName, "https://example.com/payload.zip"));
-        var service = ServiceWith(new ZipHandler(payload, chunkSize: 10));
+        using var key = new TestSigningKey();
+        var release = SignedRelease(payload, key, out var signatureBase64);
+        var service = ServiceWith(new SignedZipHandler(payload, signatureBase64),
+            publicKeyBase64: key.PublicKeyBase64);
         var downloaded = await service.DownloadUpdateAsync(release, null);
 
         try
         {
             Assert.NotNull(downloaded);
 
+            // Signature hợp lệ → vượt qua verify, fail ở bước thiếu updater → false
             Assert.False(await service.InstallUpdateAsync());
         }
         finally
@@ -142,6 +200,10 @@ public class GitHubAppUpdateServiceTests
             if (downloaded is not null)
             {
                 File.Delete(downloaded);
+            }
+            if (service.DownloadedSignaturePath is not null)
+            {
+                File.Delete(service.DownloadedSignaturePath);
             }
         }
     }
@@ -227,10 +289,12 @@ public class GitHubAppUpdateServiceTests
     [Fact]
     public async Task DownloadUpdateAsync_FailureAfterSuccess_ClearsPathAndDeletesPartialFile()
     {
-        // 30 bytes / chunk 10: attempt 1 tải trọn; attempt 2 ghi 20 bytes rồi ném IOException giữa chừng
+        // 30 bytes / chunk 10: attempt 1 tải trọn zip + sig; attempt 2 ghi zip rồi ném IOException giữa chừng
         var payload = "0123456789ABCDEFGHIJ0123456789"u8.ToArray();
-        var release = Release("v1.2.3", new ReleaseAsset(ZipAssetName, "https://example.com/payload.zip"));
-        var service = ServiceWith(new GoodThenFailMidstreamHandler(payload, chunkSize: 10, succeedBeforeFail: 2));
+        using var key = new TestSigningKey();
+        var release = SignedRelease(payload, key, out var signatureBase64);
+        var service = ServiceWith(new GoodThenFailMidstreamHandler(payload, signatureBase64, chunkSize: 10, succeedBeforeFail: 2),
+            publicKeyBase64: key.PublicKeyBase64);
 
         var firstPath = await service.DownloadUpdateAsync(release, null);
 
@@ -253,7 +317,23 @@ public class GitHubAppUpdateServiceTests
             {
                 File.Delete(firstPath);
             }
+            if (service.DownloadedSignaturePath is not null)
+            {
+                File.Delete(service.DownloadedSignaturePath);
+            }
         }
+    }
+
+    /// <summary>
+    /// Release có cả zip lẫn file .sig cạnh nhau (đúng cấu trúc release thật);
+    /// chữ ký được tạo bởi <paramref name="key"/> — test nào cần sai key tự ký bằng keypair khác.
+    /// </summary>
+    private static ReleaseInfo SignedRelease(byte[] payload, TestSigningKey key, out string signatureBase64)
+    {
+        signatureBase64 = key.SignToBase64(payload);
+        return Release("v1.2.3",
+            new ReleaseAsset(ZipAssetName, "https://example.com/payload.zip"),
+            new ReleaseAsset(ZipAssetName + ".sig", "https://example.com/payload.zip.sig"));
     }
 
     // ===== HTTP doubles (pattern FreeModelSyncServiceTests) =====
@@ -270,27 +350,53 @@ public class GitHubAppUpdateServiceTests
             Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
     }
 
-    /// <summary>Trả payload theo từng chunk để test progress nhiều lần thay vì 1 lần đọc trọn vẹn.</summary>
-    private sealed class ZipHandler(byte[] payload, int chunkSize) : HttpMessageHandler
+    /// <summary>
+    /// Route theo URL: request .sig trả chữ ký Base64, còn lại trả payload zip theo chunk
+    /// (để test progress nhiều lần thay vì 1 lần đọc trọn vẹn).
+    /// <paramref name="signatureBase64"/> null mô phỏng release không có file chữ ký (404).
+    /// </summary>
+    private sealed class SignedZipHandler(byte[] payload, string? signatureBase64, int chunkSize = 81920)
+        : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (IsSignatureRequest(request))
+            {
+                return Task.FromResult(signatureBase64 is null
+                    ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(signatureBase64) });
+            }
+
             var content = new StreamContent(new ChunkedStream(payload, chunkSize));
             content.Headers.ContentLength = payload.Length;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
     }
 
-    /// <summary>Lần gọi đầu trả payload bình thường; các lần sau trả stream ném lỗi giữa chừng (mất mạng).</summary>
-    private sealed class GoodThenFailMidstreamHandler(byte[] payload, int chunkSize, int succeedBeforeFail)
-        : HttpMessageHandler
+    private static bool IsSignatureRequest(HttpRequestMessage request) =>
+        request.RequestUri is { AbsolutePath: var path } &&
+        path.EndsWith(".sig", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Lần tải zip đầu trả payload bình thường; các lần tải zip sau trả stream ném lỗi giữa chừng
+    /// (mất mạng). Chữ ký .sig luôn trả bình thường.
+    /// </summary>
+    private sealed class GoodThenFailMidstreamHandler(byte[] payload, string? signatureBase64, int chunkSize,
+        int succeedBeforeFail) : HttpMessageHandler
     {
-        private int _calls;
+        private int _zipCalls;
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
-            _calls++;
-            Stream stream = _calls == 1
+            if (IsSignatureRequest(request))
+            {
+                return Task.FromResult(signatureBase64 is null
+                    ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(signatureBase64) });
+            }
+
+            _zipCalls++;
+            Stream stream = _zipCalls == 1
                 ? new ChunkedStream(payload, chunkSize)
                 : new FailAfterChunksStream(payload, chunkSize, succeedBeforeFail);
             var content = new StreamContent(stream);
