@@ -215,7 +215,8 @@ public sealed class ModelService : IModelService
 
     /// <inheritdoc/>
     public async Task UpdateCapabilitiesAsync(
-        long modelId, int? contextWindow, bool supportsVision, bool supportsThink, CancellationToken ct = default)
+        long modelId, int? contextWindow, bool supportsVision, bool supportsThink,
+        bool supportsAudio, bool supportsVideo, CancellationToken ct = default)
     {
         // Relational pattern: null không match → ctx null hợp lệ (clear)
         if (contextWindow is < 1 or > 10_000_000)
@@ -230,6 +231,8 @@ public sealed class ModelService : IModelService
         model.ContextWindow = contextWindow;
         model.SupportsVision = supportsVision;
         model.SupportsThink = supportsThink;
+        model.SupportsAudio = supportsAudio;
+        model.SupportsVideo = supportsVideo;
         await db.SaveChangesAsync(ct);
     }
 }

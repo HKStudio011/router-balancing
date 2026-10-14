@@ -305,7 +305,8 @@ public class ModelServiceTests : IDisposable
             modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
         }
 
-        await service.UpdateCapabilitiesAsync(modelId, 128_000, supportsVision: true, supportsThink: true);
+        await service.UpdateCapabilitiesAsync(modelId, 128_000, supportsVision: true, supportsThink: true,
+            supportsAudio: false, supportsVideo: false);
 
         using var db2 = _db.CreateDbContext();
         var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
@@ -313,6 +314,48 @@ public class ModelServiceTests : IDisposable
         Assert.True(saved.SupportsVision);
         Assert.True(saved.SupportsThink);
         Assert.Equal(providerId, saved.ProviderId); // không đụng quan hệ
+    }
+
+    [Fact]
+    public async Task UpdateCapabilities_WhenAudioVideoSet_PersistsBoth()
+    {
+        await SeedProviderAsync("a");
+        var service = ServiceWith("{}");
+        long modelId;
+        using (var db = _db.CreateDbContext())
+        {
+            modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
+        }
+
+        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null,
+            supportsVision: false, supportsThink: false, supportsAudio: true, supportsVideo: true);
+
+        using var db2 = _db.CreateDbContext();
+        var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
+        Assert.True(saved.SupportsAudio);
+        Assert.True(saved.SupportsVideo);
+    }
+
+    [Fact]
+    public async Task UpdateCapabilities_WhenAudioVideoCleared_ClearsBoth()
+    {
+        await SeedProviderAsync("a");
+        var service = ServiceWith("{}");
+        long modelId;
+        using (var db = _db.CreateDbContext())
+        {
+            modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
+        }
+        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null,
+            supportsVision: false, supportsThink: false, supportsAudio: true, supportsVideo: true);
+
+        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null,
+            supportsVision: false, supportsThink: false, supportsAudio: false, supportsVideo: false);
+
+        using var db2 = _db.CreateDbContext();
+        var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
+        Assert.False(saved.SupportsAudio);
+        Assert.False(saved.SupportsVideo);
     }
 
     [Fact]
@@ -325,10 +368,12 @@ public class ModelServiceTests : IDisposable
         {
             modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
         }
-        await service.UpdateCapabilitiesAsync(modelId, 64_000, supportsVision: false, supportsThink: false);
+        await service.UpdateCapabilitiesAsync(modelId, 64_000, supportsVision: false, supportsThink: false,
+            supportsAudio: false, supportsVideo: false);
 
         // Ô trống trong UI → null = clear (fill chain không tự chạy lại — chấp nhận theo spec §3.1)
-        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null, supportsVision: false, supportsThink: false);
+        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null, supportsVision: false, supportsThink: false,
+            supportsAudio: false, supportsVideo: false);
 
         using var db2 = _db.CreateDbContext();
         var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
@@ -352,7 +397,8 @@ public class ModelServiceTests : IDisposable
         }
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            service.UpdateCapabilitiesAsync(modelId, badValue, supportsVision: false, supportsThink: false));
+            service.UpdateCapabilitiesAsync(modelId, badValue, supportsVision: false, supportsThink: false,
+                supportsAudio: false, supportsVideo: false));
     }
 
     [Fact]
@@ -363,6 +409,6 @@ public class ModelServiceTests : IDisposable
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
             service.UpdateCapabilitiesAsync(modelId: 999_999, contextWindow: 1000,
-                supportsVision: false, supportsThink: false));
+                supportsVision: false, supportsThink: false, supportsAudio: false, supportsVideo: false));
     }
 }
