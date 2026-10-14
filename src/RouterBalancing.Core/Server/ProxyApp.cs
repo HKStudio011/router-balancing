@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
@@ -99,6 +100,7 @@ public static class ProxyApp
         builder.Services.AddSingleton<QueueSnapshotRestorer>();
         builder.Services.AddSingleton<IExecutionList, ExecutionList>();
         builder.Services.AddSingleton<IComboResolver, ComboResolver>();
+        builder.Services.AddSingleton<IComboCapabilityCalculator, ComboCapabilityCalculator>();
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
         builder.Services.AddSingleton<ProxyRequestHandler>();

@@ -134,6 +134,7 @@ namespace router_balancing
                 client => client.Timeout = TimeSpan.FromSeconds(30));
             builder.Services.AddSingleton<IProviderAccountService, ProviderAccountService>();
             builder.Services.AddSingleton<IComboService, ComboService>();
+            builder.Services.AddSingleton<IComboCapabilityCalculator, ComboCapabilityCalculator>();
             // Singleton chia sẻ với proxy container qua ProxyHost (spec §4.1) — event KeysChanged
             // của CHÍNH instance này làm auth cache của proxy invalidate khi UI CRUD key.
             builder.Services.AddSingleton<IClientKeyService, ClientKeyService>();
