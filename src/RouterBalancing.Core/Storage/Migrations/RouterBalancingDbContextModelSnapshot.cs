@@ -244,7 +244,13 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<long>("ProviderId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("SupportsAudio")
+                        .HasColumnType("INTEGER");
+
                     b.Property<bool>("SupportsThink")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("SupportsVideo")
                         .HasColumnType("INTEGER");
 
                     b.Property<bool>("SupportsVision")

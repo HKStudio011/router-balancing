@@ -4,6 +4,7 @@
 @using RouterBalancing.Core.Providers
 @implements IDisposable
 @inject IComboService ComboSvc
+@inject IComboCapabilityCalculator ComboCapsSvc
 @inject IProviderService ProviderSvc
 @inject LocalizationService L
 @inject ToastService Toast
@@ -31,6 +32,7 @@ else
                     <th class="px-2 py-2">@L["combos.col.name"]</th>
                     <th class="px-2 py-2">@L["combos.col.mode"]</th>
                     <th class="px-2 py-2">@L["combos.col.items"]</th>
+                    <th class="px-2 py-2">@L["combos.col.capabilities"]</th>
                     <th class="px-2 py-2 text-right">@L["combos.col.actions"]</th>
                 </tr>
             </thead>
@@ -44,6 +46,58 @@ else
                                    Variant="@(combo.Mode == ComboMode.RoundRobin ? BadgeVariant.Info : BadgeVariant.Warning)" />
                         </td>
                         <td class="px-2 py-2 opacity-80">@combo.Items.Count</td>
+                        <td class="px-2 py-2">
+                            @if (_caps.TryGetValue(combo.Id, out var caps))
+                            {
+                                @* Tooltip giải thích ngữ nghĩa AND/min của cột read-only *@
+                                <span title="@L["combos.caps.tooltip"]" class="inline-flex flex-wrap items-center gap-1.5">
+                                    @if (caps.ContextWindow is { } ctx)
+                                    {
+                                        <Badge Text="@($"ctx: {FormatCtx(ctx)}")" Variant="BadgeVariant.Info" />
+                                    }
+                                    else
+                                    {
+                                        <Badge Text="@L["combos.caps.ctxUnknown"]" Variant="BadgeVariant.Neutral" />
+                                    }
+                                    @if (caps.Vision is true)
+                                    {
+                                        <Badge Text="@L["models.badge.vision"]" Variant="BadgeVariant.Success" />
+                                    }
+                                    else if (caps.Vision is false)
+                                    {
+                                        <span class="opacity-70">@L["models.badge.vision"] ✕</span>
+                                    }
+                                    @if (caps.Thinking is true)
+                                    {
+                                        <Badge Text="@L["models.badge.think"]" Variant="BadgeVariant.Warning" />
+                                    }
+                                    else if (caps.Thinking is false)
+                                    {
+                                        <span class="opacity-70">@L["models.badge.think"] ✕</span>
+                                    }
+                                    @if (caps.Audio is true)
+                                    {
+                                        <Badge Text="@L["models.badge.audio"]" Variant="BadgeVariant.Info" />
+                                    }
+                                    else if (caps.Audio is false)
+                                    {
+                                        <span class="opacity-70">@L["models.badge.audio"] ✕</span>
+                                    }
+                                    @if (caps.Video is true)
+                                    {
+                                        <Badge Text="@L["models.badge.video"]" Variant="BadgeVariant.Neutral" />
+                                    }
+                                    else if (caps.Video is false)
+                                    {
+                                        <span class="opacity-70">@L["models.badge.video"] ✕</span>
+                                    }
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="opacity-70">—</span>
+                            }
+                        </td>
                         <td class="px-2 py-2 text-right">
                             <button type="button" class="btn btn-outline-secondary mr-1" disabled="@_busy"
                                     @onclick="() => OpenEdit(combo)">✏️</button>
@@ -178,6 +232,7 @@ else
     }
 
     private List<Combo> _combos = [];
+    private IReadOnlyDictionary<long, ComboCapabilities> _caps = new Dictionary<long, ComboCapabilities>();
     private List<Provider> _providers = [];
     private List<Combo> _eligibleCache = [];
     private bool _loading = true;
@@ -212,6 +267,18 @@ else
             _combos = (await ComboSvc.ListAsync()).ToList();
             _providers = (await ProviderSvc.ListAsync()).ToList();
             RefreshEligibleCache();
+
+            // Caps chỉ phục vụ cột read-only — fail riêng để không block trang
+            // (cột tự hiện "—" khi _caps rỗng)
+            try
+            {
+                _caps = await ComboCapsSvc.ComputeAllAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Không tải được khả năng combo.", ex);
+                Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+            }
         }
         catch (Exception ex)
         {
@@ -397,6 +464,10 @@ else
             _busy = false;
         }
     }
+
+    /// <summary>128000 → "128k"; dưới 1000 giữ nguyên — badge ngắn gọn, không cần chính xác tuyệt đối.</summary>
+    private static string FormatCtx(int contextWindow) =>
+        contextWindow >= 1000 ? $"{contextWindow / 1000}k" : contextWindow.ToString();
 
     private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
 

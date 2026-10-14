@@ -263,6 +263,14 @@ else
                                                                         <input type="checkbox" disabled="@_busy" @bind="_editThink" />
                                                                         @L["models.capabilities.think"]
                                                                     </label>
+                                                                    <label class="flex items-center gap-1">
+                                                                        <input type="checkbox" disabled="@_busy" @bind="_editAudio" />
+                                                                        @L["models.capabilities.audio"]
+                                                                    </label>
+                                                                    <label class="flex items-center gap-1">
+                                                                        <input type="checkbox" disabled="@_busy" @bind="_editVideo" />
+                                                                        @L["models.capabilities.video"]
+                                                                    </label>
                                                                     <button type="button" class="btn btn-primary px-1.5"
                                                                             disabled="@_busy" data-testid="caps-save"
                                                                             @onclick="() => SaveCapabilitiesAsync(m)">
@@ -294,7 +302,16 @@ else
                                                                     {
                                                                         <Badge Text="@L["models.badge.think"]" Variant="BadgeVariant.Warning" />
                                                                     }
-                                                                    @if (!m.IsManual && m.ContextWindow is null && !m.SupportsVision && !m.SupportsThink)
+                                                                    @if (m.SupportsAudio)
+                                                                    {
+                                                                        <Badge Text="@L["models.badge.audio"]" Variant="BadgeVariant.Info" />
+                                                                    }
+                                                                    @if (m.SupportsVideo)
+                                                                    {
+                                                                        <Badge Text="@L["models.badge.video"]" Variant="BadgeVariant.Neutral" />
+                                                                    }
+                                                                    @if (!m.IsManual && m.ContextWindow is null && !m.SupportsVision && !m.SupportsThink
+                                                                         && !m.SupportsAudio && !m.SupportsVideo)
                                                                     {
                                                                         @* Ký hiệu language-neutral — không qua i18n (spec §3.3) *@
                                                                         <span class="opacity-70" data-testid="caps-placeholder">&#8212;</span>
@@ -732,6 +749,8 @@ else
     private string _editCtx = string.Empty;
     private bool _editVision;
     private bool _editThink;
+    private bool _editAudio;
+    private bool _editVideo;
     private bool _bulkOpen;
     private string _bulkText = string.Empty;
 
@@ -1092,6 +1111,8 @@ else
         _editCtx = model.ContextWindow?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
         _editVision = model.SupportsVision;
         _editThink = model.SupportsThink;
+        _editAudio = model.SupportsAudio;
+        _editVideo = model.SupportsVideo;
     }
 
     private void CancelEditCapabilities()
@@ -1119,7 +1140,7 @@ else
         _busy = true;
         try
         {
-            await ModelSvc.UpdateCapabilitiesAsync(model.Id, ctx, _editVision, _editThink);
+            await ModelSvc.UpdateCapabilitiesAsync(model.Id, ctx, _editVision, _editThink, _editAudio, _editVideo);
             _editingCapabilitiesId = null;
             await ReloadKeepExpandAsync(model.ProviderId);
             Toast.Show(L["models.msg.capabilitiesSaved"], ToastSeverity.Success);

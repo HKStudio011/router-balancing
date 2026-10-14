@@ -72,15 +72,45 @@ public class ProxyAppChatIntegrationTests : IDisposable
         db.SaveChanges();
     }
 
-    private void SeedCombo(string name, string modelId)
+    private void SeedCombo(string name, string modelId) => SeedComboWithModels(name, modelId);
+
+    private void SeedComboWithModels(string name, params string[] modelIds)
     {
         using var db = _db.CreateFactory().CreateDbContext();
-        var modelKey = db.Models.Single(m => m.ModelId == modelId).Id;
         var combo = new Combo { Name = name, Mode = ComboMode.RoundRobin };
-        combo.Items.Add(new ComboItem { Position = 0, TargetModelId = modelKey });
+        for (var i = 0; i < modelIds.Length; i++)
+        {
+            var modelKey = db.Models.Single(m => m.ModelId == modelIds[i]).Id;
+            combo.Items.Add(new ComboItem { Position = i, TargetModelId = modelKey });
+        }
         db.Combos.Add(combo);
         db.SaveChanges();
     }
+
+    private void SetModelCaps(string modelId, int? contextWindow,
+        bool vision, bool audio, bool video, bool think)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        var model = db.Models.Single(m => m.ModelId == modelId);
+        model.ContextWindow = contextWindow;
+        model.SupportsVision = vision;
+        model.SupportsAudio = audio;
+        model.SupportsVideo = video;
+        model.SupportsThink = think;
+        db.SaveChanges();
+    }
+
+    private void AddProviderModel(string providerName, string modelId)
+    {
+        using var db = _db.CreateFactory().CreateDbContext();
+        db.Providers.Single(p => p.Name == providerName)
+            .Models.Add(new Model { ModelId = modelId, Enabled = true });
+        db.SaveChanges();
+    }
+
+    private static JsonElement FindEntry(JsonElement root, string id) =>
+        root.GetProperty("data").EnumerateArray()
+            .Single(e => e.GetProperty("id").GetString() == id);
 
     private sealed class StubUpstream(Func<HttpResponseMessage> factory) : IUpstreamClient
     {
@@ -263,6 +293,73 @@ public class ProxyAppChatIntegrationTests : IDisposable
         Assert.Equal(2, data.Count);
         Assert.Contains(data, e => e.GetProperty("id").GetString() == "gpt-4o-mini");
         Assert.Contains(data, e => e.GetProperty("id").GetString() == "combo-fast");
+    }
+
+    [Fact]
+    public async Task Models_ModelEntry_HasCapabilitiesObject()
+    {
+        SeedProvider("gpt-4o-mini");
+        SetModelCaps("gpt-4o-mini", 128_000, vision: true, audio: true, video: false, think: false);
+        var client = await StartAsync(new StubUpstream(() => Sse()));
+
+        var response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var caps = FindEntry(await ReadJson(response), "gpt-4o-mini").GetProperty("capabilities");
+        Assert.Equal(128_000, caps.GetProperty("context_window").GetInt32());
+        // Key "audio" phải tồn tại (ValueKind ≠ Undefined) — trước đây response không có key này
+        Assert.True(caps.TryGetProperty("audio", out var audio));
+        Assert.NotEqual(JsonValueKind.Undefined, audio.ValueKind);
+        Assert.True(audio.GetBoolean());
+        Assert.True(caps.GetProperty("vision").GetBoolean());
+        Assert.False(caps.GetProperty("video").GetBoolean());
+        Assert.False(caps.GetProperty("thinking").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Models_ComboEntry_HasComputedCapabilities()
+    {
+        SeedProvider("gpt-4o-mini");
+        SetModelCaps("gpt-4o-mini", 128_000, vision: true, audio: true, video: true, think: true);
+        SeedCombo("combo-fast", "gpt-4o-mini");
+        var client = await StartAsync(new StubUpstream(() => Sse()));
+
+        var response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var caps = FindEntry(await ReadJson(response), "combo-fast").GetProperty("capabilities");
+        Assert.Equal(128_000, caps.GetProperty("context_window").GetInt32());
+        Assert.True(caps.TryGetProperty("audio", out var audio));
+        Assert.NotEqual(JsonValueKind.Undefined, audio.ValueKind);
+        Assert.True(audio.GetBoolean());
+        Assert.True(caps.GetProperty("vision").GetBoolean());
+        Assert.True(caps.GetProperty("video").GetBoolean());
+        Assert.True(caps.GetProperty("thinking").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Models_ComboWithUnknownChild_SerializesNullsExplicitly()
+    {
+        // Member default (ctx null, all false): AND 3 mức — false thắng null → 4 bool false;
+        // ctx min(128000, null) = null phải serialize thành JSON null (client phân biệt
+        // "chưa rõ" với "không hỗ trợ"), không được omit key.
+        SeedProvider("gpt-4o-mini");
+        SetModelCaps("gpt-4o-mini", 128_000, vision: true, audio: false, video: false, think: true);
+        AddProviderModel("p-gpt-4o-mini", "gpt-4o-default");
+        SeedComboWithModels("combo-mixed", "gpt-4o-mini", "gpt-4o-default");
+        var client = await StartAsync(new StubUpstream(() => Sse()));
+
+        var response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var caps = FindEntry(await ReadJson(response), "combo-mixed").GetProperty("capabilities");
+        Assert.True(caps.TryGetProperty("context_window", out var contextWindow));
+        Assert.Equal(JsonValueKind.Null, contextWindow.ValueKind);
+        foreach (var name in new[] { "vision", "audio", "video", "thinking" })
+        {
+            Assert.True(caps.TryGetProperty(name, out var flag));
+            Assert.Equal(JsonValueKind.False, flag.ValueKind);
+        }
     }
 
     [Fact]

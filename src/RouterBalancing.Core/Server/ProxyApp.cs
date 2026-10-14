@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
@@ -99,6 +100,7 @@ public static class ProxyApp
         builder.Services.AddSingleton<QueueSnapshotRestorer>();
         builder.Services.AddSingleton<IExecutionList, ExecutionList>();
         builder.Services.AddSingleton<IComboResolver, ComboResolver>();
+        builder.Services.AddSingleton<IComboCapabilityCalculator, ComboCapabilityCalculator>();
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
         builder.Services.AddSingleton<ProxyRequestHandler>();
@@ -410,6 +412,9 @@ public static class ProxyApp
             var factory = http.RequestServices
                 .GetRequiredService<IDbContextFactory<RouterBalancingDbContext>>();
             using var db = factory.CreateDbContext();
+            // Cast bool → bool? để model entry dùng chung kiểu capabilities với combo
+            // (Concat của List<anonymous> yêu cầu cùng anonymous type); giá trị vẫn
+            // serialize true/false — model entry không bao giờ null (entity false = chưa rõ).
             var models = await db.Models.AsNoTracking()
                 .Where(m => m.Enabled)
                 .OrderBy(m => m.Id)
@@ -420,22 +425,54 @@ public static class ProxyApp
                     @object = "model",
                     created = m.CreatedAt.ToUnixTimeSeconds(),
                     owned_by = m.Provider != null ? m.Provider.Name : "unknown",
+                    capabilities = new
+                    {
+                        context_window = m.ContextWindow,
+                        vision = (bool?)m.SupportsVision,
+                        audio = (bool?)m.SupportsAudio,
+                        video = (bool?)m.SupportsVideo,
+                        thinking = (bool?)m.SupportsThink,
+                    },
                 })
                 .ToListAsync(http.RequestAborted);
 
             // Quyết định #10 (design 2026-09-25): client chọn combo qua trường `model` —
             // combo phải có trong list để client (opencode...) phát hiện trước khi gọi chat.
             // Combo không có cờ Enabled (khác Model) nên trả toàn bộ, xếp sau model trực tiếp.
-            var combos = await db.Combos.AsNoTracking()
+            var comboRows = await db.Combos.AsNoTracking()
                 .OrderBy(c => c.Id)
-                .Select(c => new
-                {
-                    id = c.Name,
-                    @object = "model",
-                    created = c.CreatedAt.ToUnixTimeSeconds(),
-                    owned_by = "combo",
-                })
+                .Select(c => new { c.Id, Name = c.Name, Created = c.CreatedAt.ToUnixTimeSeconds() })
                 .ToListAsync(http.RequestAborted);
+
+            // 1 call / request: ComputeAllAsync tự memoize theo combo Id trong call —
+            // tránh N query lẻ tẻ khi list combo dài
+            var comboCaps = await http.RequestServices
+                .GetRequiredService<IComboCapabilityCalculator>()
+                .ComputeAllAsync(http.RequestAborted);
+
+            var combos = comboRows.Select(row =>
+            {
+                // Combo không có trong dict (dữ liệu thay đổi giữa 2 query) → toàn null
+                // = "chưa rõ", không crash
+                comboCaps.TryGetValue(row.Id, out var caps);
+                return new
+                {
+                    id = row.Name,
+                    @object = "model",
+                    created = row.Created,
+                    owned_by = "combo",
+                    // Cả 5 field nullable, serialize tường minh cả null — client phân biệt
+                    // false (đã rõ không hỗ trợ) vs null (chưa rõ), spec D2
+                    capabilities = new
+                    {
+                        context_window = caps?.ContextWindow,
+                        vision = caps?.Vision,
+                        audio = caps?.Audio,
+                        video = caps?.Video,
+                        thinking = caps?.Thinking,
+                    },
+                };
+            }).ToList();
 
             return Results.Json(new { @object = "list", data = models.Concat(combos).ToList() });
         });
