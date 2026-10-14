@@ -8,4 +8,6 @@ public enum BadgeVariant
     Danger,
     Warning,
     Info,
+    Purple,
+    Pink,
 }

@@ -59,37 +59,39 @@ else
                                     {
                                         <Badge Text="@L["combos.caps.ctxUnknown"]" Variant="BadgeVariant.Neutral" />
                                     }
+                                    @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt;
+                                        false → pill xám Badge Neutral, null → ẩn (chưa rõ) *@
                                     @if (caps.Vision is true)
                                     {
-                                        <Badge Text="@L["models.badge.vision"]" Variant="BadgeVariant.Success" />
+                                        <Badge Text="👁" Variant="BadgeVariant.Success" />
                                     }
                                     else if (caps.Vision is false)
                                     {
-                                        <span class="opacity-70">@L["models.badge.vision"] ✕</span>
+                                        <Badge Text="👁 ✕" Variant="BadgeVariant.Neutral" />
                                     }
                                     @if (caps.Thinking is true)
                                     {
-                                        <Badge Text="@L["models.badge.think"]" Variant="BadgeVariant.Warning" />
+                                        <Badge Text="⚡" Variant="BadgeVariant.Warning" />
                                     }
                                     else if (caps.Thinking is false)
                                     {
-                                        <span class="opacity-70">@L["models.badge.think"] ✕</span>
+                                        <Badge Text="⚡ ✕" Variant="BadgeVariant.Neutral" />
                                     }
                                     @if (caps.Audio is true)
                                     {
-                                        <Badge Text="@L["models.badge.audio"]" Variant="BadgeVariant.Info" />
+                                        <Badge Text="🔊" Variant="BadgeVariant.Purple" />
                                     }
                                     else if (caps.Audio is false)
                                     {
-                                        <span class="opacity-70">@L["models.badge.audio"] ✕</span>
+                                        <Badge Text="🔊 ✕" Variant="BadgeVariant.Neutral" />
                                     }
                                     @if (caps.Video is true)
                                     {
-                                        <Badge Text="@L["models.badge.video"]" Variant="BadgeVariant.Neutral" />
+                                        <Badge Text="🎬" Variant="BadgeVariant.Pink" />
                                     }
                                     else if (caps.Video is false)
                                     {
-                                        <span class="opacity-70">@L["models.badge.video"] ✕</span>
+                                        <Badge Text="🎬 ✕" Variant="BadgeVariant.Neutral" />
                                     }
                                 </span>
                             }

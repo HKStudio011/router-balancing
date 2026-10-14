@@ -1,4 +1,4 @@
-<span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs @ClassFor(Variant)">@Text</span>
+<span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs @ClassFor(Variant)">@Text</span>
 
 @code {
     /// <summary>Nội dung badge — text đã i18n ở nơi gọi (trừ khi là dữ liệu như "ctx: 128k").</summary>
@@ -17,6 +17,9 @@
         BadgeVariant.Danger => "bg-danger text-light",
         BadgeVariant.Warning => "bg-warning text-dark",
         BadgeVariant.Info => "bg-info text-light",
+        // Hex trực tiếp theo mockup đã duyệt — Tailwind v4 palette đổi value qua các version, hex giữ đúng design token
+        BadgeVariant.Purple => "bg-[#ede9fe] text-[#6d28d9]",
+        BadgeVariant.Pink => "bg-[#fce7f3] text-[#be185d]",
         _ => "bg-secondary text-light",
     };
 }
