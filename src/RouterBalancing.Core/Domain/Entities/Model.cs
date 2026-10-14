@@ -26,6 +26,12 @@ public class Model
 
     public bool SupportsThink { get; set; }
 
+    /// <summary>Model nhận input audio; false = không hỗ trợ/chưa rõ (fill chỉ viết true).</summary>
+    public bool SupportsAudio { get; set; }
+
+    /// <summary>Model nhận input video; false = không hỗ trợ/chưa rõ (fill chỉ viết true).</summary>
+    public bool SupportsVideo { get; set; }
+
     /// <summary>JSON array mức think effort, ví dụ <c>["low","high"]</c>; null = không rõ.</summary>
     public string? ThinkEfforts { get; set; }
 
