@@ -170,4 +170,71 @@ public class ModelMetadataServiceTests : IDisposable
         Assert.Equal(proxyId, probe.CapturedTarget.Provider.ProviderProxies[0].ProxyId);
         Assert.Null(ProxyTarget.Current.Value); // finally phải reset scope
     }
+
+    [Fact]
+    public async Task TryFillAsync_ModalitiesContainAudio_SetsSupportsAudio()
+    {
+        var modelId = await SeedModelAsync();
+        var service = new ModelMetadataService(_db, new NullLog(),
+            [new FixedProvider(new ModelMetadata(null, null, null, null, """["text","audio"]""", null))]);
+
+        await service.TryFillAsync(modelId);
+
+        using var db = _db.CreateDbContext();
+        var model = await db.Models.SingleAsync(m => m.Id == modelId);
+        Assert.True(model.SupportsAudio);
+        Assert.False(model.SupportsVideo);
+    }
+
+    [Fact]
+    public async Task TryFillAsync_ModalitiesContainVideo_SetsSupportsVideo()
+    {
+        var modelId = await SeedModelAsync();
+        var service = new ModelMetadataService(_db, new NullLog(),
+            [new FixedProvider(new ModelMetadata(null, null, null, null, """["text","video"]""", null))]);
+
+        await service.TryFillAsync(modelId);
+
+        using var db = _db.CreateDbContext();
+        var model = await db.Models.SingleAsync(m => m.Id == modelId);
+        Assert.True(model.SupportsVideo);
+        Assert.False(model.SupportsAudio);
+    }
+
+    [Fact]
+    public async Task TryFillAsync_ManualAudioTrue_NotClearedByModalities()
+    {
+        var modelId = await SeedModelAsync();
+        using (var db = _db.CreateDbContext())
+        {
+            var seeded = await db.Models.SingleAsync(m => m.Id == modelId);
+            seeded.SupportsAudio = true;
+            await db.SaveChangesAsync();
+        }
+        var service = new ModelMetadataService(_db, new NullLog(),
+            [new FixedProvider(new ModelMetadata(null, null, null, null, """["text"]""", null))]);
+
+        await service.TryFillAsync(modelId);
+
+        using var db2 = _db.CreateDbContext();
+        var model = await db2.Models.SingleAsync(m => m.Id == modelId);
+        Assert.True(model.SupportsAudio);  // đã set tay → fill không được clear
+        Assert.False(model.SupportsVideo);
+    }
+
+    [Fact]
+    public async Task TryFillAsync_BrokenModalitiesJson_ThrowsNo()
+    {
+        var modelId = await SeedModelAsync();
+        var service = new ModelMetadataService(_db, new NullLog(),
+            [new FixedProvider(new ModelMetadata(null, null, null, null, "not-a-json", null))]);
+
+        await service.TryFillAsync(modelId);
+
+        using var db = _db.CreateDbContext();
+        var model = await db.Models.SingleAsync(m => m.Id == modelId);
+        Assert.False(model.SupportsAudio);  // derive bỏ qua JSON hỏng, không ném
+        Assert.False(model.SupportsVideo);
+        Assert.Equal("not-a-json", model.InputModalities); // field raw vẫn được ghi bình thường
+    }
 }

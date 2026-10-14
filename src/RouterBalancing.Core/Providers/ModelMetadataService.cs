@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
@@ -93,6 +94,50 @@ public sealed class ModelMetadataService : IModelMetadataService
                 {
                     model.OutputModalities = meta.OutputModalities;
                     changed = true;
+                }
+
+                // Derive cờ audio/video từ InputModalities — best-effort: JSON null/hỏng
+                // hoặc sai contract (không phải array string) → bỏ qua, không log error
+                // (spec B1). Chỉ set true, không clear (false = "chưa rõ" như SupportsVision).
+                // JsonDocument không có TryParse — exception là cách duy nhất bắt JSON hỏng.
+                JsonDocument? modalities = null;
+                if (meta.InputModalities is not null)
+                {
+                    try
+                    {
+                        modalities = JsonDocument.Parse(meta.InputModalities);
+                    }
+                    catch (JsonException)
+                    {
+                        // contract-violating provider trả garbage → skip derive, field raw vẫn ghi
+                    }
+                }
+                if (modalities is not null)
+                {
+                    using (modalities)
+                    {
+                        if (modalities.RootElement.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var entry in modalities.RootElement.EnumerateArray())
+                            {
+                                if (entry.ValueKind != JsonValueKind.String) continue;
+                                var modality = entry.GetString();
+                                if (modality is null) continue;
+                                if (!model.SupportsAudio
+                                    && string.Equals(modality, "audio", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    model.SupportsAudio = true;
+                                    changed = true;
+                                }
+                                if (!model.SupportsVideo
+                                    && string.Equals(modality, "video", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    model.SupportsVideo = true;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if (changed)
