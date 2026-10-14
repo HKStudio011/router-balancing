@@ -12,6 +12,11 @@
          suite hiện tại có ~800 call sites — sửa hàng loạt sẽ đổi behavior test.
          Tạm tắt trong test project; bật lại từng phần nếu muốn. -->
     <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+    <!-- MTP mặc định gói failure vào .log; bật để CI hiện lỗi per-test như VSTest cũ -->
+    <TestingPlatformShowTestsFailure>true</TestingPlatformShowTestsFailure>
+    <!-- Bắt buộc với xunit khi dùng MTP: chuyển CLI của test app sang MTP
+         (dotnet test mới parse được filter options kiểu filter-class/filter-method) -->
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,13 +25,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="6.0.4" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <!-- mtp-off: tắt Microsoft.Testing.Platform — .NET 10 SDK chặn chạy MTP qua
-         dotnet test VSTest mode, nên giữ adapter VSTest (xunit.runner.visualstudio)
-         thay vì MTP để mọi lệnh filter (FullyQualifiedName~...) trong CI/docs chạy y hệt. -->
-    <PackageReference Include="xunit.v3.mtp-off" Version="4.0.2" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <!-- MTP mode (.NET 10): dotnet test chạy qua global.json ở repo root,
+         không cần VSTest adapter (xunit.runner.visualstudio / Microsoft.NET.Test.Sdk). -->
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
   </ItemGroup>
 
