@@ -255,31 +255,34 @@ else
                                                                                data-testid="caps-ctx-input"
                                                                                @bind="_editCtx" @bind:event="oninput" />
                                                                     </label>
+                                                                    @* Emoji nằm trực tiếp trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt *@
                                                                     <label class="flex items-center gap-1">
                                                                         <input type="checkbox" disabled="@_busy" @bind="_editVision" />
-                                                                        @L["models.capabilities.vision"]
+                                                                        👁 @L["models.capabilities.vision"]
                                                                     </label>
                                                                     <label class="flex items-center gap-1">
                                                                         <input type="checkbox" disabled="@_busy" @bind="_editThink" />
-                                                                        @L["models.capabilities.think"]
+                                                                        ⚡ @L["models.capabilities.think"]
                                                                     </label>
-                                                                    <label class="flex items-center gap-1">
+                                                                    <label class="flex items-center gap-1 border-l-2 border-[#8b5cf6] pl-2.5">
                                                                         <input type="checkbox" disabled="@_busy" @bind="_editAudio" />
-                                                                        @L["models.capabilities.audio"]
+                                                                        🔊 @L["models.capabilities.audio"]
+                                                                        <em class="opacity-60 text-xs">@L["models.capabilities.new"]</em>
                                                                     </label>
-                                                                    <label class="flex items-center gap-1">
+                                                                    <label class="flex items-center gap-1 border-l-2 border-[#ec4899] pl-2.5">
                                                                         <input type="checkbox" disabled="@_busy" @bind="_editVideo" />
-                                                                        @L["models.capabilities.video"]
+                                                                        🎬 @L["models.capabilities.video"]
+                                                                        <em class="opacity-60 text-xs">@L["models.capabilities.new"]</em>
                                                                     </label>
-                                                                    <button type="button" class="btn btn-primary px-1.5"
+                                                                    <button type="button" class="btn btn-primary"
                                                                             disabled="@_busy" data-testid="caps-save"
                                                                             @onclick="() => SaveCapabilitiesAsync(m)">
-                                                                        &#10003;
+                                                                        @L["settings.action.save"]
                                                                     </button>
-                                                                    <button type="button" class="btn btn-outline-secondary px-1.5"
+                                                                    <button type="button" class="btn btn-outline-secondary"
                                                                             disabled="@_busy" data-testid="caps-cancel"
                                                                             @onclick="CancelEditCapabilities">
-                                                                        &#10005;
+                                                                        @L["confirm.cancel"]
                                                                     </button>
                                                                 </div>
                                                             }
@@ -294,21 +297,22 @@ else
                                                                     {
                                                                         <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
                                                                     }
+                                                                    @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt *@
                                                                     @if (m.SupportsVision)
                                                                     {
-                                                                        <Badge Text="@L["models.badge.vision"]" Variant="BadgeVariant.Success" />
+                                                                        <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
                                                                     }
                                                                     @if (m.SupportsThink)
                                                                     {
-                                                                        <Badge Text="@L["models.badge.think"]" Variant="BadgeVariant.Warning" />
+                                                                        <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
                                                                     }
                                                                     @if (m.SupportsAudio)
                                                                     {
-                                                                        <Badge Text="@L["models.badge.audio"]" Variant="BadgeVariant.Info" />
+                                                                        <Badge Text="@($"🔊 {L["models.badge.audio"]}")" Variant="BadgeVariant.Purple" />
                                                                     }
                                                                     @if (m.SupportsVideo)
                                                                     {
-                                                                        <Badge Text="@L["models.badge.video"]" Variant="BadgeVariant.Neutral" />
+                                                                        <Badge Text="@($"🎬 {L["models.badge.video"]}")" Variant="BadgeVariant.Pink" />
                                                                     }
                                                                     @if (!m.IsManual && m.ContextWindow is null && !m.SupportsVision && !m.SupportsThink
                                                                          && !m.SupportsAudio && !m.SupportsVideo)
