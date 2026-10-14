@@ -147,6 +147,41 @@ public class ComboCapabilityCalculatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ComputeAll_EmptyChildWithFalseSibling_FalseBeatsNullButUnknownPersists()
+    {
+        var emptyChildId = await SeedComboAsync("empty-child");
+        var modelId = await SeedModelAsync(ctx: 128_000, vision: true, audio: true, video: false, think: true);
+        var parentId = await SeedComboAsync("parent", ItemToCombo(emptyChildId), ItemToModel(modelId));
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        var parent = caps[parentId];
+        // Guard 3-valued AND: false thắng null, nhưng null phải sống sót ở field
+        // không có false — nếu regression (a ?? false) & (b ?? false) thì Vision
+        // thành false thay vì null ("không hỗ trợ" oan cho member chưa rõ)
+        Assert.False(parent.Video);
+        Assert.Null(parent.Vision);
+        Assert.Null(parent.Audio);
+        Assert.Null(parent.Thinking);
+        Assert.Null(parent.ContextWindow); // ctx null từ child chưa rõ — không phải min(128K)
+    }
+
+    [Fact]
+    public async Task ComputeAll_NullContextWindowMember_ComboCtxIsNull()
+    {
+        var modelWithCtx = await SeedModelAsync(ctx: 128_000, vision: true);
+        var modelWithoutCtx = await SeedModelAsync(vision: true); // ContextWindow null
+        var comboId = await SeedComboAsync("combo", ItemToModel(modelWithCtx), ItemToModel(modelWithoutCtx));
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        var combo = caps[comboId];
+        // ANY member ctx null → combo null, không phải min-of-non-null (128K)
+        Assert.Null(combo.ContextWindow);
+        Assert.True(combo.Vision); // bool AND vẫn tính độc lập ctx
+    }
+
+    [Fact]
     public async Task ComputeAll_WhenCycleInItems_SkipsBackEdge()
     {
         // Seed cycle thô, bypass validation của ComboService (data bẩn phòng thủ)
