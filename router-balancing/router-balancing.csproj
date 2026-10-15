@@ -84,11 +84,18 @@
         <Content Include="Resources\AppIcon\appicon.ico" CopyToOutputDirectory="PreserveNewest" />
 
         <!-- Updater exe: chỉ cần trên windows để InstallUpdateAsync launch sau khi app thoát;
-             ReferenceOutputAssembly=false vì không tham chiếu code, chỉ copy output. -->
+              ReferenceOutputAssembly=false vì không tham chiếu code, chỉ copy output. -->
         <ProjectReference Include="..\RouterBalancing.Updater\RouterBalancing.Updater.csproj"
                           ReferenceOutputAssembly="false"
                           OutputItemType="Content"
                           CopyToOutputDirectory="PreserveNewest" />
+
+        <!-- Go sidecar (opencode-proxy.exe) — OpenSSL/Schannel bypass cho OpenCode
+              free tier gate; binary commit sẵn ở runtimes/, chỉ copy sang output
+              trên windows (sidecar Windows-only, user decision 2026-10-14). -->
+        <Content Include="..\runtimes\win-x64\native\opencode-proxy.exe"
+                 CopyToOutputDirectory="PreserveNewest"
+                 Link="runtimes\win-x64\native\opencode-proxy.exe" />
     </ItemGroup>
 
     <ItemGroup>

@@ -72,7 +72,19 @@ public static class ProxyApp
         builder.Services.AddHttpClient(OpenAiUpstreamClient.HttpClientName,
             client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(CreateUpstreamHandler)
-            .AddHttpMessageHandler<ProxyHealthHandler>();
+            .AddHttpMessageHandler<ProxyHealthHandler>()
+            // SAU ProxyHealthHandler: pick proxy xong (ProxyContext set) mới reroute
+            // sang sidecar — sidecarHandler đọc context gắn X-Proxy-Url, rồi clear
+            // context để connect loopback không đi qua outbound proxy.
+            .AddHttpMessageHandler<OpenCodeSidecarHandler>();
+
+        // Sidecar Go cho OpenCode free tier — gate chặn TLS Schannel (.NET) bằng
+        // JA3/JA4; sidecar forward với crypto/tls. Singleton giữ nguyên process
+        // qua các request; Dispose khi container dừng (kill process).
+        builder.Services.AddSingleton<IOpenCodeSidecarService>(sp => new OpenCodeSidecarService(
+            ResolveSidecarBinaryPath(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<OpenCodeSidecarService>>()));
+        builder.Services.AddTransient<OpenCodeSidecarHandler>();
 
         // AddHttpMessageHandler<THandler> chỉ resolve THandler từ DI, không tự đăng ký
         // ("must be registered as a transient service") — thiếu dòng này thì lần gửi
@@ -127,6 +139,14 @@ public static class ProxyApp
         UseProxy = true,
         ConnectTimeout = Timeout.InfiniteTimeSpan,
     };
+
+    /// <summary>
+    /// Đường dẫn sidecar binary — copy sang output bởi csproj (Windows TFM only);
+    /// non-Windows → path không tồn tại → sidecar disabled, OpenCode free fail
+    /// an toàn như trước khi có sidecar.
+    /// </summary>
+    private static string ResolveSidecarBinaryPath() =>
+        Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native", "opencode-proxy.exe");
 
     /// <summary>
     /// Gắn pipeline: auth middleware + endpoint. Gọi NGAY SAU <c>Build()</c>, TRƯỚC <c>StartAsync</c>.

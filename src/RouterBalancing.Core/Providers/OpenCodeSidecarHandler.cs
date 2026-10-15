@@ -19,11 +19,17 @@ public sealed class OpenCodeSidecarHandler : DelegatingHandler
     private readonly IOpenCodeSidecarService _sidecar;
 
     /// <summary>
-    /// Tạo handler reroute opencode.ai sang sidecar.
+    /// Tạo handler reroute opencode.ai sang sidecar (constructor DI — InnerHandler
+    /// do HttpClientFactory gán).
     /// </summary>
     /// <param name="sidecar">Service quản lý Go sidecar process.</param>
-    /// <param name="innerHandler">Handler kế tiếp trong pipeline (SocketsHttpHandler).</param>
-    public OpenCodeSidecarHandler(IOpenCodeSidecarService sidecar, HttpMessageHandler innerHandler)
+    public OpenCodeSidecarHandler(IOpenCodeSidecarService sidecar)
+    {
+        _sidecar = sidecar;
+    }
+
+    /// <summary>Tạo handler với inner handler tường minh — dùng trong unit test.</summary>
+    internal OpenCodeSidecarHandler(IOpenCodeSidecarService sidecar, HttpMessageHandler innerHandler)
         : base(innerHandler)
     {
         _sidecar = sidecar;
@@ -43,7 +49,21 @@ public sealed class OpenCodeSidecarHandler : DelegatingHandler
         }
 
         var sidecarRequest = await CloneForSidecarAsync(request, _sidecar.BaseUrl, ct).ConfigureAwait(false);
-        using var response = await base.SendAsync(sidecarRequest, ct).ConfigureAwait(false);
+
+        // RoundRobinWebProxy đọc ProxyContext.Current để quyết định outbound —
+        // request loopback tới sidecar KHÔNG được dial qua proxy (sidecar tự dial
+        // qua X-Proxy-Url). Clear trong lúc gửi, restore sau khi xong.
+        var attempt = ProxyContext.Current;
+        ProxyContext.Current = null;
+        HttpResponseMessage response;
+        try
+        {
+            response = await base.SendAsync(sidecarRequest, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            ProxyContext.Current = attempt;
+        }
 
         // 502 + X-Proxy-Failure: sidecar không dial được outbound proxy — ném
         // cùng shape lỗi proxy-connect để ProxyHealthHandler attempt proxy khác.
