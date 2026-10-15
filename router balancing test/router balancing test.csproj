@@ -41,6 +41,11 @@
     <Content Include="..\runtimes\win-x64\native\opencode-proxy.exe"
              CopyToOutputDirectory="PreserveNewest"
              Link="runtimes\win-x64\native\opencode-proxy.exe" />
+    <!-- Wire body title-gen thật (capture 2026-10-15 từ opencode CLI qua echo server) —
+         dùng trong OpenCodeSidecarE2ETests replay. -->
+    <Content Include="Server\title-captured.json"
+             CopyToOutputDirectory="PreserveNewest"
+             Link="title-captured.json" />
   </ItemGroup>
 
   <ItemGroup>
