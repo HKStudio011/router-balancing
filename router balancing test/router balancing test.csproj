@@ -36,6 +36,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Go sidecar binary: OpenCodeSidecarServiceTests + OpenCodeSidecarE2ETests
+         resolve từ AppContext.BaseDirectory/runtimes/... như app thật. -->
+    <Content Include="..\runtimes\win-x64\native\opencode-proxy.exe"
+             CopyToOutputDirectory="PreserveNewest"
+             Link="runtimes\win-x64\native\opencode-proxy.exe" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\src\RouterBalancing.Core\RouterBalancing.Core.csproj" />
     <!-- Compile trực tiếp UpdateStager (KHÔNG ProjectReference): reference assembly
          sẽ kéo RouterBalancing.Updater.exe vào test bin, phá test
