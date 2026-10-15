@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
+<Project Sdk="Microsoft.NET.Sdk.Razor">
 
     <PropertyGroup>
         <TargetFrameworks>net10.0-android</TargetFrameworks>
@@ -36,9 +36,9 @@
 
         <!-- Versions -->
         <!-- Version 4 phần cho assembly/updater; ApplicationDisplayVersion phải là semver 3 phần (bắt buộc bởi Maui.Resizetizer) -->
-        <Version>1.3.0.0</Version>
-        <ApplicationDisplayVersion>1.3.0</ApplicationDisplayVersion>
-        <ApplicationVersion>9</ApplicationVersion>
+        <Version>1.4.0.0</Version>
+        <ApplicationDisplayVersion>1.4.0</ApplicationDisplayVersion>
+        <ApplicationVersion>10</ApplicationVersion>
 
         <!-- To develop, package, and publish an app to the Microsoft Store, see: https://aka.ms/MauiTemplateUnpackaged -->
         <WindowsPackageType>None</WindowsPackageType>
@@ -84,11 +84,18 @@
         <Content Include="Resources\AppIcon\appicon.ico" CopyToOutputDirectory="PreserveNewest" />
 
         <!-- Updater exe: chỉ cần trên windows để InstallUpdateAsync launch sau khi app thoát;
-             ReferenceOutputAssembly=false vì không tham chiếu code, chỉ copy output. -->
+              ReferenceOutputAssembly=false vì không tham chiếu code, chỉ copy output. -->
         <ProjectReference Include="..\RouterBalancing.Updater\RouterBalancing.Updater.csproj"
                           ReferenceOutputAssembly="false"
                           OutputItemType="Content"
                           CopyToOutputDirectory="PreserveNewest" />
+
+        <!-- Go sidecar (opencode-proxy.exe) — OpenSSL/Schannel bypass cho OpenCode
+              free tier gate; binary commit sẵn ở runtimes/, chỉ copy sang output
+              trên windows (sidecar Windows-only, user decision 2026-10-14). -->
+        <Content Include="..\runtimes\win-x64\native\opencode-proxy.exe"
+                 CopyToOutputDirectory="PreserveNewest"
+                 Link="runtimes\win-x64\native\opencode-proxy.exe" />
     </ItemGroup>
 
     <ItemGroup>

@@ -42,7 +42,7 @@ dotnet run --project router-balancing/router-balancing.csproj -f net10.0-windows
 ## Test
 
 ```powershell
-dotnet test "router balancing test/router balancing test.csproj" --nologo
+dotnet test "router balancing test/router balancing test.csproj" --no-banner
 ```
 
 ## Frontend (chỉ khi sửa UI)

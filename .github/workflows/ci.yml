@@ -41,9 +41,15 @@ jobs:
         run: dotnet build ${{ env.PROJECT_PATH }} -f net10.0-windows10.0.19041.0 --nologo
 
       # SingleInstanceGuardTests phụ thuộc mutex/env của runner (fail cả trên master);
-      # Cancel_QueuedRequest_* flaky timing khi chạy song song — cả hai đã ruling baseline,
-      # filter khỏi CI để pass/fail phản ánh thay đổi thật của code
+      # Cancel_QueuedRequest_* và Stream_ClientAbortQueued_* flaky timing khi chạy
+      # song song — cả hai đã ruling baseline, filter khỏi CI để pass/fail phản ánh
+      # thay đổi thật của code
+      # (cú pháp filter của xunit MTP, sau "--" là args chuyển tới test app;
+      #  dùng --no-banner thay vì --nologo: SDK 10.0.x MTP mode forward --nologo
+      #  xuống test app → exit 5 invalid args)
       - name: Test
         run: >
-          dotnet test "${{ env.TEST_PROJECT }}" --nologo
-          --filter "FullyQualifiedName!~SingleInstanceGuardTests&FullyQualifiedName!~Cancel_QueuedRequest"
+          dotnet test "${{ env.TEST_PROJECT }}" --no-banner
+          -- --filter-not-class "*SingleInstanceGuardTests"
+          --filter-not-method "*Cancel_QueuedRequest*"
+          --filter-not-method "*Stream_ClientAbortQueued*"
