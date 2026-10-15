@@ -364,3 +364,6 @@ FodyWeavers.xsd
 # SDD working files (briefs, reports, review diffs, progress ledger)
 .superpowers/
 .worktrees/
+
+# Dev build của sidecar — binary release nằm ở runtimes/win-x64/native/
+sidecar/opencode-proxy/opencode-proxy.exe
