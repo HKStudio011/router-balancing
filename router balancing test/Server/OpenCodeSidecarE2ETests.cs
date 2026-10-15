@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -111,6 +112,52 @@ public class OpenCodeSidecarE2ETests : IDisposable
         Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
 
         // SSE cho phép comment lines (`: keep-alive`) trước data — skip tới data đầu tiên.
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+        string? line;
+        var sawData = false;
+        while ((line = await reader.ReadLineAsync()) is not null)
+        {
+            if (line.StartsWith("data: ", StringComparison.Ordinal))
+            {
+                sawData = true;
+                break;
+            }
+        }
+        Assert.True(sawData, "SSE stream không chứa data line nào.");
+    }
+
+    /// <summary>
+    /// Regression: wire body title-gen THẬT (capture 2026-10-15 — system prompt
+    /// PROMPT_TITLE chính chủ) từng bị gate 403 FreeTierError deterministic.
+    /// Sidecar phải paraphrase system prompt title-gen trong normalizeBody và
+    /// upstream trả 200 SSE.
+    /// </summary>
+    [Fact]
+    public async Task TitleShapedRequest_TitlePromptRewritten_ReturnsSse()
+    {
+        if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native", "opencode-proxy.exe")))
+        {
+            return; // binary chưa build — skip
+        }
+
+        SeedOpenCodeFreeProvider();
+        var client = await StartAsync();
+
+        // Fixture giữ nguyên model wire thật ("opencode-free/...") — map về model
+        // id đã seed trong provider để router match đúng lane OpenCode free.
+        var titleNode = JsonNode.Parse(
+            await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "title-captured.json")))!;
+        titleNode["model"] = "mimo-v2.6-flash-free";
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent(titleNode.ToJsonString(), Encoding.UTF8, "application/json"),
+        };
+
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
         string? line;
         var sawData = false;
