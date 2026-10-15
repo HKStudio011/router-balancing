@@ -4,6 +4,8 @@
 
 **Goal:** Make OpenCode Free provider work by routing requests through a local Go sidecar that uses Go's crypto/tls fingerprint (passes the JA3/JA4 gate).
 
+> **DISCOVERY 2026-10-15:** TLS fingerprint is necessary but NOT sufficient. The live gate (contract dated 2026-10-14) ALSO validates endpoint (`/inference/...` not `/zen/...`), 4-segment UA, canonical descending session encoding, 40-hex `x-opencode-project`, absence of `x-opencode-request`, exact `Bearer public`, and genuine tool definitions in the body. Sidecar canonicalizes ALL of these internally. See ledger `.superpowers/sdd/2026-10-14-opencode-sidecar/progress.md` for the full contract table.
+
 **Architecture:** Go binary `opencode-proxy` listens on localhost, forwards requests to opencode.ai with Go TLS fingerprint. .NET `OpenCodeSidecarHandler` intercepts OpenCode Free requests in the HttpClient pipeline, routes to sidecar with proxy URL from `ProxyContext.Current`. Sidecar uses the proxy for the outbound connection.
 
 **Scope decision (2026-10-14):** Windows-only for the sidecar integration — build script targets win-x64 only; other TFMs keep the existing HttpClient path. WebView2 approach was ruled out by spike: headed/headless Edge browser fetch → 403 FreeTierError with all header variants (Origin/sec-ch-ua/Referer stripped, UA flag) — only Go crypto/tls (jasonxu reference, 200 OK) and Electron desktop pass the gate. Go 1.27.0 installed via winget.
@@ -40,7 +42,7 @@
 **Interfaces:**
 - Consumes: none (standalone)
 - Produces: HTTP server on `127.0.0.1:<random-port>`, endpoints:
-  - `POST /v1/chat/completions` — forwards to `https://opencode.ai/zen/v1/chat/completions`
+  - `POST /v1/chat/completions` — forwards to `https://opencode.ai/inference/v1/chat/completions` (anonymous lane — `/zen` 403s keyless since 2026-10-14; sidecar canonicalizes identity + injects genuine tools internally)
   - `GET /health` — returns 200 OK
   - Startup output: `LISTENING <port>\n` to stdout
 
