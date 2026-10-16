@@ -1909,6 +1909,36 @@ public class DispatcherLoopTests : IDisposable
     }
 
     [Fact]
+    public async Task Loop_DiamondChildExhausted_DoesNotLoopAndAdvances()
+    {
+        var pidY = SeedProvider("pY", modelId: "mY");
+        var pidX = SeedProvider("pX", modelId: "mX");
+        var candY = Candidate(pidY, "mY");
+        var candX = Candidate(pidX, "mX");
+        // Diamond: top FB tham chiếu kid RR [Y] HAI lần — Y 429 → MarkTried(pair) prune CẢ 2
+        // nhánh (pair đã thử là đã thử) → top còn leafX → advance X, không infinite-loop.
+        var kid = new ComboUnit("kid", ComboMode.RoundRobin, [new CandidateLeaf(candY)]);
+        var root = new ComboUnit("top", ComboMode.Fallback, [kid, kid, new CandidateLeaf(candX)]);
+        var resolver = new StubResolver(new SelectionSuccess(
+            [candY, candX], ComboMode.Fallback, "top", root));
+        var upstream = new WalkUpstream((p, _, _, _) =>
+            Task.FromResult(p.Name == "pY" ? Resp429() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, new ModelSelector(_executions), upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(2, calls.Count); // Y đúng 1 lần (không retry nhánh diamond thứ hai)
+        Assert.Equal("pY", calls[0].Provider);
+        Assert.Equal("pX", calls[1].Provider);
+    }
+
+    [Fact]
     public async Task Dispatch_NestedRoute_PublishesComboPathWithEachHopMode()
     {
         var pidY = SeedProvider("pY", modelId: "mY");
