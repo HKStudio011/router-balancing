@@ -178,6 +178,27 @@ public class ComboResolverTests : IDisposable
     }
 
     [Fact]
+    public void SelectionTree_NestedFallbackWithRoundRobinChild_HasExpectedShape()
+    {
+        var leafA = new CandidateLeaf(new ModelCandidate(
+            new Provider { Name = "pA" }, new Model { ModelId = "x" }));
+        var leafB = new CandidateLeaf(new ModelCandidate(
+            new Provider { Name = "pB" }, new Model { ModelId = "y" }));
+        var leafC = new CandidateLeaf(new ModelCandidate(
+            new Provider { Name = "pC" }, new Model { ModelId = "z" }));
+        var child = new ComboUnit("child", ComboMode.RoundRobin, [leafB, leafC]);
+        var root = new ComboUnit("root", ComboMode.Fallback, [leafA, child]);
+
+        Assert.Equal("root", root.Name);
+        Assert.Equal(ComboMode.Fallback, root.Mode);
+        Assert.IsType<CandidateLeaf>(root.Children[0]);
+        var childUnit = Assert.IsType<ComboUnit>(root.Children[1]);
+        Assert.Equal("child", childUnit.Name);
+        Assert.Equal(ComboMode.RoundRobin, childUnit.Mode);
+        Assert.Equal(2, childUnit.Children.Count);
+    }
+
+    [Fact]
     public async Task Resolve_WhenModelIdNoMatch_FallsBackToComboByName()
     {
         SeedProvider("p1", modelIds: ["m1"]);
