@@ -83,12 +83,13 @@ public sealed class ModelSelector(IExecutionList executions) : IModelSelector
 
     /// <summary>
     /// RR unit: đơn vị (con) nào còn lá eligible = ứng viên; sort key = min in-flight các lá
-    /// hợp lệ của đơn vị (đã duyệt lựa chọn 1), tie-break theo tên đơn vị/leaf — deterministic.
-    /// Cursor toàn cục Interlocked như flat path.
+    /// hợp lệ của đơn vị (đã duyệt lựa chọn 1), tie-break theo (ProviderId, ModelId) lá /
+    /// tên đơn vị — deterministic. Cursor toàn cục Interlocked như flat path.
     /// </summary>
     private async Task<ModelCandidate?> SelectInRoundRobinUnitAsync(ComboUnit unit, CancellationToken ct)
     {
-        var eligible = new List<(SelectionNode Node, string Tiebreak, int MinInFlight)>();
+        var eligible = new List<(SelectionNode Node, (int Kind, long Num, string Text) Tiebreak,
+            int MinInFlight)>();
         foreach (var child in unit.Children)
         {
             if (await MinInFlightOfEligibleAsync(child, ct) is { } minInFlight)
@@ -99,7 +100,9 @@ public sealed class ModelSelector(IExecutionList executions) : IModelSelector
 
         var ordered = eligible
             .OrderBy(e => e.MinInFlight)
-            .ThenBy(e => e.Tiebreak, StringComparer.Ordinal)
+            .ThenBy(e => e.Tiebreak.Kind)
+            .ThenBy(e => e.Tiebreak.Num)
+            .ThenBy(e => e.Tiebreak.Text, StringComparer.Ordinal)
             .ToList();
         // Chỉ consume cursor khi có lựa chọn thật (>1) — unit 1-eligible descend thẳng, không tốn tick.
         // Nếu không, RR unit lồng nhau (mỗi cấp +1) sẽ lệch phase: root luôn thấy cursor chẵn →
@@ -140,10 +143,14 @@ public sealed class ModelSelector(IExecutionList executions) : IModelSelector
         }
     }
 
-    private static string TiebreakOf(SelectionNode node) => node switch
+    /// <summary>
+    /// Tie-break sort: lá so theo (ProviderId, ModelId) số THẬT (không ghép string —
+    /// id 10 phải sau 9); đơn vị theo tên, xếp sau lá cùng in-flight (Kind 1 > 0).
+    /// </summary>
+    private static (int Kind, long Num, string Text) TiebreakOf(SelectionNode node) => node switch
     {
-        CandidateLeaf leaf => $"{leaf.Candidate.Provider.Id}:{leaf.Candidate.Model.ModelId}",
-        ComboUnit unit => unit.Name,
-        _ => string.Empty,
+        CandidateLeaf leaf => (0, leaf.Candidate.Provider.Id, leaf.Candidate.Model.ModelId),
+        ComboUnit unit => (1, 0, unit.Name),
+        _ => (2, 0, string.Empty),
     };
 }

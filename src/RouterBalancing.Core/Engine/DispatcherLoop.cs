@@ -221,6 +221,16 @@ public sealed class DispatcherLoop(
         // rồi dispatch lại (snapshot mới khi vào ServeAsync lần sau).
         var attemptBudget = request.Retry.Attempts
             + remaining.Sum(r => r.Provider.Accounts?.Count(a => a.Enabled) ?? 0);
+
+        // Complete exhaustion tập trung — 3 điểm gọi (advance đầu, prune trong loop, NoAccountLeft)
+        // dùng chung: mô tả attempt VỪA fail (candidate/account current qua closure), log TRƯỚC
+        // khi complete outcome (I2). Exit đã làm ở nhánh xử lý lỗi trước khi rơi xuống đây.
+        void CompleteExhausted()
+        {
+            LogAttemptFail(request, candidate, accountId, attemptBudget, "exhausted");
+            request.Completion.TrySetResult(CompleteExhaustion(request));
+        }
+
         while (true)
         {
             DispatchOutcome outcome;
@@ -230,10 +240,11 @@ public sealed class DispatcherLoop(
             var attemptRoute = new TraceRoute(comboName, candidate.Provider.Name,
                 AccountNameOf(candidate, accountId),
                 // ComboPath từ cây ĐÃ prune theo RetryState — candidate vừa được chọn từ cây
-                // prune nên luôn tìm thấy path; diamond nhiều match → path đầu tiên (đủ tên+mode)
+                // prune nên luôn tìm thấy path; diamond nhiều match → path đầu tiên (đủ tên+mode).
+                // Pruned null (phòng drift prune/FilterRemaining) → ComboPath null, không NRE.
                 root is null
                     ? null
-                    : ComboPathOf(PruneTriedTree(root, request)!, candidate));
+                    : ComboPathOf(PruneTriedTree(root, request), candidate));
             // H3a: publish attempt start ngay trước lần gửi upstream, với route đủ combo/provider/
             // account — UI vẽ circle vào nhánh ngay khi attempt đang chạy (spec trace §4).
             // Đặt NGOÀI try: các catch bên dưới chỉ dành cho ForwardAsync — publish không đổi behavior.
@@ -405,12 +416,7 @@ public sealed class DispatcherLoop(
             var nextRoot = root is { } treeRoot ? PruneTriedTree(treeRoot, request) : null;
             if (next.Count == 0 || (root is not null && nextRoot is null))
             {
-                LogAttemptFail(request, candidate, accountId, attemptBudget, "exhausted");
-                // Exit đã làm ở nhánh trên (Account: trước TryEnter; Model/Provider: cùng MarkTried)
-                // — CompleteExhaustion TRƯỚC khi complete để log exhaustion ghi xong rồi mới
-                // endpoint nhận outcome (I2)
-                var exhausted = CompleteExhaustion(request);
-                request.Completion.TrySetResult(exhausted);
+                CompleteExhausted();
                 return;
             }
 
@@ -426,8 +432,7 @@ public sealed class DispatcherLoop(
                     nextRoot = root is { } rt ? PruneTriedTree(rt, request) : null;
                     if (root is not null && nextRoot is null)
                     {
-                        LogAttemptFail(request, candidate, accountId, attemptBudget, "exhausted");
-                        request.Completion.TrySetResult(CompleteExhaustion(request));
+                        CompleteExhausted();
                         return;
                     }
                     nextCandidate = await selector.TrySelectAsync(
@@ -454,11 +459,7 @@ public sealed class DispatcherLoop(
                                 next = FilterRemaining(next, request);
                                 if (next.Count == 0)
                                 {
-                                    // Vẫn mô tả attempt VỪA fail (candidate/account cũ) — action exhausted
-                                    LogAttemptFail(request, candidate, accountId, attemptBudget,
-                                        "exhausted");
-                                    var exhaustedLoop = CompleteExhaustion(request);
-                                    request.Completion.TrySetResult(exhaustedLoop);
+                                    CompleteExhausted();
                                     return;
                                 }
                                 continue; // vòng trong — chọn candidate khác
@@ -564,10 +565,12 @@ public sealed class DispatcherLoop(
     /// lá đã thử (pair tried / provider failed / hết TK untried) bị gỡ; unit rỗng sau prune
     /// → <see langword="null"/> (subtree exhausted). Criteria GIỐNG <see cref="FilterRemaining"/>
     /// — flat <c>remaining</c> và cây prune phải nhất quán, không được lệch (selector tree-walk
-    /// trả lá đã tried = infinite loop). <paramref name="node"/> root = <see langword="null"/>
+    /// trả lá đã tried = infinite loop). Điều kiện exhaustion trong walk có thêm nhánh
+    /// <c>prunedRoot == null</c> là defense-in-depth: nếu 2 criteria bao giờ lệch thì cây
+    /// thắng (nguồn tree-path), không treo. <paramref name="node"/> root = <see langword="null"/>
     /// (flat path) không gọi tới đây.
     /// </summary>
-    private SelectionNode? PruneTriedTree(SelectionNode node, ProxyRequest request)
+    private static SelectionNode? PruneTriedTree(SelectionNode node, ProxyRequest request)
     {
         switch (node)
         {
@@ -597,11 +600,12 @@ public sealed class DispatcherLoop(
     /// <summary>
     /// DFS cây đã prune tìm leaf = <paramref name="target"/> (ProviderId + ModelId) — trả danh
     /// sách hop root→leaf, KHÔNG gồm leaf (leaf đã có trong Route.Provider). Diamond nhiều
-    /// match → trả path đầu tiên. Không tìm thấy → <see langword="null"/> (không nên xảy ra:
-    /// candidate được chọn từ chính cây prune này).
+    /// match → trả path đầu tiên. Cây null (prune rỗng / drift phòng hờ) → <see langword="null"/>.
     /// </summary>
-    private static IReadOnlyList<TraceHop>? ComboPathOf(SelectionNode root, ModelCandidate target)
+    private static IReadOnlyList<TraceHop>? ComboPathOf(SelectionNode? root, ModelCandidate target)
     {
+        if (root is null)
+            return null;
         List<TraceHop> path = [];
         return TryFindComboPath(root, target, path) ? path : null;
     }

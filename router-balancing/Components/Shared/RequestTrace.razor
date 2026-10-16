@@ -252,7 +252,7 @@
        dòng dưới breadcrumb thay vì tràn ngang node */
     .trace-modechain {
         display: block;
-        margin-top: 2px;
+        margin-top: 2px; /* khoảng cách breadcrumb → chips, nhỏ hơn padding node thường */
         white-space: nowrap;
     }
 
@@ -262,7 +262,7 @@
         border: 1px solid #8b8fa3;
         border-radius: 4px;
         padding: 0 4px;
-        font-size: 9px;
+        font-size: 9px; /* nhỏ hơn body node (11px) — chip phụ, không competes với breadcrumb */
         line-height: 1.5;
         opacity: .85;
     }
@@ -270,7 +270,7 @@
     .trace-modechain__arrow {
         margin: 0 3px;
         opacity: .6;
-        font-size: 9px;
+        font-size: 9px; /* đồng bộ .trace-modechip */
     }
 
     /* Chip account (mockup .acct) — absolute như node, nội dung 1 dòng */
