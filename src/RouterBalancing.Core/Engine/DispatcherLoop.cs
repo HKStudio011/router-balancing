@@ -152,7 +152,10 @@ public sealed class DispatcherLoop(
         while (true)
         {
             remaining = FilterRemaining(success.Candidates, request);
-            if (remaining.Count == 0)
+            // Tree prune theo RetryState mỗi vòng — pair đã thử bị g khỏi cây (composition);
+            // root==null (flat) → y hệt như cũ
+            var prunedRoot = success.Root is { } treeRoot ? PruneTriedTree(treeRoot, request) : null;
+            if (remaining.Count == 0 || (success.Root is not null && prunedRoot is null))
             {
                 if (!queue.TryRemove(request.Id, out _))
                     return true; // vừa bị cancel/abort gỡ — bên kia đã báo outcome rồi
@@ -165,7 +168,7 @@ public sealed class DispatcherLoop(
             }
 
             candidate = await selector.TrySelectAsync(
-                new SelectionSuccess(remaining, success.Mode, success.ComboName), ct);
+                new SelectionSuccess(remaining, success.Mode, success.ComboName, prunedRoot), ct);
             if (candidate is null)
                 return false; // park — item KHÔNG bị Take, chờ Changed|Exited
 
@@ -197,7 +200,8 @@ public sealed class DispatcherLoop(
         trace.Publish(new TraceEvent(request.Id, TraceStage.DispatchStarted, request.Model,
             null, null, null, null, null, DateTimeOffset.Now, success.Mode.ToString()));
 
-        _ = ServeAsync(taken, candidate, remaining, success.Mode, accountId, success.ComboName);
+        _ = ServeAsync(taken, candidate, remaining, success.Mode, accountId, success.ComboName,
+            success.Root);
         return true;
     }
 
@@ -209,7 +213,8 @@ public sealed class DispatcherLoop(
     /// Fire-and-forget từ <see cref="TryDispatchOnceAsync"/> — không block dispatcher loop.
     /// </summary>
     private async Task ServeAsync(ProxyRequest request, ModelCandidate candidate,
-        IReadOnlyList<ModelCandidate> remaining, ComboMode mode, long accountId, string? comboName)
+        IReadOnlyList<ModelCandidate> remaining, ComboMode mode, long accountId, string? comboName,
+        SelectionNode? root)
     {
         // Ước lượng N cho log "attempt k/N" (spec §5): Attempts đã có khi vào serve + tổng TK
         // enabled của snapshot remaining lúc này — chỉ phục vụ log, có thể lệch nhẹ khi park
@@ -392,7 +397,8 @@ public sealed class DispatcherLoop(
 
             // — Candidate-advance (spec exhaustive-failover §2.4) —
             var next = FilterRemaining(remaining, request);
-            if (next.Count == 0)
+            var nextRoot = root is { } treeRoot ? PruneTriedTree(treeRoot, request) : null;
+            if (next.Count == 0 || (root is not null && nextRoot is null))
             {
                 LogAttemptFail(request, candidate, accountId, attemptBudget, "exhausted");
                 // Exit đã làm ở nhánh trên (Account: trước TryEnter; Model/Provider: cùng MarkTried)
@@ -411,8 +417,17 @@ public sealed class DispatcherLoop(
                 long? nextAccountId = null;
                 try
                 {
+                    // Prune lại mỗi vòng — MarkTried(pair) vòng trước gỡ lá khỏi cây (composition)
+                    nextRoot = root is { } rt ? PruneTriedTree(rt, request) : null;
+                    if (root is not null && nextRoot is null)
+                    {
+                        LogAttemptFail(request, candidate, accountId, attemptBudget, "exhausted");
+                        request.Completion.TrySetResult(CompleteExhaustion(request));
+                        return;
+                    }
                     nextCandidate = await selector.TrySelectAsync(
-                        new SelectionSuccess(next, mode, comboName), request.Context.RequestAborted);
+                        new SelectionSuccess(next, mode, comboName, nextRoot),
+                        request.Context.RequestAborted);
                     if (nextCandidate is not null)
                     {
                         var enter = await executions.TryEnterAsync(nextCandidate.Provider.Id,
@@ -538,6 +553,41 @@ public sealed class DispatcherLoop(
     private static bool HasEnabledUntriedAccount(ModelCandidate candidate, RetryState retry) =>
         candidate.Provider.Accounts?
             .Any(a => a.Enabled && !retry.IsAccountTried(candidate.Provider.Id, a.Id)) != false;
+
+    /// <summary>
+    /// Prune cây selection theo <paramref name="request"/>.Retry (composition, plan Task 5):
+    /// lá đã thử (pair tried / provider failed / hết TK untried) bị gỡ; unit rỗng sau prune
+    /// → <see langword="null"/> (subtree exhausted). Criteria GIỐNG <see cref="FilterRemaining"/>
+    /// — flat <c>remaining</c> và cây prune phải nhất quán, không được lệch (selector tree-walk
+    /// trả lá đã tried = infinite loop). <paramref name="node"/> root = <see langword="null"/>
+    /// (flat path) không gọi tới đây.
+    /// </summary>
+    private SelectionNode? PruneTriedTree(SelectionNode node, ProxyRequest request)
+    {
+        switch (node)
+        {
+            case CandidateLeaf leaf:
+                var c = leaf.Candidate;
+                return !request.Retry.IsTried(c.Provider.Id, c.Model.ModelId)
+                    && !request.Retry.IsProviderFailed(c.Provider.Id)
+                    && HasEnabledUntriedAccount(c, request.Retry)
+                    ? leaf
+                    : null;
+            case ComboUnit unit:
+                List<SelectionNode> prunedChildren = [];
+                foreach (var child in unit.Children)
+                {
+                    if (PruneTriedTree(child, request) is { } kept)
+                        prunedChildren.Add(kept);
+                }
+                // Unit không còn lá = không thể serve — gỡ khỏi cây (FB cha sẽ nhảy item kế)
+                return prunedChildren.Count == 0
+                    ? null
+                    : unit with { Children = prunedChildren };
+            default:
+                return null;
+        }
+    }
 
     /// <summary>
     /// Lỗi transient có thể retry backoff cùng TK (spec transient-retry §3.1):

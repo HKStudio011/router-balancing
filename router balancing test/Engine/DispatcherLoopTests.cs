@@ -1874,4 +1874,37 @@ public class DispatcherLoopTests : IDisposable
             await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.False(_queue.Contains("req00001"));
     }
+
+    [Fact]
+    public async Task Loop_NestedFallbackChildExhausted_AdvancesToNextRootItem()
+    {
+        var pidY = SeedProvider("pY", modelId: "mY");
+        var pidX = SeedProvider("pX", modelId: "mX");
+        var candY = Candidate(pidY, "mY");
+        var candX = Candidate(pidX, "mX");
+        // Cây top FB: [kid RR [Y], X] — Y lỗi 429 → MarkTried(pair) → kid prune rỗng →
+        // walk advance: FB root còn leafX → X serve OK (KHÔNG exhaustion sớm, KHÔNG loop Y)
+        var root = new ComboUnit("top", ComboMode.Fallback,
+        [
+            new ComboUnit("kid", ComboMode.RoundRobin, [new CandidateLeaf(candY)]),
+            new CandidateLeaf(candX),
+        ]);
+        var resolver = new StubResolver(new SelectionSuccess(
+            [candY, candX], ComboMode.Fallback, "top", root));
+        var upstream = new WalkUpstream((p, _, _, _) =>
+            Task.FromResult(p.Name == "pY" ? Resp429() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, new ModelSelector(_executions), upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(2, calls.Count);
+        Assert.Equal("pY", calls[0].Provider); // FB descend kid → leafY (vị trí đầu)
+        Assert.Equal("pX", calls[1].Provider); // kid prune rỗng → advance leafX
+    }
 }
