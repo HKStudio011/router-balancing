@@ -59,6 +59,7 @@ else
                                 <span class="font-medium">@p.Name</span>
                                 <Badge Text="@TypeLabel(p.Type)" Variant="TypeVariant(p.Type)" />
                                 <Badge Text="@ProxyModeBadgeText(p)" Variant="@ProxyModeBadgeVariant(p)" />
+                                <Badge Text="@MaxConcurrentBadgeText(p)" Variant="@MaxConcurrentBadgeVariant(p)" />
                                 @if (p.IsPreset)
                                 {
                                     <Badge Text="@L["providers.badge.free"]" Variant="BadgeVariant.Info" />
@@ -1786,9 +1787,23 @@ else
             : BadgeVariant.Info;
     }
 
-    /// <summary>128000 → "128k"; dưới 1000 giữ nguyên — badge ngắn gọn, không cần chính xác tuyệt đối.</summary>
+    /// <summary>
+    /// Badge giới hạn đồng thời của provider: &gt;0 = "N concurrent", ≤0 = "unlimited" —
+    /// D-B1: Max ≤ 0 = không giới hạn (xem <c>ExecutionList.HasCapacity</c>).
+    /// </summary>
+    private string MaxConcurrentBadgeText(Provider provider) =>
+        provider.MaxConcurrent > 0
+            ? string.Format(L["providers.badge.maxConcurrent"], provider.MaxConcurrent)
+            : L["providers.badge.maxConcurrentUnlimited"];
+
+    private static BadgeVariant MaxConcurrentBadgeVariant(Provider provider) =>
+        provider.MaxConcurrent > 0 ? BadgeVariant.Purple : BadgeVariant.Neutral;
+
+    /// <summary>128000 → "128k"; ≥1000000 → "1M" (1000k đọc thành chữ dài); dưới 1000 giữ nguyên.</summary>
     private static string FormatCtx(int contextWindow) =>
-        contextWindow >= 1000 ? $"{contextWindow / 1000}k" : contextWindow.ToString();
+        contextWindow >= 1_000_000 ? $"{contextWindow / 1_000_000}M"
+            : contextWindow >= 1000 ? $"{contextWindow / 1000}k"
+            : contextWindow.ToString();
 
     public void Dispose() => L.LanguageChanged -= OnLanguageChanged;
 }

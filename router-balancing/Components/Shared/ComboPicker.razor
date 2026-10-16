@@ -1,12 +1,14 @@
 @using Microsoft.JSInterop
+@using RouterBalancing.Core.Combos
 @using RouterBalancing.Core.Domain
 @inject LocalizationService L
 @inject IJSRuntime JS
 
 <style>
     /* Picker chọn combo con (tương tự ModelCombo): search live theo tên, list phẳng
-       (không nhóm), ô đang chọn 2 dòng — tên xanh + "mode · N thành phần". Menu position
-       fixed theo trigger qua rbCombo.place để không bị overflow-y-auto của Modal cắt. */
+       (không nhóm), ô đang chọn 2-3 dòng — tên xanh + "mode · N thành phần" +
+       capabilities tổng hợp AND/min. Menu position fixed theo trigger qua
+       rbCombo.place để không bị overflow-y-auto của Modal cắt. */
     .combopicker {
         position: relative;
         flex: 1;
@@ -50,6 +52,17 @@
         opacity: .6;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Dòng 3 — capabilities tổng hợp của combo; badge Pill giãn 4px, tràn thì cắt */
+    .combopicker__caps {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 2px;
+        font-size: 11px;
+        overflow: hidden;
         white-space: nowrap;
     }
 
@@ -127,6 +140,52 @@
             {
                 <span class="combopicker__meta">@meta</span>
             }
+            @* Dòng 3 — capabilities tổng hợp, cùng ngữ nghĩa badge với cột caps ở bảng combo *@
+            @if (SelectedCaps is { } caps)
+            {
+                <span class="combopicker__caps" title="@L["combos.caps.tooltip"]">
+                    @if (caps.ContextWindow is { } ctx)
+                    {
+                        <Badge Text="@($"ctx: {FormatCtx(ctx)}")" Variant="BadgeVariant.Info" />
+                    }
+                    else
+                    {
+                        <Badge Text="@L["combos.caps.ctxUnknown"]" Variant="BadgeVariant.Neutral" />
+                    }
+                    @if (caps.Vision is true)
+                    {
+                        <Badge Text="👁" Variant="BadgeVariant.Success" />
+                    }
+                    else if (caps.Vision is false)
+                    {
+                        <Badge Text="👁 ✕" Variant="BadgeVariant.Neutral" />
+                    }
+                    @if (caps.Thinking is true)
+                    {
+                        <Badge Text="⚡" Variant="BadgeVariant.Warning" />
+                    }
+                    else if (caps.Thinking is false)
+                    {
+                        <Badge Text="⚡ ✕" Variant="BadgeVariant.Neutral" />
+                    }
+                    @if (caps.Audio is true)
+                    {
+                        <Badge Text="🔊" Variant="BadgeVariant.Purple" />
+                    }
+                    else if (caps.Audio is false)
+                    {
+                        <Badge Text="🔊 ✕" Variant="BadgeVariant.Neutral" />
+                    }
+                    @if (caps.Video is true)
+                    {
+                        <Badge Text="🎬" Variant="BadgeVariant.Pink" />
+                    }
+                    else if (caps.Video is false)
+                    {
+                        <Badge Text="🎬 ✕" Variant="BadgeVariant.Neutral" />
+                    }
+                </span>
+            }
         </span>
         <span class="combopicker__chev">▾</span>
     </button>
@@ -165,6 +224,9 @@
     /// <summary>Phát khi người dùng chọn/bỏ chọn combo.</summary>
     [Parameter] public EventCallback<long?> ValueChanged { get; set; }
 
+    /// <summary>Capabilities tổng hợp (AND/min) theo combo Id — nguồn dòng 3; null = không hiển thị capabilities.</summary>
+    [Parameter] public IReadOnlyDictionary<long, ComboCapabilities>? Capabilities { get; set; }
+
     private bool _open;
     private string _search = string.Empty;
     private bool _focusSearch;
@@ -180,6 +242,16 @@
         FindSelected() is { } c
             ? $"{ModeLabel(c)} · {c.Items.Count}"
             : null;
+
+    /// <summary>Dòng 3 của ô đang chọn — capabilities tổng hợp; null khi chưa chọn hoặc chưa có dữ liệu.</summary>
+    private ComboCapabilities? SelectedCaps =>
+        Value is { } id && Capabilities is { } caps && caps.TryGetValue(id, out var c) ? c : null;
+
+    /// <summary>128000 → "128k"; ≥1000000 → "1M" (1000k đọc thành chữ dài); dưới 1000 giữ nguyên.</summary>
+    private static string FormatCtx(int contextWindow) =>
+        contextWindow >= 1_000_000 ? $"{contextWindow / 1_000_000}M"
+            : contextWindow >= 1000 ? $"{contextWindow / 1000}k"
+            : contextWindow.ToString();
 
     private Combo? FindSelected()
     {

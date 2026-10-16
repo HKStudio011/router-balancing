@@ -171,7 +171,7 @@ else
                     {
                         @* Combo có search (tương tự ModelCombo) — thay select native;
                            danh sách combo hợp lệ (loại self + tổ tiên) do trang này lọc *@
-                        <ComboPicker Combos="_eligibleCache" @bind-Value="row.ComboId" />
+                        <ComboPicker Combos="_eligibleCache" Capabilities="_caps" @bind-Value="row.ComboId" />
                     }
 
                     <div class="ml-auto flex gap-1">
@@ -467,9 +467,11 @@ else
         }
     }
 
-    /// <summary>128000 → "128k"; dưới 1000 giữ nguyên — badge ngắn gọn, không cần chính xác tuyệt đối.</summary>
+    /// <summary>128000 → "128k"; ≥1000000 → "1M" (1000k đọc thành chữ dài); dưới 1000 giữ nguyên.</summary>
     private static string FormatCtx(int contextWindow) =>
-        contextWindow >= 1000 ? $"{contextWindow / 1000}k" : contextWindow.ToString();
+        contextWindow >= 1_000_000 ? $"{contextWindow / 1_000_000}M"
+            : contextWindow >= 1000 ? $"{contextWindow / 1000}k"
+            : contextWindow.ToString();
 
     private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
 
