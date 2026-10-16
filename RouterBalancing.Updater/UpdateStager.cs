@@ -53,17 +53,17 @@ internal static class UpdateStager
 
     /// <summary>
     /// Chờ mọi file trong staging đã tồn tại ở <paramref name="appDir"/> mở ghi
-    /// exclusive được (hết lock) trong <paramref name="timeout"/>.
+    /// exclusive được (hết lock) trong <paramref name="timeout"/>. Mỗi pass thu
+    /// thập TOÀN BỘ file còn lock (không dừng ở file đầu) để chẩn đoán đủ.
     /// </summary>
-    /// <returns><see langword="true"/> khi tất cả file đích ghi được; false nếu hết timeout còn lock.</returns>
-    /// <exception cref="UnauthorizedAccessException">File bị từ chối quyền (không phải lock) — không retry được.</exception>
-    internal static bool WaitUntilWritable(string stagingDir, string appDir, TimeSpan timeout)
+    /// <returns>Danh sách file vẫn lock sau timeout (rỗng = tất cả writable).</returns>
+    internal static IReadOnlyList<string> WaitUntilWritable(string stagingDir, string appDir, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
 
         while (true)
         {
-            var allWritable = true;
+            var lockedFiles = new List<string>();
             foreach (var src in Directory.EnumerateFiles(stagingDir, "*", SearchOption.AllDirectories))
             {
                 var dst = Path.Combine(appDir, Path.GetRelativePath(stagingDir, src));
@@ -76,13 +76,12 @@ internal static class UpdateStager
                 }
                 catch (IOException)
                 {
-                    allWritable = false;
-                    break;
+                    lockedFiles.Add(dst);
                 }
             }
 
-            if (allWritable) return true;
-            if (DateTime.UtcNow >= deadline) return false;
+            if (lockedFiles.Count == 0) return [];
+            if (DateTime.UtcNow >= deadline) return lockedFiles;
 
             Thread.Sleep(500);
         }

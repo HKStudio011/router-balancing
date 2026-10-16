@@ -49,12 +49,22 @@ try
         goto error;
     }
 
-    // 2. Chờ mọi file đích hết lock. Vẫn lock sau timeout → abort với appDir nguyên vẹn
-    //    (trước đây extract thẳng vào appDir dở dang giữa chừng làm lẫn runtime hai kiểu).
-    if (!UpdateStager.WaitUntilWritable(stagingDir, appDir, TimeSpan.FromSeconds(60)))
+    // 1c. Diệt process mồ côi còn chạy từ appDir: sidecar Go (opencode-proxy) của
+    //     phiên bản cũ không có kill-on-close job — app Quit nhưng orphan giữ lock
+    //     file exe → WaitUntilWritable treo 60s rồi abort (bug 2026-10-16).
+    AppDirProcessKiller.KillProcessesUnderDirectory(appDir, Environment.ProcessId, Console.WriteLine);
+
+    // 2. Chờ mọi file đích hết lock. Vẫn lock sau timeout → chẩn đoán (file +
+    //    locker) rồi abort với appDir nguyên vẹn (trước đây extract thẳng vào
+    //    appDir dở dang giữa chừng làm lẫn runtime hai kiểu).
+    var lockedFiles = UpdateStager.WaitUntilWritable(stagingDir, appDir, TimeSpan.FromSeconds(60));
+    if (lockedFiles.Count > 0)
     {
         Console.Error.WriteLine(
             "Timed out waiting for application files to be released — update aborted, application folder untouched.");
+        var report = LockDiagnostics.BuildReport(lockedFiles);
+        Console.Error.WriteLine(report);
+        LockDiagnostics.AppendToFile(report);
         goto error;
     }
 

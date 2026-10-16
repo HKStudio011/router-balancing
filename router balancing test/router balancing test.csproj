@@ -54,6 +54,9 @@
          sẽ kéo RouterBalancing.Updater.exe vào test bin, phá test
          InstallUpdateAsync_False_WhenUpdaterMissing và có thể launch thật updater. -->
     <Compile Include="..\RouterBalancing.Updater\UpdateStager.cs" Link="Update\UpdateStager.cs" />
+    <Compile Include="..\RouterBalancing.Updater\AppDirProcessKiller.cs" Link="Update\AppDirProcessKiller.cs" />
+    <Compile Include="..\RouterBalancing.Updater\RestartManager.cs" Link="Update\RestartManager.cs" />
+    <Compile Include="..\RouterBalancing.Updater\LockDiagnostics.cs" Link="Update\LockDiagnostics.cs" />
   </ItemGroup>
 
 </Project>
