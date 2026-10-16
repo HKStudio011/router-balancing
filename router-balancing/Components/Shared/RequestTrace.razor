@@ -156,6 +156,10 @@
         box-sizing: border-box;
         height: 13px;
         line-height: 11px;
+        /* Flex center thay vì line-box top-aligned — text 9.5px lệch ~1px trong pill 13px */
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     /* Ring vàng đứt quanh dot đang chờ slot (G1 — mockup .lt-park-ring) */
