@@ -248,6 +248,31 @@
         box-shadow: 0 0 0 1px rgba(239, 68, 68, .4);
     }
 
+    /* Chuỗi chip mode trong node Combo lồng nhau (mockup B): FB → RR — block để xuống
+       dòng dưới breadcrumb thay vì tràn ngang node */
+    .trace-modechain {
+        display: block;
+        margin-top: 2px;
+        white-space: nowrap;
+    }
+
+    .trace-modechip {
+        display: inline-block;
+        box-sizing: border-box;
+        border: 1px solid #8b8fa3;
+        border-radius: 4px;
+        padding: 0 4px;
+        font-size: 9px;
+        line-height: 1.5;
+        opacity: .85;
+    }
+
+    .trace-modechain__arrow {
+        margin: 0 3px;
+        opacity: .6;
+        font-size: 9px;
+    }
+
     /* Chip account (mockup .acct) — absolute như node, nội dung 1 dòng */
     .trace-chip {
         position: absolute;
@@ -504,6 +529,20 @@
                     <span class="cap">@L["trace.node.combo"]</span>
                     <div class="trace-node__slot"></div>
                     @combo.DisplayName
+                    @* Chip mode chuỗi FB → RR (mockup B) — chỉ combo lồng nhau ≥2 hop *@
+                    @if (combo.ModeChips.Count > 1)
+                    {
+                        <span class="trace-modechain">
+                            @for (var i = 0; i < combo.ModeChips.Count; i++)
+                            {
+                                @if (i > 0)
+                                {
+                                    <span class="trace-modechain__arrow">→</span>
+                                }
+                                <span class="trace-modechip">@combo.ModeChips[i]</span>
+                            }
+                        </span>
+                    }
                 </div>
             }
 
@@ -823,10 +862,32 @@
     }
 
     /// <summary>Block cột Combo — mockup <c>.n</c> tại left 210.</summary>
-    private sealed record ComboBlock(string Name, string? Mode, int Top, bool Running)
+    /// <param name="Path">Đường đi combo lồng nhau từ trace (≥2 hop) — mockup B breadcrumb;
+    /// null = combo 1 cấp / flat path (giữ DisplayName cũ).</param>
+    private sealed record ComboBlock(string Name, string? Mode, int Top, bool Running,
+        IReadOnlyList<TraceHop>? Path = null)
     {
-        /// <summary>"combo · mode" (mockup <c>ai-fast · RR</c>); combo rỗng (dispatch trực tiếp) → "—".</summary>
-        public string DisplayName => Name.Length == 0 ? "—" : Mode is null ? Name : $"{Name} · {Mode}";
+        /// <summary>
+        /// Breadcrumb "cha › con" (mockup B) khi ≥2 hop; ngược lại "combo · mode" cũ —
+        /// combo rỗng (dispatch trực tiếp) → "—".
+        /// </summary>
+        public string DisplayName
+        {
+            get
+            {
+                if (Path is { Count: > 1 })
+                    return string.Join(" › ", Path.Select(h => h.Name));
+                return Name.Length == 0 ? "—" : Mode is null ? Name : $"{Name} · {Mode}";
+            }
+        }
+
+        /// <summary>
+        /// Chip mode mỗi cấp (FB/RR) nối bằng "→" — chỉ có ý nghĩa khi ≥2 hop;
+        /// 1 cấp giữ nguyên row DisplayName cũ (không render chip).
+        /// </summary>
+        public IReadOnlyList<string> ModeChips => Path is { Count: > 1 }
+            ? Path.Select(h => h.Mode == ComboMode.Fallback ? "FB" : "RR").ToList()
+            : [];
     }
 
     /// <summary>Block cột Provider — mockup <c>.n</c> tại left 410, kèm tag status lỗi.</summary>
@@ -1642,7 +1703,12 @@
             // Mode do DispatchStarted ghi, ApplyEvent giữ lại khi node chuyển sang Attempt
             var mode = nodes.Select(n => n.Mode).FirstOrDefault(m => m is not null);
             var running = nodes.Any(n => n.Stage is TraceStage.DispatchStarted or TraceStage.Attempt);
-            layout.Combos.Add(new ComboBlock(name, mode, ComboStartY + i * ComboRowH, running));
+            // ComboPath (mockup B): node cùng tên combo lồng nhau → breadcrumb; node đầu
+            // có path ≥2 hop thắng (cùng tên combo = cùng nguồn resolve, path trùng nhau)
+            var path = nodes
+                .Select(n => n.Route?.ComboPath)
+                .FirstOrDefault(p => p is { Count: > 1 });
+            layout.Combos.Add(new ComboBlock(name, mode, ComboStartY + i * ComboRowH, running, path));
         }
 
         // Cột Provider + chip Account — lane dồn theo số chip (chip 34px, lane ≥ 110px như mockup)
