@@ -13,6 +13,9 @@ public sealed partial class OpenCodeSidecarService : IOpenCodeSidecarService
 {
     private readonly string _binaryPath;
     private readonly ILogger<OpenCodeSidecarService> _logger;
+    // Job KILL_ON_JOB_CLOSE: sidecar (Go, không monitor parent) phải chết cùng app
+    // — Quit/crash không chạy Dispose, orphan sẽ giữ lock file exe làm updater timeout.
+    private readonly WindowsProcessJob? _killOnCloseJob;
     private readonly object _gate = new();
 
     private Process? _process;
@@ -25,9 +28,22 @@ public sealed partial class OpenCodeSidecarService : IOpenCodeSidecarService
     /// <param name="binaryPath">Đường dẫn tuyệt đối tới opencode-proxy.exe.</param>
     /// <param name="logger">Logger ghi sự kiện start/restart/crash của process.</param>
     public OpenCodeSidecarService(string binaryPath, ILogger<OpenCodeSidecarService> logger)
+        : this(binaryPath, logger, WindowsProcessJob.TryCreate())
+    {
+    }
+
+    /// <summary>
+    /// Constructor nội bộ cho test: inject job để kiểm chứng sidecar được gán
+    /// và chết khi handle job đóng.
+    /// </summary>
+    internal OpenCodeSidecarService(
+        string binaryPath,
+        ILogger<OpenCodeSidecarService> logger,
+        WindowsProcessJob? killOnCloseJob)
     {
         _binaryPath = binaryPath;
         _logger = logger;
+        _killOnCloseJob = killOnCloseJob;
     }
 
     /// <inheritdoc />
@@ -85,6 +101,13 @@ public sealed partial class OpenCodeSidecarService : IOpenCodeSidecarService
         {
             _logger.LogError("Process.Start returned null for {Path}", _binaryPath);
             return false;
+        }
+
+        // Gán vào kill-on-close job NGAY sau khi start (trước khi chờ LISTENING):
+        // nếu app chết giữa chừng chờ bind, sidecar vẫn phải bị OS kill theo job.
+        if (_killOnCloseJob is not null && !_killOnCloseJob.Assign(process))
+        {
+            _logger.LogWarning("Could not assign OpenCode sidecar to kill-on-close job object");
         }
 
         string? baseUrl;
@@ -158,6 +181,8 @@ public sealed partial class OpenCodeSidecarService : IOpenCodeSidecarService
             _disposed = true;
         }
         KillForTest();
+        // Đóng handle job — mọi sidecar còn sót (nếu KillForTest bỏ lỡ) bị OS kill.
+        _killOnCloseJob?.Dispose();
     }
 
     // stderr liên tục đọc để không full buffer (sidecar ít log nhưng tránh deadlock).

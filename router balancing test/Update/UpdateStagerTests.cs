@@ -73,19 +73,19 @@ public class UpdateStagerTests : IDisposable
     }
 
     [Fact]
-    public void WaitUntilWritable_WhenAllUnlocked_ReturnsTrue()
+    public void WaitUntilWritable_WhenAllUnlocked_ReturnsEmptyLockedList()
     {
         CreateDirs();
         File.WriteAllText(Path.Combine(StagingDir, "a.dll"), "new");
         File.WriteAllText(Path.Combine(AppDir, "a.dll"), "old");
 
-        var ok = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(5));
+        var locked = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(5));
 
-        Assert.True(ok);
+        Assert.Empty(locked);
     }
 
     [Fact]
-    public void WaitUntilWritable_WhenFileLocked_ReturnsFalseAfterTimeout()
+    public void WaitUntilWritable_WhenFileLocked_ReturnsLockedFileAfterTimeout()
     {
         CreateDirs();
         File.WriteAllText(Path.Combine(StagingDir, "a.dll"), "new");
@@ -94,14 +94,38 @@ public class UpdateStagerTests : IDisposable
 
         using (File.Open(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
         {
-            var ok = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromMilliseconds(400));
+            var locked = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromMilliseconds(400));
 
-            Assert.False(ok);
+            Assert.Contains(target, locked);
         }
     }
 
     [Fact]
-    public async Task WaitUntilWritable_WhenLockReleasedDuringWait_ReturnsTrue()
+    public void WaitUntilWritable_MultipleFilesLocked_ReturnsAllOfThem()
+    {
+        // Chẩn đoán timeout phải liệt kê ĐỦ file lock, không dừng ở file đầu —
+        // nếu không user chỉ thấy 1 trong nhiều locker.
+        CreateDirs();
+        File.WriteAllText(Path.Combine(StagingDir, "a.dll"), "new");
+        File.WriteAllText(Path.Combine(StagingDir, "b.dll"), "new");
+        var targetA = Path.Combine(AppDir, "a.dll");
+        var targetB = Path.Combine(AppDir, "b.dll");
+        File.WriteAllText(targetA, "old");
+        File.WriteAllText(targetB, "old");
+
+        using (File.Open(targetA, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        using (File.Open(targetB, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var locked = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromMilliseconds(400));
+
+            Assert.Equal(2, locked.Count);
+            Assert.Contains(targetA, locked);
+            Assert.Contains(targetB, locked);
+        }
+    }
+
+    [Fact]
+    public async Task WaitUntilWritable_WhenLockReleasedDuringWait_ReturnsEmpty()
     {
         CreateDirs();
         File.WriteAllText(Path.Combine(StagingDir, "a.dll"), "new");
@@ -115,10 +139,10 @@ public class UpdateStagerTests : IDisposable
             handle.Dispose();
         });
 
-        var ok = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(10));
+        var locked = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(10));
         await releaser;
 
-        Assert.True(ok);
+        Assert.Empty(locked);
     }
 
     [Fact]
@@ -128,9 +152,9 @@ public class UpdateStagerTests : IDisposable
         File.WriteAllText(Path.Combine(StagingDir, "brand-new.dll"), "new");
 
         // File mới chưa có ở appDir — không thể bị lock, không được block
-        var ok = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(5));
+        var locked = UpdateStager.WaitUntilWritable(StagingDir, AppDir, TimeSpan.FromSeconds(5));
 
-        Assert.True(ok);
+        Assert.Empty(locked);
     }
 
     [Fact]

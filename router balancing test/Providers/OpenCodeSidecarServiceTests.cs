@@ -62,6 +62,35 @@ public class OpenCodeSidecarServiceTests
         await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync($"{baseUrl}/health"));
     }
 
+    [Fact]
+    public async Task EnsureStartedAsync_AssignsSidecarToKillOnCloseJob()
+    {
+        var binaryPath = FindSidecarBinary();
+        if (binaryPath is null || !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // Job được dispose TRƯỚC service — mô phỏng handle job đóng khi app exit:
+        // OS phải kill sidecar (KILL_ON_JOB_CLOSE) mà service không Dispose().
+        var job = WindowsProcessJob.TryCreate();
+        Assert.NotNull(job);
+
+        using var service = new OpenCodeSidecarService(binaryPath, NullLogger<OpenCodeSidecarService>.Instance, job);
+        Assert.True(await service.EnsureStartedAsync());
+        Assert.NotNull(service.BaseUrl);
+
+        job!.Dispose();
+
+        // DrainAndWatchAsync thấy sidecar chết → clear BaseUrl.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (service.BaseUrl is not null && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(100);
+        }
+        Assert.Null(service.BaseUrl);
+    }
+
     private static string? FindSidecarBinary()
     {
         var candidates = new[]
