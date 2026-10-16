@@ -145,6 +145,13 @@ public class DispatcherLoopTests : IDisposable
             Task.FromResult(result);
     }
 
+    /// <summary>Resolve theo map model string → kết quả — test nhiều provider với model khác nhau.</summary>
+    private sealed class DictResolver(Dictionary<string, SelectionResult> byModel) : IComboResolver
+    {
+        public Task<SelectionResult> ResolveAsync(string model, CancellationToken ct) =>
+            Task.FromResult(byModel[model]);
+    }
+
     private sealed class ThrowingOnceResolver(SelectionResult result) : IComboResolver
     {
         private int _calls;
@@ -276,6 +283,30 @@ public class DispatcherLoopTests : IDisposable
         {
             _entered.TrySetResult();
             await _release.Task;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(SseBody, Encoding.UTF8, "text/event-stream"),
+            };
+        }
+    }
+
+    /// <summary>Giữ request tới provider chỉ định đến khi Release; provider khác đi thẳng.</summary>
+    private sealed class GateProviderUpstream(string gatedProviderName) : IUpstreamClient
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+        public void Release() => _release.TrySetResult();
+
+        public async Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+        {
+            if (provider.Name == gatedProviderName)
+            {
+                _entered.TrySetResult();
+                await _release.Task;
+            }
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(SseBody, Encoding.UTF8, "text/event-stream"),
@@ -543,6 +574,45 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(0, _executions.GetInFlight(pid));
+    }
+
+    [Fact]
+    public async Task Loop_ParkedHead_DoesNotBlockRequestForOtherProvider()
+    {
+        // Bug HOL: request park chờ provider A đầy đứng ở ĐẦU queue → dispatcher dừng,
+        // request sau (provider B đang trống) bị chặn vô hạn dù capacity B rảnh.
+        var pidA = SeedProvider("pA", maxConcurrent: 1, modelId: "mA");
+        var pidB = SeedProvider("pB", maxConcurrent: 1, modelId: "mB");
+        var resolver = new DictResolver(new Dictionary<string, SelectionResult>
+        {
+            ["mA"] = new SelectionSuccess([Candidate(pidA)], ComboMode.RoundRobin),
+            ["mB"] = new SelectionSuccess([Candidate(pidB)], ComboMode.RoundRobin),
+        });
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new GateProviderUpstream("pA"); // giữ request trên pA; pB đi thẳng
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var filler = Req("req00000", "mA"); // chiếm slot pA
+        var r1 = Req("req00001", "mA");     // sẽ park chờ pA — đầu queue
+        var r2 = Req("req00002", "mB");     // pB trống — phải dispatch ngay
+
+        _queue.Enqueue(filler);
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // filler giữ slot pA
+        _queue.Enqueue(r1);
+        await WaitUntilAsync(() => _executions.GetInFlight(pidA) == 1 && !_executions.Contains("req00001")
+            && !_queue.Contains("req00000")); // filler đã Take + serve; r1 vào queue
+        _queue.Enqueue(r2);
+
+        // r2 phải dispatch + serve xong (pB trống) trong khi r1 vẫn park chờ pA —
+        // poll theo Completion vì r2 hoàn tất nhanh rồi rời execution list
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(_queue.Contains("req00001"), "r1 vẫn nằm trong queue chờ slot pA");
+
+        upstream.Release();
+        Assert.IsType<DispatchOutcome.Handled>(await filler.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]
@@ -1803,5 +1873,94 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(
             await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.False(_queue.Contains("req00001"));
+    }
+
+    [Fact]
+    public async Task Loop_NestedFallbackChildExhausted_AdvancesToNextRootItem()
+    {
+        var pidY = SeedProvider("pY", modelId: "mY");
+        var pidX = SeedProvider("pX", modelId: "mX");
+        var candY = Candidate(pidY, "mY");
+        var candX = Candidate(pidX, "mX");
+        // Cây top FB: [kid RR [Y], X] — Y lỗi 429 → MarkTried(pair) → kid prune rỗng →
+        // walk advance: FB root còn leafX → X serve OK (KHÔNG exhaustion sớm, KHÔNG loop Y)
+        var root = new ComboUnit("top", ComboMode.Fallback,
+        [
+            new ComboUnit("kid", ComboMode.RoundRobin, [new CandidateLeaf(candY)]),
+            new CandidateLeaf(candX),
+        ]);
+        var resolver = new StubResolver(new SelectionSuccess(
+            [candY, candX], ComboMode.Fallback, "top", root));
+        var upstream = new WalkUpstream((p, _, _, _) =>
+            Task.FromResult(p.Name == "pY" ? Resp429() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, new ModelSelector(_executions), upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(2, calls.Count);
+        Assert.Equal("pY", calls[0].Provider); // FB descend kid → leafY (vị trí đầu)
+        Assert.Equal("pX", calls[1].Provider); // kid prune rỗng → advance leafX
+    }
+
+    [Fact]
+    public async Task Loop_DiamondChildExhausted_DoesNotLoopAndAdvances()
+    {
+        var pidY = SeedProvider("pY", modelId: "mY");
+        var pidX = SeedProvider("pX", modelId: "mX");
+        var candY = Candidate(pidY, "mY");
+        var candX = Candidate(pidX, "mX");
+        // Diamond: top FB tham chiếu kid RR [Y] HAI lần — Y 429 → MarkTried(pair) prune CẢ 2
+        // nhánh (pair đã thử là đã thử) → top còn leafX → advance X, không infinite-loop.
+        var kid = new ComboUnit("kid", ComboMode.RoundRobin, [new CandidateLeaf(candY)]);
+        var root = new ComboUnit("top", ComboMode.Fallback, [kid, kid, new CandidateLeaf(candX)]);
+        var resolver = new StubResolver(new SelectionSuccess(
+            [candY, candX], ComboMode.Fallback, "top", root));
+        var upstream = new WalkUpstream((p, _, _, _) =>
+            Task.FromResult(p.Name == "pY" ? Resp429() : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, new ModelSelector(_executions), upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var calls = upstream.Calls;
+        Assert.Equal(2, calls.Count); // Y đúng 1 lần (không retry nhánh diamond thứ hai)
+        Assert.Equal("pY", calls[0].Provider);
+        Assert.Equal("pX", calls[1].Provider);
+    }
+
+    [Fact]
+    public async Task Dispatch_NestedRoute_PublishesComboPathWithEachHopMode()
+    {
+        var pidY = SeedProvider("pY", modelId: "mY");
+        var candY = Candidate(pidY, "mY");
+        // root FB → child RR → leaf — trace Attempt phải carry ComboPath đủ 2 hop + mode mỗi cấp
+        var child = new ComboUnit("child", ComboMode.RoundRobin, [new CandidateLeaf(candY)]);
+        var root = new ComboUnit("root", ComboMode.Fallback, [child]);
+        var resolver = new StubResolver(new SelectionSuccess(
+            [candY], ComboMode.Fallback, "root", root));
+        var log = new CapturingLog();
+        await StartAsync(resolver, new ModelSelector(_executions), new StubUpstream(), log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var attempt = _trace.Snapshot().Single(e => e.Stage == TraceStage.Attempt);
+        Assert.Equal("root", attempt.Route!.Combo);
+        Assert.Equal("pY", attempt.Route!.Provider);
+        var path = Assert.IsType<List<TraceHop>>(attempt.Route!.ComboPath);
+        Assert.Equal(2, path.Count);
+        Assert.Equal(("root", ComboMode.Fallback), (path[0].Name, path[0].Mode));
+        Assert.Equal(("child", ComboMode.RoundRobin), (path[1].Name, path[1].Mode));
     }
 }

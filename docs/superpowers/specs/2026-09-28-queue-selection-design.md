@@ -177,3 +177,35 @@ Integration (TestServer + mock upstream, seam như 3A):
 - 3D (account): `ProviderKeyResolver.ResolveFirstEnabledKey` vẫn là fallback trong handler — 3D thay bằng weighted/quota selection; `ProxyRequest` đã mang context đủ để trace usage về request id.
 - UI Runtime panel: đọc `Snapshot()` từ 2 collection + `SetPriority` service — không cần đổi engine.
 - Queue in-memory: restart app → mất request đang chờ (chấp nhận, không persist).
+
+## 7. Composition — cây mode đệ quy (plan `2026-10-16-hol-composition.md`, Part B)
+
+> Bổ sung 2026-10-16: trước đây combo lồng nhau bị flatten (`AddRange`) — mode của combo con
+> bị bỏ, FB cha luôn pick lá đầu bất kể mode con. Đã sửa theo HARD GATE đã duyệt.
+
+- **Cây selection:** `ComboResolver` trả `SelectionSuccess.Root` (`ComboUnit`/`CandidateLeaf`)
+  khi resolve qua combo; `Root == null` = flat path (model-id resolve) giữ nguyên y hệt.
+  Flat field `Candidates` = flatten(tree) dedup — backward cho exhaustion-check/attemptBudget.
+- **Luật đệ quy mỗi cấp** (không flatten): FB unit = đơn vị ĐẦU-or-park (descendant không serve
+  được → park, KHÔNG nhảy kế); RR unit = lọc đơn vị còn lá eligible (`CanEnter`), sort key
+  = min-in-flight các lá hợp lệ của đơn vị, tie-break tên; cursor toàn cục — unit 1-eligible
+  descend thẳng không consume tick. Park luật: park = wake re-select, không advance trong
+  cùng lần dispatch.
+- **Failover:** lỗi attempt → `MarkTried(pair)` → prune cây (`PruneTriedTree` — criteria GIỐNG
+  `FilterRemaining`: pair tried / provider failed / hết TK untried) → re-select đệ quy.
+  FB cha: đơn vị đầu hết lá untried → gỡ unit → item kế. Diamond (2 nhánh cùng con):
+  tree giữ 2 nhánh, prune pair gỡ cả 2. Hết lá → exhaustion (giữ semantics).
+- **Trace:** `TraceRoute.ComboPath` = hop root→leaf (không gồm leaf) từ cây đã prune —
+  UI node COMBO vẽ breadcrumb `cha › con` + chip mode `FB → RR` (mockup B).
+
+## 8. Scan-past-park — chống head-of-line blocking (plan `2026-10-16-hol-composition.md`, Part A)
+
+> Bổ sung 2026-10-16: `TryDispatchOnceAsync` cũ chỉ `Peek` đầu queue — request park chờ
+> capacity provider A chặn toàn bộ request phía sau kể cả provider khác còn trống.
+
+- Dispatcher quét `queue.Snapshot()` theo (Priority → Sequence): item park → bỏ qua
+  **giữ nguyên vị trí** (không re-enqueue, không mất thứ tự); item dispatch được → `Take` +
+  serve. `TryDispatchOnceAsync` trả true khi có ít nhất 1 item tiến triển (loop gọi lại),
+  false khi không item nào dispatch được → chờ `_wake`.
+- `ReenqueueForPark` (ServeAsync path account-full) **giữ nguyên** — park luật không đổi,
+  chỉ dispatcher loop không còn bị chặn bởi head park.

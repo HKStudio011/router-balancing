@@ -178,6 +178,76 @@ public class ComboResolverTests : IDisposable
     }
 
     [Fact]
+    public void SelectionTree_NestedFallbackWithRoundRobinChild_HasExpectedShape()
+    {
+        var leafA = new CandidateLeaf(new ModelCandidate(
+            new Provider { Name = "pA" }, new Model { ModelId = "x" }));
+        var leafB = new CandidateLeaf(new ModelCandidate(
+            new Provider { Name = "pB" }, new Model { ModelId = "y" }));
+        var leafC = new CandidateLeaf(new ModelCandidate(
+            new Provider { Name = "pC" }, new Model { ModelId = "z" }));
+        var child = new ComboUnit("child", ComboMode.RoundRobin, [leafB, leafC]);
+        var root = new ComboUnit("root", ComboMode.Fallback, [leafA, child]);
+
+        Assert.Equal("root", root.Name);
+        Assert.Equal(ComboMode.Fallback, root.Mode);
+        Assert.IsType<CandidateLeaf>(root.Children[0]);
+        var childUnit = Assert.IsType<ComboUnit>(root.Children[1]);
+        Assert.Equal("child", childUnit.Name);
+        Assert.Equal(ComboMode.RoundRobin, childUnit.Mode);
+        Assert.Equal(2, childUnit.Children.Count);
+    }
+
+    [Fact]
+    public async Task Resolve_ComboNestedChild_KeepsChildModeAndTreeShape()
+    {
+        SeedProvider("p1", modelIds: ["x"]);
+        SeedProvider("p2", modelIds: ["y"]);
+        SeedProvider("p3", modelIds: ["z"]);
+        var childId = SeedCombo("child", ComboMode.RoundRobin,
+            (1, ModelKey("y"), null), (2, ModelKey("z"), null));
+        SeedCombo("root", ComboMode.Fallback, (1, ModelKey("x"), null), (2, null, childId));
+
+        var result = await CreateSut(out _).ResolveAsync("root", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        Assert.Equal(ComboMode.Fallback, ok.Mode);
+        Assert.Equal("root", ok.ComboName);
+        Assert.NotNull(ok.Root);
+        var rootUnit = Assert.IsType<ComboUnit>(ok.Root);
+        Assert.Equal("root", rootUnit.Name);
+        Assert.Equal(ComboMode.Fallback, rootUnit.Mode);
+        Assert.Equal(2, rootUnit.Children.Count);
+        Assert.IsType<CandidateLeaf>(rootUnit.Children[0]); // X
+        var child = Assert.IsType<ComboUnit>(rootUnit.Children[1]);
+        Assert.Equal("child", child.Name);
+        Assert.Equal(ComboMode.RoundRobin, child.Mode);
+        Assert.Equal(2, child.Children.Count);
+        Assert.All(child.Children, c => Assert.IsType<CandidateLeaf>(c)); // Y, Z theo Position
+        // Flat Candidates (backward field) giữ đủ X, Y, Z
+        Assert.Equal(3, ok.Candidates.Count);
+    }
+
+    [Fact]
+    public async Task Resolve_ComboDiamondSameChildTwice_FlattensDedupAndTreeKeepsBoth()
+    {
+        SeedProvider("p1", modelIds: ["y"]);
+        var childId = SeedCombo("kid", ComboMode.RoundRobin, (1, ModelKey("y"), null));
+        SeedCombo("top", ComboMode.Fallback, (1, null, childId), (2, null, childId));
+
+        var result = await CreateSut(out _).ResolveAsync("top", default);
+
+        var ok = Assert.IsType<SelectionSuccess>(result);
+        Assert.NotNull(ok.Root);
+        var rootUnit = Assert.IsType<ComboUnit>(ok.Root);
+        // Tree giữ 2 nhánh diamond (MarkTried sẽ prune pair ở dispatcher)
+        Assert.Equal(2, rootUnit.Children.Count);
+        Assert.All(rootUnit.Children, c => Assert.IsType<ComboUnit>(c));
+        // Flat Candidates dedup
+        Assert.Single(ok.Candidates);
+    }
+
+    [Fact]
     public async Task Resolve_WhenModelIdNoMatch_FallsBackToComboByName()
     {
         SeedProvider("p1", modelIds: ["m1"]);

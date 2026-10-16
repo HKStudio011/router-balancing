@@ -5,6 +5,23 @@ namespace RouterBalancing.Core.Engine;
 /// <summary>Candidate đã resolve: provider + model tương ứng (T4 chọn, T6 serve).</summary>
 public sealed record ModelCandidate(Provider Provider, Model Model);
 
+/// <summary>Nút trong cây selection — lá = 1 candidate; đơn vị combo = mode + danh sách con.</summary>
+public abstract record SelectionNode;
+
+/// <summary>Lá của cây selection — 1 provider/model pair.</summary>
+/// <param name="Candidate">Candidate tương ứng.</param>
+public sealed record CandidateLeaf(ModelCandidate Candidate) : SelectionNode;
+
+/// <summary>
+/// Đơn vị combo trong cây — chọn trong <see cref="Children"/> theo <see cref="Mode">
+/// của CHÍNH combo này (composition: tôn trọng mode từng cấp, không flatten).
+/// </summary>
+/// <param name="Name">Tên combo (điều hướng trace breadcrumb).</param>
+/// <param name="Mode">Chế độ của combo này — áp dụng đệ quy cho subtree.</param>
+/// <param name="Children">Thứ tự theo Position của combo; item con = <see cref="ComboUnit"/>, item model = <see cref="CandidateLeaf"/>.</param>
+public sealed record ComboUnit(string Name, ComboMode Mode, IReadOnlyList<SelectionNode> Children)
+    : SelectionNode;
+
 /// <summary>Kết quả resolve theo model string (spec §3.2).</summary>
 public abstract record SelectionResult;
 
@@ -12,8 +29,11 @@ public abstract record SelectionResult;
 /// <param name="Candidates">Đã dedup + filter OpenAI; RR sort (ProviderId, ModelId), Fallback giữ thứ tự Position.</param>
 /// <param name="Mode">RoundRobin với model id; combo mode khi resolve qua combo.</param>
 /// <param name="ComboName">Tên combo đã resolve; <see langword="null"/> khi match model id.</param>
+/// <param name="Root">Cây selection khi resolve qua combo (mode từng cấp được giữ);
+/// <see langword="null"/> = flat path (model id) — selector dùng <paramref name="Candidates"/> như cũ.</param>
 public sealed record SelectionSuccess(
-    IReadOnlyList<ModelCandidate> Candidates, ComboMode Mode, string? ComboName = null)
+    IReadOnlyList<ModelCandidate> Candidates, ComboMode Mode, string? ComboName = null,
+    SelectionNode? Root = null)
     : SelectionResult;
 
 /// <summary>Resolve thất bại — endpoint/dispatcher ghi lỗi theo <paramref name="Reason"/>.</summary>

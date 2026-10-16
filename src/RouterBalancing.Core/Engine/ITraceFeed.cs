@@ -1,3 +1,5 @@
+using RouterBalancing.Core.Domain;
+
 namespace RouterBalancing.Core.Engine;
 
 /// <summary>Giai đoạn xử lý của một request trong pipeline — điểm phát trace event.</summary>
@@ -22,11 +24,19 @@ public enum TraceStage
     Parked,
 }
 
+/// <summary>1 hop trong đường đi combo lồng nhau — tên + mode CỦA CẤP ĐÓ (breadcrumb, mockup B).</summary>
+/// <param name="Name">Tên combo cấp này.</param>
+/// <param name="Mode">Mode của combo cấp này — không phải mode root.</param>
+public sealed record TraceHop(string Name, ComboMode Mode);
+
 /// <summary>Route đã chọn cho một request — null từng field khi chưa xác định.</summary>
 /// <param name="Combo">Combo id đã chọn.</param>
 /// <param name="Provider">Provider id đã chọn.</param>
 /// <param name="Account">Tài khoản provider đã dùng.</param>
-public sealed record TraceRoute(string? Combo, string? Provider, string? Account);
+/// <param name="ComboPath">Đường đi combo root→leaf (không gồm leaf) khi resolve qua combo
+/// lồng nhau — <see langword="null"/> khi flat path hoặc combo 1 cấp (UI giữ breadcrumb cũ).</param>
+public sealed record TraceRoute(string? Combo, string? Provider, string? Account,
+    IReadOnlyList<TraceHop>? ComboPath = null);
 
 /// <summary>Một điểm sự kiện trong trace của request — immutable, không chứa secret/prompt.</summary>
 /// <param name="RequestId">Id duy nhất của request để ghép các event thành một trace.</param>
