@@ -592,19 +592,23 @@ public static class ProxyApp
 
     /// <summary>
     /// Forward pipe → Response.Body trong lúc chờ outcome: quá hạn chưa có data thì viết
-    /// keep-alive; outcome về thì complete writer và drain nốt phần còn lại. Trả số byte
-    /// content đã forward (keep-alive KHÔNG đếm) — quyết định phân loại #7/#8 ở caller.
+    /// keep-alive (CHỈ ở line boundary — xem <see cref="KeepAliveComment"/>); outcome về
+    /// thì complete writer và drain nốt phần còn lại. Trả số byte content đã forward
+    /// (keep-alive KHÔNG đếm) — quyết định phân loại #7/#8 ở caller.
     /// </summary>
     /// <param name="ctx">Context đã commit head 200+event-stream (flush point ở caller).</param>
     /// <param name="pipe">Pipe handler 2xx dùng làm dest tee.</param>
     /// <param name="completion">Task outcome của request — endpoint là người chờ duy nhất.</param>
     /// <returns>Outcome cuối và tổng byte content đã ghi xuống wire.</returns>
-    private static async Task<(DispatchOutcome Outcome, long ContentBytes)> RunStreamLoopAsync(
+    internal static async Task<(DispatchOutcome Outcome, long ContentBytes)> RunStreamLoopAsync(
         HttpContext ctx, Pipe pipe, Task<DispatchOutcome> completion)
     {
         var ct = ctx.RequestAborted;
         var readTask = pipe.Reader.ReadAsync(ct).AsTask();
         long contentBytes = 0;
+        // false = đang giữa dòng data (byte cuối forward chưa phải \n): keep-alive bị skip —
+        // TCP split mid-JSON + pause >5s là common case khi stream tool-call từ model chậm
+        var atLineStart = true;
         try
         {
             while (true)
@@ -618,11 +622,15 @@ public static class ProxyApp
                     var result = await readTask;
                     if (result.Buffer.Length > 0)
                     {
+                        byte lastByte = 0;
                         foreach (var segment in result.Buffer)
                         {
                             await ctx.Response.Body.WriteAsync(segment, ct);
                             contentBytes += segment.Length;
+                            if (segment.Length > 0)
+                                lastByte = segment.Span[^1];
                         }
+                        atLineStart = lastByte == (byte)'\n';
                         pipe.Reader.AdvanceTo(result.Buffer.End);
                     }
                     else
@@ -630,13 +638,26 @@ public static class ProxyApp
                         // Read rỗng (writer chưa có gì) — chỉ re-arm, không advance
                         pipe.Reader.AdvanceTo(result.Buffer.Start);
                     }
+                    if (result.IsCompleted)
+                    {
+                        // Writer complete TRƯỚC khi outcome về (ordering ngoài invariant
+                        // "endpoint là completer duy nhất" — test mô phỏng được): re-arm sẽ
+                        // trả task completed ngay, WhenAny luôn chọn readTask (đầu args) →
+                        // spin vô hạn, không bao giờ thoát bằng completion. Drain bên dưới
+                        // xử lý phần còn lại — đọc lại task MỚI (result cũ đã advance rồi).
+                        readTask = pipe.Reader.ReadAsync(CancellationToken.None).AsTask();
+                        break;
+                    }
                     readTask = pipe.Reader.ReadAsync(ct).AsTask();
                 }
-                else
+                else if (atLineStart)
                 {
-                    // KeepAliveIntervalMs trôi qua chưa có data → comment line giữ kết nối
+                    // KeepAliveIntervalMs trôi qua chưa có data, đang ở boundary → comment giữ kết nối
                     await ctx.Response.Body.WriteAsync(KeepAliveComment, ct);
                 }
+                // atLineStart=false: im lặng — chèn ": keep-alive" giữa dòng data chưa đóng
+                // làm \n\n của comment đóng nhầm dòng → client gộp JSON cụt + comment thành
+                // 1 event sai định dạng (bug 2026-10-16)
             }
         }
         catch (OperationCanceledException)

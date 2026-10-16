@@ -1,4 +1,7 @@
-<span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs @ClassFor(Variant)">@Text</span>
+@* Center cả2 trục: items/justify = trong pill; self = không bị stretch cao trong flex;
+   align-middle = thẳng hàng chữ khi đứng inline (baseline mặc định làm pill lệch xuống);
+   text-center = dòng wrap ngắn vẫn căn giữa *@
+<span class="inline-flex items-center justify-center self-center align-middle text-center rounded-full px-1.5 py-0.5 text-xs @ClassFor(Variant)">@Text</span>
 
 @code {
     /// <summary>Nội dung badge — text đã i18n ở nơi gọi (trừ khi là dữ liệu như "ctx: 128k").</summary>
