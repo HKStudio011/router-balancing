@@ -145,6 +145,13 @@ public class DispatcherLoopTests : IDisposable
             Task.FromResult(result);
     }
 
+    /// <summary>Resolve theo map model string → kết quả — test nhiều provider với model khác nhau.</summary>
+    private sealed class DictResolver(Dictionary<string, SelectionResult> byModel) : IComboResolver
+    {
+        public Task<SelectionResult> ResolveAsync(string model, CancellationToken ct) =>
+            Task.FromResult(byModel[model]);
+    }
+
     private sealed class ThrowingOnceResolver(SelectionResult result) : IComboResolver
     {
         private int _calls;
@@ -276,6 +283,30 @@ public class DispatcherLoopTests : IDisposable
         {
             _entered.TrySetResult();
             await _release.Task;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(SseBody, Encoding.UTF8, "text/event-stream"),
+            };
+        }
+    }
+
+    /// <summary>Giữ request tới provider chỉ định đến khi Release; provider khác đi thẳng.</summary>
+    private sealed class GateProviderUpstream(string gatedProviderName) : IUpstreamClient
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+        public void Release() => _release.TrySetResult();
+
+        public async Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+        {
+            if (provider.Name == gatedProviderName)
+            {
+                _entered.TrySetResult();
+                await _release.Task;
+            }
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(SseBody, Encoding.UTF8, "text/event-stream"),
@@ -543,6 +574,45 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(0, _executions.GetInFlight(pid));
+    }
+
+    [Fact]
+    public async Task Loop_ParkedHead_DoesNotBlockRequestForOtherProvider()
+    {
+        // Bug HOL: request park chờ provider A đầy đứng ở ĐẦU queue → dispatcher dừng,
+        // request sau (provider B đang trống) bị chặn vô hạn dù capacity B rảnh.
+        var pidA = SeedProvider("pA", maxConcurrent: 1, modelId: "mA");
+        var pidB = SeedProvider("pB", maxConcurrent: 1, modelId: "mB");
+        var resolver = new DictResolver(new Dictionary<string, SelectionResult>
+        {
+            ["mA"] = new SelectionSuccess([Candidate(pidA)], ComboMode.RoundRobin),
+            ["mB"] = new SelectionSuccess([Candidate(pidB)], ComboMode.RoundRobin),
+        });
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new GateProviderUpstream("pA"); // giữ request trên pA; pB đi thẳng
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var filler = Req("req00000", "mA"); // chiếm slot pA
+        var r1 = Req("req00001", "mA");     // sẽ park chờ pA — đầu queue
+        var r2 = Req("req00002", "mB");     // pB trống — phải dispatch ngay
+
+        _queue.Enqueue(filler);
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // filler giữ slot pA
+        _queue.Enqueue(r1);
+        await WaitUntilAsync(() => _executions.GetInFlight(pidA) == 1 && !_executions.Contains("req00001")
+            && !_queue.Contains("req00000")); // filler đã Take + serve; r1 vào queue
+        _queue.Enqueue(r2);
+
+        // r2 phải dispatch + serve xong (pB trống) trong khi r1 vẫn park chờ pA —
+        // poll theo Completion vì r2 hoàn tất nhanh rồi rời execution list
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(_queue.Contains("req00001"), "r1 vẫn nằm trong queue chờ slot pA");
+
+        upstream.Release();
+        Assert.IsType<DispatchOutcome.Handled>(await filler.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]

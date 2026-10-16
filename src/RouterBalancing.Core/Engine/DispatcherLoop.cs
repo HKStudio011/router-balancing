@@ -9,8 +9,9 @@ using RouterBalancing.Core.Settings;
 namespace RouterBalancing.Core.Engine;
 
 /// <summary>
-/// Queue-first dispatcher (spec §2.1): chờ event → Peek → resolve → chọn → TryEnter → Take
-/// atomic → serve song song. Thiếu capacity: KHÔNG Take (item ở lại queue — park vô hạn),
+/// Queue-first dispatcher (spec §2.1): chờ event → quét Snapshot → resolve → chọn → TryEnter →
+/// Take atomic → serve song song. Thiếu capacity: KHÔNG Take (item ở lại queue — park),
+/// scan bỏ qua item park để request khác dispatch sang provider rảnh (HOL fix),
 /// chờ <see cref="IRequestQueue.Changed"/> | <see cref="IExecutionList.Exited"/> đánh thức.
 /// Đang drain (<see cref="DrainGate.IsDraining"/>): không Take request mới — request đang
 /// serve chạy hết, request mới nằm yên trong queue chờ <see cref="DrainGate.Changed"/>.
@@ -54,7 +55,7 @@ public sealed class DispatcherLoop(
                 }
                 catch (Exception ex)
                 {
-                    // Vòng lặp phải sống: item đầu giữ nguyên, event sau sẽ retry (spec §4).
+                    // Vòng lặp phải sống: item park giữ nguyên vị trí, event sau sẽ retry (spec §4).
                     // try/catch INLINE (không delegate): log (SQLite) ném không được thoát ExecuteAsync —
                     // loop chết = không còn dispatcher nào serve. "log không được làm hỏng request path" (I2)
                     try
@@ -88,17 +89,36 @@ public sealed class DispatcherLoop(
     /// <summary>Event handler — chỉ Release, không làm gì đồng bộ (bắn từ thread khác).</summary>
     private void OnWake() => _wake.Release();
 
-    /// <summary>Một vòng dispatch. Trả <see langword="true"/> nếu có tiến triển (drain tiếp), false = park/rỗng → chờ event.</summary>
+    /// <summary>
+    /// Một vòng dispatch. Trả <see langword="true"/> nếu có tiến triển (drain tiếp),
+    /// false = không item nào dispatch được (park/rỗng) → chờ event.
+    /// </summary>
     private async Task<bool> TryDispatchOnceAsync(CancellationToken ct)
     {
-        // Drain cho update: dừng nhận request MỚI trước cả Peek — request đang trong queue
+        // Drain cho update: dừng nhận request MỚI trước cả quét — request đang trong queue
         // không bị Take/Resolve, nằm yên chờ CancelDrain (update thất bại) đánh thức
         if (_drain.IsDraining)
             return false;
 
-        if (!queue.Peek(out var request))
-            return false;
+        // Scan-past-park: quét theo (Priority, Sequence); item park → bỏ qua, GIỮ NGUYÊN vị trí
+        // trong line — request chờ capacity provider A không chặn request khác dispatch sang
+        // provider rảnh (bug HOL). O(n) resolve mỗi vòng wake — chấp nhận được cho desktop
+        // (queue độ tuổi ngắn); KHÔNG cache resolve (YAGNI).
+        foreach (var request in queue.Snapshot())
+        {
+            if (await TryDispatchItemAsync(request, ct))
+                return true; // có tiến triển — outer loop quét lại với Snapshot mới
+        }
+        return false;
+    }
 
+    /// <summary>
+    /// Dispatch từng item. Trả <see langword="true"/> nếu có tiến triển (dispatch hoặc
+    /// complete lỗi resolve/exhaustion); <see langword="false"/> = park (capacity hết —
+    /// item ở lại queue chờ <c>Exited</c>/<c>Changed</c>) hoặc item vừa bị gỡ.
+    /// </summary>
+    private async Task<bool> TryDispatchItemAsync(ProxyRequest request, CancellationToken ct)
+    {
         var selection = await resolver.ResolveAsync(request.Model, ct);
         if (selection is SelectionFailure failure)
         {
