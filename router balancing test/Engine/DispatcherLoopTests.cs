@@ -1907,4 +1907,30 @@ public class DispatcherLoopTests : IDisposable
         Assert.Equal("pY", calls[0].Provider); // FB descend kid → leafY (vị trí đầu)
         Assert.Equal("pX", calls[1].Provider); // kid prune rỗng → advance leafX
     }
+
+    [Fact]
+    public async Task Dispatch_NestedRoute_PublishesComboPathWithEachHopMode()
+    {
+        var pidY = SeedProvider("pY", modelId: "mY");
+        var candY = Candidate(pidY, "mY");
+        // root FB → child RR → leaf — trace Attempt phải carry ComboPath đủ 2 hop + mode mỗi cấp
+        var child = new ComboUnit("child", ComboMode.RoundRobin, [new CandidateLeaf(candY)]);
+        var root = new ComboUnit("root", ComboMode.Fallback, [child]);
+        var resolver = new StubResolver(new SelectionSuccess(
+            [candY], ComboMode.Fallback, "root", root));
+        var log = new CapturingLog();
+        await StartAsync(resolver, new ModelSelector(_executions), new StubUpstream(), log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var attempt = _trace.Snapshot().Single(e => e.Stage == TraceStage.Attempt);
+        Assert.Equal("root", attempt.Route!.Combo);
+        Assert.Equal("pY", attempt.Route!.Provider);
+        var path = Assert.IsType<List<TraceHop>>(attempt.Route!.ComboPath);
+        Assert.Equal(2, path.Count);
+        Assert.Equal(("root", ComboMode.Fallback), (path[0].Name, path[0].Mode));
+        Assert.Equal(("child", ComboMode.RoundRobin), (path[1].Name, path[1].Mode));
+    }
 }

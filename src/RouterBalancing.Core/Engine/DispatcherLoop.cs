@@ -228,7 +228,12 @@ public sealed class DispatcherLoop(
             // dùng lại đúng attempt vừa chạy — attemptNo = Attempts đã journal + 1, không nhầm index
             var attemptNo = request.Retry.Attempts + 1;
             var attemptRoute = new TraceRoute(comboName, candidate.Provider.Name,
-                AccountNameOf(candidate, accountId));
+                AccountNameOf(candidate, accountId),
+                // ComboPath từ cây ĐÃ prune theo RetryState — candidate vừa được chọn từ cây
+                // prune nên luôn tìm thấy path; diamond nhiều match → path đầu tiên (đủ tên+mode)
+                root is null
+                    ? null
+                    : ComboPathOf(PruneTriedTree(root, request)!, candidate));
             // H3a: publish attempt start ngay trước lần gửi upstream, với route đủ combo/provider/
             // account — UI vẽ circle vào nhánh ngay khi attempt đang chạy (spec trace §4).
             // Đặt NGOÀI try: các catch bên dưới chỉ dành cho ForwardAsync — publish không đổi behavior.
@@ -586,6 +591,40 @@ public sealed class DispatcherLoop(
                     : unit with { Children = prunedChildren };
             default:
                 return null;
+        }
+    }
+
+    /// <summary>
+    /// DFS cây đã prune tìm leaf = <paramref name="target"/> (ProviderId + ModelId) — trả danh
+    /// sách hop root→leaf, KHÔNG gồm leaf (leaf đã có trong Route.Provider). Diamond nhiều
+    /// match → trả path đầu tiên. Không tìm thấy → <see langword="null"/> (không nên xảy ra:
+    /// candidate được chọn từ chính cây prune này).
+    /// </summary>
+    private static IReadOnlyList<TraceHop>? ComboPathOf(SelectionNode root, ModelCandidate target)
+    {
+        List<TraceHop> path = [];
+        return TryFindComboPath(root, target, path) ? path : null;
+    }
+
+    private static bool TryFindComboPath(SelectionNode node, ModelCandidate target,
+        List<TraceHop> path)
+    {
+        switch (node)
+        {
+            case CandidateLeaf leaf:
+                return leaf.Candidate.Provider.Id == target.Provider.Id
+                    && leaf.Candidate.Model.ModelId == target.Model.ModelId;
+            case ComboUnit unit:
+                path.Add(new TraceHop(unit.Name, unit.Mode));
+                foreach (var child in unit.Children)
+                {
+                    if (TryFindComboPath(child, target, path))
+                        return true;
+                }
+                path.RemoveAt(path.Count - 1); // backtrack — nhánh này không chứa target
+                return false;
+            default:
+                return false;
         }
     }
 
