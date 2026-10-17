@@ -539,7 +539,7 @@ public class ProxyRetryIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Stream_WhenUpstreamDiesMidContent_ClosesSilentlyAndYellowRow()
+    public async Task Stream_WhenUpstreamDiesMidContent_EmitsInBandUpstreamLostEvent()
     {
         SeedProvider("p-main", maxConcurrent: 4, "m1");
         var upstream = new ScriptedUpstream((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
@@ -549,11 +549,15 @@ public class ProxyRetryIntegrationTests : IDisposable
         var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        // Đã có content → đóng stream im lặng: KHÔNG append error event, không [DONE]
+        // Đã có content → append event upstream_disconnected để client discard partial
+        // (đảo ngược chủ đích đóng im lặng của b0b3ae7 ở wire; monitor giữ vàng)
         var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal("data: {\"x\":1}\n\n", body);
+        Assert.StartsWith("data: {\"x\":1}\n\n", body);
+        Assert.Contains("\"code\":\"upstream_disconnected\"", body);
+        Assert.Contains("\"type\":\"error\"", body);
+        Assert.DoesNotContain("[DONE]", body);
 
-        // Giữ chủ đích vàng của b0b3ae7: mid-stream fail → Canceled + FailureKind network
+        // Monitor semantics giữ nguyên theo chủ đích b0b3ae7: mid-stream fail → Canceled + FailureKind network
         var id = resp.Headers.GetValues("X-Request-Id").Single();
         var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
         Assert.Equal(ApiCallState.Cancelled, record!.State);

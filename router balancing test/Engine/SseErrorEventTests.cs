@@ -74,6 +74,21 @@ public class SseErrorEventTests
     }
 
     [Fact]
+    public void UpstreamLostMidStream_ProducesUpstreamDisconnectedEvent()
+    {
+        var bytes = SseErrorEvent.UpstreamLostMidStream();
+
+        const string expected =
+            "data: {\"type\":\"error\",\"error\":{\"message\":\"Upstream connection lost mid-stream.\"," +
+            "\"type\":\"server_error\",\"code\":\"upstream_disconnected\"}}\n\n";
+        Assert.Equal(expected, AsText(bytes));
+
+        var error = ParseEvent(bytes)["error"]!.AsObject();
+        Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
+        Assert.Equal("upstream_disconnected", error["code"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Passthrough_WhenBodyHasErrorKey_MergesTypeAndRetryAfter()
     {
         var body = Encoding.UTF8.GetBytes("""{"error":{"message":"rate limited"}}""");

@@ -86,4 +86,116 @@ public class ChatCompletionsProtocolAggregateTests
             .GetProperty("message").GetProperty("content").GetString());
         Assert.Null(result.Usage);
     }
+
+    // Chunk SSE chat — serialize qua JsonSerializer để escape arguments fragment đúng chuẩn
+    private static string SseChunk(object delta, string? finishReason = null) =>
+        $"data: {JsonSerializer.Serialize(new
+        {
+            id = "chatcmpl-1",
+            model = "m1",
+            choices = new[] { new { index = 0, delta, finish_reason = finishReason } },
+        })}\n\n";
+
+    [Fact]
+    public async Task Aggregate_ToolCallDeltas_ConcatenatesArgumentsAndBuildsToolCalls()
+    {
+        // arguments cắt giữa 2 chunk (partial JSON string) — contract streaming tool_calls
+        var sse = SseChunk(new { role = "assistant", content = (string?)null })
+            + SseChunk(new
+            {
+                tool_calls = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        id = "call_1",
+                        type = "function",
+                        @function = new { name = "task", arguments = "" },
+                    },
+                },
+            })
+            + SseChunk(new
+            {
+                tool_calls = new[]
+                {
+                    new { index = 0, @function = new { arguments = "{\"description\"" } },
+                },
+            })
+            + SseChunk(new
+            {
+                tool_calls = new[]
+                {
+                    new { index = 0, @function = new { arguments = ":\"x\"}" } },
+                },
+            })
+            + SseChunk(new { }, "tool_calls");
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        await Protocol.AggregateSseAsync(content, dest, CancellationToken.None);
+
+        using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(dest.ToArray()));
+        var choice = doc.RootElement.GetProperty("choices")[0];
+        var message = choice.GetProperty("message");
+        Assert.Equal("tool_calls", choice.GetProperty("finish_reason").GetString());
+
+        var toolCall = message.GetProperty("tool_calls")[0];
+        Assert.Equal("call_1", toolCall.GetProperty("id").GetString());
+        Assert.Equal("function", toolCall.GetProperty("type").GetString());
+        Assert.Equal("task", toolCall.GetProperty("function").GetProperty("name").GetString());
+        var arguments = toolCall.GetProperty("function").GetProperty("arguments").GetString();
+        using var argsDoc = JsonDocument.Parse(arguments!);
+        Assert.Equal("x", argsDoc.RootElement.GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public async Task Aggregate_MultipleInterleavedToolCalls_OrdersByIndex()
+    {
+        var sse = SseChunk(new
+        {
+            tool_calls = new object[]
+            {
+                new
+                {
+                    index = 0,
+                    id = "call_a",
+                    type = "function",
+                    @function = new { name = "alpha", arguments = "{\"a\"" },
+                },
+                new
+                {
+                    index = 1,
+                    id = "call_b",
+                    type = "function",
+                    @function = new { name = "beta", arguments = "{}" },
+                },
+            },
+        })
+            + SseChunk(new
+            {
+                tool_calls = new[]
+                {
+                    new { index = 0, @function = new { arguments = ":1}" } },
+                },
+            })
+            + SseChunk(new { }, "tool_calls");
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        await Protocol.AggregateSseAsync(content, dest, CancellationToken.None);
+
+        using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(dest.ToArray()));
+        var toolCalls = doc.RootElement.GetProperty("choices")[0].GetProperty("message")
+            .GetProperty("tool_calls");
+        Assert.Equal(2, toolCalls.GetArrayLength());
+
+        Assert.Equal("call_a", toolCalls[0].GetProperty("id").GetString());
+        Assert.Equal("alpha", toolCalls[0].GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("{\"a\":1}", toolCalls[0].GetProperty("function")
+            .GetProperty("arguments").GetString());
+
+        Assert.Equal("call_b", toolCalls[1].GetProperty("id").GetString());
+        Assert.Equal("beta", toolCalls[1].GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("{}", toolCalls[1].GetProperty("function").GetProperty("arguments").GetString());
+    }
 }

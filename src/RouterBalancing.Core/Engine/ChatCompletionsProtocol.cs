@@ -94,6 +94,9 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
     private sealed class ChatSseAggregateState
     {
         private readonly StringBuilder _content = new();
+        // tool_calls stream theo index (OpenAI spec): id/name first-wins, arguments concat
+        // từng delta — thiếu mảng này thì client non-stream nhận message rỗng (mất tool call)
+        private readonly SortedDictionary<int, ToolCallState> _toolCalls = new();
         private string? _id;
         private string? _model;
         private string? _role;
@@ -136,6 +139,7 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
                 _role = ReadDeltaString(choice, "role") ?? _role;
                 var text = ReadDeltaString(choice, "content");
                 if (text is not null) _content.Append(text);
+                AccumulateToolCalls(choice);
                 _finishReason = ReadString(choice, "finish_reason") ?? _finishReason;
             }
             catch (JsonException)
@@ -148,6 +152,26 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
         {
             var message = new JsonObject { ["role"] = _role ?? "assistant" };
             if (_content.Length > 0) message["content"] = _content.ToString();
+            if (_toolCalls.Count > 0)
+            {
+                var toolCalls = new JsonArray();
+                foreach (var (_, state) in _toolCalls)
+                {
+                    toolCalls.Add(new JsonObject
+                    {
+                        ["id"] = state.Id ?? string.Empty,
+                        ["type"] = state.Type ?? "function",
+                        ["function"] = new JsonObject
+                        {
+                            ["name"] = state.Name ?? string.Empty,
+                            ["arguments"] = state.Arguments.ToString(),
+                        },
+                    });
+                }
+                message["tool_calls"] = toolCalls;
+                // Shape OpenAI: tool_calls message luôn kèm content null tường minh
+                if (_content.Length == 0) message["content"] = null;
+            }
             var choice = new JsonObject
             {
                 ["index"] = 0,
@@ -186,6 +210,61 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
                 || delta.ValueKind != JsonValueKind.Object)
                 return null;
             return ReadString(delta, property);
+        }
+
+        // Gộp delta.tool_calls theo index: id/type/name chỉ nhận giá trị đầu (first-wins),
+        // arguments nối tiếp từng mảnh — đúng contract streaming tool_calls của OpenAI.
+        private void AccumulateToolCalls(JsonElement choice)
+        {
+            if (!choice.TryGetProperty("delta", out var delta)
+                || delta.ValueKind != JsonValueKind.Object
+                || !delta.TryGetProperty("tool_calls", out var toolCalls)
+                || toolCalls.ValueKind != JsonValueKind.Array)
+                return;
+
+            // index thiếu (provider không chuẩn) → fallback theo thứ tự xuất hiện trong delta
+            var position = 0;
+            foreach (var element in toolCalls.EnumerateArray())
+            {
+                var fallbackIndex = position++;
+                if (element.ValueKind != JsonValueKind.Object) continue;
+
+                var index = element.TryGetProperty("index", out var indexValue)
+                    && indexValue.ValueKind == JsonValueKind.Number
+                    ? indexValue.GetInt32()
+                    : fallbackIndex;
+                if (!_toolCalls.TryGetValue(index, out var state))
+                {
+                    state = new ToolCallState();
+                    _toolCalls[index] = state;
+                }
+
+                if (element.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+                    state.Id ??= id.GetString();
+                if (element.TryGetProperty("type", out var type)
+                    && type.ValueKind == JsonValueKind.String)
+                    state.Type ??= type.GetString();
+                if (element.TryGetProperty("function", out var function)
+                    && function.ValueKind == JsonValueKind.Object)
+                {
+                    if (function.TryGetProperty("name", out var name)
+                        && name.ValueKind == JsonValueKind.String)
+                        state.Name ??= name.GetString();
+                    if (function.TryGetProperty("arguments", out var args)
+                        && args.ValueKind == JsonValueKind.String
+                        && args.GetString() is { } argText)
+                        state.Arguments.Append(argText);
+                }
+            }
+        }
+
+        /// <summary>Tool call đã tích lũy — arguments là các mảnh delta đã nối.</summary>
+        private sealed class ToolCallState
+        {
+            public string? Id { get; set; }
+            public string? Type { get; set; }
+            public string? Name { get; set; }
+            public StringBuilder Arguments { get; } = new();
         }
     }
 }

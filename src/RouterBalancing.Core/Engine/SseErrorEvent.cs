@@ -65,6 +65,23 @@ internal static class SseErrorEvent
         });
 
     /// <summary>
+    /// Upstream cắt kết nối giữa chừng sau khi đã forward &gt;0 byte content (HttpIOException
+    /// mid-SSE) — client đang đọc phải biết stream cụt để discard tool-call partial thay vì
+    /// parse JSON hụt (đảo ngược chủ đích "đóng im lặng" của b0b3ae7 ở wire; monitor giữ vàng).
+    /// </summary>
+    internal static byte[] UpstreamLostMidStream() =>
+        Frame(new
+        {
+            type = "error",
+            error = new
+            {
+                message = "Upstream connection lost mid-stream.",
+                type = "server_error",
+                code = "upstream_disconnected",
+            },
+        });
+
+    /// <summary>
     /// Đóng nguyên payload lỗi của upstream vào event:
     /// body JSON còn key <c>error</c> → giữ nguyên, gắn <c>type:"error"</c> và
     /// (khi có) <c>retry_after</c> (bù header <c>Retry-After</c> đã mất trên wire);

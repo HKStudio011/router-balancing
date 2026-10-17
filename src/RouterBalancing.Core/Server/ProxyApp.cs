@@ -366,7 +366,14 @@ public static class ProxyApp
                     // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
                     await WriteInBand(ctx, SseErrorEvent.ServerFault());
                     break;
-                // Handled / Cancelled+client-abort / Aborted mid-content: không ghi gì —
+                case DispatchOutcome.Aborted when contentBytes > 0
+                    && !ctx.RequestAborted.IsCancellationRequested:
+                    // Upstream cắt giữa chừng (HttpIOException mid-SSE) — client đang đọc
+                    // phải biết stream cụt để discard tool-call partial, không parse JSON hụt;
+                    // đảo ngược chủ đích "đóng im lặng" của b0b3ae7 ở wire, monitor giữ vàng
+                    await WriteInBand(ctx, SseErrorEvent.UpstreamLostMidStream());
+                    break;
+                // Handled / Cancelled+client-abort / Aborted do client ngắt: không ghi gì —
                 // content đã forward, hoặc kết nối đã đóng (row vàng Canceled qua H4)
             }
         }
