@@ -194,7 +194,11 @@ public sealed class ProxyRequestHandler(
                     }
                     catch
                     {
-                        monitor.RecordError(requestId, 0, null);
+                        // Client cancel mid-stream không phải lỗi mạng — chỉ ghi RecordError
+                        // khi client còn nối (upstream chết giữa chừng). Bỏ guard này thì row
+                        // Canceled bị gắn FailureKind=network gây nhầm lẫn khi chẩn đoán.
+                        if (!ctx.RequestAborted.IsCancellationRequested)
+                            monitor.RecordError(requestId, 0, null);
                         throw;
                     }
                     // Monitor ghi NGAY sau tee, KỂ CẢ khi upstream thiếu usage (token null) —

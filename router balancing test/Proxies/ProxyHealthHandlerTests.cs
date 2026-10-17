@@ -171,6 +171,36 @@ public class ProxyHealthHandlerTests : IDisposable
     }
 
     [Fact]
+    // GHIM CHẨN ĐỊNH (provider nhận 2 request): HttpRequestException inner
+    // SocketException(ConnectionReset) xảy ra SAU KHI body đã được gửi đi (proxy/provider
+    // reset giữa chừng) vẫn bị IsProxyConnectFailure coi là connect-phase → handler clone +
+    // gửi lại request (replay). Mitigation: mọi upstream chat request mang Idempotency-Key
+    // (= request id, ProxyRequestHandler → ProviderRequestFactory) nên provider dedupe bản
+    // replay — handler-level behavior (vẫn gửi lại ở HTTP) giữ nguyên, test này pin đúng nó.
+    public async Task SendAsync_PostSendConnectionReset_RetriesViaNextProxy_DuplicatingRequestAtProvider()
+    {
+        var pool = new FakePool().Add(Attempt(1, 8001), Attempt(2, 8002));
+        var stub = new StubHandler(call => call == 1
+            ? throw new HttpRequestException(
+                "Connection reset", new SocketException((int)SocketError.ConnectionReset))
+            : Ok());
+        using var client = ClientFor(pool, stub);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://upstream.example/v1/chat/completions")
+        {
+            Content = new ByteArrayContent("chat-body"u8.ToArray()), // replayable — y hệt chat path
+        };
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // Bằng chứng "lọt request": body đã đi khỏi attempt 1 (reset chỉ xảy ra sau khi
+        // gửi xong) nhưng handler vẫn gửi attempt 2 → cùng logical request = 2 lần tại provider
+        Assert.Equal(2, stub.Calls);
+        Assert.Equal([1L], pool.Failures);
+        Assert.Equal([2L], pool.Successes);
+    }
+
+    [Fact]
     public async Task SendAsync_BudgetExhausted_ThrowsLastFailureWithoutRetry()
     {
         // FakePool không gỡ proxy khỏi list → GetNext luôn trả → pin nhánh hết budget
