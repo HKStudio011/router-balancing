@@ -6,7 +6,13 @@ namespace RouterBalancing.Core.Security;
 /// </summary>
 public static class SingleInstanceGuard
 {
+    // DEBUG: mutex tên riêng — instance debug chạy song song app Release đã cài
+    // (mỗi bên giữ mutex của mình, không Environment.Exit oan)
+#if DEBUG
+    private const string MutexName = "router-balancing-single-instance-debug";
+#else
     private const string MutexName = "router-balancing-single-instance";
+#endif
     private static Mutex? _mutex;
     private static readonly object Sync = new();
 
