@@ -27,6 +27,18 @@ public class ProxyUpstreamTimeoutTests
     }
 
     [Fact]
+    public void CreateUpstreamHandler_PooledConnectionIdleTimeout_IsBelowReverseProxyClose()
+    {
+        using var handler = ProxyApp.CreateUpstreamHandler();
+
+        // Cloudflare/nginx đóng connection idle ở ~60–100s — pool timeout phải thấp hơn
+        // để không bao giờ reuse connection server đã half-close (RST giữa chừng = lỗi
+        // mạng "chỉ thấy khi đi qua app")
+        Assert.True(handler.PooledConnectionIdleTimeout < TimeSpan.FromSeconds(60),
+            $"idle timeout {handler.PooledConnectionIdleTimeout} phải < 60s");
+    }
+
+    [Fact]
     public void UpstreamClient_HttpClientTimeout_IsInfinite()
     {
         var builder = WebApplication.CreateSlimBuilder();

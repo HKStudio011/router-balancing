@@ -578,8 +578,10 @@ public class ProxyRequestHandlerTests
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenNotStreamNoUsage_LogsNoDebug()
+    public async Task ForwardAsync_WhenUpstreamIgnoresForcedStream_LogsDebugMissingUsage()
     {
+        // Client non-stream → protocol force stream:true + include_usage (expectsUsage=true);
+        // upstream bỏ qua, trả JSON không usage → Debug "thiếu usage" là telemetry đúng
         var log = new CapturingLog();
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx();
@@ -588,7 +590,7 @@ public class ProxyRequestHandlerTests
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
-        Assert.Empty(log.Debugs);
+        Assert.Single(log.Debugs);
         Assert.Empty(log.Usages);
         Assert.Single(log.Infos);
     }

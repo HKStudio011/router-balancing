@@ -138,6 +138,12 @@ public static class ProxyApp
         Proxy = new RoundRobinWebProxy(),
         UseProxy = true,
         ConnectTimeout = Timeout.InfiniteTimeSpan,
+        // Cloudflare/reverse proxy đóng connection idle sau ~60–100s — pooled connection
+        // có thể đã bị server half-close trước khi ta viết request kế → RST giữa chừng
+        // (lỗi mạng "chỉ thấy khi đi qua app" — app là client duy nhất giữ keep-alive pool).
+        // CHỈ cắt connection pool ĐANG IDLE (dưới ngưỡng đóng của middle), không đụng
+        // request đang hoạt động — policy timeout vô hạn (2026-10-04) giữ nguyên.
+        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
     };
 
     /// <summary>

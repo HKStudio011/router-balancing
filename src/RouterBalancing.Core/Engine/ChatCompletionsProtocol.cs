@@ -43,6 +43,11 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
         // Alias nội bộ (pin/combo) phải đổi về model id thật trước khi forward —
         // upstream không biết pin/ten combo (bug client: gửi nguyên alias bị ModelError).
         var upstreamBody = ChatBody.WithModel(body, realModelId);
+        // Ép stream:true cho non-stream client (xem ChatBody.WithForcedStream): hết cửa sổ
+        // im lặng tuyệt đối → middle không cắt vì idle giữa generation; client vẫn nhận JSON
+        // nhờ aggregate (ForwardAsync: upstreamSse && !hasPipe). Provider bỏ qua stream:true
+        // → trả JSON → tee giữ nguyên như cũ.
+        upstreamBody = ChatBody.WithForcedStream(upstreamBody);
         // Yêu cầu upstream trả usage cho stream OpenAI (spec §6) — body gốc giữ nguyên ở queue/prepare
         return UsageCapture.WithIncludeUsage(upstreamBody, providerType);
     }
