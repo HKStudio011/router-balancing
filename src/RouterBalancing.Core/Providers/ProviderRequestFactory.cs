@@ -22,9 +22,14 @@ public static class ProviderRequestFactory
     /// <param name="path">Path mặc định <c>/v1/models</c>.</param>
     /// <param name="method">HTTP method — mặc định GET (probe); POST cho chat completion.</param>
     /// <param name="content">Body request — chỉ dùng khi có <paramref name="method"/>.</param>
+    /// <param name="idempotencyKey">
+    /// Gắn header <c>Idempotency-Key</c> (chỉ khi khác rỗng) — request id gốc giữ nguyên qua
+    /// mọi retry/failover để provider dedupe request bị gửi lại. Chỉ POST chat dùng;
+    /// GET probe truyền null (không idempotency cần dedupe).
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">Khi Type ngoài 2 giá trị đã biết.</exception>
     public static HttpRequestMessage Create(Provider provider, string apiKey, string? path = null,
-        HttpMethod? method = null, HttpContent? content = null)
+        HttpMethod? method = null, HttpContent? content = null, string? idempotencyKey = null)
     {
         // Canonicalize ngay lúc ghép (idempotent): fix runtime cho row lưu trước khi có save-fix
         // — chỉ khi path tự có /v1, không đoán với path không version
@@ -34,6 +39,13 @@ public static class ProviderRequestFactory
             : provider.BaseUrl.TrimEnd('/');
         var url = baseUrl + requestPath;
         var request = new HttpRequestMessage(method ?? HttpMethod.Get, url) { Content = content };
+
+        // Idempotency-Key TRƯỚC ApplyExtraHeaders — extra headers chỉ thêm key chưa tồn tại
+        // nên key của request (dedupe) không bị user override nhầm
+        if (!string.IsNullOrEmpty(idempotencyKey))
+        {
+            request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        }
 
         switch (provider.Type)
         {

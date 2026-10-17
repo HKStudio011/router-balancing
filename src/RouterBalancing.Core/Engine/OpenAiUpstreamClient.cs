@@ -16,12 +16,13 @@ public sealed class OpenAiUpstreamClient(IHttpClientFactory http) : IUpstreamCli
 
     /// <inheritdoc/>
     public async Task<HttpResponseMessage> PostAsync(
-        Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+        Provider provider, string apiKey, string path, byte[] body, string idempotencyKey,
+        CancellationToken ct)
     {
         var content = new ByteArrayContent(body);
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         using var request = ProviderRequestFactory.Create(
-            provider, apiKey, path, HttpMethod.Post, content);
+            provider, apiKey, path, HttpMethod.Post, content, idempotencyKey);
 
         // ResponseHeadersRead: hoàn tất khi đủ header, body stream tiếp — bắt buộc cho SSE
         return await http.CreateClient(HttpClientName)

@@ -64,7 +64,7 @@ public class ProxyRequestHandlerTests
         public string? LastApiKey { get; private set; }
 
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             LastApiKey = apiKey;
             return Task.FromResult(factory());
@@ -74,7 +74,7 @@ public class ProxyRequestHandlerTests
     private sealed class ThrowingUpstream(Exception ex) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromException<HttpResponseMessage>(ex);
     }
 
@@ -499,7 +499,7 @@ public class ProxyRequestHandlerTests
     {
         public byte[]? LastBody { get; private set; }
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             LastBody = body;
             return Task.FromResult(factory());

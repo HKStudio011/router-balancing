@@ -129,7 +129,8 @@ public sealed class ProxyRequestHandler(
             HttpResponseMessage response;
             try
             {
-                response = await upstream.PostAsync(provider, key, protocol.UpstreamPath, requestBody, ct);
+                response = await upstream.PostAsync(provider, key, protocol.UpstreamPath, requestBody,
+                    requestId, ct);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                        && !ctx.RequestAborted.IsCancellationRequested)

@@ -80,7 +80,7 @@ public class TraceIntegrationTests : IDisposable
     private sealed class StubUpstream : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromResult(Sse());
     }
 
@@ -93,7 +93,7 @@ public class TraceIntegrationTests : IDisposable
         public void Release() => _release.TrySetResult();
 
         public async Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             _entered.TrySetResult();
             await _release.Task;
@@ -105,7 +105,7 @@ public class TraceIntegrationTests : IDisposable
     private sealed class ScriptedUpstream(Func<Provider, HttpResponseMessage> factory) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromResult(factory(provider));
     }
 

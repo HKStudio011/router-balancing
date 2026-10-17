@@ -13,6 +13,12 @@ public interface IUpstreamClient
     /// <param name="apiKey">Plaintext key — người gọi đã resolve từ ProviderAccount.</param>
     /// <param name="path">Path upstream từ <see cref="IProxyProtocol.UpstreamPath"/> (đã leading slash).</param>
     /// <param name="body">Body JSON thô nguyên trạng từ client.</param>
+    /// <param name="idempotencyKey">
+    /// Gửi làm header <c>Idempotency-Key</c> — request id gốc, GIỮ NGUYÊN qua mọi retry/
+    /// failover để provider dedupe request bị gửi lại (lỗi mạng mid-generation vẫn retry
+    /// được mà không nhân đôi processing/billing ở provider).
+    /// </param>
     /// <param name="ct">Token hủy theo RequestAborted.</param>
-    Task<HttpResponseMessage> PostAsync(Provider provider, string apiKey, string path, byte[] body, CancellationToken ct);
+    Task<HttpResponseMessage> PostAsync(Provider provider, string apiKey, string path, byte[] body,
+        string idempotencyKey, CancellationToken ct);
 }

@@ -260,7 +260,7 @@ public class DispatcherLoopTests : IDisposable
         public int Calls;
 
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             Interlocked.Increment(ref Calls);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -279,7 +279,7 @@ public class DispatcherLoopTests : IDisposable
         public void Release() => _release.TrySetResult();
 
         public async Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             _entered.TrySetResult();
             await _release.Task;
@@ -300,7 +300,7 @@ public class DispatcherLoopTests : IDisposable
         public void Release() => _release.TrySetResult();
 
         public async Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             if (provider.Name == gatedProviderName)
             {
@@ -381,7 +381,7 @@ public class DispatcherLoopTests : IDisposable
         public int Calls;
 
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             Interlocked.Increment(ref Calls);
             // Factory throw được (mạng giả) — ném đồng bộ, handler bắt trong try có sẵn
@@ -401,7 +401,7 @@ public class DispatcherLoopTests : IDisposable
         public void Release() => _release.TrySetResult();
 
         public async Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             var call = Interlocked.Increment(ref _calls);
             if (call == 1)
@@ -434,7 +434,7 @@ public class DispatcherLoopTests : IDisposable
         }
 
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             lock (_calls)
                 _calls.Add((provider.Name, apiKey));
