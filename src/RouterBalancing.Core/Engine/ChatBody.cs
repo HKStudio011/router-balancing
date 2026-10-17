@@ -40,4 +40,35 @@ internal static class ChatBody
         // ToJsonString escape unicode nhưng JSON escape vẫn semantic-equivalent — upstream parse y hệt
         return Encoding.UTF8.GetBytes(obj.ToJsonString());
     }
+
+    /// <summary>
+    /// Ép <c>stream:true</c> với body non-stream (thiếu trường hoặc false) — upstream stream
+    /// byte liên tục nên middle (Cloudflare/reverse proxy trước provider) không cắt connection
+    /// vì idle trong lúc generate: đây là nguyên nhân "lỗi mạng giữa chừng generation" khi
+    /// client non-stream đi qua app. Body đã <c>stream:true</c> hoặc JSON hỏng → trả nguyên bytes.
+    /// </summary>
+    public static byte[] WithForcedStream(byte[] body)
+    {
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(Encoding.UTF8.GetString(body));
+        }
+        catch (JsonException)
+        {
+            // Validator đã chặn JSON hỏng trước enqueue — nhánh này chỉ để phòng thủ
+            return body;
+        }
+
+        if (node is not JsonObject obj) return body;
+
+        var isStream = obj.TryGetPropertyValue("stream", out var streamNode)
+            && streamNode is JsonValue streamValue
+            && streamValue.TryGetValue<bool>(out var flag)
+            && flag;
+        if (isStream) return body;
+
+        obj["stream"] = true;
+        return Encoding.UTF8.GetBytes(obj.ToJsonString());
+    }
 }

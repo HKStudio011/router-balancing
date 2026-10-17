@@ -81,7 +81,7 @@ public class ProxyTransientRetryIntegrationTests : IDisposable
     private sealed class ScriptedUpstream(Func<Provider, HttpResponseMessage> factory) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromResult(factory(provider));
     }
 
@@ -179,5 +179,56 @@ public class ProxyTransientRetryIntegrationTests : IDisposable
         // Hết ngân sách → exhaustion passthrough nguyên response cuối (hành vi cũ giữ nguyên §3.4)
         Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
         Assert.Contains("gateway timeout", await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// Call 1 ném HttpRequestException (mạng giả — reset sau khi body đã gửi), call 2+ theo
+    /// script; capture Idempotency-Key từng call để chứng minh retry giữ nguyên key.
+    /// </summary>
+    private sealed class KeyCapturingUpstream(Func<HttpResponseMessage> script) : IUpstreamClient
+    {
+        private readonly object _gate = new();
+        private readonly List<string> _keys = [];
+
+        public IReadOnlyList<string> Keys
+        {
+            get { lock (_gate) return [.. _keys]; }
+        }
+
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey,
+            CancellationToken ct)
+        {
+            int call;
+            lock (_gate)
+            {
+                _keys.Add(idempotencyKey);
+                call = _keys.Count;
+            }
+            // Call 1: lỗi mạng giả — handler classify Fatal(Status null) → transient retry cùng key
+            return call == 1
+                ? Task.FromException<HttpResponseMessage>(
+                    new HttpRequestException("Simulated connection reset"))
+                : Task.FromResult(script());
+        }
+    }
+
+    [Fact]
+    public async Task TransientRetry_NetworkFailure_ReusesSameIdempotencyKeyAcrossRetries()
+    {
+        // Luồng lọt request: lỗi mạng sau khi body đã gửi (reset giữa generation) vẫn retry —
+        // key = request id GIỮ NGUYÊN qua retry để provider dedupe thay vì generate lần 2
+        _settings.Set(SettingsKeys.TransientMaxRetries, 3);
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 100);
+        SeedProvider(maxConcurrent: 4, "m1");
+        var upstream = new KeyCapturingUpstream(Sse);
+        var client = await StartAsync(upstream);
+
+        var response = await client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var id = response.Headers.GetValues("X-Request-Id").Single();
+        Assert.Equal(2, upstream.Keys.Count);                       // call 1 ném mạng, call 2 retry OK
+        Assert.All(upstream.Keys, k => Assert.Equal(id, k));        // CÙNG key = X-Request-Id
     }
 }

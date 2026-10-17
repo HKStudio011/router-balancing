@@ -74,7 +74,7 @@ public class ProxyQueueIntegrationTests : IDisposable
     private sealed class StubUpstream(Func<HttpResponseMessage>? respond = null) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromResult(respond?.Invoke() ?? Sse());
     }
 
@@ -88,7 +88,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         public void Release() => _release.TrySetResult();
 
         public async Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             Interlocked.Increment(ref Calls);
             _entered.TrySetResult();

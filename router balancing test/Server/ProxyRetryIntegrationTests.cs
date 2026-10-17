@@ -123,7 +123,7 @@ public class ProxyRetryIntegrationTests : IDisposable
         }
 
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             // Ghi TRƯỚC khi factory throw (mạng giả) — test vẫn đếm được attempt đó
             lock (_gate)

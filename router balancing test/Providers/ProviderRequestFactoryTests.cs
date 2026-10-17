@@ -126,4 +126,28 @@ public class ProviderRequestFactoryTests
         Assert.False(request.Headers.Contains("X-Custom"));
         Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
     }
+
+    [Fact]
+    public void Create_WhenIdempotencyKeySet_SendsHeader()
+    {
+        // Key = request id gốc — provider dedupe request bị retry/failover gửi lại (lọt request)
+        using var request = ProviderRequestFactory.Create(
+            P("https://api.openai.com"), "sk-test", "/v1/chat/completions", HttpMethod.Post,
+            new StringContent("{}", System.Text.Encoding.UTF8, "application/json"),
+            idempotencyKey: "req-abc");
+
+        Assert.Equal("req-abc", request.Headers.GetValues("Idempotency-Key").Single());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void Create_WhenIdempotencyKeyEmpty_OmitsHeader(string? key)
+    {
+        // GET probe / caller không truyền key — không gửi header thừa
+        using var request = ProviderRequestFactory.Create(P("https://api.openai.com"), "sk-test",
+            idempotencyKey: key);
+
+        Assert.False(request.Headers.Contains("Idempotency-Key"));
+    }
 }

@@ -64,7 +64,7 @@ public class ProxyRequestHandlerTests
         public string? LastApiKey { get; private set; }
 
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             LastApiKey = apiKey;
             return Task.FromResult(factory());
@@ -74,7 +74,7 @@ public class ProxyRequestHandlerTests
     private sealed class ThrowingUpstream(Exception ex) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromException<HttpResponseMessage>(ex);
     }
 
@@ -499,7 +499,7 @@ public class ProxyRequestHandlerTests
     {
         public byte[]? LastBody { get; private set; }
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             LastBody = body;
             return Task.FromResult(factory());
@@ -578,8 +578,10 @@ public class ProxyRequestHandlerTests
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenNotStreamNoUsage_LogsNoDebug()
+    public async Task ForwardAsync_WhenUpstreamIgnoresForcedStream_LogsDebugMissingUsage()
     {
+        // Client non-stream → protocol force stream:true + include_usage (expectsUsage=true);
+        // upstream bỏ qua, trả JSON không usage → Debug "thiếu usage" là telemetry đúng
         var log = new CapturingLog();
         var sut = Create(new StubUpstream(() => Upstream(200, "{}")), log);
         var ctx = Ctx();
@@ -588,7 +590,7 @@ public class ProxyRequestHandlerTests
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson), AccountIdOf(provider), ProxyProtocols.Chat, default);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
-        Assert.Empty(log.Debugs);
+        Assert.Single(log.Debugs);
         Assert.Empty(log.Usages);
         Assert.Single(log.Infos);
     }

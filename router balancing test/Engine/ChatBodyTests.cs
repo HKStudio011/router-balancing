@@ -65,4 +65,39 @@ public class ChatBodyTests
         Assert.Equal("hi", doc.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
         Assert.Equal(0.5, doc.RootElement.GetProperty("temperature").GetDouble());
     }
+
+    [Theory]
+    [InlineData("""{"model":"m","messages":[]}""")]                 // thiếu trường stream
+    [InlineData("""{"model":"m","messages":[],"stream":false}""")]  // stream tắt tường minh
+    public void WithForcedStream_WhenNonStream_SetsStreamTrue(string json)
+    {
+        // Non-stream = im lặng tuyệt đối trong suốt generate → middle cắt vì idle.
+        // Ép stream:true để byte chạy liên tục — đây là fix gốc "lỗi mạng giữa chừng".
+        var result = ChatBody.WithForcedStream(Bytes(json));
+
+        using var doc = JsonDocument.Parse(result);
+        Assert.True(doc.RootElement.GetProperty("stream").GetBoolean());
+        // Các trường khác giữ nguyên
+        Assert.Equal("m", doc.RootElement.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public void WithForcedStream_WhenStreamAlreadyTrue_ReturnsOriginalBytes()
+    {
+        var body = Bytes("""{"model":"m","messages":[],"stream":true}""");
+
+        var result = ChatBody.WithForcedStream(body);
+
+        Assert.Same(body, result); // không reserialize — giữ byte-for-byte
+    }
+
+    [Fact]
+    public void WithForcedStream_WhenJsonInvalid_ReturnsOriginalBytes()
+    {
+        var body = Bytes("{broken");
+
+        var result = ChatBody.WithForcedStream(body);
+
+        Assert.Same(body, result);
+    }
 }

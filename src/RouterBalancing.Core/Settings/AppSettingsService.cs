@@ -36,7 +36,13 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public string Theme => Get(SettingsKeys.Theme, "system");
 
+    // DEBUG: default port +100 (8417) — chạy song song app Release (8317) không tranh
+    // port; giá trị user đã lưu trong settings vẫn thắng, khi đó PortSelector tự tìm port trống.
+#if DEBUG
+    public int Port => Get(SettingsKeys.Port, 8417);
+#else
     public int Port => Get(SettingsKeys.Port, 8317);
+#endif
 
     public bool LanAccess => Get(SettingsKeys.LanAccess, false);
 

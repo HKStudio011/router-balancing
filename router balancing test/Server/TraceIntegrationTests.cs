@@ -80,7 +80,7 @@ public class TraceIntegrationTests : IDisposable
     private sealed class StubUpstream : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromResult(Sse());
     }
 
@@ -93,7 +93,7 @@ public class TraceIntegrationTests : IDisposable
         public void Release() => _release.TrySetResult();
 
         public async Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             _entered.TrySetResult();
             await _release.Task;
@@ -105,7 +105,7 @@ public class TraceIntegrationTests : IDisposable
     private sealed class ScriptedUpstream(Func<Provider, HttpResponseMessage> factory) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct) =>
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromResult(factory(provider));
     }
 
@@ -354,5 +354,76 @@ public class TraceIntegrationTests : IDisposable
         // 2 provider cùng ném HttpRequestException → có ít nhất 1 attempt done kiểu này
         Assert.Contains(EventsOf(id), e => e.Stage == TraceStage.Attempt
             && e.AttemptDone == true && e.FailureKind == "network" && e.Status is null);
+    }
+
+    private static Task<HttpResponseMessage> SendHighestPriorityStreamAsync(HttpClient client, string model)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = Json($"{{\"model\":\"{model}\",\"messages\":[{{\"role\":\"user\"}}],\"stream\":true}}"),
+        };
+        request.Headers.Add("X-Priority", "max");
+        // ResponseHeadersRead — PostAsync mặc định buffer toàn body sẽ treo khi stream còn held
+        return client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+    }
+
+    /// <summary>
+    /// Repro live-trace markers trong đúng kịch bản "chờ slot lâu": stream request
+    /// X-Priority=max đứng trong queue (slot bị giữ bởi request khác) → feed phải
+    /// mang đủ Priority + HeadersSent, và aggregator (đúng đường UI apply) phải ra
+    /// node tại anchor Hàng đợi với dữ liệu tag/badge — điều kiện badge render.
+    /// </summary>
+    [Fact]
+    public async Task QueuedStreamRequest_WhileWaitingForSlot_AppliesPriorityAndHeadersAtQueueAnchor()
+    {
+        SeedProvider(maxConcurrent: 1, "m1");
+        var upstream = new GatedUpstream();
+        var client = await StartAsync(upstream);
+
+        var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // giữ trọn slot → request 2 phải chờ
+
+        var sendTask = SendHighestPriorityStreamAsync(client, "m1");
+        try
+        {
+            // Head về ngay khi còn queued (early-headers) — nếu không thì flush ở điểm sai
+            var resp = await sendTask.WaitAsync(TimeSpan.FromSeconds(2));
+            var streamId = resp.Headers.GetValues("X-Request-Id").Single();
+
+            await WaitUntilAsync(() =>
+                    EventsOf(streamId).Any(e => e.Priority == RequestPriority.Highest)
+                    && EventsOf(streamId).Any(e => e.HeadersSent == true),
+                "feed phải có Received-đang-mang-Highest lẫn HeadersSent khi request còn queued");
+
+            // Apply đúng đường UI: RequestTrace.ApplyEvent → TraceNodeAggregator.Apply
+            var agg = new TraceNodeAggregator(TimeSpan.FromSeconds(10));
+            foreach (var e in EventsOf(streamId))
+                agg.Apply(e);
+
+            var node = agg.Nodes[streamId];
+            // Badge column chỉ render cho group Hàng đợi — node phải còn đứng đó
+            Assert.Equal(TraceStage.Received, node.Stage);
+            Assert.Equal(TraceAnchor.Queue, TraceNodeAggregator.AnchorOf(node));
+            // …và đủ dữ liệu cho cả 2 badge (priority tag + headers)
+            Assert.Equal(RequestPriority.Highest, node.Priority);
+            Assert.Equal("trace-tag--prio-highest", TraceNodeAggregator.PriorityTag(node.Priority));
+            Assert.True(node.HeadersSent);
+        }
+        finally
+        {
+            upstream.Release();
+            await holding.WaitAsync(TimeSpan.FromSeconds(5));
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await (await sendTask.WaitAsync(TimeSpan.FromSeconds(5)))
+                    .Content.CopyToAsync(Stream.Null, cts.Token);
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException
+                                       or HttpRequestException or IOException)
+            {
+                // Best-effort dọn ở finally — không được che lỗi chính của test
+            }
+        }
     }
 }

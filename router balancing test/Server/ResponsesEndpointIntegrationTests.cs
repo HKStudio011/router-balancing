@@ -91,7 +91,7 @@ public class ResponsesEndpointIntegrationTests : IDisposable
         }
 
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, CancellationToken ct)
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             lock (_paths) _paths.Add(path);
             return Task.FromResult(factory(provider));

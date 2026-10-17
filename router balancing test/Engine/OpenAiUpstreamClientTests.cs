@@ -20,7 +20,7 @@ public class OpenAiUpstreamClientTests
     };
 
     private sealed record CapturedRequest(HttpMethod Method, Uri? Uri, string? AuthScheme,
-        string? AuthParam, string? ContentType, byte[] Body);
+        string? AuthParam, string? ContentType, byte[] Body, string? IdempotencyKey);
 
     private sealed class FixedHandler(HttpResponseMessage response, Action<CapturedRequest> capture)
         : HttpMessageHandler
@@ -34,7 +34,10 @@ public class OpenAiUpstreamClientTests
                 : request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
             capture(new CapturedRequest(request.Method, request.RequestUri,
                 request.Headers.Authorization?.Scheme, request.Headers.Authorization?.Parameter,
-                request.Content?.Headers.ContentType?.ToString(), body));
+                request.Content?.Headers.ContentType?.ToString(), body,
+                request.Headers.TryGetValues("Idempotency-Key", out var keys)
+                    ? keys.Single()
+                    : null));
             return Task.FromResult(response);
         }
     }
@@ -70,7 +73,8 @@ public class OpenAiUpstreamClientTests
         var sut = new OpenAiUpstreamClient(new FixedFactory(client));
         var body = Encoding.UTF8.GetBytes("""{"model":"m","messages":[]}""");
 
-        await sut.PostAsync(P(), "sk-live", "/v1/chat/completions", body, CancellationToken.None);
+        await sut.PostAsync(P(), "sk-live", "/v1/chat/completions", body, "req-1",
+            CancellationToken.None);
 
         Assert.NotNull(captured);
         Assert.Equal(HttpMethod.Post, captured.Method);
@@ -80,6 +84,8 @@ public class OpenAiUpstreamClientTests
         Assert.Equal("sk-live", captured.AuthParam);
         Assert.StartsWith("application/json", captured.ContentType);
         Assert.Equal(body, captured.Body);
+        // Idempotency-Key = request id gốc — provider dedupe retry/failover replay (lọt request)
+        Assert.Equal("req-1", captured.IdempotencyKey);
     }
 
     [Fact]
@@ -88,7 +94,8 @@ public class OpenAiUpstreamClientTests
         var client = new HttpClient(new FixedHandler(SseResponse(), _ => { }));
         var sut = new OpenAiUpstreamClient(new FixedFactory(client));
 
-        var response = await sut.PostAsync(P(), "k", "/v1/chat/completions", [], CancellationToken.None);
+        var response = await sut.PostAsync(P(), "k", "/v1/chat/completions", [], "req-2",
+            CancellationToken.None);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("text/event-stream", response.Content.Headers.ContentType!.MediaType);
@@ -103,7 +110,7 @@ public class OpenAiUpstreamClientTests
         var client = new HttpClient(new FixedHandler(response, _ => { }));
         var sut = new OpenAiUpstreamClient(new FixedFactory(client));
 
-        await sut.PostAsync(P(), "k", "/v1/chat/completions", [], CancellationToken.None);
+        await sut.PostAsync(P(), "k", "/v1/chat/completions", [], "req-3", CancellationToken.None);
 
         // ResponseContentRead sẽ load body vào bộ nhớ trước khi trả về (SerializeToStreamAsync chạy)
         Assert.False(tracking.WasRead);

@@ -81,6 +81,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
             catch (Exception ex) when (IsProxyConnectFailure(ex))
             {
                 lastFailure = ex;
+                LogFailover(pick, request, ex);
                 if (_pool.ReportFailure(pick.Id))
                 {
                     LogDown(pick, ex);
@@ -107,6 +108,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
                 response.Dispose();
                 lastFailure = new HttpRequestException(
                     "The proxy server returned HTTP 407 (Proxy Authentication Required).");
+                LogFailover(pick, request, lastFailure);
                 if (_pool.ReportFailure(pick.Id))
                 {
                     LogDown(pick, lastFailure);
@@ -198,6 +200,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
                 catch (Exception ex) when (IsProxyConnectFailure(ex))
                 {
                     lastFailure = ex;
+                    LogFailover(pick, request, ex);
                     if (_pool.ReportFailure(pick.Id))
                     {
                         LogDown(pick, ex);
@@ -218,6 +221,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
                     response.Dispose();
                     var fail = new HttpRequestException(
                         "The proxy server returned HTTP 407 (Proxy Authentication Required).");
+                    LogFailover(pick, request, fail);
                     if (_pool.ReportFailure(pick.Id))
                     {
                         LogDown(pick, fail);
@@ -245,6 +249,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
             }
             catch (Exception ex) when (IsProxyConnectFailure(ex))
             {
+                LogFailover(pick, request, ex);
                 if (_pool.ReportFailure(pick.Id))
                 {
                     LogDown(pick, ex);
@@ -265,6 +270,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
                 response.Dispose();
                 var fail = new HttpRequestException(
                     "The proxy server returned HTTP 407 (Proxy Authentication Required).");
+                LogFailover(pick, request, fail);
                 if (_pool.ReportFailure(pick.Id))
                 {
                     LogDown(pick, fail);
@@ -324,4 +330,13 @@ public sealed class ProxyHealthHandler : DelegatingHandler
         // Chỉ khi ReportFailure trả true (sống→down) — không lặp mỗi request (spec §7);
         // message KHÔNG chứa credentials, chỉ endpoint + nội dung lỗi
         _log.Warn($"Proxy {pick.Endpoint} đánh dấu down 60s sau lỗi kết nối: {ex.Message}");
+
+    /// <summary>
+    /// Log Warn cho MỌI lần failover — khác <see cref="LogDown"/> (chỉ alive→down): lần
+    /// gửi lại request qua proxy kế/direct phải có dấu vết để chẩn đoán request bị lọt
+    /// (provider nhận 2 lần — reset sau khi body đã gửi vẫn replay). Không chứa credentials/body.
+    /// </summary>
+    private void LogFailover(ProxyAttempt pick, HttpRequestMessage request, Exception failure) =>
+        _log.Warn($"Proxy failover từ {pick.Endpoint}: {failure.Message} — gửi lại request "
+            + $"({request.Method} {request.RequestUri?.PathAndQuery}) qua proxy kế/direct.");
 }
