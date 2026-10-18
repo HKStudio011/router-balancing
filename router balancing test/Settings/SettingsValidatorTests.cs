@@ -14,6 +14,7 @@ public class SettingsValidatorTests
         StatsErrorRateThreshold = 10,
         TransientMaxRetries = 5,
         TransientBackoffBaseMs = 1000,
+        UpstreamIdleTimeoutSec = 300,
     };
 
     [Fact]
@@ -101,5 +102,29 @@ public class SettingsValidatorTests
         Assert.Equal("settings.error.transientBackoffBase", low[nameof(SettingsDraft.TransientBackoffBaseMs)]);
         Assert.Equal("settings.error.transientRetries", high[nameof(SettingsDraft.TransientMaxRetries)]);
         Assert.Equal("settings.error.transientBackoffBase", high[nameof(SettingsDraft.TransientBackoffBaseMs)]);
+    }
+
+    [Fact]
+    public void Validate_WhenUpstreamIdleTimeoutAtRangeEdges_ReturnsEmpty()
+    {
+        // 0 hợp lệ = tắt watchdog; 3600 = max hợp lệ
+        var errors = SettingsValidator.Validate(ValidDraft() with
+        {
+            UpstreamIdleTimeoutSec = 0,
+        });
+        Assert.Empty(errors);
+
+        errors = SettingsValidator.Validate(ValidDraft() with { UpstreamIdleTimeoutSec = 3600 });
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Validate_WhenUpstreamIdleTimeoutOutOfRange_ReturnsError()
+    {
+        var low = SettingsValidator.Validate(ValidDraft() with { UpstreamIdleTimeoutSec = -1 });
+        var high = SettingsValidator.Validate(ValidDraft() with { UpstreamIdleTimeoutSec = 3601 });
+
+        Assert.Equal("settings.error.upstreamIdleTimeout", low[nameof(SettingsDraft.UpstreamIdleTimeoutSec)]);
+        Assert.Equal("settings.error.upstreamIdleTimeout", high[nameof(SettingsDraft.UpstreamIdleTimeoutSec)]);
     }
 }

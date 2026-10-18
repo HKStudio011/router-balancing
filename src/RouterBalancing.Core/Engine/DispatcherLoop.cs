@@ -267,7 +267,19 @@ public sealed class DispatcherLoop(
                 // Log bọc INLINE: nếu ném, outcome sẽ không bao giờ ghi → endpoint treo vĩnh viễn (I2)
                 try
                 {
-                    log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
+                    // Ghi kèm RequestId/ProviderKey/ModelKey + stack (Details) — dòng "Lỗi dispatcher"
+                    // không correlation thì không truy được request/provider nào chết
+                    log.Write(new LogEntry
+                    {
+                        Severity = LogSeverity.Error,
+                        Category = LogCategory.Request,
+                        Message = $"Lỗi dispatcher: {ex.Message}",
+                        Details = ex.ToString(),
+                        ErrorCode = ex.GetType().Name,
+                        RequestId = request.Id,
+                        ProviderKey = candidate.Provider.Name,
+                        ModelKey = candidate.Model.ModelId,
+                    });
                 }
                 catch
                 {
@@ -510,7 +522,16 @@ public sealed class DispatcherLoop(
     {
         try
         {
-            log.Error($"Lỗi dispatcher: {ex.Message}", ex, LogCategory.Request);
+            // Ghi kèm RequestId + stack để truy được request nào chết (nơi này chưa có candidate scope)
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Error,
+                Category = LogCategory.Request,
+                Message = $"Lỗi dispatcher: {ex.Message}",
+                Details = ex.ToString(),
+                ErrorCode = ex.GetType().Name,
+                RequestId = request.Id,
+            });
         }
         catch
         {

@@ -324,8 +324,16 @@ public static class ProxyApp
             success = false;
             status = 500;
         }
+        // FailureKind "network" cho stream chết khi client còn nối (#7 contentBytes=0 và
+        // #8 contentBytes>0 — cả hai đều upstream/network, KHÔNG phải client cancel): journal
+        // ghi Error/network thay vì Cancelled để stats ErrorRate không nuốt lỗi. Monitor không
+        // đổi (store không đọc FailureKind của terminal). Client cancel thật → null như cũ.
+        var failureKind = prepared.IsStream && outcome is DispatchOutcome.Aborted
+            && !ctx.RequestAborted.IsCancellationRequested
+            ? "network"
+            : null;
         trace.Publish(new TraceEvent(id, stage, prepared.ModelId,
-            null, null, status, success, null, DateTimeOffset.Now));
+            null, null, status, success, failureKind, DateTimeOffset.Now));
 
         if (ssePipe is not null)
         {

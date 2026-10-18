@@ -67,8 +67,19 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
         var buffer = new byte[16 * 1024];
         byte[] carry = [];
         int read;
-        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+        while (true)
         {
+            try
+            {
+                read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Dest chỉ ghi MỘT lần ở cuối — mọi lỗi đọc đều pre-content (marker)
+                throw new UpstreamDiedBeforeContentException(ex);
+            }
+            if (read <= 0) break;
+
             state.FirstTokenAt ??= DateTimeOffset.UtcNow;
             var combined = new byte[carry.Length + read];
             Buffer.BlockCopy(carry, 0, combined, 0, carry.Length);

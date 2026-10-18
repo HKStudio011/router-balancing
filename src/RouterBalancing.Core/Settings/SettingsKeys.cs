@@ -30,4 +30,7 @@ public static class SettingsKeys
 
     /// <summary>Đệm (base) backoff exponential cho retry transient — 250..4000 ms, mặc định 1000.</summary>
     public const string TransientBackoffBaseMs = "transientBackoffBaseMs";
+
+    /// <summary>Ngưỡng idle-read watchdog upstream — 0..3600 giây, mặc định 300 (0 = tắt watchdog).</summary>
+    public const string UpstreamIdleTimeoutSec = "upstreamIdleTimeoutSec";
 }

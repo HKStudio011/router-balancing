@@ -28,4 +28,6 @@ public sealed record SettingsDraft
     public int TransientMaxRetries { get; set; } = 5;
 
     public int TransientBackoffBaseMs { get; set; } = 1000;
+
+    public int UpstreamIdleTimeoutSec { get; set; } = 300;
 }

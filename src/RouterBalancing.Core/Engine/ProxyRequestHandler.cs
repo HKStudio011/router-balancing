@@ -7,6 +7,7 @@ using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
+using RouterBalancing.Core.Settings;
 
 namespace RouterBalancing.Core.Engine;
 
@@ -22,7 +23,8 @@ public sealed class ProxyRequestHandler(
     ISecretProtector protector,
     ILogService log,
     IClientKeyUsageSink usageSink,
-    IApiMonitorStore monitor)
+    IApiMonitorStore monitor,
+    IAppSettingsService settings)
 {
     /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
     /// <param name="ModelId">Model id đã validate (resolve alias tại dispatcher).</param>
@@ -118,6 +120,11 @@ public sealed class ProxyRequestHandler(
         // Đặt context proxy TRƯỚC khi gọi handler (upstream.PostAsync) —
         // ProxyHealthHandler đọc ProxyTarget.Current để dispatch theo assignment.
         ProxyTarget.Current.Value = new ProxyTarget(provider, account);
+        // Linked tới RequestAborted: khi handler cắt (upstream chết giữa chừng) Cancel() đóng kết
+        // nối HTTP tới upstream NGAY — chuẩn OpenAI SDK: không có cancel endpoint cho streaming
+        // chat (openai-openapi đã xác minh) nên "cancel" = abort kết nối. Hủy TRƯỚC khi
+        // outcome/exception rời handler, trước khi endpoint ghi lỗi cho client (cancel-before-error).
+        using var upstreamCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         try
         {
             // Rewrite protocol-specific (alias→model id thật, inject usage flags cho chat) —
@@ -130,7 +137,7 @@ public sealed class ProxyRequestHandler(
             try
             {
                 response = await upstream.PostAsync(provider, key, protocol.UpstreamPath, requestBody,
-                    requestId, ct);
+                    requestId, upstreamCts.Token);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                        && !ctx.RequestAborted.IsCancellationRequested)
@@ -183,17 +190,52 @@ public sealed class ProxyRequestHandler(
                     // Nhưng RecordResponse chạy SAU tee nên mid-stream fail mất TTFT/ResponseBody —
                     // ghi RecordError(0) để popup có FailureKind=network thay vì trống.
                     UsageCapture.TeeResult tee;
+                    // Watchdog idle-read (setting upstreamIdleTimeoutSec — 0 = tắt; đọc mỗi lần
+                    // bắt đầu stream): bọc content tại seam duy nhất để MỌI điểm đọc (usage tee,
+                    // aggregate, protocol) đi qua IdleWatchdogStream — chống treo vô hạn khi
+                    // HttpClient.Timeout = infinite (upstream im lặng không RST → đen màn hình).
+                    var idleSec = settings.UpstreamIdleTimeoutSec;
+                    var teeContent = idleSec > 0
+                        ? new UpstreamWatchdogContent(response.Content, TimeSpan.FromSeconds(idleSec))
+                        : response.Content;
                     try
                     {
                         // Stream sau flush: dest là pipe endpoint đặt tại flush point — endpoint
                         // là tay duy nhất ghi Response.Body và completer duy nhất của pipe, nên
                         // handler KHÔNG dispose/Complete writer ở đây (spec early-headers §3.2).
                         tee = aggregate
-                            ? await protocol.AggregateSseAsync(response.Content, dest, ct)
-                            : await protocol.TeeAsync(response.Content, dest, ct);
+                            ? await protocol.AggregateSseAsync(teeContent, dest, upstreamCts.Token)
+                            : await protocol.TeeAsync(teeContent, dest, upstreamCts.Token);
+                    }
+                    catch (UpstreamDiedBeforeContentException ex) when (!ctx.RequestAborted.IsCancellationRequested)
+                    {
+                        // Hủy kết nối upstream NGAY (cancel-before-error): không thì response sống
+                        // tới khi dispose, upstream vẫn sinh token sau khi attempt đã đi tiếp
+                        upstreamCts.Cancel();
+                        // Upstream cắt TRƯỚC byte content nào — retry an toàn vì client chưa nhận gì;
+                        // trả Fatal(Provider, Status null) → dispatcher retry transient rồi failover,
+                        // cùng contract với lỗi kết nối lúc gửi (spec exhaustive-failover §3.1).
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Error,
+                            Category = LogCategory.Request,
+                            Message = $"Upstream '{provider.Name}' cắt kết nối trước khi gửi content — sẽ retry/failover.",
+                            Details = (ex.InnerException ?? ex).ToString(),
+                            ErrorCode = (ex.InnerException ?? ex).GetType().Name,
+                            RequestId = ClientKeyItems.RequestIdOf(ctx),
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                        // status 0 → store ghi FailureKind "network" (popup hiển thị đúng nhóm lỗi)
+                        monitor.RecordError(requestId, 0, null);
+                        return new DispatchOutcome.Fatal(FailoverLevel.Provider, null, null, [], null);
                     }
                     catch
                     {
+                        // Hủy kết nối upstream TRƯỚC khi exception rời handler — endpoint và
+                        // dispatcher mới ghi lỗi cho client sau đó (cancel-before-error, chuẩn
+                        // OpenAI SDK: cancel = abort kết nối HTTP — không có cancel endpoint
+                        // cho streaming chat); idempotent khi token đã hủy vì client ngắt
+                        upstreamCts.Cancel();
                         // Client cancel mid-stream không phải lỗi mạng — chỉ ghi RecordError
                         // khi client còn nối (upstream chết giữa chừng). Bỏ guard này thì row
                         // Canceled bị gắn FailureKind=network gây nhầm lẫn khi chẩn đoán.

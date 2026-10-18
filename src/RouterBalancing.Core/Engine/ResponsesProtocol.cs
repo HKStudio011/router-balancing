@@ -88,7 +88,15 @@ internal sealed class ResponsesProtocol : IProxyProtocol
             return await TeeSseAsync(stream, dest, ct);
 
         var bytes = new MemoryStream();
-        await stream.CopyToAsync(bytes, ct);
+        try
+        {
+            await stream.CopyToAsync(bytes, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Buffer-only — dest chưa nhận byte nào nên mọi lỗi đọc đều là pre-content (marker)
+            throw new UpstreamDiedBeforeContentException(ex);
+        }
         var payload = bytes.ToArray();
         await dest.WriteAsync(payload, ct);
         // DecodeCapped cắt BYTE trước khi decode + marker đúng 1 lần — semantics cap monitor dùng chung (spec §4.3)
@@ -107,8 +115,19 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         var buffer = new byte[16 * 1024];
         byte[] carry = [];
         int read;
-        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+        while (true)
         {
+            try
+            {
+                read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Dest chỉ ghi MỘT lần ở cuối — mọi lỗi đọc đều pre-content (marker)
+                throw new UpstreamDiedBeforeContentException(ex);
+            }
+            if (read <= 0) break;
+
             var combined = new byte[carry.Length + read];
             Buffer.BlockCopy(carry, 0, combined, 0, carry.Length);
             Buffer.BlockCopy(buffer, 0, combined, carry.Length, read);
@@ -140,11 +159,25 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         var state = new ResponsesSseState();
         try
         {
+            var wroteAny = false;
             int read;
-            while ((read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+            while (true)
             {
+                try
+                {
+                    read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                }
+                catch (Exception ex) when (!wroteAny && ex is not OperationCanceledException)
+                {
+                    // Chết trước byte đầu tới client → marker failover/retry;
+                    // đã có byte trên wire (wroteAny) → giữ IOException gốc (mid-content không retry)
+                    throw new UpstreamDiedBeforeContentException(ex);
+                }
+                if (read <= 0) break;
+
                 // Ghi NGUYÊN chunk cho client TRƯỚC khi parse — byte-forward không đổi (spec §4.4)
                 await dest.WriteAsync(buffer.AsMemory(0, read), ct);
+                wroteAny = true;
                 CaptureHead(capture, buffer, read);
 
                 var combined = new byte[carry.Length + read];

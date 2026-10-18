@@ -515,7 +515,7 @@ public class ProxyRetryIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Stream_WhenUpstreamDiesBeforeContent_ReturnsServerFaultInBandAndRedRow()
+    public async Task Stream_WhenUpstreamDiesBeforeContent_Emits502InBandAndErrorRow()
     {
         SeedProvider("p-main", maxConcurrent: 4, "m1");
         var upstream = new ScriptedUpstream((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
@@ -526,16 +526,49 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("text/event-stream", resp.Content.Headers.ContentType!.MediaType);
 
+        // Chết pre-content → Fatal(Provider, Status null) — baseline TransientMaxRetries=0 và
+        // chỉ 1 provider → hết retry/failover ngay, exhaustion ra 502 như lỗi mạng khác
         var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Contains("\"code\":\"server_error\"", body);
-        Assert.Contains("\"type\":\"error\"", body);
+        Assert.Contains("\"status\":502", body);
+        Assert.Contains("Upstream provider request failed", body);
         Assert.DoesNotContain("[DONE]", body);
+        Assert.Equal(1, upstream.Calls);
 
-        // Override đỏ #7: Aborted mà 0 byte content (client còn nối) → Finished/Error, status 500
         var id = resp.Headers.GetValues("X-Request-Id").Single();
         var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
         Assert.Equal(ApiCallState.Error, record!.State);
-        Assert.Equal(500, record.Status);
+        Assert.Equal(502, record.Status);
+        Assert.Equal("network", record.FailureKind);
+    }
+
+    [Fact]
+    public async Task Stream_WhenUpstreamDiesBeforeContent_RetriesSameRouteAndSucceeds()
+    {
+        SeedProvider("p-main", maxConcurrent: 4, "m1");
+        // Opt-in transient (baseline của lớp là 0) — attempt 1 chết pre-content phải
+        // retry CÙNG route thành công thay vì fail request
+        _settings.Set(SettingsKeys.TransientMaxRetries, 1);
+        _settings.Set(SettingsKeys.TransientBackoffBaseMs, 250);
+        var attempt = 0;
+        var upstream = new ScriptedUpstream((_, _) =>
+            Interlocked.Increment(ref attempt) == 1
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ThrowingContent(writeFirst: false) }
+                : Sse());
+        var client = await StartAsync(upstream);
+
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        // Client nhận trọn stream như upstream chưa từng chết — không thấy event lỗi nào
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("data: {\"x\":1}", body);
+        Assert.Contains("[DONE]", body);
+        Assert.Equal(2, upstream.Calls);
+
+        var id = resp.Headers.GetValues("X-Request-Id").Single();
+        var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
+        Assert.Equal(ApiCallState.Done, record!.State);
+        Assert.Equal(200, record.Status);
     }
 
     [Fact]
@@ -562,6 +595,9 @@ public class ProxyRetryIntegrationTests : IDisposable
         var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
         Assert.Equal(ApiCallState.Cancelled, record!.State);
         Assert.Equal("network", record.FailureKind);
+
+        // Đã có byte trên wire → KHÔNG retry (không attempt nào sau attempt đầu)
+        Assert.Equal(1, upstream.Calls);
     }
 
     [Fact]

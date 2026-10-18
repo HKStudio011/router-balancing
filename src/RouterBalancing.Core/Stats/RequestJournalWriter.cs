@@ -88,7 +88,12 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
                     WriteTerminal(e, e.Success == true ? RequestOutcome.Ok : RequestOutcome.Error);
                     break;
                 case TraceStage.Canceled:
-                    WriteTerminal(e, RequestOutcome.Cancelled);
+                    // Stream chết giữa chừng khi client còn nối (ProxyApp ghi FailureKind
+                    // "network") là LỖI — ghi Error để stats ErrorRate không nuốt; client
+                    // cancel thật (FailureKind null) giữ nguyên Cancelled như cũ
+                    WriteTerminal(e, e.FailureKind == "network"
+                        ? RequestOutcome.Error
+                        : RequestOutcome.Cancelled);
                     break;
                 // Parked: marker Live Trace, không phải terminal — không journal
             }
@@ -194,10 +199,11 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
             RequestId = e.RequestId,
             DurationMs = durationMs,
             ClientKeyId = pending.ClientKeyId,
-            // Terminal không mang FailureKind — writer tự suy ra từ Status (mirror ApiMonitorStore.RecordError)
+            // FailureKind từ publisher (vd. "network" cho upstream cắt mid-stream) override
+            // suy ra từ Status — request stream chết có status 200/500 nhưng gốc là lỗi mạng
             ErrorCode = outcome switch
             {
-                RequestOutcome.Error => e.Status is > 0 ? "http" : "network",
+                RequestOutcome.Error => e.FailureKind ?? (e.Status is > 0 ? "http" : "network"),
                 _ => null,
             },
             Outcome = outcome,

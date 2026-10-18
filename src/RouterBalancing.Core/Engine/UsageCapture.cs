@@ -85,7 +85,16 @@ public static class UsageCapture
             return await TeeSseAsync(stream, dest, ct);
 
         var bytes = new MemoryStream();
-        await stream.CopyToAsync(bytes, ct);
+        try
+        {
+            await stream.CopyToAsync(bytes, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Buffer-only — dest chưa nhận byte nào nên mọi lỗi đọc đều là pre-content:
+            // marker cho handler failover/retry thay vì abort request (xem exception)
+            throw new UpstreamDiedBeforeContentException(ex);
+        }
         var payload = bytes.ToArray();
         await dest.WriteAsync(payload, ct);
         var body = Encoding.UTF8.GetString(payload);
@@ -104,13 +113,27 @@ public static class UsageCapture
         DateTimeOffset? firstTokenAt = null;
         try
         {
+            var wroteAny = false;
             int read;
-            while ((read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+            while (true)
             {
+                try
+                {
+                    read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                }
+                catch (Exception ex) when (!wroteAny && ex is not OperationCanceledException)
+                {
+                    // Chết trước byte đầu tới client → marker failover/retry;
+                    // đã có byte trên wire (wroteAny) → giữ IOException gốc (mid-content không retry)
+                    throw new UpstreamDiedBeforeContentException(ex);
+                }
+                if (read <= 0) break;
+
                 // TTFT phải tính tại thời điểm byte đầu tiên về — đặt ngay khi read > 0 (spec api-monitor §5)
                 firstTokenAt ??= DateTimeOffset.UtcNow;
                 // Ghi NGUYÊN chunk cho client TRƯỚC khi scan — byte-forward không đổi (spec §6.1)
                 await dest.WriteAsync(buffer.AsMemory(0, read), ct);
+                wroteAny = true;
 
                 var combined = new byte[carry.Length + read];
                 Buffer.BlockCopy(carry, 0, combined, 0, carry.Length);

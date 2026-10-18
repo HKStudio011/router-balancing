@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using RouterBalancing.Core.Domain;
@@ -263,5 +264,102 @@ public class UsageCaptureTests
         Assert.True(result.ResponseBody.Length <= 64 * 1024 + "[truncated]".Length,
             $"ResponseBody.Length = {result.ResponseBody.Length} vượt cap 64KB + marker");
         Assert.Equal(payload, Encoding.UTF8.GetString(dest.ToArray()));  // client vẫn nhận đủ 70KB
+    }
+
+    /// <summary>
+    /// Content SSE nổ khi đọc — <paramref name="deliverFirst"/> = chunk đầu đi qua rồi nổ
+    /// (mid-content); ngược lại nổ ngay lần đọc đầu (pre-content).
+    /// </summary>
+    private sealed class FlakySseContent : HttpContent
+    {
+        private readonly bool _deliverFirst;
+        private bool _delivered;
+
+        // TeeAsync rẽ theo Content-Type — thiếu header này sẽ rơi vào nhánh buffer (non-SSE)
+        public FlakySseContent(bool deliverFirst)
+        {
+            _deliverFirst = deliverFirst;
+            Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new FlakyStream(this));
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        private sealed class FlakyStream(FlakySseContent owner) : Stream
+        {
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush() { }
+
+            public override int Read(byte[] buffer, int offset, int count) =>
+                Deliver(buffer.AsSpan(offset, count));
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+                ValueTask.FromResult(Deliver(buffer.Span));
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+                CancellationToken ct) =>
+                Task.FromResult(Deliver(buffer.AsSpan(offset, count)));
+
+            private int Deliver(Span<byte> buffer)
+            {
+                if (owner._delivered)
+                    throw new IOException("upstream broke mid-chunk");
+                owner._delivered = true;
+                if (!owner._deliverFirst)
+                    throw new IOException("upstream reset before content");
+                var bytes = Encoding.UTF8.GetBytes("data: {\"x\":1}\n\n");
+                bytes.CopyTo(buffer);
+                return bytes.Length;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) =>
+                throw new NotSupportedException();
+        }
+    }
+
+    [Fact]
+    public async Task Tee_SseDiesBeforeFirstByte_ThrowsMarkerAndForwardsNothing()
+    {
+        using var content = new FlakySseContent(deliverFirst: false);
+        using var dest = new MemoryStream();
+
+        var ex = await Assert.ThrowsAsync<UpstreamDiedBeforeContentException>(() =>
+            UsageCapture.TeeAsync(content, dest, CancellationToken.None));
+
+        Assert.IsType<IOException>(ex.InnerException);
+        Assert.Empty(dest.ToArray());  // client chưa nhận gì — retry/failover an toàn
+    }
+
+    [Fact]
+    public async Task Tee_SseDiesAfterFirstByte_RethrowsOriginalIOException()
+    {
+        using var content = new FlakySseContent(deliverFirst: true);
+        using var dest = new MemoryStream();
+
+        // Đã có byte trên wire → giữ nguyên IOException gốc (không marker → không retry)
+        await Assert.ThrowsAsync<IOException>(() =>
+            UsageCapture.TeeAsync(content, dest, CancellationToken.None));
+
+        Assert.NotEmpty(dest.ToArray());
     }
 }
