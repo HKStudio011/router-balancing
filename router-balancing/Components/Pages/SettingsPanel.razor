@@ -189,6 +189,11 @@
             <input class="rounded border border-border bg-surface px-2 py-1.5"
                    type="number" @bind="_draft.TransientBackoffBaseMs" />
         </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.upstreamIdleTimeout"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.UpstreamIdleTimeoutSec" />
+        </label>
     </div>
 
     @if (Error(nameof(SettingsDraft.ProviderProbeTimeoutSec)) is { } probeTimeoutError)
@@ -202,6 +207,10 @@
     @if (Error(nameof(SettingsDraft.TransientBackoffBaseMs)) is { } transientBackoffBaseError)
     {
         <div class="mt-1 text-sm text-danger">@L[transientBackoffBaseError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.UpstreamIdleTimeoutSec)) is { } upstreamIdleTimeoutError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[upstreamIdleTimeoutError]</div>
     }
 
     <button class="btn btn-primary mt-3" @onclick="SaveEngine">@L["settings.action.save"]</button>
@@ -316,6 +325,7 @@
         nameof(SettingsDraft.ProviderProbeTimeoutSec),
         nameof(SettingsDraft.TransientMaxRetries),
         nameof(SettingsDraft.TransientBackoffBaseMs),
+        nameof(SettingsDraft.UpstreamIdleTimeoutSec),
     ];
     private static readonly string[] DataFields =
     [
@@ -361,6 +371,7 @@
         ProviderProbeTimeoutSec = Settings.ProviderProbeTimeoutSec,
         TransientMaxRetries = Settings.TransientMaxRetries,
         TransientBackoffBaseMs = Settings.TransientBackoffBaseMs,
+        UpstreamIdleTimeoutSec = Settings.UpstreamIdleTimeoutSec,
         LogRetentionDays = Settings.LogRetentionDays,
         StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
     };
@@ -461,6 +472,7 @@
         Settings.Set(SettingsKeys.ProviderProbeTimeoutSec, _draft.ProviderProbeTimeoutSec);
         Settings.Set(SettingsKeys.TransientMaxRetries, _draft.TransientMaxRetries);
         Settings.Set(SettingsKeys.TransientBackoffBaseMs, _draft.TransientBackoffBaseMs);
+        Settings.Set(SettingsKeys.UpstreamIdleTimeoutSec, _draft.UpstreamIdleTimeoutSec);
         // Engine đọc setting mỗi request qua SettingsChanged — giá trị mới áp dụng ngay
         Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
     }
