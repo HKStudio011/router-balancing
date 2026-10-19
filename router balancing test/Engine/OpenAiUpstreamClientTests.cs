@@ -115,4 +115,51 @@ public class OpenAiUpstreamClientTests
         // ResponseContentRead sẽ load body vào bộ nhớ trước khi trả về (SerializeToStreamAsync chạy)
         Assert.False(tracking.WasRead);
     }
+
+    private const string RenamedBody =
+        """{"model":"m","tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]}""";
+
+    private const string BashCallSse =
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+        "\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+        "data: [DONE]\n\n";
+
+    [Fact]
+    public async Task PostAsync_OpenCodeRenamedQuartet_RestoresClientToolNamesInStream()
+    {
+        // Client khai "Bash" → request bị fingerprint đổi thành "bash"; response trả "bash"
+        // PHẢI map ngược về "Bash" trước khi tới client, nếu không opencode báo invalid tool.
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(BashCallSse, Encoding.UTF8, "text/event-stream"),
+        };
+        var sut = new OpenAiUpstreamClient(
+            new FixedFactory(new HttpClient(new FixedHandler(response, _ => { }))));
+
+        var result = await sut.PostAsync(P("https://opencode.ai/zen"), "k",
+            "/v1/chat/completions", Encoding.UTF8.GetBytes(RenamedBody), "req-4",
+            CancellationToken.None);
+
+        var text = await result.Content.ReadAsStringAsync();
+        Assert.Contains("\"name\":\"Bash\"", text);
+        Assert.DoesNotContain("\"name\":\"bash\"", text);
+    }
+
+    [Fact]
+    public async Task PostAsync_NonOpenCodeProvider_KeepsStreamUntouched()
+    {
+        // Không phải opencode.ai → không bọc response (byte-forward nguyên vẹn)
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(BashCallSse, Encoding.UTF8, "text/event-stream"),
+        };
+        var sut = new OpenAiUpstreamClient(
+            new FixedFactory(new HttpClient(new FixedHandler(response, _ => { }))));
+
+        var result = await sut.PostAsync(P(), "k", "/v1/chat/completions",
+            Encoding.UTF8.GetBytes(RenamedBody), "req-5", CancellationToken.None);
+
+        Assert.IsType<StringContent>(result.Content);
+        Assert.Equal(BashCallSse, await result.Content.ReadAsStringAsync());
+    }
 }
