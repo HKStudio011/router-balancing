@@ -11,6 +11,12 @@ public enum FreeDetectKind
 
     /// <summary>Mọi model trong response đều free (NVIDIA NIM, Ollama Cloud — không có field pricing).</summary>
     AllFree,
+
+    /// <summary>
+    /// Detect theo catalog riêng <c>models.opencode.ai/api.json</c> (spec opencode-tools-page §6.2) —
+    /// response KHÔNG theo OpenAI shape nên đi nhánh parse <c>FreeModelDetector.ParseOpenCodeCatalog</c>.
+    /// </summary>
+    OpenCodeCatalog,
 }
 
 /// <summary>
@@ -21,12 +27,14 @@ public enum FreeDetectKind
 public static class FreeProviderCatalog
 {
     /// <summary>1 preset free: tên hiển thị (đồng thời là khóa match), gốc URL, cách detect free.</summary>
-    public sealed record Entry(string DisplayName, string BaseUrl, FreeDetectKind DetectKind);
+    /// <param name="CatalogUrl">Nguồn catalog riêng (absolute URL) khi <paramref name="DetectKind"/> là
+    /// <see cref="FreeDetectKind.OpenCodeCatalog"/>; null cho các preset dùng models endpoint thường (spec §6.1).</param>
+    public sealed record Entry(string DisplayName, string BaseUrl, FreeDetectKind DetectKind, string? CatalogUrl = null);
 
     /// <summary>4 preset seed lúc khởi động — thứ tự = thứ tự insert (spec §4).</summary>
     public static readonly IReadOnlyList<Entry> Entries =
     [
-        new("OpenCode Free", "https://opencode.ai/zen", FreeDetectKind.FreeSuffix),
+        new("OpenCode Free", "https://opencode.ai/zen", FreeDetectKind.OpenCodeCatalog, "https://models.opencode.ai/api.json"),
         new("OpenRouter Free", "https://openrouter.ai/api", FreeDetectKind.PricingZeroOrFreeSuffix),
         new("NVIDIA NIM Free", "https://integrate.api.nvidia.com", FreeDetectKind.AllFree),
         new("Ollama Cloud Free", "https://ollama.com", FreeDetectKind.AllFree),
@@ -39,4 +47,16 @@ public static class FreeProviderCatalog
     /// <returns><see langword="null"/> nếu không match — user đã đổi tên preset.</returns>
     public static Entry? FindByDisplayName(string displayName) =>
         Entries.FirstOrDefault(e => string.Equals(e.DisplayName, displayName, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Tra catalog theo BaseUrl canonical (rename-safe cho trang Tools, spec opencode-tools-page C4/C7):
+    /// user đổi tên preset vẫn nhận diện được preset free.
+    /// </summary>
+    /// <returns><see langword="null"/> nếu BaseUrl không khớp preset free nào.</returns>
+    public static Entry? FindByBaseUrl(string baseUrl)
+    {
+        var canonical = ProviderUrl.Canonicalize(baseUrl);
+        return Entries.FirstOrDefault(e =>
+            string.Equals(e.BaseUrl, canonical, StringComparison.OrdinalIgnoreCase));
+    }
 }
