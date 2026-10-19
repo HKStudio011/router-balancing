@@ -19,6 +19,19 @@ public sealed class ClientKeyUsageSink(
         {
             await keys.RecordTokensAsync(id, promptTokens, completionTokens, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Client ngắt đúng lúc ghi (race sau khi upstream đã trả xong): request không còn
+            // người nhận, DB hủy theo token — không phải lỗi DB (spec §10 chỉ log Error cho
+            // lỗi DB thật). Không nuốt im lặng: ghi Debug để còn dấu vết khi soi counter.
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Debug,
+                Category = LogCategory.Request,
+                Message = "Request đã hủy — bỏ qua ghi usage counter cho client key.",
+                ClientKeyId = id,
+            });
+        }
         catch (Exception ex)
         {
             // Fail-open: counter là telemetry — DB lỗi không được phá request đã 2xx (spec §10)
