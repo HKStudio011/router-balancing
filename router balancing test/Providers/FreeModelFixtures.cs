@@ -56,4 +56,64 @@ internal static class FreeModelFixtures
       ]
     }
     """;
+
+    /// <summary>Catalog models.opencode.ai — shape thật 2026-10-19 (rút gọn): free / half-free / paid / deprecated / toggle.</summary>
+    public const string OpenCodeCatalog = """
+    {
+      "opencode": {
+        "models": {
+          "big-pickle": { "name": "Big Pickle", "attachment": false, "tool_call": true, "reasoning": true,
+            "reasoning_options": [], "modalities": { "input": ["text"], "output": ["text"] },
+            "cost": { "input": 0, "output": 0, "cache_read": 0 }, "limit": { "context": 200000, "output": 32000 } },
+          "deepseek-v4.1-flash-free": { "name": "DeepSeek V4.1 Flash Free", "attachment": true, "tool_call": true, "reasoning": true,
+            "reasoning_options": [ { "type": "effort", "values": ["low", "high", "max"] } ],
+            "modalities": { "input": ["text", "image"], "output": ["text"] },
+            "cost": { "input": 0, "output": 0 }, "limit": { "context": 200000, "output": 32000 } },
+          "toggle-model": { "tool_call": true, "reasoning": true,
+            "reasoning_options": [ { "type": "toggle" } ],
+            "cost": { "input": 0, "output": 0 } },
+          "dead-model-free": { "cost": { "input": 0, "output": 0 }, "status": "deprecated" },
+          "paid-model": { "cost": { "input": 3, "output": 15 } },
+          "half-free": { "cost": { "input": 0, "output": 2 } }
+        }
+      }
+    }
+    """;
+
+    /// <summary>Catalog toàn model trả phí — detector lọc rỗng → guard không xoá list.</summary>
+    public const string OpenCodeCatalogAllPaid = """
+    { "opencode": { "models": { "paid-a": { "cost": { "input": 3, "output": 15 } } } } }
+    """;
+
+    /// <summary>2 entry THẬT từ snapshot (giữ field lạ: description/family/interleaved/provider/canonical_model_id/limit.input…)
+    /// + 1 model thật deprecated — chứng minh parser bỏ qua field lạ và map đúng shape sống.</summary>
+    public const string OpenCodeCatalogRealSlice = """
+    {
+      "opencode": {
+        "models": {
+          "big-pickle": { "id": "big-pickle", "name": "Big Pickle", "description": "Reasoning model for deliberate analysis",
+            "family": "big-pickle", "attachment": false, "reasoning": true, "reasoning_options": [], "tool_call": true,
+            "interleaved": { "field": "reasoning_content" }, "structured_output": true, "temperature": true,
+            "knowledge": "2025-01", "release_date": "2025-10-17", "last_updated": "2025-10-17",
+            "modalities": { "input": ["text"], "output": ["text"] }, "open_weights": false,
+            "limit": { "context": 200000, "input": 160000, "output": 32000 },
+            "provider": { "api": "https://opencode.ai/inference/openai/v1" },
+            "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 } },
+          "nemotron-3-ultra-free": { "id": "nemotron-3-ultra-free", "name": "Nemotron 3 Ultra Free", "family": "nemotron-free",
+            "attachment": false, "reasoning": true, "reasoning_options": [], "tool_call": true, "temperature": true,
+            "knowledge": "2026-02", "modalities": { "input": ["text"], "output": ["text"] }, "open_weights": true,
+            "limit": { "context": 1000000, "output": 128000 },
+            "provider": { "api": "https://opencode.ai/inference/openai/v1" },
+            "cost": { "input": 0, "output": 0, "cache_read": 0 },
+            "canonical_model_id": "nvidia/nemotron-3-ultra-550b-a55b" },
+          "muse-spark-1.3-contributor-free": { "id": "muse-spark-1.3-contributor-free", "name": "Muse Spark 1.3 Free",
+            "attachment": true, "reasoning": true, "reasoning_options": [ { "type": "effort", "values": ["minimal", "low", "medium", "high", "xhigh"] } ],
+            "tool_call": true, "modalities": { "input": ["text", "image", "video", "pdf", "audio"], "output": ["text"] },
+            "limit": { "context": 1048576, "output": 131072 }, "status": "deprecated",
+            "provider": { "npm": "@ai-sdk/openai", "api": "https://opencode.ai/inference/openai/v1" },
+            "cost": { "input": 0, "output": 0, "cache_read": 0 } }
+        }
+      }
+    }
+    """;
 }

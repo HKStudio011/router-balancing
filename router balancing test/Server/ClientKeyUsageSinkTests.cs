@@ -46,14 +46,40 @@ public class ClientKeyUsageSinkTests : IDisposable
     public async Task Record_WhenKeysServiceThrows_LogsErrorAndSwallows()
     {
         var log = new CapturingLog();
-        var sink = new ClientKeyUsageSink(new ThrowingKeys(), _limiter, log);
+        var sink = new ClientKeyUsageSink(new ThrowingKeys(new InvalidOperationException("db locked")), _limiter, log);
 
         await sink.RecordAsync(1, 5, 5); // fail-open: không nổ ra caller (spec §10)
 
         Assert.Contains(log.Errors, m => m.Contains("usage counter"));
     }
 
-    private sealed class ThrowingKeys : IClientKeyService
+    [Fact]
+    public async Task Record_WhenRequestTokenCancelled_SkipsWithoutErrorLog()
+    {
+        var log = new CapturingLog();
+        var sink = new ClientKeyUsageSink(_keys, _limiter, log);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Client ngắt đúng lúc ghi (race sau khi upstream trả xong) — DB hủy theo token,
+        // đây không phải lỗi DB (spec §10) nên không được sinh dòng Error.
+        await sink.RecordAsync(1, 5, 5, cts.Token);
+
+        Assert.DoesNotContain(log.Errors, m => m.Contains("usage counter"));
+    }
+
+    [Fact]
+    public async Task Record_WhenCancelledExceptionNotFromRequestToken_LogsError()
+    {
+        var log = new CapturingLog();
+        var sink = new ClientKeyUsageSink(new ThrowingKeys(new OperationCanceledException()), _limiter, log);
+
+        await sink.RecordAsync(1, 5, 5); // token còn sống — OCE không đến từ request hủy: vẫn là lỗi thật
+
+        Assert.Contains(log.Errors, m => m.Contains("usage counter"));
+    }
+
+    private sealed class ThrowingKeys(Exception error) : IClientKeyService
     {
         public event Action? KeysChanged { add { } remove { } }
         public Task<IReadOnlyList<ClientKey>> ListAsync(CancellationToken ct = default)
@@ -68,7 +94,7 @@ public class ClientKeyUsageSinkTests : IDisposable
         public Task RecordRequestAsync(long id, CancellationToken ct = default)
             => throw new NotSupportedException();
         public Task RecordTokensAsync(long id, int promptTokens, int completionTokens, CancellationToken ct = default)
-            => throw new InvalidOperationException("db locked");
+            => throw error;
     }
 
     private sealed class CapturingLog : ILogService

@@ -54,9 +54,14 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
             ?? throw new FreeModelSyncException(
                 $"Provider '{provider.Name}' is not in the free catalog (renamed?).");
 
-        // Fetch (spec §6.1): key optional (4 endpoint public) — có account thì gắn Authorization
-        var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
-        using var response = await SendModelListAsync(provider, key, ct);
+        // Fetch (spec §6.1): key optional (4 endpoint public) — có account thì gắn Authorization.
+        // Nhánh catalog là raw GET không auth nên chỉ resolve key khi request thật cần — mirror đúng
+        // điều kiện rẽ nhánh của SendModelListAsync. Không thì Unprotect ciphertext lạ (DB copy sang
+        // máy/user khác) ném CryptographicException giết sync mỗi chu kỳ dù catalog không cần key.
+        var key = entry.CatalogUrl is { Length: > 0 }
+            ? string.Empty
+            : ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
+        using var response = await SendModelListAsync(provider, entry, key, ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -70,7 +75,10 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
         IReadOnlyList<FreeModelInfo> free;
         try
         {
-            free = FreeModelDetector.Parse(json, entry.DetectKind);
+            // Catalog v2 có shape riêng (opencode.models) — không dùng Parse OpenAI shape
+            free = entry.DetectKind == FreeDetectKind.OpenCodeCatalog
+                ? FreeModelDetector.ParseOpenCodeCatalog(json)
+                : FreeModelDetector.Parse(json, entry.DetectKind);
         }
         catch (JsonException ex)
         {
@@ -104,6 +112,7 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
                 if (model.IsManual) continue;
                 if (info.DisplayName is not null) model.DisplayName = info.DisplayName;
                 if (info.ContextWindow is not null) model.ContextWindow = info.ContextWindow;
+                ApplyCapabilities(model, info);
             }
             else
             {
@@ -115,6 +124,13 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
                     Enabled = true,
                     DisplayName = info.DisplayName,
                     ContextWindow = info.ContextWindow,
+                    SupportsTools = info.SupportsTools,
+                    SupportsVision = info.SupportsVision ?? false,
+                    SupportsThink = info.SupportsThink ?? false,
+                    ThinkEfforts = info.ThinkEfforts,
+                    InputModalities = info.InputModalities,
+                    OutputModalities = info.OutputModalities,
+                    MaxOutputTokens = info.MaxOutputTokens,
                 });
             }
         }
@@ -124,6 +140,21 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
         await db.SaveChangesAsync(ct);
         _log.Info($"Synced {free.Count} free models for provider {providerId}.");
         return free.Count;
+    }
+
+    /// <summary>
+    /// Ghi capabilities từ API vào model đã có — field null (API thiếu) giữ nguyên giá trị cũ,
+    /// không đoán (spec opencode-tools-page §6.2).
+    /// </summary>
+    private static void ApplyCapabilities(Model model, FreeModelInfo info)
+    {
+        if (info.SupportsTools is not null) model.SupportsTools = info.SupportsTools;
+        if (info.SupportsVision is not null) model.SupportsVision = info.SupportsVision.Value;
+        if (info.SupportsThink is not null) model.SupportsThink = info.SupportsThink.Value;
+        if (info.ThinkEfforts is not null) model.ThinkEfforts = info.ThinkEfforts;
+        if (info.InputModalities is not null) model.InputModalities = info.InputModalities;
+        if (info.OutputModalities is not null) model.OutputModalities = info.OutputModalities;
+        if (info.MaxOutputTokens is not null) model.MaxOutputTokens = info.MaxOutputTokens;
     }
 
     /// <inheritdoc/>
@@ -162,18 +193,21 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
     }
 
     /// <summary>
-    /// Gọi models endpoint qua named client 30s. Timeout wrap thành
-    /// <see cref="FreeModelSyncException"/> (spec §6.1/§9): periodic phân biệt app thoát
-    /// bằng OperationCanceledException và dừng vòng lặp — timeout lọt qua catch đó
-    /// sẽ giết sync định kỳ sau lần timeout đầu tiên.
+    /// Gọi models endpoint (hoặc catalog URL khi entry có <see cref="FreeProviderCatalog.Entry.CatalogUrl"/>)
+    /// qua named client 30s. Timeout wrap thành <see cref="FreeModelSyncException"/> (spec §6.1/§9):
+    /// periodic phân biệt app thoát bằng OperationCanceledException và dừng vòng lặp — timeout lọt qua
+    /// catch đó sẽ giết sync định kỳ sau lần timeout đầu tiên.
     /// </summary>
-    private async Task<HttpResponseMessage> SendModelListAsync(Provider provider, string key, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendModelListAsync(
+        Provider provider, FreeProviderCatalog.Entry entry, string key, CancellationToken ct)
     {
         // Đặt context proxy (provider level, account null) — free-model-sync đi theo provider
         // nên request qua proxy gán cho provider (D4); reset sau (finally) mọi nhánh.
         try
         {
-            using var request = ProviderRequestFactory.Create(provider, key);
+            using var request = entry.CatalogUrl is { Length: > 0 } catalogUrl
+                ? new HttpRequestMessage(HttpMethod.Get, catalogUrl)     // catalog public: không auth, không fingerprint
+                : ProviderRequestFactory.Create(provider, key);
             ProxyTarget.Current.Value = new ProxyTarget(provider, null);
             try
             {

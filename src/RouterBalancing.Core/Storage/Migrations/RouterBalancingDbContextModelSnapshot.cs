@@ -233,6 +233,9 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<bool>("IsManual")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("MaxOutputTokens")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("ModelId")
                         .IsRequired()
                         .HasMaxLength(500)
@@ -248,6 +251,9 @@ namespace RouterBalancing.Core.Storage.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<bool>("SupportsThink")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("SupportsTools")
                         .HasColumnType("INTEGER");
 
                     b.Property<bool>("SupportsVideo")
