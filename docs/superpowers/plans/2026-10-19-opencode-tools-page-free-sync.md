@@ -536,7 +536,8 @@ public void Generate_EmitsProviderShapeAndMinimalModel()
     Assert.False(Root(json).TryGetProperty("$schema", out _));             // C6: không emit $schema
     var m = Model(json, "m1");
     Assert.Equal("m1", m.GetProperty("name").GetString());                 // fallback ModelId
-    Assert.Equal("[\"text\"]", m.GetProperty("capabilities").GetProperty("input").GetRawText());
+    Assert.Equal(new[] { "text" },                                  // semantic: emit JSON indent — đừng so raw text
+        m.GetProperty("capabilities").GetProperty("input").EnumerateArray().Select(e => e.GetString()));
     Assert.False(m.GetProperty("capabilities").TryGetProperty("tools", out _));
     Assert.False(m.GetProperty("capabilities").TryGetProperty("reasoning", out _));
     Assert.False(m.TryGetProperty("limit", out _));                        // cả 2 null → không emit
@@ -550,7 +551,8 @@ public void Generate_VisionWithoutModalities_InputsTextImage()
     var m = new OpenCodeConfigModel("m1", "Một", 100000, 8000, true, true, false, null, null, null);
     var json = OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]);
     var caps = Model(json, "m1").GetProperty("capabilities");
-    Assert.Equal("[\"text\",\"image\"]", caps.GetProperty("input").GetRawText());
+    Assert.Equal(new[] { "text", "image" },
+        caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
     Assert.True(caps.GetProperty("tools").GetBoolean());
     Assert.Equal(100000, Model(json, "m1").GetProperty("limit").GetProperty("context").GetInt32());
 }
@@ -564,7 +566,8 @@ public void Generate_ReasoningToggle_EmitsToggleAndEffort_AndExoticValuesPassThr
         .GetProperty("capabilities").GetProperty("reasoning");
     Assert.True(reasoning.GetProperty("supported").GetBoolean());
     Assert.True(reasoning.GetProperty("toggle").GetBoolean());
-    Assert.Equal("[\"minimal\",\"xhigh\"]", reasoning.GetProperty("effort").GetRawText());
+    Assert.Equal(new[] { "minimal", "xhigh" },
+        reasoning.GetProperty("effort").EnumerateArray().Select(e => e.GetString()));
 }
 
 [Fact]
@@ -698,15 +701,15 @@ public async Task GetPageData_DefaultsToFreePresetModels_WhenProviderEnabled()
 public async Task GenerateAsync_DuplicateIds_KeepsFreePresetThenIdOrder_AndReportsSkipped()
 {
     await SetProviderEnabledAsync("OpenCode Free", true);
-    var freeRow = await AddModelsAsync("OpenCode Free", ("shared-id", true));
-    var otherRow = await AddModelsAsync("OpenRouter Free", ("shared-id", true)); // provider khác, cùng ModelId
+    var freeRow = await AddModelsAsync("OpenCode Free", ("shared-id", true, "Free copy"));
+    var otherRow = await AddModelsAsync("OpenRouter Free", ("shared-id", true, "Other copy")); // provider khác, cùng ModelId
 
     var result = await Service().GenerateAsync([otherRow, freeRow], "http://127.0.0.1:8317/v1", null);
 
-    Assert.Equal(["shared-id"], result.SkippedDuplicateModelIds);
+    Assert.Equal(new[] { "shared-id" }, result.SkippedDuplicateModelIds);
     var name = JsonDocument.Parse(result.Json).RootElement.GetProperty("providers")
         .GetProperty("router-balancing").GetProperty("models").GetProperty("shared-id").GetProperty("name");
-    Assert.Equal(freeRowName, name.GetString());         // bản free preset thắng (Id nhỏ hơn, preset trước)
+    Assert.Equal("Free copy", name.GetString());   // preset OpenCode Free thắng (IsFreePreset sort trước)
 }
 
 [Fact]
