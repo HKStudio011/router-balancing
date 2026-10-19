@@ -54,8 +54,13 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
             ?? throw new FreeModelSyncException(
                 $"Provider '{provider.Name}' is not in the free catalog (renamed?).");
 
-        // Fetch (spec §6.1): key optional (4 endpoint public) — có account thì gắn Authorization
-        var key = ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
+        // Fetch (spec §6.1): key optional (4 endpoint public) — có account thì gắn Authorization.
+        // Nhánh catalog là raw GET không auth nên chỉ resolve key khi request thật cần — mirror đúng
+        // điều kiện rẽ nhánh của SendModelListAsync. Không thì Unprotect ciphertext lạ (DB copy sang
+        // máy/user khác) ném CryptographicException giết sync mỗi chu kỳ dù catalog không cần key.
+        var key = entry.CatalogUrl is { Length: > 0 }
+            ? string.Empty
+            : ProviderKeyResolver.ResolveFirstEnabledKey(provider, _protector) ?? string.Empty;
         using var response = await SendModelListAsync(provider, entry, key, ct);
 
         if (!response.IsSuccessStatusCode)

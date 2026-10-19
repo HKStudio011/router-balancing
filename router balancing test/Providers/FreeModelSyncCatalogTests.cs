@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
@@ -101,6 +102,37 @@ public class FreeModelSyncCatalogTests : IDisposable
             m => m.ProviderId == id && m.ModelId == "old-free");     // không bị xoá
     }
 
+    [Fact]
+    public async Task SyncProviderAsync_CatalogWithUndecryptableProviderKey_SkipsKeyResolutionAndSyncs()
+    {
+        // M1: ciphertext copy từ máy/user khác → Unprotect ném CryptographicException. Nhánh catalog
+        // là raw GET không auth nên không được resolve key, nếu không sync OpenCode Free gãy mỗi
+        // chu kỳ dù catalog không cần key.
+        var id = await OpenCodeIdAsync();
+        using (var db = _db.CreateDbContext())
+        {
+            db.ProviderAccounts.Add(new ProviderAccount
+            {
+                ProviderId = id,
+                Name = "Default",
+                ApiKeyEncrypted = "foreign-ciphertext-not-decryptable",
+                Enabled = true,
+            });
+            await db.SaveChangesAsync();
+        }
+        var handler = new JsonHandler(FreeModelFixtures.OpenCodeCatalog);
+        var service = new FreeModelSyncService(
+            _db, new UndecryptableKeyProtector(), new StubFactory(handler), new NullLog());
+
+        var count = await service.SyncProviderAsync(id);
+
+        Assert.Equal(3, count);
+        Assert.Equal("https://models.opencode.ai/api.json", handler.LastRequestUri!.ToString());
+        using var db2 = _db.CreateDbContext();
+        Assert.Contains(await db2.Models.AsNoTracking().ToListAsync(),
+            m => m.ProviderId == id && m.ModelId == "big-pickle");
+    }
+
     // ===== HTTP doubles (pattern FreeModelSyncMergeTests: JsonHandler/StubFactory) =====
 
     private sealed class JsonHandler(string json) : HttpMessageHandler
@@ -115,6 +147,18 @@ public class FreeModelSyncCatalogTests : IDisposable
                 Content = new StringContent(json),
             });
         }
+    }
+
+    /// <summary>
+    /// Giả lập ciphertext DPAPI copy từ máy/user khác — Unprotect ném CryptographicException
+    /// đúng như <see cref="DpapiSecretProtector"/> khi blob không thuộc CurrentUser.
+    /// </summary>
+    private sealed class UndecryptableKeyProtector : ISecretProtector
+    {
+        public string Protect(string plaintext) => throw new NotSupportedException();
+
+        public string Unprotect(string protectedValue) =>
+            throw new CryptographicException("Key was protected for a different user or machine.");
     }
 
     private sealed class StubFactory(HttpMessageHandler handler) : IHttpClientFactory
