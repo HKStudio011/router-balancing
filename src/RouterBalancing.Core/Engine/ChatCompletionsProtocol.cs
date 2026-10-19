@@ -96,6 +96,12 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
         }
         if (carry.Length > 0) state.HandleLine(carry);
 
+        // EOF sạch nhưng thiếu dấu kết thúc hợp lệ = upstream cắt cụt giữa chừng: tool_call
+        // arguments có thể còn dở. Chưa ghi byte nào cho client nên đây là PRE-CONTENT →
+        // bọc marker (retry/failover) thay vì trả JSON tool call bị lệch tham số.
+        if (!state.CompletedCleanly)
+            throw new UpstreamDiedBeforeContentException(new UpstreamTruncatedException());
+
         var json = state.BuildCompletionJson();
         var payload = Encoding.UTF8.GetBytes(json);
         await dest.WriteAsync(payload, ct);
@@ -118,9 +124,15 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
         private string? _role;
         private string? _finishReason;
         private long _created;
+        // [DONE] tường minh: finish_reason có thể vắng khi provider cắt cụt — cần cả hai
+        // dấu hiệu để phân biệt "stream kết thúc" với "upstream đóng sạch giữa chừng".
+        private bool _doneSeen;
 
         public UsageCapture.Usage? Usage { get; private set; }
         public DateTimeOffset? FirstTokenAt { get; set; }
+
+        /// <summary>Stream có kết thúc hợp lệ (<c>[DONE]</c> hoặc <c>finish_reason</c> khác null).</summary>
+        public bool CompletedCleanly => _doneSeen || _finishReason is not null;
 
         public void HandleLine(ReadOnlySpan<byte> line)
         {
@@ -128,7 +140,11 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
             if (!line.StartsWith("data:"u8)) return;
             var payload = line["data:"u8.Length..];
             if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];
-            if (payload.StartsWith("[DONE]"u8)) return;
+            if (payload.StartsWith("[DONE]"u8))
+            {
+                _doneSeen = true;
+                return;
+            }
             try
             {
                 using var doc = JsonDocument.Parse(payload.ToArray());

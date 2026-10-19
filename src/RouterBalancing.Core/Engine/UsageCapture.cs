@@ -111,6 +111,7 @@ public static class UsageCapture
         var body = new StringBuilder();
         var bodyTruncated = false;
         DateTimeOffset? firstTokenAt = null;
+        var terminal = false;
         try
         {
             var wroteAny = false;
@@ -144,7 +145,7 @@ public static class UsageCapture
                 {
                     if (combined[i] != (byte)'\n') continue;
                     var line = combined.AsSpan(lineStart, i - lineStart);
-                    usage = ScanSseLine(line, usage);
+                    usage = ScanSseLine(line, usage, ref terminal);
                     AppendSsePayload(line, body, ref bodyTruncated);
                     lineStart = i + 1;
                 }
@@ -153,8 +154,17 @@ public static class UsageCapture
             // Dòng cuối không có \n (SSE chuẩn luôn có nhưng không assume) — xử lý nốt
             if (carry.Length > 0)
             {
-                usage = ScanSseLine(carry, usage);
+                usage = ScanSseLine(carry, usage, ref terminal);
                 AppendSsePayload(carry, body, ref bodyTruncated);
+            }
+            // EOF sạch (không RST/exception) nhưng thiếu dấu kết thúc hợp lệ ([DONE] hoặc
+            // finish_reason) = stream CỤT: tool_call arguments có thể còn dở. Chưa có byte
+            // trên wire → marker (retry/failover); đã có byte → giữ IOException để dispatcher
+            // map Aborted → in-band upstream_disconnected, client discard partial tool_call.
+            if (!terminal)
+            {
+                if (wroteAny) throw new UpstreamTruncatedException();
+                throw new UpstreamDiedBeforeContentException(new UpstreamTruncatedException());
             }
             return new TeeResult(usage, firstTokenAt, body.ToString());
         }
@@ -185,16 +195,31 @@ public static class UsageCapture
     // Chỉ dòng "data: {...}" chứa usage hợp lệ; JSON hỏng → bỏ qua dòng đó, không nổ stream.
     // Guard ValueKind Number trước GetInt32: field sai kiểu (string/bool) ném InvalidOperationException
     // (KHÔNG phải JsonException) — spec §10 yêu cầu usage parse lỗi không được throw làm hỏng request.
-    private static Usage? ScanSseLine(ReadOnlySpan<byte> line, Usage? current)
+    // Đồng thời đánh dấu `terminal` khi gặp [DONE] hoặc finish_reason khác null — thiếu cả hai
+    // tại EOF sạch nghĩa là upstream cắt cụt (TeeSseAsync throw).
+    private static Usage? ScanSseLine(ReadOnlySpan<byte> line, Usage? current, ref bool terminal)
     {
         if (!line.StartsWith("data:"u8)) return current;
         var payload = line["data:"u8.Length..];
-        if (payload.StartsWith("[DONE]"u8)) return current;
+        // SSE cho phép 1 space sau ':' — thiếu trim thì "data: [DONE]" không khớp
+        if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];
+        if (payload.StartsWith("[DONE]"u8))
+        {
+            terminal = true;
+            return current;
+        }
         try
         {
             // net10 không còn overload Parse(ReadOnlySpan<byte>) — ToArray() sang ReadOnlyMemory<byte>
             using var doc = JsonDocument.Parse(payload.ToArray());
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return current;
+            if (doc.RootElement.TryGetProperty("choices", out var choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0
+                && choices[0].ValueKind == JsonValueKind.Object
+                && choices[0].TryGetProperty("finish_reason", out var finish)
+                && finish.ValueKind == JsonValueKind.String)
+                terminal = true;
             if (!doc.RootElement.TryGetProperty("usage", out var usage)
                 || usage.ValueKind != JsonValueKind.Object
                 || !usage.TryGetProperty("prompt_tokens", out var prompt)

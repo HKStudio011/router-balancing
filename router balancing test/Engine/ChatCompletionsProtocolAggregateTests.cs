@@ -51,21 +51,45 @@ public class ChatCompletionsProtocolAggregateTests
     }
 
     [Fact]
-    public async Task Aggregate_EmptyStream_WritesMinimalCompletionFailsOpen()
+    public async Task Aggregate_EmptyStream_ThrowsPreContentMarker()
     {
+        // Stream rỗng = upstream đóng sạch mà không có [DONE]/finish_reason → cụt;
+        // chưa ghi byte nào nên phải là marker (retry/failover), không phải JSON rỗng.
         using var content = new StringContent("", Encoding.UTF8, "text/event-stream");
         using var dest = new MemoryStream();
 
-        var result = await Protocol.AggregateSseAsync(content, dest, CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<UpstreamDiedBeforeContentException>(() =>
+            Protocol.AggregateSseAsync(content, dest, CancellationToken.None));
 
-        var written = Encoding.UTF8.GetString(dest.ToArray());
-        using var doc = JsonDocument.Parse(written);
-        Assert.Equal("chat.completion", doc.RootElement.GetProperty("object").GetString());
-        Assert.Equal("assistant", doc.RootElement.GetProperty("choices")[0]
-            .GetProperty("message").GetProperty("role").GetString());
-        Assert.False(doc.RootElement.TryGetProperty("usage", out _));
-        Assert.Null(result.Usage);
-        Assert.Null(result.FirstTokenAt);
+        Assert.IsType<UpstreamTruncatedException>(ex.InnerException);
+        Assert.Empty(dest.ToArray());
+    }
+
+    [Fact]
+    public async Task Aggregate_StreamEndsMidToolCall_ThrowsPreContentMarker()
+    {
+        // tool_call arguments còn dở rồi EOF sạch — gộp lại sẽ ra JSON tool call thiếu tham số
+        var sse = SseChunk(new
+        {
+            tool_calls = new[]
+            {
+                new
+                {
+                    index = 0,
+                    id = "call_1",
+                    type = "function",
+                    @function = new { name = "task", arguments = "{\"descrip" },
+                },
+            },
+        });
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var ex = await Assert.ThrowsAsync<UpstreamDiedBeforeContentException>(() =>
+            Protocol.AggregateSseAsync(content, dest, CancellationToken.None));
+
+        Assert.IsType<UpstreamTruncatedException>(ex.InnerException);
+        Assert.Empty(dest.ToArray());
     }
 
     [Fact]

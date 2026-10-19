@@ -362,4 +362,50 @@ public class UsageCaptureTests
 
         Assert.NotEmpty(dest.ToArray());
     }
+
+    [Fact]
+    public async Task TeeSse_CleanEofMidToolCall_ThrowsTruncatedAfterForwarding()
+    {
+        // Không [DONE], không finish_reason: upstream đóng SẠCH (EOF) khi tool_call arguments
+        // còn dở — nếu forward im lặng, client parse được tool call với tham số lệch/thiếu.
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+            "\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\"\"}}]}}]}\n\n";
+        using var dest = new MemoryStream();
+
+        var ex = await Assert.ThrowsAsync<UpstreamTruncatedException>(() =>
+            UsageCapture.TeeSseAsync(new MemoryStream(Encoding.UTF8.GetBytes(sse)), dest,
+                CancellationToken.None));
+
+        Assert.IsAssignableFrom<IOException>(ex);
+        Assert.NotEmpty(dest.ToArray());   // byte đã lên wire → dispatcher ghi in-band lỗi
+    }
+
+    [Fact]
+    public async Task TeeSse_CleanEofBeforeAnyByte_ThrowsPreContentMarker()
+    {
+        using var dest = new MemoryStream();
+
+        var ex = await Assert.ThrowsAsync<UpstreamDiedBeforeContentException>(() =>
+            UsageCapture.TeeSseAsync(new MemoryStream([]), dest, CancellationToken.None));
+
+        Assert.IsType<UpstreamTruncatedException>(ex.InnerException);
+        Assert.Empty(dest.ToArray());   // chưa có byte nào → retry/failover an toàn
+    }
+
+    [Fact]
+    public async Task TeeSse_FinishReasonWithoutDone_CompletesWithoutThrow()
+    {
+        // finish_reason khác null cũng là dấu hiệu kết thúc hợp lệ (một số provider bỏ [DONE])
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Encoding.UTF8.GetBytes(sse)), dest, CancellationToken.None);
+
+        Assert.Null(result.Usage);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
 }
