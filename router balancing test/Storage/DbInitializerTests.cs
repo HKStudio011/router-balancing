@@ -131,9 +131,11 @@ public class DbInitializerTests : IDisposable
 
         using (var db = factory.CreateDbContext())
         {
+            // Providers.Name unique (spec capability-model §6, B4): dùng tên KHÁC nhau nhưng
+            // slugify ra cùng slug (dấu '.' bị Slugify bỏ) — ý test dedupe identifier giữ nguyên.
             db.Providers.AddRange(
                 new Provider { Name = "Nhà cung cấp A", Type = ProviderType.OpenAI, BaseUrl = "https://a.example" },
-                new Provider { Name = "Nhà cung cấp A", Type = ProviderType.OpenAI, BaseUrl = "https://b.example" },
+                new Provider { Name = "Nhà cung cấp A.", Type = ProviderType.OpenAI, BaseUrl = "https://b.example" },
                 new Provider { Name = "   ---   ", Type = ProviderType.OpenAI, BaseUrl = "https://c.example" });
             db.SaveChanges();
             // Mô phỏng hàng cũ trước khi có backfill: Identifier NULL
@@ -171,9 +173,11 @@ public class DbInitializerTests : IDisposable
         var longName = new string('a', 60);
         using (var db = factory.CreateDbContext())
         {
+            // Providers.Name unique (spec capability-model §6, B4): tên thứ hai thêm '.' —
+            // Slugify bỏ ký tự ngoài [a-z0-9] nên cả hai vẫn ra cùng slug 60 'a', ý test dedupe giữ nguyên.
             db.Providers.AddRange(
                 new Provider { Name = longName, Type = ProviderType.OpenAI, BaseUrl = "https://a.example" },
-                new Provider { Name = longName, Type = ProviderType.OpenAI, BaseUrl = "https://b.example" },
+                new Provider { Name = longName + ".", Type = ProviderType.OpenAI, BaseUrl = "https://b.example" },
                 // Slug 51 ký tự — cắt tại vị 50 rơi vào '-' cuối, TrimEnd không được để sót dấu '-'
                 new Provider { Name = $"{new string('a', 49)} b", Type = ProviderType.OpenAI, BaseUrl = "https://c.example" });
             db.SaveChanges();

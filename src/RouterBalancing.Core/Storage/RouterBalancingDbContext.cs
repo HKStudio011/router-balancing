@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 
 namespace RouterBalancing.Core.Storage;
@@ -28,11 +29,24 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
 
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
 
+    /// <summary>Dòng capability (tools/reasoning) per model per nguồn (spec capability-model §6).</summary>
+    public DbSet<ModelCapability> ModelCapabilities => Set<ModelCapability>();
+
+    /// <summary>Dòng modality input/output per model per nguồn.</summary>
+    public DbSet<ModelModality> ModelModalities => Set<ModelModality>();
+
+    /// <summary>Mức reasoning effort đã biết per model per nguồn.</summary>
+    public DbSet<ModelReasoningEffort> ModelReasoningEfforts => Set<ModelReasoningEffort>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Provider>(e =>
         {
             e.Property(x => x.Name).IsRequired().HasMaxLength(200);
+            // Name unique toàn cục — ràng buộc rẻ spec capability-model §6 (B4): 2 provider
+            // trùng tên làm mọi UI/lookup theo Name nhập nhằng. DB index là backstop,
+            // app chưa check trùng ở ProviderValidator.
+            e.HasIndex(x => x.Name).IsUnique();
             e.Property(x => x.Identifier).HasMaxLength(50);
             // Identifier slug unique toàn cục — nhiều NULL vẫn OK (SQLite distinct NULLs),
             // hàng cũ được backfill trong DbInitializer sau Migrate
@@ -54,7 +68,11 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
         modelBuilder.Entity<ProviderAccount>(e =>
         {
             e.Property(x => x.Name).IsRequired().HasMaxLength(100);
-            e.Property(x => x.ApiKeyEncrypted).IsRequired();
+            // ApiKeyEncrypted bỏ NOT NULL (ràng buộc rẻ spec capability-model §6, B5):
+            // luồng account không key đã tồn tại ở app (sentinel chuỗi rỗng); NULL được phép
+            // để DB bên ngoài/luồng sau không bị chặn — mọi reader đã check IsNullOrEmpty.
+            // Property C# vẫn non-nullable: EF không tự ghi NULL, chỉ cột mới bỏ ràng buộc.
+            e.Property(x => x.ApiKeyEncrypted).IsRequired(false);
             // Đổi tên account trong form có thể trùng account khác cùng provider
             e.HasIndex(x => new { x.ProviderId, x.Name }).IsUnique();
             e.HasOne(x => x.Provider)
@@ -156,6 +174,44 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             e.HasOne(x => x.Proxy)
                 .WithMany()
                 .HasForeignKey(x => x.ProxyId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // --- Capability fact (spec capability-model §6): 3 bảng per-source, PK ghép,
+        // enum → TEXT chữ thường qua CapabilityNames (token là storage contract, xem §6 DDL).
+        // Cascade theo Models(Id) — xóa model là sạch hết fact ([RF-5]). Cột cũ trên
+        // Models vẫn sống tới Task 11; phase 1 chỉ thêm bảng, chưa dời dữ liệu.
+        modelBuilder.Entity<ModelCapability>(e =>
+        {
+            e.HasKey(x => new { x.ModelId, x.Capability });
+            e.Property(x => x.Capability)
+                .HasConversion(v => CapabilityNames.ToDb(v), s => CapabilityNames.FromDb<CapabilityKind>(s));
+            e.HasOne<Model>()
+                .WithMany(m => m.ModelCapabilities)
+                .HasForeignKey(x => x.ModelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ModelModality>(e =>
+        {
+            e.HasKey(x => new { x.ModelId, x.Direction, x.Modality });
+            e.Property(x => x.Direction)
+                .HasConversion(v => CapabilityNames.ToDb(v), s => CapabilityNames.FromDb<ModalityDirection>(s));
+            e.Property(x => x.Modality)
+                .HasConversion(v => CapabilityNames.ToDb(v), s => CapabilityNames.FromDb<ModalityKind>(s));
+            e.HasOne<Model>()
+                .WithMany(m => m.ModelModalities)
+                .HasForeignKey(x => x.ModelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ModelReasoningEffort>(e =>
+        {
+            // Level là TEXT tự do (mỗi provider đặt tên mức khác nhau) — không enum hóa.
+            e.HasKey(x => new { x.ModelId, x.Level });
+            e.HasOne<Model>()
+                .WithMany(m => m.ModelReasoningEfforts)
+                .HasForeignKey(x => x.ModelId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
     }

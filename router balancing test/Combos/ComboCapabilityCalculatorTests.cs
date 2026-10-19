@@ -10,6 +10,9 @@ public class ComboCapabilityCalculatorTests : IDisposable
     private readonly TestDb _testDb = new();
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ComboCapabilityCalculator _calculator;
+    // Providers.Name có unique index (spec capability-model §6, B4) — mỗi seed một tên
+    // riêng; tên không liên quan hành vi calculator.
+    private int _providerSeq;
 
     public ComboCapabilityCalculatorTests()
     {
@@ -24,7 +27,7 @@ public class ComboCapabilityCalculatorTests : IDisposable
         bool video = false, bool think = false, bool enabled = true)
     {
         using var db = _db.CreateDbContext();
-        var provider = new Provider { Name = "P", Type = ProviderType.OpenAI, BaseUrl = "https://api.example.com" };
+        var provider = new Provider { Name = $"P{_providerSeq++}", Type = ProviderType.OpenAI, BaseUrl = "https://api.example.com" };
         provider.Models.Add(new Model
         {
             ModelId = "m",

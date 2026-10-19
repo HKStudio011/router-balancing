@@ -15,6 +15,9 @@ public class ProviderAccountServiceTests : IDisposable
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ISecretProtector _protector = new DpapiSecretProtector();
     private readonly ProviderAccountService _service;
+    // Providers.Name có unique index (spec capability-model §6, B4) — mỗi seed một tên riêng;
+    // test này nói về tên ACCOUNT trùng nhau giữa các provider, không phải tên provider.
+    private int _providerSeq;
 
     public ProviderAccountServiceTests()
     {
@@ -83,7 +86,7 @@ public class ProviderAccountServiceTests : IDisposable
         using var db = _db.CreateDbContext();
         var provider = new Provider
         {
-            Name = "P",
+            Name = $"P{_providerSeq++}",
             Type = ProviderType.OpenAI,
             BaseUrl = "https://api.example.com",
             MaxConcurrent = 4,
@@ -139,7 +142,7 @@ public class ProviderAccountServiceTests : IDisposable
             () => _service.CreateAsync(Draft(providerId, name: "dup")));
     }
 
-    /// <summary>Cùng Name giữa 2 provider là hợp lệ.</summary>
+    /// <summary>Cùng Name ACCOUNT giữa 2 provider khác nhau là hợp lệ (unique chỉ per-provider).</summary>
     [Fact]
     public async Task Create_SameNameDifferentProviders_Ok()
     {

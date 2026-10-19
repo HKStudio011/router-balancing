@@ -10,6 +10,8 @@ public class ComboServiceTests : IDisposable
     private readonly TestDb _testDb = new();
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ComboService _service;
+    // Providers.Name có unique index (spec capability-model §6, B4) — mỗi seed một tên riêng.
+    private int _providerSeq;
 
     public ComboServiceTests()
     {
@@ -32,7 +34,7 @@ public class ComboServiceTests : IDisposable
         using var db = _db.CreateDbContext();
         var provider = new Provider
         {
-            Name = "P",
+            Name = $"P{_providerSeq++}",
             Type = ProviderType.OpenAI,
             BaseUrl = "https://api.example.com",
             Models = { new Model { ModelId = modelId } },

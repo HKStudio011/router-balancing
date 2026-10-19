@@ -48,4 +48,13 @@ public class Model
     public string? OutputModalities { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Dòng capability (tools/reasoning) per nguồn — xóa model cascade xóa hết fact (spec §6).</summary>
+    public ICollection<ModelCapability> ModelCapabilities { get; set; } = [];
+
+    /// <summary>Dòng modality input/output per nguồn — cascade như <see cref="ModelCapabilities"/>.</summary>
+    public ICollection<ModelModality> ModelModalities { get; set; } = [];
+
+    /// <summary>Mức reasoning effort đã biết per nguồn — cascade như <see cref="ModelCapabilities"/>.</summary>
+    public ICollection<ModelReasoningEffort> ModelReasoningEfforts { get; set; } = [];
 }
