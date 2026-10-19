@@ -29,12 +29,13 @@ Hai phần liên quan chặt (chung một pipeline dữ liệu):
 | U2 | User | **Bỏ luôn `disabled`** |
 | U3 | User | Free = model **cost = 0** (không chỉ hậu tố `-free`) |
 | U4 | User | Trang công cụ sinh config **cho opencode dùng**; baseURL trỏ về **app này** (proxy localhost) |
+| U5 | User | Sync chỉ theo catalog; model không còn trong catalog (vd `jev-1.13-free`) **bị xoá thẳng** khi merge (chốt 2026-10-19 — combo trỏ tới nó, nếu có, mất dòng theo cascade) |
 
 Call của tôi (chưa phải user chốt — cần user check khi review):
 
 | # | Call | Lý do |
 |---|---|---|
-| C1 | Nguồn sync **chỉ catalog** (`models.opencode.ai`), bỏ zen list cho OpenCode Free | Catalog là nguồn chuẩn opencode v2 dùng; zen list đã cũ (bằng chứng §4). **Hệ quả: `jev-1.13-free` (có trong zen list, không có trong catalog) sẽ bị xoá khi merge vì không còn trong tập free**; muốn giữ thì thêm tay (IsManual). |
+| C1 | Nguồn sync **chỉ catalog** (`models.opencode.ai`), bỏ hẳn zen list cho OpenCode Free | Catalog là nguồn chuẩn opencode v2 dùng; zen list đã cũ (bằng chứng §4). Model không còn trong catalog xoá thẳng theo U5. |
 | C2 | Provider id trong config = **`router-balancing`** (cố định), name = "Router Balancing" | Đơn giản; user đổi được trong file |
 | C3 | `apiKey` trong config: **mặc định không có field**; UI cho nhập tay hoặc tạo client key mới | Proxy mở khi chưa bật client key (middleware hiện tại); nếu proxy yêu cầu key thì user tạo key ngay trên trang |
 | C4 | Model mặc định được tick: **các model đang Enabled của preset OpenCode Free**; provider khác để user tự tick | Đúng nhu cầu "model free cho opencode" |
@@ -61,7 +62,7 @@ Nguồn: repo `anomalyco/opencode` (nhánh `dev`), các file `packages/core/src/
 
 5. **Kết quả rule mới** (catalog cost=0, output=0, `status != deprecated`):
    - Hiện tại app có **9** model (zen ∩ hậu tố `-free`).
-   - Rule mới cho **10** model: 9 cũ (trừ `jev-1.13-free` — call C1) + **`big-pickle`** + **`nemotron-3-ultra-free`**.
+   - Rule mới cho **10** model: 8 model cũ còn trong catalog + **`big-pickle`** + **`nemotron-3-ultra-free`**; `jev-1.13-free` bị xoá (U5).
 
 6. **Config v2** (schema thật, `packages/schema/src/config/provider.ts` + `config.ts`):
    - Root: `{ "providers": { "<id>": ProviderInfo } }` (record, không phải array).
@@ -116,7 +117,7 @@ new("OpenCode Free", "https://opencode.ai/zen", FreeDetectKind.OpenCodeCatalog, 
 - Merge (giữ nguyên semantics §6.2.6 spec provider-free — delete model non-manual biến mất, giữ manual, guard rỗng không xoá, 1 SaveChanges):
   - Insert/update thêm các field capabilities từ `FreeModelInfo` (chỉ ghi khi non-null).
   - **Không** đụng tới model `IsManual`.
-- Hệ quả xoá stale đã có sẵn (không đổi trong spec này): FK `ComboItem.TargetModelId` là **cascade** (`DbContext:78`) → model bị xoá kéo theo các dòng combo trỏ tới nó; không sinh lỗi FK. Đây là một phần lý do C1 cần user chốt.
+- Hệ quả xoá stale đã có sẵn (không đổi trong spec này): FK `ComboItem.TargetModelId` là **cascade** (`DbContext:78`) → model bị xoá kéo theo các dòng combo trỏ tới nó; không sinh lỗi FK. Đã được user chốt cùng U5.
 - Provider khác (OpenRouter/NVIDIA/Ollama) giữ nguyên đường cũ.
 - BaseUrl/fingerprint chat giữ nguyên (non-goal §2).
 
