@@ -40,6 +40,7 @@ Call của tôi (chưa phải user chốt — cần user check khi review):
 | C4 | Model mặc định được tick: **các model đang Enabled của preset OpenCode Free**; provider khác để user tự tick | Đúng nhu cầu "model free cho opencode" |
 | C5 | `limit`/`capabilities`: **chỉ ghi field đã biết** (null → bỏ field, để opencode dùng default) | Trung thực với dữ liệu; tránh khoá cứng sai |
 | C6 | Không đổi `$schema` trong file sinh ra (không emit) | Tránh trỏ vào schema v1 cũ |
+| C7 | Trang Tools phân biệt **provider đang tắt**: model của provider `Enabled=false` vẫn hiển thị (badge cảnh báo, **không tick mặc định**); tick mặc định yêu cầu cả `Model.Enabled` **và** `Provider.Enabled` | Provider preset free seed sẵn `Enabled=false` (`DbInitializer` D9); định tuyến thật yêu cầu cả hai (`ComboResolver`) — nếu tick mù sẽ sinh config trỏ tới model app không phục vụ được |
 
 ## 4. Cách opencode v2 lấy model free (bằng chứng — đọc source + probe live 2026-10-19)
 
@@ -115,6 +116,7 @@ new("OpenCode Free", "https://opencode.ai/zen", FreeDetectKind.OpenCodeCatalog, 
 - Merge (giữ nguyên semantics §6.2.6 spec provider-free — delete model non-manual biến mất, giữ manual, guard rỗng không xoá, 1 SaveChanges):
   - Insert/update thêm các field capabilities từ `FreeModelInfo` (chỉ ghi khi non-null).
   - **Không** đụng tới model `IsManual`.
+- Hệ quả xoá stale đã có sẵn (không đổi trong spec này): FK `ComboItem.TargetModelId` là **cascade** (`DbContext:78`) → model bị xoá kéo theo các dòng combo trỏ tới nó; không sinh lỗi FK. Đây là một phần lý do C1 cần user chốt.
 - Provider khác (OpenRouter/NVIDIA/Ollama) giữ nguyên đường cũ.
 - BaseUrl/fingerprint chat giữ nguyên (non-goal §2).
 
@@ -129,7 +131,7 @@ Các khối trên trang:
 
 1. **Trạng thái proxy**: `IProxyHost.Port` + `IsRunning` → hiển thị `http://127.0.0.1:{port}/v1`; nếu proxy chưa chạy → cảnh báo (vẫn cho sinh config với port từ settings, kèm ghi chú — call).
 2. **Client key (optional)**: nếu proxy chưa bật key nào → info "không cần key"; ngược lại có ô nhập key + nút "Tạo key cho OpenCode" (gọi `IClientKeyService.CreateAsync`, hiện plaintext 1 lần, tự điền vào ô). Ô nhập → gồm vào `settings.apiKey` khi khác rỗng. Cảnh báo "file config chứa key — giữ kín".
-3. **Chọn model**: bảng nhóm theo provider (chỉ model `Enabled`), checkbox mặc định tick = model của preset OpenCode Free; nút "Chọn nhóm free" / "Bỏ chọn". Hiển thị context + badge caps (vision/think/tools).
+3. **Chọn model**: bảng nhóm theo provider, gồm model `Enabled` của mọi provider. Nhóm có `Provider.Enabled == false` → badge cảnh báo "provider đang tắt — request sẽ không định tuyến được", model trong nhóm **không tick mặc định** (vẫn tick tay được — user tự chịu; không chặn generate). Tick mặc định = model `Enabled` của preset OpenCode Free (`Provider.IsPreset` + khớp `FreeProviderCatalog` theo BaseUrl canonical) **và** provider đang bật (C7); nếu preset tồn tại nhưng provider đang tắt → ghi chú CTA "bật provider OpenCode Free". Nút "Chọn nhóm free" / "Bỏ chọn". Hiển thị context + badge caps (vision/think/tools).
 4. **Preview + hành động**: `<pre>` JSON, nút **Sao chép** (`IClipboardService` có sẵn) + **Tải file** (JS blob download — thêm `wwwroot/rb-tools.js` nhỏ, hàm `rbTools.download(filename, text)`; tên gợi ý `opencode-router-balancing.jsonc`) + hướng dẫn merge vào `opencode.json(c)` của opencode.
 
 ### 7.2 Generator — `IOpenCodeConfigGenerator` (Core, pure + 1 service đọc DB)
@@ -149,6 +151,8 @@ Service: `GenerateAsync(selectedModelIds, baseUrl, apiKey?)` → string JSON (in
 | — | `cost`, `disabled` | **không emit** (U1/U2) |
 
 Provider entry: `package = "@opencode/ai/providers/openai-compatible"`, `settings.baseURL = baseUrl` (+ `apiKey` nếu có), `name = "Router Balancing"`, id = `router-balancing` (C2).
+
+Trùng `ModelId` giữa nhiều provider (key JSON phải unique): ưu tiên model thuộc preset OpenCode Free, rồi theo `Id` nhỏ hơn; model bị bỏ khỏi JSON do trùng key → ghi chú nhỏ dưới preview.
 
 Ví dụ output (2 model tiêu biểu):
 
@@ -206,7 +210,8 @@ Không `catch {}` rỗng; mọi catch `LogWarning`/`LogError`.
 - `OpenCodeCatalogParserTests` (mới): fixture rút từ snapshot thật — free theo cost, loại deprecated, thiếu field → null, root thiếu `opencode.models` → exception, `big-pickle`/`nemotron-3-ultra-free` có mặt, `jev-1.13-free` không có.
 - `FreeModelDetectorTests`: giữ nguyên cho 3 kind cũ.
 - `FreeModelSyncServiceTests`/`MergeTests`: nhánh catalog — URL tuyệt đối, capabilities ghi đúng vào cột (kể cả `SupportsTools`, `MaxOutputTokens`), manual không bị đụng, guard rỗng, provider khác không đổi.
-- `OpenCodeConfigGeneratorTests` (mới): mapping đủ bảng §7.2 + edge (reasoning toggle/effort/mix, modalities null→["text"], vision-mà-thiếu-array, tools null→bỏ field, limit null→bỏ field, apiKey optional, JSON đúng schema key).
+- `OpenCodeConfigGeneratorTests` (mới): mapping đủ bảng §7.2 + edge (reasoning toggle/effort/mix, modalities null→["text"], vision-mà-thiếu-array, tools null→bỏ field, limit null→bỏ field, apiKey optional, trùng `ModelId` → dedupe đúng ưu tiên, JSON đúng schema key).
+- Default tick (C7) tách thành pure function trong Core (`Model.Enabled && Provider.Enabled && thuộc preset`) → unit test riêng; nhóm provider tắt trả cờ cảnh báo cho UI.
 - Gates: `dotnet build` (Core + TFM Windows) + `dotnet test` toàn bộ; i18n parity xanh.
 - Smoke tay: sync OpenCode Free → 10 model; generate config → dán vào opencode → model hiện + gọi được (user kiểm; nếu opencode báo thiếu `apiKey` khi proxy mở → điền placeholder — ghi chú UI).
 
