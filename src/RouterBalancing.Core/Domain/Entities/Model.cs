@@ -22,9 +22,15 @@ public class Model
 
     public int? ContextWindow { get; set; }
 
+    /// <summary>Giới hạn token output; null = chưa rõ.</summary>
+    public int? MaxOutputTokens { get; set; }
+
     public bool SupportsVision { get; set; }
 
     public bool SupportsThink { get; set; }
+
+    /// <summary>Model hỗ trợ tool/function calling; null = chưa rõ (khác các bool cũ: false = không/chưa rõ).</summary>
+    public bool? SupportsTools { get; set; }
 
     /// <summary>Model nhận input audio; false = không hỗ trợ/chưa rõ (fill chỉ viết true).</summary>
     public bool SupportsAudio { get; set; }
