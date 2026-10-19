@@ -60,6 +60,8 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public int TransientBackoffBaseMs => Get(SettingsKeys.TransientBackoffBaseMs, 1000);
 
+    public int UpstreamIdleTimeoutSec => Get(SettingsKeys.UpstreamIdleTimeoutSec, 300);
+
     public T Get<T>(string key, T defaultValue = default!)
     {
         bool found;

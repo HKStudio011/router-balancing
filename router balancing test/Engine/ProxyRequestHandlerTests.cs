@@ -1,3 +1,4 @@
+using System.IO.Pipelines;
 using System.Net;
 using System.Text;
 using Microsoft.AspNetCore.Http;
@@ -6,6 +7,7 @@ using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
+using RouterBalancing.Core.Settings;
 
 namespace router_balancing_test.Engine;
 
@@ -32,6 +34,27 @@ public class ProxyRequestHandlerTests
                 Enabled = true,
                 ApiKeyEncrypted = _protector.Protect("sk-live"),
             });
+        return provider;
+    }
+
+    private Provider SeedOpenCodeProvider()
+    {
+        // Host opencode.ai → OpenCodeFreeFingerprint áp dụng; dùng để kiểm tín hiệu chẩn đoán
+        // decoy-call (response vẫn đi qua StubUpstream nên request KHÔNG bị rewrite — chỉ nhánh
+        // tính decoy/tool list từ body gốc được test)
+        var provider = new Provider
+        {
+            Name = "opencode-free",
+            Type = ProviderType.OpenAI,
+            BaseUrl = "https://opencode.ai/zen",
+        };
+        provider.Models.Add(new Model { ModelId = "gpt-4o-mini", Enabled = true });
+        provider.Accounts.Add(new ProviderAccount
+        {
+            Name = "a1",
+            Enabled = true,
+            ApiKeyEncrypted = _protector.Protect("sk-live"),
+        });
         return provider;
     }
 
@@ -63,12 +86,37 @@ public class ProxyRequestHandlerTests
     {
         public string? LastApiKey { get; private set; }
 
+        // Token mà handler truyền cho PostAsync — test xác minh cancel-before-error
+        // (upstream bị hủy TRƯỚC khi outcome/exception tới endpoint ghi lỗi cho client)
+        public CancellationToken LastCt { get; private set; }
+
         public Task<HttpResponseMessage> PostAsync(
             Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             LastApiKey = apiKey;
+            LastCt = ct;
             return Task.FromResult(factory());
         }
+    }
+
+    // Stub settings cho handler — default 300 như production để test hiện có chạy với watchdog bật
+    private sealed class StubSettings : IAppSettingsService
+    {
+        public event Action? SettingsChanged { add { } remove { } }
+        public string Language => "auto";
+        public string Theme => "system";
+        public int Port => 8317;
+        public bool LanAccess => false;
+        public bool CloseToTray => true;
+        public bool StartWithWindows => false;
+        public int ProviderProbeTimeoutSec => 60;
+        public int LogRetentionDays => 90;
+        public int StatsErrorRateThreshold => 10;
+        public int TransientMaxRetries => 5;
+        public int TransientBackoffBaseMs => 1000;
+        public int UpstreamIdleTimeoutSec { get; set; } = 300;
+        public T Get<T>(string key, T defaultValue) => defaultValue;
+        public void Set<T>(string key, T value) { }
     }
 
     private sealed class ThrowingUpstream(Exception ex) : IUpstreamClient
@@ -115,13 +163,15 @@ public class ProxyRequestHandlerTests
     }
 
     private ProxyRequestHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
-        IClientKeyUsageSink? sink = null, ApiMonitorStore? monitor = null)
+        IClientKeyUsageSink? sink = null, ApiMonitorStore? monitor = null,
+        StubSettings? settings = null)
     {
         var effectiveLog = log ?? new CapturingLog();
         // Store/feed thật tham gia DI — hook monitor không được đổi hành vi outcome/log đang test
         return new(upstream, _protector, effectiveLog, sink ?? new NullUsageSink(),
             monitor ?? new ApiMonitorStore(new TraceFeed(effectiveLog), effectiveLog,
-                TimeProvider.System));
+                TimeProvider.System),
+            settings ?? new StubSettings());
     }
 
     [Fact]
@@ -664,6 +714,131 @@ public class ProxyRequestHandlerTests
             throw new NotSupportedException();
     }
 
+    /// <summary>
+    /// Content SSE nổ ngay lần đọc đầu — upstream chết TRƯỚC khi gửi byte content nào
+    /// (mô phỏng RST/ResponseEnded trước event đầu, spec exhaustive-failover §3.1).
+    /// </summary>
+    private sealed class DeadOnFirstReadSseContent : HttpContent
+    {
+        public DeadOnFirstReadSseContent() =>
+            Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new DeadStream());
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        private sealed class DeadStream : Stream
+        {
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush() { }
+
+            public override int Read(byte[] buffer, int offset, int count) =>
+                throw new IOException("upstream reset before content");
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+                throw new IOException("upstream reset before content");
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+                CancellationToken ct) =>
+                throw new IOException("upstream reset before content");
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) =>
+                throw new NotSupportedException();
+        }
+    }
+
+    /// <summary>
+    /// Content SSE im lặng vô hạn — tôn trọng ct để watchdog timer cắt được ngay (không thì
+    /// test treo). deliverFirstChunk=false: chết ngay từ lần đọc đầu (pre-content idle);
+    /// =true: trôi được 1 chunk rồi im lặng (mid-content idle).
+    /// </summary>
+    private sealed class BlockingSseContent : HttpContent
+    {
+        private readonly bool _deliverFirstChunk;
+
+        public BlockingSseContent(bool deliverFirstChunk)
+        {
+            _deliverFirstChunk = deliverFirstChunk;
+            Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new BlockingSseStream(_deliverFirstChunk));
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        private sealed class BlockingSseStream(bool deliverFirstChunk) : Stream
+        {
+            private static readonly byte[] FirstChunk =
+                Encoding.UTF8.GetBytes("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n");
+            private bool _delivered;
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer,
+                CancellationToken ct = default)
+            {
+                if (deliverFirstChunk && !_delivered)
+                {
+                    _delivered = true;
+                    FirstChunk.CopyTo(buffer.Span);
+                    return FirstChunk.Length;
+                }
+
+                // Im lặng vô hạn cho tới khi bị hủy — tôn trọng ct để CancelAfter cắt được ngay
+                await Task.Delay(Timeout.Infinite, ct);
+                return 0;
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count,
+                CancellationToken ct) =>
+                ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+
+            public override int Read(byte[] buffer, int offset, int count) =>
+                throw new NotSupportedException("Chỉ hỗ trợ async read.");
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) =>
+                throw new NotSupportedException();
+        }
+    }
+
     [Fact]
     public async Task ForwardAsync_WhenTeeFailsMidStream_RethrowsAndRecordsNetworkKind()
     {
@@ -675,10 +850,15 @@ public class ProxyRequestHandlerTests
         }), log, monitor: monitor);
         var ctx = Ctx();
         ctx.Items[ClientKeyItems.RequestId] = "req-mid";
+        // Stream client (đã qua flush point) → dest là pipe writer: chunk đầu ĐÃ tới client
+        // trước khi nổ → không retry được (đã có byte trên wire), giữ IOException rethrow như cũ
+        ctx.Items[SsePipeItems.Key] = new Pipe();
         var provider = SeedProvider();
 
-        // Rethrow — không đổi hành vi pipeline: dispatcher vẫn map HasStarted → Aborted như cũ
-        await Assert.ThrowsAsync<IOException>(() =>
+        // Rethrow — không đổi hành vi pipeline: dispatcher vẫn map HasStarted → Aborted như cũ.
+        // ThrowsAny (không phải Throws): watchdog bọc IOException gốc thành UpstreamStreamDiedException
+        // (vẫn kế thừa IOException) — nhóm lỗi mạng giữ nguyên, chỉ type cụ thể đổi có chủ đích
+        await Assert.ThrowsAnyAsync<IOException>(() =>
             sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
                 AccountIdOf(provider), ProxyProtocols.Chat, default));
 
@@ -690,6 +870,128 @@ public class ProxyRequestHandlerTests
         Assert.Null(record.Status);
         Assert.Null(record.ResponseBody);
         Assert.Null(record.FirstTokenAt);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstreamDiesBeforeContent_ReturnsProviderNetworkFatal()
+    {
+        var log = new CapturingLog();
+        var monitor = new ApiMonitorStore(new TraceFeed(log), log, TimeProvider.System);
+        var sut = Create(new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new DeadOnFirstReadSseContent(),
+        }), log, monitor: monitor);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-pre";
+        var provider = SeedProvider();
+
+        // Chết TRƯỚC byte content nào → Fatal(Provider, Status null) — dispatcher retry
+        // transient rồi failover (contract như lỗi kết nối lúc gửi), không abort request
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(FailoverLevel.Provider, fatal.Level);
+        Assert.Null(fatal.Status);
+        Assert.Empty(fatal.Body);
+
+        var record = monitor.Find("req-pre");
+        Assert.NotNull(record);
+        Assert.Equal("network", record.FailureKind);
+        Assert.Null(record.Status);
+
+        Assert.Contains(log.Errors, m => m.Contains("cắt kết nối trước khi gửi content"));
+    }
+
+    // Timeout 8s: GREEN cần ~1s (watchdog) + biên; RED (chưa bọc watchdog) sẽ treo tới timeout
+    [Fact(Timeout = 8000)]
+    public async Task ForwardAsync_WhenUpstreamIdleBeforeContent_CancelsUpstreamAndReturnsFatal()
+    {
+        // Upstream IM LẶNG vô hạn trước byte content đầu (không RST) — watchdog idle-read cắt,
+        // map thành nhóm lỗi mạng → Fatal(Provider) để dispatcher retry/failover
+        var log = new CapturingLog();
+        var monitor = new ApiMonitorStore(new TraceFeed(log), log, TimeProvider.System);
+        var settings = new StubSettings { UpstreamIdleTimeoutSec = 1 };
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new BlockingSseContent(deliverFirstChunk: false),
+        });
+        var sut = Create(upstream, log, monitor: monitor, settings: settings);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-idle-pre";
+        var provider = SeedProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        var fatal = Assert.IsType<DispatchOutcome.Fatal>(outcome);
+        Assert.Equal(FailoverLevel.Provider, fatal.Level);
+        // Cancel-before-error: token upstream bị hủy TRƯỚC khi outcome rời handler
+        Assert.True(upstream.LastCt.IsCancellationRequested,
+            "upstream token phải bị hủy trước khi trả outcome cho endpoint.");
+        var record = monitor.Find("req-idle-pre");
+        Assert.NotNull(record);
+        Assert.Equal("network", record.FailureKind);
+        Assert.Contains(log.Errors, m => m.Contains("cắt kết nối trước khi gửi content"));
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstreamDiesMidStream_CancelsUpstreamBeforeRethrow()
+    {
+        // Chết giữa chừng sau khi đã trôi chunk đầu → rethrow như cũ, nhưng upstream PHẢI bị
+        // hủy trước khi exception rời handler (endpoint ghi lỗi in-band sau đó)
+        var log = new CapturingLog();
+        var monitor = new ApiMonitorStore(new TraceFeed(log), log, TimeProvider.System);
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new BrokenSseContent(),
+        });
+        var sut = Create(upstream, log, monitor: monitor);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-cancel-mid";
+        ctx.Items[SsePipeItems.Key] = new Pipe();
+        var provider = SeedProvider();
+
+        await Assert.ThrowsAnyAsync<IOException>(() =>
+            sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+                AccountIdOf(provider), ProxyProtocols.Chat, default));
+
+        Assert.True(upstream.LastCt.IsCancellationRequested,
+            "upstream token phải bị hủy trước khi exception rời handler.");
+        var record = monitor.Find("req-cancel-mid");
+        Assert.NotNull(record);
+        Assert.Equal("network", record.FailureKind);
+    }
+
+    // Timeout 8s: GREEN cần ~1s (watchdog) + biên; RED (chưa bọc watchdog) sẽ treo tới timeout
+    [Fact(Timeout = 8000)]
+    public async Task ForwardAsync_WhenUpstreamIdleMidStream_CancelsUpstreamAndRethrows()
+    {
+        // Trôi chunk đầu rồi IM LẶNG vô hạn — watchdog cắt giữa chừng → IOException (không
+        // retry được vì client đã nhận byte) + cancel upstream trước khi rethrow
+        var log = new CapturingLog();
+        var monitor = new ApiMonitorStore(new TraceFeed(log), log, TimeProvider.System);
+        var settings = new StubSettings { UpstreamIdleTimeoutSec = 1 };
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new BlockingSseContent(deliverFirstChunk: true),
+        });
+        var sut = Create(upstream, log, monitor: monitor, settings: settings);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-idle-mid";
+        ctx.Items[SsePipeItems.Key] = new Pipe();
+        var provider = SeedProvider();
+
+        var ex = await Assert.ThrowsAnyAsync<IOException>(() =>
+            sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+                AccountIdOf(provider), ProxyProtocols.Chat, default));
+        Assert.IsType<UpstreamIdleTimeoutException>(ex);
+
+        Assert.True(upstream.LastCt.IsCancellationRequested,
+            "upstream token phải bị hủy trước khi exception rời handler.");
+        var record = monitor.Find("req-idle-mid");
+        Assert.NotNull(record);
+        Assert.Equal("network", record.FailureKind);
     }
 
     [Fact]
@@ -714,5 +1016,55 @@ public class ProxyRequestHandlerTests
         Assert.Equal(1, record.ErrorBody.Split("[truncated]").Length - 1);
         Assert.True(record.ErrorBody.Length <= 64 * 1024 + "[truncated]".Length,
             $"ErrorBody.Length = {record.ErrorBody.Length} vượt cap 64KB + marker");
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenOpenCodeModelCallsDecoyTool_LogsCorrelatedWarning()
+    {
+        // Client không khai tools → fingerprint chèn 4 decoy qua gate; model gọi "read" là
+        // TOOL MA client không đăng ký (opencode sẽ báo "invalid tool" khó hiểu). Response
+        // giữ nguyên (hướng B) — chỉ thêm Warning chẩn đoán gắn RequestId.
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+            "\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => Upstream(200, sse, "text/event-stream")), log);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-decoy";
+        var provider = SeedOpenCodeProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Contains(log.Entries, e =>
+            e.Severity == LogSeverity.Warning && e.RequestId == "req-decoy"
+            && e.Message.Contains("read"));
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenOpenCodeModelCallsClientTool_LogsNoWarning()
+    {
+        // Client tự khai "bash" (không phải decoy) → model gọi bình thường, không cảnh báo
+        const string body =
+            """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"bash","description":"d","parameters":{"type":"object","properties":{}}}}]}""";
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+            "\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => Upstream(200, sse, "text/event-stream")), log);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-notdecoy";
+        var provider = SeedOpenCodeProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(body),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Empty(log.Warns);
     }
 }

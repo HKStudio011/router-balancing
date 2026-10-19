@@ -273,4 +273,85 @@ public class OpenCodeFreeFingerprintTests
         var bytes = await request.Content!.ReadAsByteArrayAsync();
         Assert.Equal(bytes.Length, request.Content.Headers.ContentLength);
     }
+
+    [Fact]
+    public void RestoreMapFor_CaseVariantQuartet_MapsCanonicalToClientName()
+    {
+        // Map ngược cho response: client gọi "bash" phải khớp tên nó khai báo ("Bash")
+        var body = ChatWith("""
+            "tools":[
+              {"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}},
+              {"type":"function","function":{"name":"Glob","parameters":{"type":"object"}}}
+            ]
+            """);
+
+        var map = OpenCodeFreeFingerprint.RestoreMapFor(OpenCode(), Encoding.UTF8.GetBytes(body));
+
+        Assert.NotNull(map);
+        Assert.Equal(2, map.Count);
+        Assert.Equal("Bash", map["bash"]);
+        Assert.Equal("Glob", map["glob"]);
+    }
+
+    [Fact]
+    public void RestoreMapFor_NoRenamedTools_ReturnsNull()
+    {
+        // Không có tools (chỉ decoy chèn) hoặc tools đã đúng lowercase → không cần bọc response
+        Assert.Null(OpenCodeFreeFingerprint.RestoreMapFor(OpenCode(), Encoding.UTF8.GetBytes(ChatBody)));
+
+        var lower = ChatWith("""
+            "tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}]
+            """);
+        Assert.Null(OpenCodeFreeFingerprint.RestoreMapFor(OpenCode(), Encoding.UTF8.GetBytes(lower)));
+    }
+
+    [Fact]
+    public void RestoreMapFor_NonOpenCodeProvider_ReturnsNull()
+    {
+        var provider = new Provider
+        {
+            Name = "P", Type = ProviderType.OpenAI, BaseUrl = "https://api.openai.com",
+        };
+        var body = ChatWith("""
+            "tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]
+            """);
+
+        Assert.Null(OpenCodeFreeFingerprint.RestoreMapFor(provider, Encoding.UTF8.GetBytes(body)));
+    }
+
+    [Fact]
+    public void DecoyNamesFor_NoClientTools_ReturnsAllQuartet()
+    {
+        // Client không khai tool nào → fingerprint chèn cả 4 decoy; model gọi tên nào
+        // trong 4 tên này cũng là "tool ma" client không đăng ký
+        var names = OpenCodeFreeFingerprint.DecoyNamesFor(
+            OpenCode(), Encoding.UTF8.GetBytes(ChatBody));
+
+        Assert.Equal(new[] { "bash", "glob", "grep", "read" }, names);
+    }
+
+    [Fact]
+    public void DecoyNamesFor_ClientDeclaresCaseVariantBash_ReturnsOtherThree()
+    {
+        // Client khai "Bash" → canonicalize thành bash → chỉ glob/grep/read là decoy
+        var body = ChatWith("""
+            "tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]
+            """);
+
+        var names = OpenCodeFreeFingerprint.DecoyNamesFor(OpenCode(), Encoding.UTF8.GetBytes(body));
+
+        Assert.Equal(new[] { "glob", "grep", "read" }, names);
+    }
+
+    [Fact]
+    public void DecoyNamesFor_NonOpenCodeProvider_ReturnsEmpty()
+    {
+        var provider = new Provider
+        {
+            Name = "P", Type = ProviderType.OpenAI, BaseUrl = "https://api.openai.com",
+        };
+
+        Assert.Empty(OpenCodeFreeFingerprint.DecoyNamesFor(
+            provider, Encoding.UTF8.GetBytes(ChatBody)));
+    }
 }

@@ -46,6 +46,10 @@ public static class SettingsValidator
         if (draft.TransientBackoffBaseMs is < 250 or > 4000)
             errors[nameof(SettingsDraft.TransientBackoffBaseMs)] = "settings.error.transientBackoffBase";
 
+        // 0 hợp lệ (tắt watchdog) nên range bắt đầu tại 0
+        if (draft.UpstreamIdleTimeoutSec is < 0 or > 3600)
+            errors[nameof(SettingsDraft.UpstreamIdleTimeoutSec)] = "settings.error.upstreamIdleTimeout";
+
         return errors;
     }
 }

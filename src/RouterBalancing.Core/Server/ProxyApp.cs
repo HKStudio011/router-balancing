@@ -324,8 +324,16 @@ public static class ProxyApp
             success = false;
             status = 500;
         }
+        // FailureKind "network" cho stream chết khi client còn nối (#7 contentBytes=0 và
+        // #8 contentBytes>0 — cả hai đều upstream/network, KHÔNG phải client cancel): journal
+        // ghi Error/network thay vì Cancelled để stats ErrorRate không nuốt lỗi. Monitor không
+        // đổi (store không đọc FailureKind của terminal). Client cancel thật → null như cũ.
+        var failureKind = prepared.IsStream && outcome is DispatchOutcome.Aborted
+            && !ctx.RequestAborted.IsCancellationRequested
+            ? "network"
+            : null;
         trace.Publish(new TraceEvent(id, stage, prepared.ModelId,
-            null, null, status, success, null, DateTimeOffset.Now));
+            null, null, status, success, failureKind, DateTimeOffset.Now));
 
         if (ssePipe is not null)
         {
@@ -626,8 +634,11 @@ public static class ProxyApp
         {
             while (true)
             {
-                var winner = await Task.WhenAny(readTask,
-                    Task.Delay(KeepAliveIntervalMs, ct), completion);
+                var delayTask = Task.Delay(KeepAliveIntervalMs, ct);
+                var winner = await Task.WhenAny(readTask, delayTask, completion);
+                // Delay thua cuộc bị WhenAny bỏ rơi — observe để finalizer không ném lại
+                // khi ct hủy (mỗi vòng lặp tạo delay mới, chỉ winner được await)
+                TaskObservation.ObserveFailure(delayTask);
                 if (winner == completion)
                     break;
                 if (winner == readTask)
@@ -678,6 +689,14 @@ public static class ProxyApp
             // Client ngắt giữa loop: Register/Dispatcher LUÔN set outcome khi abort —
             // await completion không deadlock (đó là lý do abort không cần timeout ở đây)
             return (await completion, contentBytes);
+        }
+        finally
+        {
+            // readTask pending gắn với ct có thể fault (OCE qua ValueTaskSourceAsTask) SAU khi
+            // thoát — đặc biệt ở nhánh OCE phía trên (write ném trước khi read kịp xong). Không
+            // observe thì finalizer ném lại AggregateException làm sập tiến trình (lỗi 2026-10-19).
+            // Nhánh drain bên dưới await lại chính task này — Task cho phép đọc kết quả nhiều lần.
+            TaskObservation.ObserveFailure(readTask);
         }
 
         // Completion về: endpoint là completer duy nhất của pipe (handler không Complete).

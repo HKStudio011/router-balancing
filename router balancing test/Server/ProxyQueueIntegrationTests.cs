@@ -178,10 +178,24 @@ public class ProxyQueueIntegrationTests : IDisposable
 
     private async Task<string> FindRequestIdByStateAsync(HttpClient client, string state)
     {
-        var response = await client.GetAsync("/v1/requests");
-        var requests = (await ReadJson(response)).GetProperty("requests").EnumerateArray();
-        return requests.Single(r => r.GetProperty("state").GetString() == state)
-            .GetProperty("id").GetString()!;
+        // Poll như WaitForQueuedIdAsync — enqueue chạy song song với roundtrip POST→GET,
+        // Single một lần fail ngẫu nhiên khi request chưa kịp vào queue (race pre-existing)
+        for (var i = 0; i < 100; i++)
+        {
+            var response = await client.GetAsync("/v1/requests");
+            var requests = (await ReadJson(response)).GetProperty("requests").EnumerateArray();
+            var hits = requests
+                .Where(r => r.GetProperty("state").GetString() == state)
+                .Select(r => r.GetProperty("id").GetString())
+                .ToArray();
+            if (hits.Length == 1)
+                return hits[0]!;
+            if (hits.Length > 1)
+                throw new InvalidOperationException(
+                    $"Nhiều request cùng state '{state}' — không xác định id cần huỷ.");
+            await Task.Delay(50);
+        }
+        throw new TimeoutException($"Không thấy request nào ở state '{state}' trong 5s.");
     }
 
     [Fact]

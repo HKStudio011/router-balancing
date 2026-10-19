@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Engine;
 
 namespace RouterBalancing.Core.Providers;
 
@@ -190,7 +191,9 @@ public sealed partial class OpenCodeSidecarService : IOpenCodeSidecarService
     {
         try
         {
-            _ = process.StandardError.ReadToEndAsync();
+            // Task đọc stderr bị bỏ rơi — kill/dispose giữa chừng làm read fault
+            // (OCE/ObjectDisposed) → phải observe, không thì finalizer ném lại.
+            TaskObservation.ObserveFailure(process.StandardError.ReadToEndAsync());
             await process.WaitForExitAsync().ConfigureAwait(false);
         }
         catch

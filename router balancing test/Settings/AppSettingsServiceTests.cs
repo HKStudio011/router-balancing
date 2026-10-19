@@ -29,6 +29,7 @@ public class AppSettingsServiceTests : IDisposable
         Assert.True(service.CloseToTray);
         Assert.Equal(5, service.TransientMaxRetries);
         Assert.Equal(1000, service.TransientBackoffBaseMs);
+        Assert.Equal(300, service.UpstreamIdleTimeoutSec);
     }
 
     [Fact]

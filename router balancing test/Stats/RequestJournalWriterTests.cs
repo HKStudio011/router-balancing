@@ -40,8 +40,9 @@ public class RequestJournalWriterTests : IDisposable
 
     private static TraceEvent Ev(string id, TraceStage stage, string model, DateTimeOffset at,
         TraceRoute? route = null, int? status = null, bool? success = null, string? mode = null,
-        long? clientKeyId = null) =>
-        new(id, stage, model, route, null, status, success, null, at, mode, ClientKeyId: clientKeyId);
+        long? clientKeyId = null, string? failureKind = null) =>
+        new(id, stage, model, route, null, status, success, failureKind, at, mode,
+            ClientKeyId: clientKeyId);
 
     private List<LogEntry> Rows()
     {
@@ -106,6 +107,41 @@ public class RequestJournalWriterTests : IDisposable
         Assert.Equal(2000, row.DurationMs);
         Assert.Null(row.HttpStatus);
         Assert.Null(row.ErrorCode);
+    }
+
+    [Fact]
+    public void Canceled_WithNetworkFailureKind_WritesErrorRowWithNetworkCode()
+    {
+        // Upstream cắt mid-stream khi client còn nối (ProxyApp ghi FailureKind "network")
+        // — phải ghi Error để stats ErrorRate không nuốt lỗi thay vì Cancelled như client cancel
+        var t0 = Now;
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0));
+        _feed.Publish(Ev("r1", TraceStage.Attempt, "m1", t0.AddSeconds(1),
+            route: new TraceRoute(null, "prov1", null)));
+        _feed.Publish(Ev("r1", TraceStage.Canceled, "m1", t0.AddSeconds(2), failureKind: "network"));
+
+        var row = Assert.Single(Rows());
+        Assert.Equal(RequestOutcome.Error, row.Outcome);
+        Assert.Equal(LogSeverity.Error, row.Severity);
+        Assert.Equal("network", row.ErrorCode);
+        Assert.Null(row.HttpStatus);
+        Assert.Equal("prov1", row.ProviderKey);
+    }
+
+    [Fact]
+    public void Finished_NetworkFailureKind_OverridesStatusDerivedCode()
+    {
+        // #7 (stream chết pre-content còn sót) có status 500 nhưng gốc là lỗi mạng —
+        // FailureKind từ publisher phải thắng suy ra "http" từ Status
+        var t0 = Now;
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", t0.AddSeconds(1),
+            status: 500, success: false, failureKind: "network"));
+
+        var row = Assert.Single(Rows());
+        Assert.Equal(RequestOutcome.Error, row.Outcome);
+        Assert.Equal("network", row.ErrorCode);
+        Assert.Equal(500, row.HttpStatus);
     }
 
     [Fact]

@@ -246,7 +246,7 @@ public static class OpenCodeFreeFingerprint
 
         var hadClientTools = obj["tools"] is JsonArray existingTools && existingTools.Count > 0;
         var changed = ApplyTools(obj, out var renamed);
-        changed = RetargetToolChoice(obj, renamed) || changed;
+        changed = RetargetToolChoice(obj, renamed.Keys) || changed;
 
         if (!hadClientTools && !HasToolChoice(obj))
         {
@@ -278,9 +278,8 @@ public static class OpenCodeFreeFingerprint
     }
 
     /// <returns>Có thay đổi tools nào không.</returns>
-    private static bool ApplyTools(JsonObject body, out HashSet<string> renamed)
+    private static bool ApplyTools(JsonObject body, out Dictionary<string, string> renamed)
     {
-        renamed = [];
         var tools = body["tools"] as JsonArray;
         if (tools is null)
         {
@@ -288,14 +287,17 @@ public static class OpenCodeFreeFingerprint
             body["tools"] = tools;
         }
 
+        // Một nguồn duy nhất cho map rename (canonical key → tên client gốc): dung lại cho
+        // cả request rewrite lẫn map ngược response (RestoreMapFor) — tránh lệch 2 chiều.
+        renamed = ComputeRenameMap(tools);
+
         var changed = false;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var duplicates = new List<int>();
         for (var i = 0; i < tools.Count; i++)
         {
             if (tools[i] is not JsonObject tool) continue;
-            var name = ToolName(tool);
-            var key = QuartetKey(name);
+            var key = QuartetKey(ToolName(tool));
             if (key.Length == 0) continue; // tool thường — giữ nguyên, nằm ngoài fingerprint contract
 
             if (!seen.Add(key))
@@ -303,12 +305,9 @@ public static class OpenCodeFreeFingerprint
                 duplicates.Add(i); // Bash + bash = duplicate bị upstream từ chối
                 continue;
             }
-            if (!string.Equals(name, key, StringComparison.Ordinal))
-            {
-                RenameTool(tool, key);
-                renamed.Add(key);
-                changed = true;
-            }
+            if (!renamed.ContainsKey(key)) continue;
+            RenameTool(tool, key);
+            changed = true;
         }
         for (var i = duplicates.Count - 1; i >= 0; i--)
         {
@@ -325,7 +324,139 @@ public static class OpenCodeFreeFingerprint
         return changed;
     }
 
-    private static bool RetargetToolChoice(JsonObject body, HashSet<string> renamed)
+    /// <summary>
+    /// Map canonical quartet key → tên client gốc cho tool client khai báo với casing khác
+    /// (vd. <c>Bash</c> → <c>bash</c>). First-wins: bản trùng bị <see cref="ApplyTools"/> loại
+    /// nên chỉ bản đầu vào map; tool vốn đúng lowercase không có trong map (không cần rename).
+    /// </summary>
+    private static Dictionary<string, string> ComputeRenameMap(JsonArray? tools)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (tools is null) return map;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in tools)
+        {
+            if (item is not JsonObject tool) continue;
+            var name = ToolName(tool);
+            var key = QuartetKey(name);
+            if (key.Length == 0) continue;
+            if (!seen.Add(key)) continue;
+            if (!string.Equals(name, key, StringComparison.Ordinal)) map[key] = name;
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Map ngược tên tool cho RESPONSE (canonical → tên client gốc) khi request đã bị
+    /// fingerprint đổi casing: client chỉ biết tên nó đăng ký, nhận tên khác sẽ báo
+    /// "invalid tool"/sai schema parameter. Trả <see langword="null"/> khi không áp dụng
+    /// hoặc không có gì để map — caller dùng null nghĩa là "không bọc response".
+    /// </summary>
+    /// <param name="provider">Provider đích (chỉ host opencode.ai mới áp dụng).</param>
+    /// <param name="body">Body chat GỐC từ client (trước rewrite upstream).</param>
+    public static IReadOnlyDictionary<string, string>? RestoreMapFor(Provider provider, byte[] body)
+    {
+        if (!IsApplicable(provider)) return null;
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(Encoding.UTF8.GetString(body));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (node is not JsonObject obj) return null;
+        var map = ComputeRenameMap(obj["tools"] as JsonArray);
+        return map.Count > 0 ? map : null;
+    }
+
+    /// <summary>
+    /// Tên quartet mà fingerprint sẽ chèn dưới dạng DECOY (client không khai báo) — model
+    /// gọi những tên này thì client không có tool tương ứng và sẽ báo "invalid tool".
+    /// Dùng cho tín hiệu chẩn đoán, không đổi request/response.
+    /// </summary>
+    /// <param name="provider">Provider đích (chỉ host opencode.ai mới áp dụng).</param>
+    /// <param name="body">Body chat GỐC từ client.</param>
+    public static IReadOnlyList<string> DecoyNamesFor(Provider provider, byte[] body)
+    {
+        if (!IsApplicable(provider)) return [];
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(Encoding.UTF8.GetString(body));
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+        if (node is not JsonObject obj) return [];
+
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        if (obj["tools"] is JsonArray tools)
+        {
+            foreach (var item in tools)
+            {
+                if (item is not JsonObject tool) continue;
+                var key = QuartetKey(ToolName(tool));
+                if (key.Length > 0) declared.Add(key);
+            }
+        }
+        return Quartet.Where(name => !declared.Contains(name)).ToArray();
+    }
+
+    /// <summary>
+    /// Tên decoy mà model ĐÃ gọi trong response (walk <c>choices[].{delta,message}.tool_calls</c>
+    /// của mọi dòng JSON trong <paramref name="responseBody"/>) — dùng để ghi cảnh báo chẩn
+    /// đoán thay vì để client báo "invalid tool" khó hiểu. Trả rỗng khi không có decoy nào.
+    /// </summary>
+    /// <param name="provider">Provider đích.</param>
+    /// <param name="body">Body chat GỐC từ client.</param>
+    /// <param name="responseBody">ResponseBody đã tee (SSE payload từng dòng, hoặc JSON gộp).</param>
+    public static IReadOnlyList<string> FindDecoyCalls(Provider provider, byte[] body, string? responseBody)
+    {
+        if (string.IsNullOrEmpty(responseBody)) return [];
+        var decoys = DecoyNamesFor(provider, body);
+        if (decoys.Count == 0) return [];
+        var candidates = new HashSet<string>(decoys, StringComparer.Ordinal);
+        var found = new List<string>();
+
+        foreach (var rawLine in responseBody.Split('\n'))
+        {
+            var text = rawLine.Trim();
+            if (text.Length == 0) continue;
+            JsonNode? node;
+            try
+            {
+                node = JsonNode.Parse(text);
+            }
+            catch (JsonException)
+            {
+                continue; // dòng hỏng/chunk cắt — bỏ qua, đây chỉ là tín hiệu chẩn đoán
+            }
+            if (node is not JsonObject root || root["choices"] is not JsonArray choices) continue;
+            foreach (var choice in choices)
+            {
+                if (choice is not JsonObject choiceObj) continue;
+                foreach (var holderKey in new[] { "delta", "message" })
+                {
+                    if (choiceObj[holderKey] is not JsonObject holder) continue;
+                    if (holder["tool_calls"] is not JsonArray toolCalls) continue;
+                    foreach (var toolCall in toolCalls)
+                    {
+                        if (toolCall is not JsonObject tc) continue;
+                        if (tc["function"] is not JsonObject function) continue;
+                        if (function["name"] is not JsonValue nameValue) continue;
+                        if (!nameValue.TryGetValue<string>(out var name)) continue;
+                        if (candidates.Contains(name) && !found.Contains(name)) found.Add(name);
+                    }
+                }
+            }
+        }
+        return found;
+    }
+
+    private static bool RetargetToolChoice(JsonObject body, ICollection<string> renamed)
     {
         if (renamed.Count == 0 || body["tool_choice"] is not JsonObject choice) return false;
 
@@ -334,7 +465,7 @@ public static class OpenCodeFreeFingerprint
         return RenameIfQuartet(choice, renamed);
     }
 
-    private static bool RenameIfQuartet(JsonObject holder, HashSet<string> renamed)
+    private static bool RenameIfQuartet(JsonObject holder, ICollection<string> renamed)
     {
         if (holder["name"] is not JsonValue nameValue
             || !nameValue.TryGetValue<string>(out var name))

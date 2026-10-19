@@ -25,7 +25,15 @@ public sealed class OpenAiUpstreamClient(IHttpClientFactory http) : IUpstreamCli
             provider, apiKey, path, HttpMethod.Post, content, idempotencyKey);
 
         // ResponseHeadersRead: hoàn tất khi đủ header, body stream tiếp — bắt buộc cho SSE
-        return await http.CreateClient(HttpClientName)
+        var response = await http.CreateClient(HttpClientName)
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+        // OpenCode lane: request đã bị canonicalize tên quartet (Bash→bash) — response phải
+        // map ngược về đúng tên client đăng ký, nếu không model trả "bash" trong khi client
+        // chỉ biết "Bash" → "invalid tool"/lệch schema parameter (drift mỗi bản opencode).
+        if (OpenCodeFreeFingerprint.RestoreMapFor(provider, body) is { } restore)
+            response.Content = new ToolNameRestoreContent(response.Content, restore);
+
+        return response;
     }
 }
