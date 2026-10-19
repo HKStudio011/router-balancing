@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Net.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Localization;
@@ -144,6 +145,9 @@ namespace router_balancing
             // Thứ tự đăng ký = thứ tự chain: endpoint trước, static catalog sau
             builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();
             builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
+            // Capability writer singleton (spec capability-model §5): importer catalog/probe và
+            // UI chỉ ghi fact capability qua IModelCapabilityWriter — không tự đụng entity.
+            builder.Services.AddSingleton<IModelCapabilityWriter, ModelCapabilityWriter>();
             builder.Services.AddSingleton<LogRetentionWorker>();
             builder.Services.AddSingleton<FreeModelSyncWorker>();
 
