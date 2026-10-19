@@ -27,7 +27,7 @@ public sealed record OpenCodeConfigModel(string ModelId, string? DisplayName, in
 public static class OpenCodeConfigGenerator
 {
     /// <summary>
-    /// Id provider trong config opencode — id do app tự chọn (spec C3) để config user dán vào
+    /// Id provider trong config opencode — id do app tự chọn (spec C2) để config user dán vào
     /// opencode khớp endpoint local của app; không ràng buộc với sidecar.
     /// </summary>
     public const string ProviderId = "router-balancing";
