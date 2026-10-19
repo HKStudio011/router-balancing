@@ -19,7 +19,7 @@
 - Working tree có file WIP của user (`src/RouterBalancing.Core/Engine/*`, `router balancing test/Engine/*`) — không được stage/sửa/revert.
 - Comment tiếng Việt cho "tại sao"; XML doc cho public API; exception message và identifier tiếng Anh. Không TODO vô chủ.
 - Test dùng `TestDb` (SQLite file tạm, chạy migration thật) + `DbInitializer.Initialize`; HTTP stub là class cục bộ trong từng file test (house pattern: `JsonHandler`/`StubFactory`/`NullLog`).
-- Flake đã biết: `ProxyQueueIntegrationTests.Stream_LargeUpstreamBody_CompletesWithoutDeadlock` timeout khi chạy song song (tiền tồn tại) — chạy lại hoặc `--parallel none` trước khi kết luận đỏ, không sửa test đó.
+- Flake đã biết (danh sách chính thức): `ProxyQueueIntegrationTests.Stream_LargeUpstreamBody_CompletesWithoutDeadlock` và `ProxyHostTests.*(NonLoopback)` — timeout khi chạy song song, cả hai **tiền tồn tại** (đã reproduce ở baseline sạch). Cách xử lý được phép: chạy lại full suite, hoặc `dotnet test --parallel none`. **Cấm** dùng `--filter "…!~…"` để loại test khỏi gate — gate phải là full suite thật.
 - Tên enum/cột DB đúng nguyên văn ở Task 1 (các task sau phụ thuộc).
 
 ## Review Focus
@@ -56,10 +56,10 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
   - `static class CapabilityNames` cũng cung cấp `static T FromDb<T>(string) where T : struct, Enum` (ném `FormatException` cho giá trị lạ; `T` là một trong ba enum) — Task 2/3/11 gọi `FromDb<CapabilityKind>(…)` / `FromDb<ModalityKind>(…)` / `FromDb<ModalityDirection>(…)`.
   - Kèm hai ràng buộc rẻ của spec §6 trong **cùng migration này**: unique index trên `Providers.Name`; `ProviderAccounts.ApiKeyEncrypted` cho phép NULL.
 
-- [ ] **Step 1:** Viết test schema trong `CapabilityFactSchemaTests.cs`: dùng `TestDb` + `DbInitializer.Initialize`, chèn một `Model` rồi chèn 3 loại fact, đọc lại bằng `DbContext`, assert: tổ hợp khóa ghép trùng bị chặn (`DbUpdateException`), xóa model thì 3 bảng sạch (cascade), enum lưu ra TEXT chữ thường, `FromDb("tools")` round-trip. Gắn `[RF-5]` cho phần cascade. Thêm hai test ràng buộc kèm: `DuplicateProviderName_Rejected` và `AccountWithNullApiKeyEncrypted_Allowed`.
+- [ ] **Step 1:** Viết test schema trong `CapabilityFactSchemaTests.cs`: dùng `TestDb` + `DbInitializer.Initialize`, chèn một `Model` rồi chèn 3 loại fact, đọc lại bằng `DbContext`, assert: tổ hợp khóa ghép trùng bị chặn (`DbUpdateException`), xóa model thì 3 bảng sạch (cascade), enum lưu ra TEXT chữ thường, `FromDb("tools")` round-trip. Gắn `[RF-5]` cho phần cascade. Thêm hai test ràng buộc kèm: `DuplicateProviderName_Rejected` và `AccountWithNullApiKeyEncrypted_Allowed`; và `Migration_DuplicateProviderNames_BecomeUniqueAndSucceed` — dựng DB ở schema cũ bằng `db.Database.Migrate("20261019064905_AddModelToolsOutputLimit")`, chèn 2 provider **trùng tên** bằng SQL thô, rồi gọi `Migrate()` đầy đủ: migration phải chạy qua và tên trở thành `X` / `X-2`.
 - [ ] **Step 2:** Chạy `dotnet test "router balancing test/router balancing test.csproj" --filter "FullyQualifiedName~CapabilityFactSchemaTests"` → Expected: FAIL (loại entity chưa tồn tại → không compile được; đó là red hợp lệ của feature mới).
 - [ ] **Step 3:** Tạo enum + `CapabilityNames` + 3 entity + navigation trên `Model` + cấu hình `RouterBalancingDbContext` (khóa ghép, cascade, `.HasConversion(v => CapabilityNames.ToDb(v), s => CapabilityNames.FromDb(s))`).
-- [ ] **Step 4:** Chạy lệnh migration ở Global Constraints với tên `AddModelCapabilityFacts`. Kiểm tra file migration chỉ **tạo 3 bảng mới** (không đụng cột nào cũ).
+- [ ] **Step 4:** Chạy lệnh migration ở Global Constraints với tên `AddModelCapabilityFacts`. Kiểm tra file migration: **chỉ** tạo 3 bảng mới + unique index `Providers.Name` + bỏ NOT NULL `ApiKeyEncrypted`, **và** một UPDATE tiền xử lý **trước** khi tạo index để các `Providers.Name` trùng nhau thành duy nhất (suffix `-2`, `-3` theo `Id` tăng dần) — DB cũ có tên trùng phải migrate được vì app tự `Migrate()` lúc khởi động. Không được đụng cột nào của `Models`.
 - [ ] **Step 5:** Chạy lại filter test ở Step 2 → PASS. Chạy full suite → PASS.
 - [ ] **Step 6:** Commit: `git add` các file trên + migration → `git commit -m "feat: add capability fact tables with per-source provenance"`.
 
