@@ -53,7 +53,7 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
   - `static class CapabilityNames` — `ToDb(this CapabilityKind) -> "tools"|"reasoning"`, `ToDb(this ModalityKind) -> "text"|"image"|"audio"|"video"`, `ToDb(this ModalityDirection) -> "input"|"output"` và chiều ngược lại `TryFromDb`.
   - Entities: `ModelCapability { long ModelId; CapabilityKind Capability; bool KnownAbsent; CapabilitySource Source; DateTimeOffset UpdatedAt; }`, `ModelModality { long ModelId; ModalityDirection Direction; ModalityKind Modality; bool KnownAbsent; CapabilitySource Source; DateTimeOffset UpdatedAt; }`, `ModelReasoningEffort { long ModelId; string Level; CapabilitySource Source; DateTimeOffset UpdatedAt; }`.
   - Bảng/điểm ràng buộc DB: `ModelCapabilities(ModelId, Capability)` PK, `ModelModalities(ModelId, Direction, Modality)` PK, `ModelReasoningEfforts(ModelId, Level)` PK; tất cả FK → `Models(Id)` `ON DELETE CASCADE`. `DbSet` trong `RouterBalancingDbContext` đặt tên đúng số nhiều như trên để tên bảng khớp.
-  - `static class CapabilityNames` cũng cung cấp `FromDb(string) -> CapabilityKind|ModalityKind|ModalityDirection` (ném `FormatException` cho giá trị lạ) — Task 2/3/11 gọi đúng tên này.
+  - `static class CapabilityNames` cũng cung cấp `static T FromDb<T>(string) where T : struct, Enum` (ném `FormatException` cho giá trị lạ; `T` là một trong ba enum) — Task 2/3/11 gọi `FromDb<CapabilityKind>(…)` / `FromDb<ModalityKind>(…)` / `FromDb<ModalityDirection>(…)`.
   - Kèm hai ràng buộc rẻ của spec §6 trong **cùng migration này**: unique index trên `Providers.Name`; `ProviderAccounts.ApiKeyEncrypted` cho phép NULL.
 
 - [ ] **Step 1:** Viết test schema trong `CapabilityFactSchemaTests.cs`: dùng `TestDb` + `DbInitializer.Initialize`, chèn một `Model` rồi chèn 3 loại fact, đọc lại bằng `DbContext`, assert: tổ hợp khóa ghép trùng bị chặn (`DbUpdateException`), xóa model thì 3 bảng sạch (cascade), enum lưu ra TEXT chữ thường, `FromDb("tools")` round-trip. Gắn `[RF-5]` cho phần cascade. Thêm hai test ràng buộc kèm: `DuplicateProviderName_Rejected` và `AccountWithNullApiKeyEncrypted_Allowed`.
@@ -278,6 +278,22 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 - [ ] **Step 2:** Chạy ba gate: Core build, full suite, app TFM build. Flake `ProxyQueueIntegrationTests` → chạy lại một lần trước khi kết luận.
 - [ ] **Step 3:** Smoke checklist (user, app bản mới): OpenCode Free → "Tải model free" → badge audio/video hiện đúng model có trong catalog; OpenRouter Free → "Lấy model" → model có tools/vision; NVIDIA → chỉ model còn trang catalog có badge, model legacy vẫn trống; tick tay "audio output = có" → reload vẫn còn sau khi bấm lại sync; "Đặt lại theo catalog" → mất tick tay, lấy lại của catalog; `GET /v1/models` của proxy trả `capabilities` từ fact.
 - [ ] **Step 4:** Push + PR vào `master` (master protected), body theo format PR #29/#30: Changes / Verification.
+
+---
+
+### Task 13: Chặn trùng tên provider ở tầng app (hệ quả của unique index ở Task 1)
+
+**Files:**
+- Modify: `src/RouterBalancing.Core/Providers/ProviderValidator.cs` (hoặc nơi validate provider — xác định bằng `rg "class ProviderValidator|ValidateProvider"`), `src/RouterBalancing.Core/Localization/Translations.cs` (thêm key `providers.error.duplicateName` EN/VI)
+- Test: `router balancing test/Providers/ProviderValidatorTests.cs` (thêm case)
+
+**Interfaces:**
+- Consumes: unique index `IX_Providers_Name` đã có từ Task 1.
+- Produces: `ProviderValidator` từ chối tên trùng (kể cả chỉ khác hoa thường? **Không** — so Ordinal, vì index là Ordinal) trước khi `SaveChanges`, trả lỗi validation thay vì `DbUpdateException`.
+- [ ] **Step 1:** Test đỏ: `Validate_NewProviderWithExistingName_ReturnsError`, `Validate_RenamingToAnotherExistingName_ReturnsError`, `Validate_SameProviderUnchangedName_IsValid`, `Validate_CaseDifferenceOnly_IsAllowed` (khớp đúng semantics của index).
+- [ ] **Step 2:** Chạy `--filter "FullyQualifiedName~ProviderValidator"` → FAIL.
+- [ ] **Step 3:** Implement validation + i18n key.
+- [ ] **Step 4:** Filter → PASS; full suite → PASS. Commit `fix: reject duplicate provider names in validation`.
 
 ---
 
