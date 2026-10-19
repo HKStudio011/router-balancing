@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
+using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
@@ -248,6 +249,7 @@ public sealed class ProxyRequestHandler(
                     monitor.RecordResponse(requestId, tee.Usage?.PromptTokens,
                         tee.Usage?.CompletionTokens, tee.FirstTokenAt, tee.ResponseBody);
                     LogForwarded(ctx, provider, model, response, stopwatch);
+                    WarnOnDecoyToolCalls(ctx, provider, body, tee.ResponseBody);
 
                     if (tee.Usage is not null)
                     {
@@ -364,6 +366,27 @@ public sealed class ProxyRequestHandler(
             RequestId = ClientKeyItems.RequestIdOf(ctx),
             ClientKeyId = ClientKeyItems.IdOf(ctx),
         });
+
+    // Tín hiệu CHẨN ĐOÁN (không đổi response/outcome): fingerprint opencode.ai chèn 4 tool
+    // decoy để qua gate, model có thể gọi một tên client KHÔNG đăng ký → client báo "invalid
+    // tool" rất khó hiểu khi debug. Ghi Warning kèm RequestId để correlate ngay trong log.
+    private void WarnOnDecoyToolCalls(HttpContext ctx, Provider provider, byte[] body,
+        string? responseBody)
+    {
+        foreach (var name in OpenCodeFreeFingerprint.FindDecoyCalls(provider, body, responseBody))
+        {
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Warning,
+                Category = LogCategory.Request,
+                Message = $"Model gọi tool fingerprint '{name}' (decoy để qua gate) nhưng client "
+                          + "không đăng ký tên này — opencode sẽ báo invalid tool; "
+                          + "kiểm tra tool list client gửi lên.",
+                RequestId = ClientKeyItems.RequestIdOf(ctx),
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
+        }
+    }
 
     // Encoder relax giữ nguyên apostrophe (0x27) trong message — default encoder escape
     // apostrophe thành chuỗi unicode, sai contract OpenAI (spec §4) — GIỮ NGUYÊN comment 3A

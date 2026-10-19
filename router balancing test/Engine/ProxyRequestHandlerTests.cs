@@ -37,6 +37,27 @@ public class ProxyRequestHandlerTests
         return provider;
     }
 
+    private Provider SeedOpenCodeProvider()
+    {
+        // Host opencode.ai → OpenCodeFreeFingerprint áp dụng; dùng để kiểm tín hiệu chẩn đoán
+        // decoy-call (response vẫn đi qua StubUpstream nên request KHÔNG bị rewrite — chỉ nhánh
+        // tính decoy/tool list từ body gốc được test)
+        var provider = new Provider
+        {
+            Name = "opencode-free",
+            Type = ProviderType.OpenAI,
+            BaseUrl = "https://opencode.ai/zen",
+        };
+        provider.Models.Add(new Model { ModelId = "gpt-4o-mini", Enabled = true });
+        provider.Accounts.Add(new ProviderAccount
+        {
+            Name = "a1",
+            Enabled = true,
+            ApiKeyEncrypted = _protector.Protect("sk-live"),
+        });
+        return provider;
+    }
+
     private static Model ModelOf(Provider provider) => provider.Models[0];
 
     // Entity in-memory (chưa SaveChanges) → Id = 0 khớp account duy nhất của test;
@@ -995,5 +1016,55 @@ public class ProxyRequestHandlerTests
         Assert.Equal(1, record.ErrorBody.Split("[truncated]").Length - 1);
         Assert.True(record.ErrorBody.Length <= 64 * 1024 + "[truncated]".Length,
             $"ErrorBody.Length = {record.ErrorBody.Length} vượt cap 64KB + marker");
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenOpenCodeModelCallsDecoyTool_LogsCorrelatedWarning()
+    {
+        // Client không khai tools → fingerprint chèn 4 decoy qua gate; model gọi "read" là
+        // TOOL MA client không đăng ký (opencode sẽ báo "invalid tool" khó hiểu). Response
+        // giữ nguyên (hướng B) — chỉ thêm Warning chẩn đoán gắn RequestId.
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+            "\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => Upstream(200, sse, "text/event-stream")), log);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-decoy";
+        var provider = SeedOpenCodeProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Contains(log.Entries, e =>
+            e.Severity == LogSeverity.Warning && e.RequestId == "req-decoy"
+            && e.Message.Contains("read"));
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenOpenCodeModelCallsClientTool_LogsNoWarning()
+    {
+        // Client tự khai "bash" (không phải decoy) → model gọi bình thường, không cảnh báo
+        const string body =
+            """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"bash","description":"d","parameters":{"type":"object","properties":{}}}}]}""";
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+            "\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => Upstream(200, sse, "text/event-stream")), log);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-notdecoy";
+        var provider = SeedOpenCodeProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(body),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Empty(log.Warns);
     }
 }
