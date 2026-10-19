@@ -80,6 +80,11 @@ internal static class FreeModelFixtures
     }
     """;
 
+    /// <summary>Catalog toàn model trả phí — detector lọc rỗng → guard không xoá list.</summary>
+    public const string OpenCodeCatalogAllPaid = """
+    { "opencode": { "models": { "paid-a": { "cost": { "input": 3, "output": 15 } } } } }
+    """;
+
     /// <summary>2 entry THẬT từ snapshot (giữ field lạ: description/family/interleaved/provider/canonical_model_id/limit.input…)
     /// + 1 model thật deprecated — chứng minh parser bỏ qua field lạ và map đúng shape sống.</summary>
     public const string OpenCodeCatalogRealSlice = """
