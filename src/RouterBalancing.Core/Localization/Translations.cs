@@ -485,6 +485,31 @@ public static class Translations
         ["update.error.snapshot"] = "queue snapshot error",
         ["update.error.install"] = "installer launch error",
         ["update.error.drain"] = "in-flight count error",
+
+        // OpenCode Tools page (Task 6, spec §7.1)
+        ["nav.tools"] = "Tools",
+        ["tools.title"] = "OpenCode config",
+        ["tools.proxy.running"] = "Proxy is running",
+        ["tools.proxy.stopped"] = "Proxy is not running — start it in Settings; config can still be generated with the settings port.",
+        ["tools.baseUrl"] = "Base URL",
+        ["tools.apiKey.label"] = "Client key (optional)",
+        ["tools.apiKey.hint"] = "Only needed when the proxy has client keys enabled. Paste a key to include it in the config.",
+        ["tools.apiKey.notNeeded"] = "No client keys enabled — a key is not required.",
+        ["tools.apiKey.create"] = "Create key for OpenCode",
+        ["tools.apiKey.created"] = "Key created — copy it now, shown only once:",
+        ["tools.apiKey.warning"] = "This config contains the key — keep the file secret.",
+        ["tools.models.title"] = "Models to include",
+        ["tools.selectFree"] = "Select free group",
+        ["tools.clearAll"] = "Clear all",
+        ["tools.preview"] = "Preview",
+        ["tools.copy"] = "Copy",
+        ["tools.copied"] = "Copied",
+        ["tools.download"] = "Download",
+        ["tools.empty"] = "No models selected",
+        ["tools.hint.merge"] = "Merge this into your opencode.json(c), or use it as the config file.",
+        ["tools.provider.disabled"] = "Provider is disabled — its models will not be routed.",
+        ["tools.free.cta"] = "Enable the OpenCode Free provider to preselect the free group.",
+        ["tools.duplicates"] = "Some duplicate model ids were skipped.",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -965,6 +990,31 @@ public static class Translations
         ["update.error.snapshot"] = "lỗi ghi snapshot hàng đợi",
         ["update.error.install"] = "lỗi khởi chạy trình cài đặt",
         ["update.error.drain"] = "lỗi đếm request đang chạy",
+
+        // Trang Tools / OpenCode config (Task 6, spec §7.1)
+        ["nav.tools"] = "Công cụ",
+        ["tools.title"] = "Cấu hình OpenCode",
+        ["tools.proxy.running"] = "Proxy đang chạy",
+        ["tools.proxy.stopped"] = "Proxy chưa chạy — bật ở trang Cài đặt; vẫn sinh được config với port trong settings.",
+        ["tools.baseUrl"] = "Base URL",
+        ["tools.apiKey.label"] = "Client key (tùy chọn)",
+        ["tools.apiKey.hint"] = "Chỉ cần khi proxy đã bật client key. Dán key để ghi kèm vào config.",
+        ["tools.apiKey.notNeeded"] = "Proxy chưa bật client key — không cần key.",
+        ["tools.apiKey.create"] = "Tạo key cho OpenCode",
+        ["tools.apiKey.created"] = "Đã tạo key — copy ngay, chỉ hiện một lần:",
+        ["tools.apiKey.warning"] = "Config chứa key — giữ kín file này.",
+        ["tools.models.title"] = "Model đưa vào config",
+        ["tools.selectFree"] = "Chọn nhóm free",
+        ["tools.clearAll"] = "Bỏ chọn hết",
+        ["tools.preview"] = "Xem trước",
+        ["tools.copy"] = "Sao chép",
+        ["tools.copied"] = "Đã sao chép",
+        ["tools.download"] = "Tải file",
+        ["tools.empty"] = "Chưa chọn model nào",
+        ["tools.hint.merge"] = "Merge file này vào opencode.json(c), hoặc dùng làm file config.",
+        ["tools.provider.disabled"] = "Provider đang tắt — model của nhóm này không được định tuyến.",
+        ["tools.free.cta"] = "Bật provider OpenCode Free để chọn sẵn nhóm free.",
+        ["tools.duplicates"] = "Một số model trùng id đã bị bỏ qua.",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>

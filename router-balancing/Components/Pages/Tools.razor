@@ -1,0 +1,394 @@
+@page "/tools"
+@using RouterBalancing.Core.Tools
+@using RouterBalancing.Core.Settings
+@implements IDisposable
+@inject IOpenCodeConfigService ConfigSvc
+@inject IProxyHost Proxy
+@inject IAppSettingsService Settings
+@inject IClientKeyService ClientKeys
+@inject IClipboardService Clipboard
+@inject IJSRuntime JS
+@inject LocalizationService L
+@inject ToastService Toast
+@inject ILogService Log
+
+<div class="mb-4 flex items-center justify-between gap-3">
+    <h1 class="text-xl font-semibold">@L["tools.title"]</h1>
+</div>
+
+@if (_loading)
+{
+    <p class="text-sm opacity-70">...</p>
+}
+else
+{
+    @* ===== Khối 1: trạng thái proxy + base URL (spec §7.1) ===== *@
+    <div class="mb-4 rounded border border-border bg-surface p-4">
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+            @if (Proxy.IsRunning)
+            {
+                <Badge Text="@L["tools.proxy.running"]" Variant="BadgeVariant.Success" />
+            }
+            else
+            {
+                @* Nền vàng: proxy chưa chạy — vẫn sinh được config với port trong settings (spec §7.1) *@
+                <span class="rounded bg-warning px-2 py-1 text-dark">@L["tools.proxy.stopped"]</span>
+            }
+            <span class="opacity-70">@L["tools.baseUrl"]:</span>
+            <code>@_baseUrl</code>
+        </div>
+    </div>
+
+    @* ===== Khối 2: client key tùy chọn — chỉ ghi vào config khi khác rỗng (spec §7.1) ===== *@
+    <div class="mb-4 rounded border border-border bg-surface p-4">
+        <h2 class="mb-3 text-base font-semibold">@L["tools.apiKey.label"]</h2>
+
+        @if (!_keysEnabled)
+        {
+            <p class="mb-3 text-sm opacity-70">@L["tools.apiKey.notNeeded"]</p>
+        }
+
+        <div class="flex flex-wrap items-center gap-2">
+            <input class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1.5"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="@L["tools.apiKey.label"]"
+                   @bind="_apiKey" @bind:after="RegenerateAsync" />
+            @if (_keysEnabled)
+            {
+                <button type="button" class="btn btn-outline-secondary" @onclick="CreateKeyAsync">
+                    @L["tools.apiKey.create"]
+                </button>
+            }
+        </div>
+        <div class="mt-1 text-xs opacity-70">@L["tools.apiKey.hint"]</div>
+
+        @if (!string.IsNullOrEmpty(_apiKey))
+        {
+            @* Key nằm trong file config — nhắc user giữ kín (spec §7.1) *@
+            <div class="mt-2">
+                <Badge Text="@L["tools.apiKey.warning"]" Variant="BadgeVariant.Warning" />
+            </div>
+        }
+
+        @if (_newKeyPlaintext is not null)
+        {
+            @* Plaintext hiện đúng 1 lần — server không giữ lại (spec §7.1) *@
+            <div class="mt-2 flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5 text-sm">
+                <div class="min-w-0 flex-1">
+                    <div class="text-xs opacity-70">@L["tools.apiKey.created"]</div>
+                    <code class="break-all">@_newKeyPlaintext</code>
+                </div>
+            </div>
+        }
+    </div>
+
+    @* ===== Khối 3: chọn model đưa vào config (spec §7.1) ===== *@
+    <div class="mb-4 rounded border border-border bg-surface p-4">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 class="text-base font-semibold">@L["tools.models.title"]</h2>
+            <div class="flex gap-2">
+                <button type="button" class="btn btn-outline-secondary" @onclick="SelectFreeAsync">
+                    @L["tools.selectFree"]
+                </button>
+                <button type="button" class="btn btn-outline-secondary" @onclick="ClearAllAsync">
+                    @L["tools.clearAll"]
+                </button>
+            </div>
+        </div>
+
+        @if (_groups.Count == 0)
+        {
+            <EmptyState Icon="🧩" Message="@L["models.empty"]" />
+        }
+        else
+        {
+            @foreach (var group in _groups)
+            {
+                <div class="mb-3">
+                    <div class="mb-1 flex flex-wrap items-center gap-2">
+                        <span class="font-medium">@group.ProviderName</span>
+                        @if (!group.ProviderEnabled)
+                        {
+                            <Badge Text="@L["tools.provider.disabled"]" Variant="BadgeVariant.Danger" />
+                        }
+                        @if (group.IsFreePreset)
+                        {
+                            <Badge Text="@L["providers.badge.free"]" Variant="BadgeVariant.Info" />
+                        }
+                    </div>
+
+                    @if (group.IsFreePreset && !group.ProviderEnabled)
+                    {
+                        @* Preset free đang tắt → không tick mặc định được; mời user bật ở trang Providers (C7) *@
+                        <div class="mb-1 text-xs opacity-70">@L["tools.free.cta"]</div>
+                    }
+
+                    <div class="overflow-x-auto rounded border border-border bg-surface">
+                        <table class="w-full text-sm">
+                            <tbody>
+                                @foreach (var m in group.Models)
+                                {
+                                    <tr @key="m.Id" class="border-b border-border last:border-b-0">
+                                        <td class="w-10 px-2 py-1.5">
+                                            <input type="checkbox" checked="@_selected.Contains(m.Id)"
+                                                   @onchange="e => ToggleAsync(m.Id, (bool)e.Value!)" />
+                                        </td>
+                                        <td class="px-2 py-1.5">@(m.DisplayName ?? m.ModelId)</td>
+                                        <td class="px-2 py-1.5">
+                                            <div class="flex flex-wrap items-center gap-1.5">
+                                                @if (m.ContextWindow is { } ctx)
+                                                {
+                                                    <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
+                                                }
+                                                @* Emoji + nhãn language-neutral cho tools (không có key i18n) — theo pattern Providers.razor *@
+                                                @if (m.SupportsTools == true)
+                                                {
+                                                    <Badge Text="🛠 tools" Variant="BadgeVariant.Success" />
+                                                }
+                                                @if (m.SupportsVision)
+                                                {
+                                                    <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
+                                                }
+                                                @if (m.SupportsThink)
+                                                {
+                                                    <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
+                                                }
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            }
+        }
+    </div>
+
+    @* ===== Khối 4: preview + copy/download (spec §7.1) ===== *@
+    <div class="mb-4 rounded border border-border bg-surface p-4">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 class="text-base font-semibold">@L["tools.preview"]</h2>
+            <div class="flex gap-2">
+                <button type="button" class="btn btn-outline-secondary" disabled="@(_json is null)"
+                        @onclick="CopyAsync">
+                    @L["tools.copy"]
+                </button>
+                <button type="button" class="btn btn-primary" disabled="@(_json is null)"
+                        @onclick="DownloadAsync">
+                    @L["tools.download"]
+                </button>
+            </div>
+        </div>
+
+        @if (_json is null)
+        {
+            <EmptyState Message="@L["tools.empty"]" />
+        }
+        else
+        {
+            @* JSON đã indent từ service — giữ nguyên định dạng trong pre, scroll thay vì kéo dài trang *@
+            <pre class="max-h-96 overflow-auto rounded border border-border bg-background p-3 text-xs">@_json</pre>
+            @if (_skipped.Count > 0)
+            {
+                <div class="mt-2 text-xs opacity-70">@L["tools.duplicates"]</div>
+            }
+            <div class="mt-2 text-xs opacity-70">@L["tools.hint.merge"]</div>
+        }
+    </div>
+}
+
+@code {
+    private bool _loading = true;
+    private List<ToolsModelGroup> _groups = [];
+    private HashSet<long> _selected = [];
+    private string? _apiKey;
+    private bool _keysEnabled;
+    private string? _json;
+    private IReadOnlyList<string> _skipped = [];
+    private string? _newKeyPlaintext;
+    private string _baseUrl = string.Empty;
+
+    // Component đã gỡ — callback InvokeAsync có thể chạy muộn sau Dispose (mirror ApiMonitorPanel)
+    private bool _disposed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        L.LanguageChanged += OnLanguageChanged;
+        // Subscribe TRƯỚC khi load — trạng thái proxy đổi giữa 2 bước không bị miss (mirror ApiMonitorPanel)
+        Proxy.StateChanged += OnProxyStateChanged;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _baseUrl = OpenCodeConfigService.BuildBaseUrl(Proxy.Port, Settings.Port);
+            var data = await ConfigSvc.GetPageDataAsync();
+            _groups = data.Groups.ToList();
+            _selected = data.DefaultSelectedIds.ToHashSet();
+            _keysEnabled = (await ClientKeys.ListAsync()).Any(k => k.Enabled);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Tools: không tải được dữ liệu trang.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+
+        await RegenerateAsync();
+    }
+
+    /// <summary>Sinh lại JSON preview từ các model đang tick; không tick model nào → xoá preview.</summary>
+    private async Task RegenerateAsync()
+    {
+        if (_selected.Count == 0)
+        {
+            _json = null;
+            _skipped = [];
+            return;
+        }
+
+        try
+        {
+            var result = await ConfigSvc.GenerateAsync(_selected.ToArray(), _baseUrl, _apiKey);
+            _json = result.Json;
+            _skipped = result.SkippedDuplicateModelIds;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Tools: sinh config opencode thất bại.", ex);
+            Toast.Show(ex.Message, ToastSeverity.Error);
+        }
+    }
+
+    private async Task ToggleAsync(long id, bool on)
+    {
+        if (on)
+        {
+            _selected.Add(id);
+        }
+        else
+        {
+            _selected.Remove(id);
+        }
+
+        await RegenerateAsync();
+    }
+
+    /// <summary>Chọn toàn bộ model của nhóm free preset — provider đang tắt vẫn tick được, user tự chịu (spec §7.1).</summary>
+    private async Task SelectFreeAsync()
+    {
+        foreach (var group in _groups.Where(g => g.IsFreePreset))
+        {
+            foreach (var model in group.Models)
+            {
+                _selected.Add(model.Id);
+            }
+        }
+
+        await RegenerateAsync();
+    }
+
+    private async Task ClearAllAsync()
+    {
+        _selected.Clear();
+        await RegenerateAsync();
+    }
+
+    private async Task CopyAsync()
+    {
+        if (_json is null)
+        {
+            return;
+        }
+
+        if (await Clipboard.CopyAsync(_json))
+        {
+            Toast.Show(L["tools.copied"], ToastSeverity.Success);
+        }
+        else
+        {
+            // Clipboard reject khi document không focus (NotAllowedError) — toast thay vì văng (D-D2)
+            Log.Error("Tools: sao chép config vào clipboard thất bại.", null);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+    }
+
+    private async Task DownloadAsync()
+    {
+        if (_json is null)
+        {
+            return;
+        }
+
+        await JS.InvokeVoidAsync("rbTools.download", "opencode-router-balancing.jsonc", _json);
+    }
+
+    private async Task CreateKeyAsync()
+    {
+        try
+        {
+            // Cùng flow với trang Settings: plaintext chỉ trả về 1 lần, tự điền vào ô key (spec §7.1)
+            var (_, plaintext) = await ClientKeys.CreateAsync(new ClientKeyDraft("OpenCode", null, null));
+            _apiKey = plaintext;
+            _newKeyPlaintext = plaintext;
+            _keysEnabled = true;
+            Toast.Show(L["tools.apiKey.created"] + " " + plaintext, ToastSeverity.Success);
+            await RegenerateAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Create client key for OpenCode failed.", ex);
+            Toast.Show(ex.Message, ToastSeverity.Error);
+        }
+    }
+
+    /// <summary>
+    /// Trạng thái proxy đổi (start/stop) — cập nhật base URL + sinh lại preview vì port trong config đổi.
+    /// Handler chạy trên thread publish của host nên marshal về dispatcher, không được ném ra ngoài.
+    /// </summary>
+    private void OnProxyStateChanged()
+    {
+        try
+        {
+            _ = InvokeAsync(async () =>
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                // Spec §7.1: proxy đang chạy → port thật; chưa chạy → port settings
+                _baseUrl = OpenCodeConfigService.BuildBaseUrl(Proxy.Port, Settings.Port);
+                await RegenerateAsync();
+                StateHasChanged();
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Tools: làm mới trạng thái proxy thất bại.", ex);
+        }
+    }
+
+    private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private static string FormatCtx(int contextWindow) =>
+        contextWindow >= 1_000_000 ? $"{contextWindow / 1_000_000}M"
+            : contextWindow >= 1000 ? $"{contextWindow / 1000}k"
+            : contextWindow.ToString();
+
+    public void Dispose()
+    {
+        // Bắt buộc unsubscribe: host/helper là singleton giữ delegate — không gỡ là leak (mirror ApiMonitorPanel)
+        Proxy.StateChanged -= OnProxyStateChanged;
+        L.LanguageChanged -= OnLanguageChanged;
+
+        // Đánh dấu sau unsubscribe — callback InvokeAsync có thể còn đang đợi trên dispatcher
+        _disposed = true;
+    }
+}
