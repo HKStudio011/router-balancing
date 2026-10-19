@@ -14,6 +14,7 @@ namespace router_balancing_test.Capabilities;
 public class CapabilityFactSchemaTests : IDisposable
 {
     private static readonly DateTimeOffset FixedAt = new(2026, 10, 20, 0, 0, 0, TimeSpan.Zero);
+    private const string Timestamp = "'2026-10-01T00:00:00+00:00'";
 
     private readonly TestDb _testDb = new();
 
@@ -303,6 +304,39 @@ public class CapabilityFactSchemaTests : IDisposable
             // app đã check IsNullOrEmpty trước khi Unprotect.
             Assert.True(string.IsNullOrEmpty(account.ApiKeyEncrypted));
         }
+    }
+
+    // ---------- tiền xử lý tên trùng trước unique index (fix review round 1) ----------
+
+    /// <summary>
+    /// Đường upgrade gãy nếu không tiền xử lý: DB đã có 2 provider trùng Name sẽ fail ở
+    /// CREATE UNIQUE INDEX khi apply AddModelCapabilityFacts. Migration phải dedupe
+    /// (hàng đầu theo Id giữ nguyên tên, hàng sau nhận suffix -2…) TRƯỚC khi tạo index.
+    /// </summary>
+    [Fact]
+    public void Migration_DuplicateProviderNames_BecomeUniqueAndSucceed()
+    {
+        using var db = _testDb.CreateFactory().CreateDbContext();
+
+        // Schema cũ ngay trước migration của task này (pattern AddModelAudioVideoCapabilitiesMigrationTests).
+        db.Database.Migrate("20261019064905_AddModelToolsOutputLimit");
+        db.Database.ExecuteSqlRaw($"""
+            INSERT INTO Providers (Name, Type, BaseUrl, Enabled, MaxConcurrent, CreatedAt, UpdatedAt)
+            VALUES ('Dup Name', 0, 'https://d1.example', 1, 4, {Timestamp}, {Timestamp});
+            INSERT INTO Providers (Name, Type, BaseUrl, Enabled, MaxConcurrent, CreatedAt, UpdatedAt)
+            VALUES ('Dup Name', 0, 'https://d2.example', 1, 4, {Timestamp}, {Timestamp});
+            """);
+
+        // Không có dedupe trong Up(): dòng này ném SqliteException Error 19 (UNIQUE constraint).
+        // Với dedupe, migration phải chạy xong và tên thành duy nhất.
+        db.Database.Migrate();
+
+        var names = db.Providers.AsNoTracking()
+            .Where(p => p.Name.StartsWith("Dup Name"))
+            .OrderBy(p => p.Name)
+            .Select(p => p.Name)
+            .ToList();
+        Assert.Equal(new[] { "Dup Name", "Dup Name-2" }, names);
     }
 
     // ---------- helpers ----------
