@@ -22,6 +22,10 @@ public sealed class ModelCapabilityWriter : IModelCapabilityWriter
         bool sourceIsCompleteList, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        // Atomicity (fix review round 1): cả operation — upsert tracked lẫn mọi delete — chạy
+        // trong MỘT transaction. Lỗi giữa đường (DbUpdateException, SQLITE_BUSY, key sai từ
+        // vựng) → transaction bị dispose rollback, không để lại nửa phát biểu đã ghi/dã xóa.
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         foreach (var (kind, present) in patch.Capabilities)
         {
             // Luật (b): negative chỉ đến từ nguồn full-list (C-P) — đây là cách mọi
@@ -37,12 +41,16 @@ public sealed class ModelCapabilityWriter : IModelCapabilityWriter
         foreach (var level in NormalizeLevels(patch.ReasoningEfforts))
             await UpsertEffortAsync(db, modelId, level, source, ct);
         await SaveChangesAsync(db, nameof(ApplyAsync), modelId, ct);
+        await tx.CommitAsync(ct);
     }
 
     /// <inheritdoc />
     public async Task ApplyUserEditAsync(long modelId, CapabilityPatch patch, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        // Atomicity (fix review round 1): ClearKeys + các upsert phải là MỘT transaction —
+        // nếu phần ghi fail thì các clear của user cũng phải bị rollback (không nửa edit).
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         // Luật (c) xử lý ClearKeys TRƯỚC khi ghi các key khác (brief Step 3): ExecuteDelete
         // chạy thẳng trên DB nên không va chạm PK với Add cùng key trong một SaveChanges
         // (EF không đảm bảo thứ tự delete trước insert cho cùng hàng).
@@ -59,24 +67,30 @@ public sealed class ModelCapabilityWriter : IModelCapabilityWriter
         foreach (var level in NormalizeLevels(patch.ReasoningEfforts))
             await UpsertEffortAsync(db, modelId, level, CapabilitySource.User, ct);
         await SaveChangesAsync(db, nameof(ApplyUserEditAsync), modelId, ct);
+        await tx.CommitAsync(ct);
     }
 
     /// <inheritdoc />
     public async Task ClearSourceAsync(long modelId, CapabilitySource source, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        // Ba delete liên bảng chỉ có nghĩa nguyên tử khi cùng transaction (fix review round 1).
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         await db.ModelCapabilities.Where(x => x.ModelId == modelId && x.Source == source).ExecuteDeleteAsync(ct);
         await db.ModelModalities.Where(x => x.ModelId == modelId && x.Source == source).ExecuteDeleteAsync(ct);
         await db.ModelReasoningEfforts.Where(x => x.ModelId == modelId && x.Source == source).ExecuteDeleteAsync(ct);
+        await tx.CommitAsync(ct);
     }
 
     /// <inheritdoc />
     public async Task ClearAllAsync(long modelId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         await db.ModelCapabilities.Where(x => x.ModelId == modelId).ExecuteDeleteAsync(ct);
         await db.ModelModalities.Where(x => x.ModelId == modelId).ExecuteDeleteAsync(ct);
         await db.ModelReasoningEfforts.Where(x => x.ModelId == modelId).ExecuteDeleteAsync(ct);
+        await tx.CommitAsync(ct);
     }
 
     // ---------- upsert theo bảng (luật a + d) ----------

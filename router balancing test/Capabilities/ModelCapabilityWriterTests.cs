@@ -227,6 +227,49 @@ public class ModelCapabilityWriterTests : IDisposable
         Assert.Empty(db.ModelReasoningEfforts.AsNoTracking().Where(x => x.ModelId == modelId).ToList());
     }
 
+    // ---------- nguyên tử (fix review round 1) ----------
+
+    /// <summary>
+    /// ApplyUserEditAsync chạy ClearKeys TRƯỚC phần upsert — nếu phát biểu mới fail
+    /// thật thì các clear đã chạy cũng phải bị rollback, không được để user edit áp
+    /// dụng nửa vời. Fail thật lấy từ key enum ngoài từ vựng của CapabilityNames:
+    /// converter chiều ghi (ToDb) ném ngay khi upsert query tham số hóa — đường đi
+    /// code production, không phải stub/mock.
+    /// </summary>
+    [Fact]
+    public async Task ApplyUserEditAsync_UpsertFails_ClearKeysNotCommitted()
+    {
+        var modelId = await AddModelAsync("atomic-edit");
+        await _writer.ApplyAsync(modelId, CapabilitySource.Catalog,
+            Patch(
+                capabilities: new Dictionary<CapabilityKind, bool> { [CapabilityKind.Tools] = true },
+                modalities: new Dictionary<(ModalityDirection Direction, ModalityKind Modality), bool>
+                {
+                    [(ModalityDirection.Input, ModalityKind.Image)] = true,
+                },
+                efforts: new HashSet<string> { "high" }),
+            sourceIsCompleteList: true);
+
+        var clearKeys = new HashSet<(string Kind, string Key)>
+        {
+            CapabilityPatch.ModalityClearKey(ModalityDirection.Input, ModalityKind.Image),
+            CapabilityPatch.EffortClearKey("high"),
+        };
+        var patch = Patch(
+            capabilities: new Dictionary<CapabilityKind, bool> { [(CapabilityKind)99] = true },
+            clearKeys: clearKeys);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => _writer.ApplyUserEditAsync(modelId, patch));
+
+        using var db = _db.CreateDbContext();
+        // Cả ba phát biểu ban đầu còn nguyên — clear đã chạy không được commit một mình.
+        Assert.Single(db.ModelCapabilities.AsNoTracking().Where(x => x.ModelId == modelId).ToList());
+        var mod = Assert.Single(db.ModelModalities.AsNoTracking().Where(x => x.ModelId == modelId));
+        Assert.Equal(ModalityKind.Image, mod.Modality);
+        var eff = Assert.Single(db.ModelReasoningEfforts.AsNoTracking().Where(x => x.ModelId == modelId));
+        Assert.Equal("high", eff.Level);
+    }
+
     // ---------- ClearSource / ClearAll: đúng phạm vi ----------
 
     [Fact]
