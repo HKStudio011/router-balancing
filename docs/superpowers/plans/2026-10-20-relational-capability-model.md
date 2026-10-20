@@ -232,7 +232,7 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 - Luật chi phí (spec §7): gọi tuần tự, tối đa 2 request song song, tổng thời gian giới hạn `TimeSpan.FromSeconds(120)` cho cả đợt (inject trong ctor để test), lỗi từng model → log + đi tiếp.
 - [ ] **Step 1:** Test đỏ: `FillMissingAsync_SkipsModelsThatAlreadyHaveFacts`, `FillMissingAsync_ProbesOnlyMissingOnes`, `FillMissingAsync_OneModelFails_ContinuesOthers`, `AddManualAsync_TriggersFillBestEffort`, `TotalTimeout_Exceeded_StopsAndReturnsFilledCount`.
 - [ ] **Step 2:** Chạy `--filter "FullyQualifiedName~ModelMetadataFillMissing"` → FAIL.
-- [ ] **Step 3:** Implement (bao gồm xóa `StaticCatalogMetadataProvider` + bỏ đăng ký DI của nó; chain còn lại: `OllamaTagsMetadataProvider`, `ProviderEndpointMetadataProvider` — NVIDIA chỉ có endpoint probe theo R-T7-1).
+- [ ] **Step 3:** Implement (bao gồm xóa `StaticCatalogMetadataProvider` + bỏ đăng ký DI của nó; chain còn lại: `OllamaTagsMetadataProvider`, `NvidiaCatalogMetadataProvider`, `ProviderEndpointMetadataProvider` — NVIDIA giữ catalog provider phủ 15/81, endpoint probe vẫn là bước cuối).
 - [ ] **Step 4:** Filter → PASS; full suite → PASS. Commit `feat: fill missing capabilities when models are fetched or added`.
 
 ---
