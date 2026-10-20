@@ -132,6 +132,7 @@ namespace router_balancing
             builder.Services.AddSingleton<IModelService, ModelService>();
             builder.Services.AddSingleton<IFreeModelSyncService, FreeModelSyncService>();
             builder.Services.AddSingleton<IOpenCodeConfigService, OpenCodeConfigService>();
+            builder.Services.AddSingleton<IOpenCodeConfigFileWriter, OpenCodeConfigFileWriter>();
             // Sync list model free lớn hơn probe 10s — timeout 30s (spec provider-free §6.1)
             builder.Services.AddHttpClient(FreeModelSyncService.HttpClientName,
                 client => client.Timeout = TimeSpan.FromSeconds(30));
