@@ -66,6 +66,7 @@ public sealed class ProviderService : IProviderService
         }
 
         var identifier = draft.Identifier.Trim();
+        await EnsureNameUsableAsync(db, draft.Name, excludeId: null, ct);
         await EnsureIdentifierUsableAsync(db, identifier, excludeId: null, ct);
 
         var provider = new Provider
@@ -101,6 +102,7 @@ public sealed class ProviderService : IProviderService
             ?? throw new KeyNotFoundException($"Provider {id} not found.");
 
         var identifier = draft.Identifier.Trim();
+        await EnsureNameUsableAsync(db, draft.Name, excludeId: id, ct);
         await EnsureIdentifierUsableAsync(db, identifier, excludeId: id, ct);
 
         provider.Name = draft.Name.Trim();
@@ -242,6 +244,28 @@ public sealed class ProviderService : IProviderService
         provider.LastTestAt = result.At;
         provider.LastTestMessage = result.Message;
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Chặn tên provider trùng trước SaveChanges để UI nhận lỗi field-level thay vì
+    /// <see cref="Microsoft.EntityFrameworkCore.DbUpdateException"/> từ unique index.
+    /// So sánh Ordinal (khớp collation BINARY của SQLite): chỉ khác hoa/thường vẫn hợp lệ;
+    /// tên đã trim vì service lưu bản trim.
+    /// </summary>
+    private static async Task EnsureNameUsableAsync(
+        RouterBalancingDbContext db, string name, long? excludeId, CancellationToken ct)
+    {
+        var trimmed = name.Trim();
+        var duplicate = await db.Providers.AsNoTracking()
+            .AnyAsync(p => p.Name == trimmed
+                && (excludeId == null || p.Id != excludeId), ct);
+        if (duplicate)
+        {
+            throw new ProviderValidationException(new Dictionary<string, string>
+            {
+                [nameof(ProviderDraft.Name)] = "providers.error.duplicateName",
+            });
+        }
     }
 
     /// <summary>

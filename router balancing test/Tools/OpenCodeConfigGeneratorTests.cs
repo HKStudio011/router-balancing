@@ -4,7 +4,9 @@ using RouterBalancing.Core.Tools;
 namespace router_balancing_test.Tools;
 
 /// <summary>
-/// Test generator JSON opencode v2 — thuần string/int/bool, không I/O, không DB.
+/// Test generator JSON opencode v2 — thuần list/bool, không I/O, không DB.
+/// Task 4: capability vào record dạng ĐÃ PARSE (IReadOnlyList&lt;string&gt;?) từ
+/// ModelCapabilityView — generator không còn parse JSON-string (defect D9 hết đất tồn tại).
 /// Assert bằng <see cref="JsonDocument"/> (semantic) vì output emit JSON indent — so raw text rất giòn.
 /// </summary>
 public class OpenCodeConfigGeneratorTests
@@ -18,7 +20,7 @@ public class OpenCodeConfigGeneratorTests
         Provider(json).GetProperty("models").GetProperty(id);
 
     private static OpenCodeConfigModel Minimal(string id) =>
-        new(id, null, null, null, null, false, false, null, null, null);
+        new(id, null, null, null, null, null, null, null, null, null);
 
     [Fact]
     public void Generate_EmitsProviderShapeAndMinimalModel()
@@ -57,7 +59,7 @@ public class OpenCodeConfigGeneratorTests
     public void Generate_ReasoningToggle_EmitsToggleAndEffort_AndExoticValuesPassThrough()
     {
         // ThinkEfforts = ["toggle","minimal","xhigh"] — giá trị lạ pass-through nguyên trạng (Review Focus)
-        var m = new OpenCodeConfigModel("m1", null, null, null, null, false, true, "[\"toggle\",\"minimal\",\"xhigh\"]", null, null);
+        var m = new OpenCodeConfigModel("m1", null, null, null, null, null, true, ["toggle", "minimal", "xhigh"], null, null);
         var reasoning = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .GetProperty("capabilities").GetProperty("reasoning");
         Assert.True(reasoning.GetProperty("supported").GetBoolean());
@@ -69,7 +71,7 @@ public class OpenCodeConfigGeneratorTests
     [Fact]
     public void Generate_ThinkingSupportedOnly_NoToggleNoEffort()
     {
-        var m = new OpenCodeConfigModel("m1", null, null, null, null, false, true, null, null, null);
+        var m = new OpenCodeConfigModel("m1", null, null, null, null, null, true, null, null, null);
         var reasoning = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .GetProperty("capabilities").GetProperty("reasoning");
         Assert.True(reasoning.GetProperty("supported").GetBoolean());
@@ -80,9 +82,52 @@ public class OpenCodeConfigGeneratorTests
     [Fact]
     public void Generate_ThinkingOff_OmitsReasoning()
     {
-        var m = new OpenCodeConfigModel("m1", null, null, null, null, false, false, "[\"low\"]", null, null);
+        var m = new OpenCodeConfigModel("m1", null, null, null, null, null, false, ["low"], null, null);
         Assert.False(Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .GetProperty("capabilities").TryGetProperty("reasoning", out _));
+    }
+
+    [Fact]
+    public void Generate_NegativeCapabilityFromKnownAbsent_EmitsFalse()
+    {
+        // Fact KnownAbsent (writer Task 2) → view Tools=false → generator PHẢI emit "tools": false
+        // ("đã biết là không"), không omit — khác hẳn null = chưa biết (C-I ba trạng thái).
+        var m = Minimal("m1") with
+        {
+            SupportsTools = false,
+            SupportsVision = false,
+            SupportsThink = false,
+            InputModalities = [],
+            OutputModalities = [],
+        };
+        var caps = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1").GetProperty("capabilities");
+        Assert.True(caps.TryGetProperty("tools", out var tools));
+        Assert.Equal(JsonValueKind.False, tools.ValueKind);
+        Assert.False(tools.GetBoolean());
+        // Reasoning KnownAbsent=false → không emit reasoning (khác true = emit supported)
+        Assert.False(caps.TryGetProperty("reasoning", out _));
+        // Danh sách modality rỗng = không có khẳng định thuận → mặc định text, KHÔNG emit mảng rỗng
+        Assert.Equal(new[] { "text" },
+            caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(new[] { "text" },
+            caps.GetProperty("output").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public void Generate_UnknownCapability_OmitsField()
+    {
+        // null = chưa biết → KHÔNG emit key (thiếu thông tin ≠ phát biểu false)
+        var m = Minimal("m1") with { SupportsVision = true };
+        var caps = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1").GetProperty("capabilities");
+        Assert.False(caps.TryGetProperty("tools", out _));                    // SupportsTools null → omit
+        Assert.False(caps.TryGetProperty("reasoning", out _));                // SupportsThink null → omit
+        // R-T2-2: SupportsThink=true nhưng efforts rỗng = chưa biết → reasoning không có key effort
+        var m2 = Minimal("m2") with { SupportsThink = true, ThinkEfforts = [] };
+        var reasoning2 = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m2]), "m2")
+            .GetProperty("capabilities").GetProperty("reasoning");
+        Assert.True(reasoning2.GetProperty("supported").GetBoolean());
+        Assert.False(reasoning2.TryGetProperty("toggle", out _));
+        Assert.False(reasoning2.TryGetProperty("effort", out _));
     }
 
     [Fact]
@@ -113,7 +158,7 @@ public class OpenCodeConfigGeneratorTests
     [Fact]
     public void Generate_NullLimitFields_Omitted()
     {
-        var m = new OpenCodeConfigModel("m1", null, null, 8000, null, false, false, null, null, null);
+        var m = new OpenCodeConfigModel("m1", null, null, 8000, null, null, null, null, null, null);
         var limit = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1").GetProperty("limit");
         Assert.Equal(8000, limit.GetProperty("output").GetInt32());
         Assert.False(limit.TryGetProperty("context", out _));                  // context null → chỉ emit output
@@ -123,7 +168,7 @@ public class OpenCodeConfigGeneratorTests
     public void Generate_ModelKeyOrder_NameCapabilitiesLimit()
     {
         // Thứ tự key cố định (name → capabilities → limit) — diff giữa các lần export ổn định
-        var m = new OpenCodeConfigModel("m1", "Một", 1000, 100, null, false, false, null, null, null);
+        var m = new OpenCodeConfigModel("m1", "Một", 1000, 100, null, null, null, null, null, null);
         var keys = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .EnumerateObject().Select(p => p.Name);
         Assert.Equal(new[] { "name", "capabilities", "limit" }, keys);
@@ -132,8 +177,8 @@ public class OpenCodeConfigGeneratorTests
     [Fact]
     public void Generate_ExplicitModalities_PassThroughVerbatim()
     {
-        var m = new OpenCodeConfigModel("m1", null, null, null, null, false, false, null,
-            "[\"text\",\"audio\"]", "[\"text\",\"audio\"]");
+        var m = new OpenCodeConfigModel("m1", null, null, null, null, null, null, null,
+            ["text", "audio"], ["text", "audio"]);
         var caps = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1").GetProperty("capabilities");
         Assert.Equal(new[] { "text", "audio" },
             caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
@@ -142,11 +187,11 @@ public class OpenCodeConfigGeneratorTests
     }
 
     [Fact]
-    public void Generate_MalformedModalities_FallsBackToDefaults()
+    public void Generate_UnknownModalities_FallsBackToDefaults()
     {
-        // Chuỗi modalities hỏng (không phải JSON array) → coi như không rõ, rơi về mặc định
+        // List modalities null/rỗng = chưa biết (view không có khẳng định thuận) → rơi về mặc định
         // (input theo SupportsVision, output ["text"]) — hợp đồng Task 4.
-        var m = new OpenCodeConfigModel("m1", null, null, null, null, true, false, null, "not-json", """{"a":1}""");
+        var m = new OpenCodeConfigModel("m1", null, null, null, null, true, null, null, [], []);
         var caps = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1").GetProperty("capabilities");
         Assert.Equal(new[] { "text", "image" },
             caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
@@ -155,10 +200,11 @@ public class OpenCodeConfigGeneratorTests
     }
 
     [Fact]
-    public void Generate_MalformedThinkEfforts_NoToggleNoEffort()
+    public void Generate_EmptyThinkEfforts_NoToggleNoEffort()
     {
-        // ThinkEfforts hỏng → vẫn reasoning {supported:true} nhưng không toggle/effort (parse fail = không rõ)
-        var m = new OpenCodeConfigModel("m1", null, null, null, null, false, true, "garbage", null, null);
+        // R-T2-2: efforts rỗng = chưa biết (không phải "biết là không có mức nào") —
+        // vẫn reasoning {supported:true} nhưng không toggle/effort.
+        var m = new OpenCodeConfigModel("m1", null, null, null, null, null, true, [], null, null);
         var reasoning = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .GetProperty("capabilities").GetProperty("reasoning");
         Assert.True(reasoning.GetProperty("supported").GetBoolean());

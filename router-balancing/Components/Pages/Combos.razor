@@ -1,10 +1,12 @@
 ﻿@page "/combos"
+@using RouterBalancing.Core.Capabilities
 @using RouterBalancing.Core.Combos
 @using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Providers
 @implements IDisposable
 @inject IComboService ComboSvc
 @inject IComboCapabilityCalculator ComboCapsSvc
+@inject IModelCapabilityReader CapReader
 @inject IProviderService ProviderSvc
 @inject LocalizationService L
 @inject ToastService Toast
@@ -165,7 +167,7 @@ else
                         @* Combo có search nhóm theo provider (mockup variant B) — ô đang chọn
                            hiện "model-id · Provider"; search live theo model/display/provider
                            (ModelCombo.razor); model đang chọn giữ dù đã tắt *@
-                        <ModelCombo Providers="_providers" @bind-Value="row.ModelId" />
+                        <ModelCombo Providers="_providers" Capabilities="_modelCaps" @bind-Value="row.ModelId" />
                     }
                     else
                     {
@@ -235,6 +237,9 @@ else
 
     private List<Combo> _combos = [];
     private IReadOnlyDictionary<long, ComboCapabilities> _caps = new Dictionary<long, ComboCapabilities>();
+    // Badge model trong ModelCombo đọc từ fact capability, nạp một lần mỗi LoadAsync.
+    private IReadOnlyDictionary<long, ModelCapabilityView> _modelCaps =
+        new Dictionary<long, ModelCapabilityView>();
     private List<Provider> _providers = [];
     private List<Combo> _eligibleCache = [];
     private bool _loading = true;
@@ -269,6 +274,23 @@ else
             _combos = (await ComboSvc.ListAsync()).ToList();
             _providers = (await ProviderSvc.ListAsync()).ToList();
             RefreshEligibleCache();
+
+            // Badge capability của ModelCombo — fail riêng để không block trang;
+            // lỗi thì ô chọn vẫn hoạt động, chỉ thiếu badge.
+            try
+            {
+                var modelIds = _providers
+                    .SelectMany(p => p.Models)
+                    .Select(m => m.Id)
+                    .Distinct()
+                    .ToList();
+                _modelCaps = await CapReader.ReadManyAsync(modelIds);
+            }
+            catch (Exception ex)
+            {
+                _modelCaps = new Dictionary<long, ModelCapabilityView>();
+                Log.Error("Không tải được khả năng của model.", ex);
+            }
 
             // Caps chỉ phục vụ cột read-only — fail riêng để không block trang
             // (cột tự hiện "—" khi _caps rỗng)

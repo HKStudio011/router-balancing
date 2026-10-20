@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Net.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Localization;
@@ -141,9 +142,18 @@ namespace router_balancing
             // của CHÍNH instance này làm auth cache của proxy invalidate khi UI CRUD key.
             builder.Services.AddSingleton<IClientKeyService, ClientKeyService>();
             builder.Services.AddSingleton<IModelMetadataService, ModelMetadataService>();
-            // Thứ tự đăng ký = thứ tự chain: endpoint trước, static catalog sau
+            // Thứ tự đăng ký = thứ tự chain: nguồn giàu nhất trước — Ollama tags (full-list
+            // 3 dimension) → NVIDIA catalog (modality + context từ trang chính thức) → endpoint
+            // probe (positive-only).
+            builder.Services.AddSingleton<IModelMetadataProvider, OllamaTagsMetadataProvider>();
+            builder.Services.AddSingleton<IModelMetadataProvider, NvidiaCatalogMetadataProvider>();
             builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();
-            builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
+            // Capability writer singleton (spec capability-model §5): importer catalog/probe và
+            // UI chỉ ghi fact capability qua IModelCapabilityWriter — không tự đụng entity.
+            builder.Services.AddSingleton<IModelCapabilityWriter, ModelCapabilityWriter>();
+            // Capability reader singleton (spec capability-model §7): generator config, combo
+            // calculator, badge UI và /v1/models đọc fact capability qua đúng một accessor.
+            builder.Services.AddSingleton<IModelCapabilityReader, ModelCapabilityReader>();
             builder.Services.AddSingleton<LogRetentionWorker>();
             builder.Services.AddSingleton<FreeModelSyncWorker>();
 

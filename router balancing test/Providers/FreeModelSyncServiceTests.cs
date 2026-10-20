@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
@@ -22,7 +23,8 @@ public class FreeModelSyncServiceTests : IDisposable
     public void Dispose() => _testDb.Dispose();
 
     private FreeModelSyncService ServiceWith(HttpMessageHandler handler) =>
-        new(_db, _protector, new StubFactory(handler), new NullLog());
+        new(_db, _protector, new StubFactory(handler), new NullLog(),
+            new ModelCapabilityWriter(_db, new NullLog()));
 
     private FreeModelSyncService ServiceWithJson(string json) => ServiceWith(new JsonHandler(json));
 

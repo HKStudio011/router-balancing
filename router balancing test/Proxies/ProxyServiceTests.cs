@@ -16,6 +16,9 @@ public class ProxyServiceTests : IDisposable
     // Mutable: test TestAsync gán script echo mới trước khi CreateService() đọc field
     private StubEchoClient _echo = new(() => new ProxyTestResult(true, null, 200, TimeSpan.FromMilliseconds(12)));
 
+    // Providers.Name có unique index (spec capability-model §6, B4) — đếm tên provider seed
+    private int _providerSeq;
+
     public ProxyServiceTests()
     {
         _factory = _db.CreateFactory();
@@ -44,7 +47,8 @@ public class ProxyServiceTests : IDisposable
         using var db = _factory.CreateDbContext();
         var provider = new Provider
         {
-            Name = "Test",
+            // Providers.Name unique index (spec capability-model §6, B4) — mỗi lần gọi một tên riêng.
+            Name = $"Test{_providerSeq++}",
             Type = ProviderType.OpenAI,
             BaseUrl = "https://api.example.com",
         };
@@ -567,7 +571,7 @@ public class ProxyServiceTests : IDisposable
         var account = assignments.Single(a => !a.IsProvider);
 
         Assert.Equal(providerId, provider.Id);
-        Assert.Equal("Test", provider.Name);
+        Assert.Equal("Test0", provider.Name); // AddProviderAsync đánh số tên (Name unique index B4)
         Assert.True(provider.IsProvider);
         Assert.Equal(ProxyMode.Fallback, provider.Mode);
         Assert.Equal(new[] { proxy }, provider.ProxyIds);
@@ -596,7 +600,7 @@ public class ProxyServiceTests : IDisposable
         var usages = result[proxy];
         var providerUsage = usages.Single(u => u.IsProvider);
         Assert.Equal(providerId, providerUsage.ScopeId);
-        Assert.Equal("Test", providerUsage.ScopeName);
+        Assert.Equal("Test0", providerUsage.ScopeName); // AddProviderAsync đánh số tên (Name unique index B4)
         Assert.Equal(ProxyMode.RoundRobin, providerUsage.Mode);
 
         var accountUsage = usages.Single(u => !u.IsProvider);

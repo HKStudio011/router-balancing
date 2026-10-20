@@ -46,6 +46,11 @@
     <Content Include="Server\title-captured.json"
              CopyToOutputDirectory="PreserveNewest"
              Link="title-captured.json" />
+    <!-- Model card sidebar thật của NVIDIA (probe 2026-10-20) — fixture cho
+         NvidiaCatalogMetadataProviderTests, copy về root bin như title-captured.json. -->
+    <Content Include="Providers\Fixtures\nvidia-nemotron-sidebar.html"
+             CopyToOutputDirectory="PreserveNewest"
+             Link="nvidia-nemotron-sidebar.html" />
   </ItemGroup>
 
   <ItemGroup>

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
@@ -113,6 +114,11 @@ public static class ProxyApp
         builder.Services.AddSingleton<IExecutionList, ExecutionList>();
         builder.Services.AddSingleton<IComboResolver, ComboResolver>();
         builder.Services.AddSingleton<IComboCapabilityCalculator, ComboCapabilityCalculator>();
+        // Capability reader (spec capability-model §7): /v1/models và combo calculator đọc
+        // fact capability qua đúng một accessor. App (MauiProgram) đã đăng ký trước —
+        // trùng đăng ký vô hại (reader stateless, cùng implementation); test container chỉ
+        // đi qua method này nên bắt buộc phải có ở đây.
+        builder.Services.AddSingleton<IModelCapabilityReader, ModelCapabilityReader>();
         builder.Services.AddSingleton<IModelSelector, ModelSelector>();
         builder.Services.AddSingleton<IUpstreamClient, OpenAiUpstreamClient>();
         builder.Services.AddSingleton<ProxyRequestHandler>();
@@ -453,29 +459,47 @@ public static class ProxyApp
             var factory = http.RequestServices
                 .GetRequiredService<IDbContextFactory<RouterBalancingDbContext>>();
             using var db = factory.CreateDbContext();
-            // Cast bool → bool? để model entry dùng chung kiểu capabilities với combo
-            // (Concat của List<anonymous> yêu cầu cùng anonymous type); giá trị vẫn
-            // serialize true/false — model entry không bao giờ null (entity false = chưa rõ).
-            var models = await db.Models.AsNoTracking()
+            var modelRows = await db.Models.AsNoTracking()
                 .Where(m => m.Enabled)
                 .OrderBy(m => m.Id)
                 .Select(m => new
                 {
-                    id = m.ModelId,
-                    // @object: keyword 'object' không đặt được thẳng làm tên member — JSON vẫn ra "object"
-                    @object = "model",
-                    created = m.CreatedAt.ToUnixTimeSeconds(),
-                    owned_by = m.Provider != null ? m.Provider.Name : "unknown",
-                    capabilities = new
-                    {
-                        context_window = m.ContextWindow,
-                        vision = (bool?)m.SupportsVision,
-                        audio = (bool?)m.SupportsAudio,
-                        video = (bool?)m.SupportsVideo,
-                        thinking = (bool?)m.SupportsThink,
-                    },
+                    m.Id,
+                    ModelId = m.ModelId,
+                    Created = m.CreatedAt.ToUnixTimeSeconds(),
+                    OwnedBy = m.Provider != null ? m.Provider.Name : "unknown",
+                    m.ContextWindow,
                 })
                 .ToListAsync(http.RequestAborted);
+
+            // Capability (Task 4): đọc qua IModelCapabilityReader — một query/bảng cho mọi model,
+            // không đọc cột capability cũ trên Models. Model chưa có fact → Empty → mọi flag
+            // null = "chưa rõ" (KHÔNG phải false); key luôn tồn tại để client phân biệt.
+            var capabilityViews = await http.RequestServices
+                .GetRequiredService<IModelCapabilityReader>()
+                .ReadManyAsync(modelRows.Select(m => m.Id).ToList(), http.RequestAborted);
+
+            var models = modelRows.Select(row =>
+            {
+                capabilityViews.TryGetValue(row.Id, out var view);
+                return new
+                {
+                    id = row.ModelId,
+                    // @object: keyword 'object' không đặt được thẳng làm tên member — JSON vẫn ra "object"
+                    @object = "model",
+                    created = row.Created,
+                    owned_by = row.OwnedBy,
+                    capabilities = new
+                    {
+                        context_window = row.ContextWindow,
+                        vision = view?.Vision,
+                        audio = view?.AudioInput,
+                        video = view?.VideoInput,
+                        thinking = view?.Reasoning,
+                        tools = view?.Tools,
+                    },
+                };
+            }).ToList();
 
             // Quyết định #10 (design 2026-09-25): client chọn combo qua trường `model` —
             // combo phải có trong list để client (opencode...) phát hiện trước khi gọi chat.
@@ -502,8 +526,10 @@ public static class ProxyApp
                     @object = "model",
                     created = row.Created,
                     owned_by = "combo",
-                    // Cả 5 field nullable, serialize tường minh cả null — client phân biệt
-                    // false (đã rõ không hỗ trợ) vs null (chưa rõ), spec D2
+                    // Cả 6 field nullable, serialize tường minh cả null — client phân biệt
+                    // false (đã rõ không hỗ trợ) vs null (chưa rõ), spec D2.
+                    // tools = null cố định: ComboCapabilities (giữ nguyên, Task 4) không tính
+                    // tools — giữ shape đồng nhất với model entry để Concat dùng cùng anonymous type.
                     capabilities = new
                     {
                         context_window = caps?.ContextWindow,
@@ -511,6 +537,7 @@ public static class ProxyApp
                         audio = caps?.Audio,
                         video = caps?.Video,
                         thinking = caps?.Thinking,
+                        tools = (bool?)null,
                     },
                 };
             }).ToList();

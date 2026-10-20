@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
@@ -16,6 +17,7 @@ public sealed class ModelService : IModelService
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
     private readonly IModelMetadataService _metadata;
+    private readonly IModelCapabilityWriter _capabilities;
 
     /// <inheritdoc/>
     public ModelService(
@@ -23,17 +25,20 @@ public sealed class ModelService : IModelService
         ISecretProtector protector,
         IHttpClientFactory http,
         ILogService log,
-        IModelMetadataService metadata)
+        IModelMetadataService metadata,
+        IModelCapabilityWriter capabilities)
     {
         _db = db;
         _protector = protector;
         _http = http;
         _log = log;
         _metadata = metadata;
+        _capabilities = capabilities;
     }
 
     /// <inheritdoc/>
-    public async Task<(int Added, int Skipped)> FetchFromProviderAsync(long providerId, CancellationToken ct = default)
+    public async Task<(int Added, int Skipped, int Filled)> FetchFromProviderAsync(
+        long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
         var provider = await db.Providers
@@ -95,15 +100,14 @@ public sealed class ModelService : IModelService
             if (created.Count > 0)
             {
                 await db.SaveChangesAsync(ct);
-                foreach (var entity in created)
-                {
-                    // Metadata best-effort — lỗi không ảnh hưởng kết quả fetch (đã log bên trong)
-                    await _metadata.TryFillAsync(entity.Id, ct);
-                }
-                _log.Info($"Fetched {added} models for provider {providerId}.");
             }
 
-            return (added, skipped);
+            // R-T8-1: FillMissing chạy cả khi không thêm model nào — nút Fetch retry các
+            // model cũ đang rỗng, và đây cũng là nơi duy nhất tính "Filled" cho UI.
+            // (TryFillAsync từng model ở đây là thừa: fill-missing đã bao gồm model mới.)
+            var filled = await _metadata.FillMissingAsync(providerId, ct);
+            _log.Info($"Fetched {added} models for provider {providerId}; filled metadata for {filled}.");
+            return (added, skipped, filled);
         }
     }
 
@@ -126,6 +130,8 @@ public sealed class ModelService : IModelService
         var model = new Model { ProviderId = providerId, ModelId = trimmed, IsManual = true };
         db.Models.Add(model);
         await db.SaveChangesAsync(ct);
+        // R-T8-5: row mới luôn IsEmpty theo construction — TryFill là đủ; không thêm
+        // dependency reader vào ModelService cho đường thêm tay.
         await _metadata.TryFillAsync(model.Id, ct);
         return model;
     }
@@ -165,6 +171,8 @@ public sealed class ModelService : IModelService
             await db.SaveChangesAsync(ct);
             foreach (var entity in created)
             {
+                // R-T8-5: mỗi row mới IsEmpty theo construction — fill trực tiếp, không
+                // cần query reader để xác định candidate.
                 await _metadata.TryFillAsync(entity.Id, ct);
             }
         }
@@ -214,25 +222,33 @@ public sealed class ModelService : IModelService
     }
 
     /// <inheritdoc/>
-    public async Task UpdateCapabilitiesAsync(
-        long modelId, int? contextWindow, bool supportsVision, bool supportsThink,
-        bool supportsAudio, bool supportsVideo, CancellationToken ct = default)
+    public async Task SetCapabilitiesAsync(
+        long modelId, int? contextWindow, int? maxOutputTokens,
+        CapabilityPatch patch, CancellationToken ct = default)
     {
-        // Relational pattern: null không match → ctx null hợp lệ (clear)
+        ArgumentNullException.ThrowIfNull(patch);
+        // Relational pattern: null không match → null hợp lệ (clear)
         if (contextWindow is < 1 or > 10_000_000)
         {
             throw new ArgumentOutOfRangeException(nameof(contextWindow), contextWindow,
                 "Context window phải trong khoảng 1..10.000.000.");
         }
+        if (maxOutputTokens is < 1 or > 10_000_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxOutputTokens), maxOutputTokens,
+                "Max output tokens phải trong khoảng 1..10.000.000.");
+        }
 
         using var db = _db.CreateDbContext();
         var model = await db.Models.FirstOrDefaultAsync(m => m.Id == modelId, ct)
             ?? throw new KeyNotFoundException($"Model {modelId} not found.");
+
+        // Fact trước, scalar sau: writer tự mở transaction. Hai bước không nguyên tử
+        // (xem XML doc) — nhưng capability là phần user vừa sửa, không được mất nếu
+        // bước scalar gặp lỗi DB hiếm gặp.
+        await _capabilities.ApplyUserEditAsync(modelId, patch, ct);
         model.ContextWindow = contextWindow;
-        model.SupportsVision = supportsVision;
-        model.SupportsThink = supportsThink;
-        model.SupportsAudio = supportsAudio;
-        model.SupportsVideo = supportsVideo;
+        model.MaxOutputTokens = maxOutputTokens;
         await db.SaveChangesAsync(ct);
     }
 }

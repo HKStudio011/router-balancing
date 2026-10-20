@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Storage;
@@ -9,12 +10,16 @@ namespace RouterBalancing.Core.Tools;
 public sealed class OpenCodeConfigService : IOpenCodeConfigService
 {
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
+    private readonly IModelCapabilityReader _capabilities;
 
     /// <inheritdoc/>
-    public OpenCodeConfigService(IDbContextFactory<RouterBalancingDbContext> db)
+    public OpenCodeConfigService(
+        IDbContextFactory<RouterBalancingDbContext> db, IModelCapabilityReader capabilities)
     {
         ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(capabilities);
         _db = db;
+        _capabilities = capabilities;
     }
 
     /// <inheritdoc/>
@@ -35,20 +40,26 @@ public sealed class OpenCodeConfigService : IOpenCodeConfigService
             var enabledModels = provider.Models
                 .Where(m => m.Enabled)
                 .OrderBy(m => m.Id)
-                .Select(ToRow)
                 .ToList();
 
             // Preset OpenCode Free luôn có mặt kể cả khi tắt/rỗng: UI cần nhóm này để hiện CTA
             // "bật provider OpenCode Free" (§7.1.3 spec) — các nhóm rỗng khác ẩn cho gọn bảng.
             if (enabledModels.Count == 0 && !isFreePreset) continue;
 
-            groups.Add(new ToolsModelGroup(provider.Name, provider.Enabled, isFreePreset, enabledModels));
+            // Capability đọc MỘT lần cho cả nhóm qua reader (C-H) — không gọi reader
+            // cho từng model khi render; ReadManyAsync = một query/bảng.
+            var views = await _capabilities.ReadManyAsync(enabledModels.Select(m => m.Id).ToList(), ct);
+            var rows = enabledModels
+                .Select(m => ToRow(m, views.TryGetValue(m.Id, out var view) ? view : ModelCapabilityView.Empty))
+                .ToList();
+
+            groups.Add(new ToolsModelGroup(provider.Name, provider.Enabled, isFreePreset, rows));
 
             // C7: chỉ tick mặc định khi cả provider lẫn model đang bật; provider tắt vẫn tick tay được
             // (routing thật cần cả hai — tick mù sẽ sinh config trỏ tới model app không phục vụ được).
             if (isFreePreset && provider.Enabled)
             {
-                defaultSelectedIds.AddRange(enabledModels.Select(m => m.Id));
+                defaultSelectedIds.AddRange(rows.Select(m => m.Id));
             }
         }
 
@@ -68,6 +79,10 @@ public sealed class OpenCodeConfigService : IOpenCodeConfigService
             .Where(m => selectedModelIds.Contains(m.Id))
             .ToListAsync(ct);
 
+        // Capability của toàn bộ model tick được đọc MỘT lần (một query/bảng) — không
+        // đọc cột capability cũ trên Models (C-H).
+        var views = await _capabilities.ReadManyAsync(models.Select(m => m.Id).ToList(), ct);
+
         // Thứ tự chốt (§7.2): preset OpenCode Free trước, rồi Id tăng dần — bản thắng khi trùng ModelId
         // không phụ thuộc thứ tự tick của user (JSON object không cho phép key trùng).
         var ordered = models
@@ -85,10 +100,11 @@ public sealed class OpenCodeConfigService : IOpenCodeConfigService
                 continue;
             }
 
+            var view = views.TryGetValue(model.Id, out var found) ? found : ModelCapabilityView.Empty;
             picked.Add(new OpenCodeConfigModel(
                 model.ModelId, model.DisplayName, model.ContextWindow, model.MaxOutputTokens,
-                model.SupportsTools, model.SupportsVision, model.SupportsThink,
-                model.ThinkEfforts, model.InputModalities, model.OutputModalities));
+                view.Tools, view.Vision, view.Reasoning,
+                view.Efforts, view.InputModalities, view.OutputModalities));
         }
 
         var json = OpenCodeConfigGenerator.Generate(baseUrl, apiKey, picked);
@@ -109,7 +125,8 @@ public sealed class OpenCodeConfigService : IOpenCodeConfigService
         provider is not null && provider.IsPreset
         && FreeProviderCatalog.FindByBaseUrl(provider.BaseUrl)?.DetectKind == FreeDetectKind.OpenCodeCatalog;
 
-    private static ToolsModelRow ToRow(Model model) =>
+    private static ToolsModelRow ToRow(Model model, ModelCapabilityView view) =>
         new(model.Id, model.ModelId, model.DisplayName, model.ContextWindow,
-            model.SupportsTools, model.SupportsVision, model.SupportsThink);
+            view.Tools, view.Reasoning, view.Vision, view.AudioInput, view.VideoInput,
+            view.InputModalities, view.OutputModalities);
 }

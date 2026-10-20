@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
@@ -87,18 +88,38 @@ public class ProxyAppChatIntegrationTests : IDisposable
         db.SaveChanges();
     }
 
+    /// <summary>
+    /// Đặt ContextWindow (cột trên Models — không thuộc capability model) và seed FACT capability.
+    /// Task 4: /v1/models + combo calculator chỉ đọc qua IModelCapabilityReader — tham số
+    /// bool ở đây nghĩa là "đã biết" (KnownAbsent=0/1); model không gọi helper này = chưa biết (null).
+    /// </summary>
     private void SetModelCaps(string modelId, int? contextWindow,
-        bool vision, bool audio, bool video, bool think)
+        bool vision, bool audio, bool video, bool think, bool? tools = null)
     {
         using var db = _db.CreateFactory().CreateDbContext();
         var model = db.Models.Single(m => m.ModelId == modelId);
         model.ContextWindow = contextWindow;
-        model.SupportsVision = vision;
-        model.SupportsAudio = audio;
-        model.SupportsVideo = video;
-        model.SupportsThink = think;
+        SeedInputModality(db, model.Id, ModalityKind.Image, vision);
+        SeedInputModality(db, model.Id, ModalityKind.Audio, audio);
+        SeedInputModality(db, model.Id, ModalityKind.Video, video);
+        SeedCapability(db, model.Id, CapabilityKind.Reasoning, think);
+        if (tools is { } toolsKnown) SeedCapability(db, model.Id, CapabilityKind.Tools, toolsKnown);
         db.SaveChanges();
     }
+
+    private static void SeedInputModality(RouterBalancingDbContext db, long modelId, ModalityKind kind, bool supported) =>
+        db.ModelModalities.Add(new ModelModality
+        {
+            ModelId = modelId, Direction = ModalityDirection.Input, Modality = kind,
+            KnownAbsent = !supported, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+    private static void SeedCapability(RouterBalancingDbContext db, long modelId, CapabilityKind kind, bool supported) =>
+        db.ModelCapabilities.Add(new ModelCapability
+        {
+            ModelId = modelId, Capability = kind,
+            KnownAbsent = !supported, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+        });
 
     private void AddProviderModel(string providerName, string modelId)
     {
@@ -299,7 +320,7 @@ public class ProxyAppChatIntegrationTests : IDisposable
     public async Task Models_ModelEntry_HasCapabilitiesObject()
     {
         SeedProvider("gpt-4o-mini");
-        SetModelCaps("gpt-4o-mini", 128_000, vision: true, audio: true, video: false, think: false);
+        SetModelCaps("gpt-4o-mini", 128_000, vision: true, audio: true, video: false, think: false, tools: true);
         var client = await StartAsync(new StubUpstream(() => Sse()));
 
         var response = await client.GetAsync("/v1/models");
@@ -314,6 +335,8 @@ public class ProxyAppChatIntegrationTests : IDisposable
         Assert.True(caps.GetProperty("vision").GetBoolean());
         Assert.False(caps.GetProperty("video").GetBoolean());
         Assert.False(caps.GetProperty("thinking").GetBoolean());
+        // Task 4: payload thêm "tools" đọc từ fact CapabilityKind.Tools
+        Assert.True(caps.GetProperty("tools").GetBoolean());
     }
 
     [Fact]
@@ -340,9 +363,11 @@ public class ProxyAppChatIntegrationTests : IDisposable
     [Fact]
     public async Task Models_ComboWithUnknownChild_SerializesNullsExplicitly()
     {
-        // Member default (ctx null, all false): AND 3 mức — false thắng null → 4 bool false;
-        // ctx min(128000, null) = null phải serialize thành JSON null (client phân biệt
-        // "chưa rõ" với "không hỗ trợ"), không được omit key.
+        // Member không có fact = chưa biết (null), KHÔNG phải false (Task 4 — view ba trạng thái).
+        // AND 3 mức: false của member đã biết thắng null (audio/video ra false), nhưng null
+        // lan ở field không có false (vision/thinking từ true ∧ null). ctx min(128000, null) = null.
+        // Mọi key phải tồn tại, serialize thành JSON null — client phân biệt "chưa rõ" với
+        // "không hỗ trợ", không được omit key.
         SeedProvider("gpt-4o-mini");
         SetModelCaps("gpt-4o-mini", 128_000, vision: true, audio: false, video: false, think: true);
         AddProviderModel("p-gpt-4o-mini", "gpt-4o-default");
@@ -355,10 +380,15 @@ public class ProxyAppChatIntegrationTests : IDisposable
         var caps = FindEntry(await ReadJson(response), "combo-mixed").GetProperty("capabilities");
         Assert.True(caps.TryGetProperty("context_window", out var contextWindow));
         Assert.Equal(JsonValueKind.Null, contextWindow.ValueKind);
-        foreach (var name in new[] { "vision", "audio", "video", "thinking" })
+        foreach (var name in new[] { "vision", "thinking" })
         {
             Assert.True(caps.TryGetProperty(name, out var flag));
-            Assert.Equal(JsonValueKind.False, flag.ValueKind);
+            Assert.Equal(JsonValueKind.Null, flag.ValueKind); // true ∧ unknown = unknown
+        }
+        foreach (var name in new[] { "audio", "video" })
+        {
+            Assert.True(caps.TryGetProperty(name, out var flag));
+            Assert.Equal(JsonValueKind.False, flag.ValueKind); // false thắng unknown
         }
     }
 

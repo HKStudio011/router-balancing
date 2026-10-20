@@ -227,9 +227,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("InputModalities")
-                        .HasColumnType("TEXT");
-
                     b.Property<bool>("IsManual")
                         .HasColumnType("INTEGER");
 
@@ -241,29 +238,8 @@ namespace RouterBalancing.Core.Storage.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("OutputModalities")
-                        .HasColumnType("TEXT");
-
                     b.Property<long>("ProviderId")
                         .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsAudio")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsThink")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool?>("SupportsTools")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsVideo")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsVision")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("ThinkEfforts")
-                        .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 
@@ -271,6 +247,72 @@ namespace RouterBalancing.Core.Storage.Migrations
                         .IsUnique();
 
                     b.ToTable("Models");
+                });
+
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ModelCapability", b =>
+                {
+                    b.Property<long>("ModelId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Capability")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("KnownAbsent")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ModelId", "Capability");
+
+                    b.ToTable("ModelCapabilities");
+                });
+
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ModelModality", b =>
+                {
+                    b.Property<long>("ModelId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Direction")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Modality")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("KnownAbsent")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ModelId", "Direction", "Modality");
+
+                    b.ToTable("ModelModalities");
+                });
+
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ModelReasoningEffort", b =>
+                {
+                    b.Property<long>("ModelId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Level")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ModelId", "Level");
+
+                    b.ToTable("ModelReasoningEfforts");
                 });
 
             modelBuilder.Entity("RouterBalancing.Core.Domain.OutboundProxy", b =>
@@ -391,6 +433,9 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.HasIndex("Identifier")
                         .IsUnique();
 
+                    b.HasIndex("Name")
+                        .IsUnique();
+
                     b.ToTable("Providers");
                 });
 
@@ -401,7 +446,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("ApiKeyEncrypted")
-                        .IsRequired()
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset>("CreatedAt")
@@ -525,6 +569,33 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Navigation("Provider");
                 });
 
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ModelCapability", b =>
+                {
+                    b.HasOne("RouterBalancing.Core.Domain.Model", null)
+                        .WithMany("ModelCapabilities")
+                        .HasForeignKey("ModelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ModelModality", b =>
+                {
+                    b.HasOne("RouterBalancing.Core.Domain.Model", null)
+                        .WithMany("ModelModalities")
+                        .HasForeignKey("ModelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ModelReasoningEffort", b =>
+                {
+                    b.HasOne("RouterBalancing.Core.Domain.Model", null)
+                        .WithMany("ModelReasoningEfforts")
+                        .HasForeignKey("ModelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("RouterBalancing.Core.Domain.ProviderAccount", b =>
                 {
                     b.HasOne("RouterBalancing.Core.Domain.Provider", "Provider")
@@ -577,6 +648,15 @@ namespace RouterBalancing.Core.Storage.Migrations
             modelBuilder.Entity("RouterBalancing.Core.Domain.Combo", b =>
                 {
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("RouterBalancing.Core.Domain.Model", b =>
+                {
+                    b.Navigation("ModelCapabilities");
+
+                    b.Navigation("ModelModalities");
+
+                    b.Navigation("ModelReasoningEfforts");
                 });
 
             modelBuilder.Entity("RouterBalancing.Core.Domain.Provider", b =>

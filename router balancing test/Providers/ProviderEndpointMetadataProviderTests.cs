@@ -37,6 +37,16 @@ public class ProviderEndpointMetadataProviderTests
          new Model { ProviderId = 1, ModelId = "gpt-4o" });
 
     [Fact]
+    public void Source_IsEndpointAndNotCompleteList()
+    {
+        var provider = new ProviderEndpointMetadataProvider(
+            new StubFactory(new JsonHandler("{}")), new DpapiSecretProtector());
+
+        Assert.Equal(RouterBalancing.Core.Capabilities.CapabilitySource.Endpoint, provider.Source);
+        Assert.False(provider.ReturnsCompleteFacts);
+    }
+
+    [Fact]
     public async Task FetchAsync_WhenEndpointReturnsContextWindow_ParsesMetadata()
     {
         var handler = new JsonHandler("""
@@ -51,7 +61,8 @@ public class ProviderEndpointMetadataProviderTests
         Assert.NotNull(meta);
         Assert.Equal(128_000, meta.ContextWindow);
         Assert.True(meta.SupportsVision);
-        Assert.Equal("""["text","image"]""", meta.InputModalities);
+        Assert.Equal(new[] { "text", "image" }, meta.InputModalities);
+        Assert.False(provider.ReturnsCompleteFacts); // probe positive-only (R-T7-2)
         // Request đúng path {base}/v1/models/{id}
         Assert.Equal("https://api.example.com/v1/models/gpt-4o", handler.LastUri!.ToString());
     }
@@ -132,7 +143,7 @@ public class ProviderEndpointMetadataProviderTests
 
         Assert.NotNull(meta);
         Assert.True(meta.SupportsVision);
-        Assert.Equal("""["text","image"]""", meta.InputModalities);
-        Assert.Equal("""["text"]""", meta.OutputModalities);
+        Assert.Equal(new[] { "text", "image" }, meta.InputModalities);
+        Assert.Equal(new[] { "text" }, meta.OutputModalities);
     }
 }

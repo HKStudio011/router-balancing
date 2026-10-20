@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Security;
 
@@ -7,7 +8,7 @@ namespace RouterBalancing.Core.Providers;
 /// <summary>
 /// Bước 1: GET {base}/v1/models/{id} — thử parse field mà một số gateway
 /// (OpenRouter, Together, v.v.) trả thêm. Shape "sạch" của OpenAI gốc không có
-/// capabilities → trả null, nhường static catalog.
+/// capabilities → trả null, nhường bước sau trong chain (Ollama/NVIDIA catalog).
 /// </summary>
 public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
 {
@@ -20,6 +21,12 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
         _http = http;
         _protector = protector;
     }
+
+    /// <inheritdoc/>
+    public bool ReturnsCompleteFacts => false;
+
+    /// <inheritdoc/>
+    public CapabilitySource Source => CapabilitySource.Endpoint;
 
     /// <inheritdoc/>
     public async Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default)
@@ -42,9 +49,9 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
                 ?? IntFrom(root, "context_length")
                 ?? IntFrom(root, "max_model_len");
             bool? vision = ParseVision(root);
-            string? input = ParseModalityList(root, "supported_modalities", "input")
+            IReadOnlyList<string>? input = ParseModalityList(root, "supported_modalities", "input")
                 ?? ParseModalityList(root, "architecture", "input_modalities");
-            string? output = ParseModalityList(root, "supported_modalities", "output")
+            IReadOnlyList<string>? output = ParseModalityList(root, "supported_modalities", "output")
                 ?? ParseModalityList(root, "architecture", "output_modalities");
 
             // Không có field nào quen thuộc → shape lạ, nhường bước sau
@@ -79,11 +86,8 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
         return input.Contains("image", StringComparer.OrdinalIgnoreCase);
     }
 
-    private static string? ParseModalityList(JsonElement root, string property, string direction)
-    {
-        var values = ParseModalityArray(root, property, direction);
-        return values is null ? null : JsonSerializer.Serialize(values);
-    }
+    private static string[]? ParseModalityList(JsonElement root, string property, string direction) =>
+        ParseModalityArray(root, property, direction);
 
     /// <summary>Đọc mảng string 2 cấp <c>{property}.{direction}</c>; null nếu shape không khớp.</summary>
     private static string[]? ParseModalityArray(JsonElement root, string property, string direction)

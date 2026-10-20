@@ -1,5 +1,6 @@
 @page "/providers"
 @using RouterBalancing.Core.Domain
+@using RouterBalancing.Core.Capabilities
 @using System.Text.Json
 @using RouterBalancing.Core.Providers
 @using System.Globalization
@@ -8,6 +9,8 @@
 @inject IProviderAccountService AccountSvc
 @inject IModelService ModelSvc
 @inject IFreeModelSyncService FreeSyncSvc
+@inject IModelMetadataService MetadataSvc
+@inject IModelCapabilityReader CapReader
 @inject LocalizationService L
 @inject ToastService Toast
 @inject ILogService Log
@@ -106,7 +109,7 @@ else
                                     <button type="button" class="btn btn-outline-secondary"
                                             disabled="@(_busy || _syncingId == p.Id)"
                                             @onclick="() => SyncFreeModelsAsync(p)">
-                                        @L["providers.sync.now"]
+                                        @(_syncingId == p.Id ? L["providers.syncing"] : L["providers.sync.now"])
                                     </button>
                                 }
                                 <button type="button" class="btn btn-outline-secondary"
@@ -229,6 +232,7 @@ else
                                             <tbody>
                                                 @foreach (var m in PagedModels(p))
                                                 {
+                                                    var view = CapabilitiesOf(m);
                                                     <tr @key="m.Id" class="border-b border-border last:border-b-0">
                                                         <td class="px-2 py-1.5 font-mono">
                                                             <div>@(m.DisplayName is null ? m.ModelId : $"{m.DisplayName} ({m.ModelId})")</div>
@@ -248,43 +252,81 @@ else
                                                         <td class="px-2 py-1.5">
                                                             @if (_editingCapabilitiesId == m.Id)
                                                             {
-                                                                <div class="flex flex-wrap items-center gap-1.5" data-testid="caps-edit-form">
-                                                                    <label class="flex items-center gap-1">
-                                                                        @L["models.capabilities.contextWindow"]
-                                                                        <input type="number" min="1" max="10000000"
-                                                                               class="w-24" disabled="@_busy"
-                                                                               data-testid="caps-ctx-input"
-                                                                               @bind="_editCtx" @bind:event="oninput" />
-                                                                    </label>
-                                                                    @* Emoji nằm trực tiếp trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt *@
-                                                                    <label class="flex items-center gap-1">
-                                                                        <input type="checkbox" disabled="@_busy" @bind="_editVision" />
-                                                                        👁 @L["models.capabilities.vision"]
-                                                                    </label>
-                                                                    <label class="flex items-center gap-1">
-                                                                        <input type="checkbox" disabled="@_busy" @bind="_editThink" />
-                                                                        ⚡ @L["models.capabilities.think"]
-                                                                    </label>
-                                                                    <label class="flex items-center gap-1 border-l-2 border-[#8b5cf6] pl-2.5">
-                                                                        <input type="checkbox" disabled="@_busy" @bind="_editAudio" />
-                                                                        🔊 @L["models.capabilities.audio"]
-                                                                        <em class="opacity-60 text-xs">@L["models.capabilities.new"]</em>
-                                                                    </label>
-                                                                    <label class="flex items-center gap-1 border-l-2 border-[#ec4899] pl-2.5">
-                                                                        <input type="checkbox" disabled="@_busy" @bind="_editVideo" />
-                                                                        🎬 @L["models.capabilities.video"]
-                                                                        <em class="opacity-60 text-xs">@L["models.capabilities.new"]</em>
-                                                                    </label>
-                                                                    <button type="button" class="btn btn-primary"
-                                                                            disabled="@_busy" data-testid="caps-save"
-                                                                            @onclick="() => SaveCapabilitiesAsync(m)">
-                                                                        @L["settings.action.save"]
-                                                                    </button>
-                                                                    <button type="button" class="btn btn-outline-secondary"
-                                                                            disabled="@_busy" data-testid="caps-cancel"
-                                                                            @onclick="CancelEditCapabilities">
-                                                                        @L["confirm.cancel"]
-                                                                    </button>
+                                                                <div class="flex flex-col gap-1.5" data-testid="caps-edit-form">
+                                                                    <div class="flex flex-wrap items-center gap-2">
+                                                                        <label class="flex items-center gap-1">
+                                                                            @L["models.capabilities.contextWindow"]
+                                                                            <input type="number" min="1" max="10000000"
+                                                                                   class="w-24" disabled="@_busy"
+                                                                                   data-testid="caps-ctx-input"
+                                                                                   @bind="_editCtx" @bind:event="oninput" />
+                                                                        </label>
+                                                                        <label class="flex items-center gap-1">
+                                                                            @L["models.capabilities.maxOutput"]
+                                                                            <input type="number" min="1" max="10000000"
+                                                                                   class="w-24" disabled="@_busy"
+                                                                                   data-testid="caps-maxout-input"
+                                                                                   @bind="_editMaxOut" @bind:event="oninput" />
+                                                                        </label>
+                                                                    </div>
+                                                                    @* Ba trạng thái (unknown/yes/no) — không dùng checkbox vì checkbox không biểu diễn được "chưa rõ" *@
+                                                                    <div class="grid grid-cols-[minmax(6rem,auto)_auto] items-center gap-x-2 gap-y-1 text-xs">
+                                                                        <span>🔧 @L["models.cap.tools"]</span>
+                                                                        <span class="flex items-center gap-1.5">
+                                                                            <select class="rounded border border-border bg-surface px-1 py-0.5"
+                                                                                    value="@ChoiceValue(_editTools)" disabled="@_busy"
+                                                                                    data-testid="caps-tools-select"
+                                                                                    @onchange="e => _editTools = ParseChoice(e.Value?.ToString())">
+                                                                                @ChoiceOptions
+                                                                            </select>
+                                                                            <em class="opacity-60">@SourceLabel(_editView.SourceOf(CapabilityKind.Tools))</em>
+                                                                        </span>
+                                                                        <span>⚡ @L["models.cap.reasoning"]</span>
+                                                                        <span class="flex items-center gap-1.5">
+                                                                            <select class="rounded border border-border bg-surface px-1 py-0.5"
+                                                                                    value="@ChoiceValue(_editReasoning)" disabled="@_busy"
+                                                                                    data-testid="caps-reasoning-select"
+                                                                                    @onchange="e => _editReasoning = ParseChoice(e.Value?.ToString())">
+                                                                                @ChoiceOptions
+                                                                            </select>
+                                                                            <em class="opacity-60">@SourceLabel(_editView.SourceOf(CapabilityKind.Reasoning))</em>
+                                                                        </span>
+                                                                        @foreach (var direction in new[] { ModalityDirection.Input, ModalityDirection.Output })
+                                                                        {
+                                                                            <span class="pt-1 font-semibold">@DirectionLabel(direction)</span>
+                                                                            <span></span>
+                                                                            @foreach (var modality in new[] { ModalityKind.Text, ModalityKind.Image, ModalityKind.Audio, ModalityKind.Video })
+                                                                            {
+                                                                                <span>@ModalityLabel(modality)</span>
+                                                                                <span class="flex items-center gap-1.5">
+                                                                                    <select class="rounded border border-border bg-surface px-1 py-0.5"
+                                                                                            value="@ChoiceValue(_editModalities[(direction, modality)])" disabled="@_busy"
+                                                                                            data-testid="@($"caps-{direction.ToDb()}-{modality.ToDb()}-select")"
+                                                                                            @onchange="e => _editModalities[(direction, modality)] = ParseChoice(e.Value?.ToString())">
+                                                                                        @ChoiceOptions
+                                                                                    </select>
+                                                                                    <em class="opacity-60">@SourceLabel(_editView.SourceOf(direction, modality))</em>
+                                                                                </span>
+                                                                            }
+                                                                        }
+                                                                    </div>
+                                                                    <div class="flex flex-wrap items-center gap-1.5">
+                                                                        <button type="button" class="btn btn-primary"
+                                                                                disabled="@_busy" data-testid="caps-save"
+                                                                                @onclick="() => SaveCapabilitiesAsync(m)">
+                                                                            @L["settings.action.save"]
+                                                                        </button>
+                                                                        <button type="button" class="btn btn-outline-info"
+                                                                                disabled="@_busy" data-testid="caps-reset"
+                                                                                @onclick="() => _confirmResetModel = m">
+                                                                            @L["models.action.resetCapabilities"]
+                                                                        </button>
+                                                                        <button type="button" class="btn btn-outline-secondary"
+                                                                                disabled="@_busy" data-testid="caps-cancel"
+                                                                                @onclick="CancelEditCapabilities">
+                                                                            @L["confirm.cancel"]
+                                                                        </button>
+                                                                    </div>
                                                                 </div>
                                                             }
                                                             else
@@ -298,25 +340,29 @@ else
                                                                     {
                                                                         <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
                                                                     }
-                                                                    @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt *@
-                                                                    @if (m.SupportsVision)
+                                                                    @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt.
+                                                                       Chỉ hiện khi fact đã biết là true; false (KnownAbsent) và null (chưa biết) cùng ẩn. *@
+                                                                    @if (view.Tools is true)
+                                                                    {
+                                                                        <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
+                                                                    }
+                                                                    @if (view.Vision is true)
                                                                     {
                                                                         <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
                                                                     }
-                                                                    @if (m.SupportsThink)
+                                                                    @if (view.Reasoning is true)
                                                                     {
                                                                         <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
                                                                     }
-                                                                    @if (m.SupportsAudio)
+                                                                    @if (view.AudioInput is true)
                                                                     {
                                                                         <Badge Text="@($"🔊 {L["models.badge.audio"]}")" Variant="BadgeVariant.Purple" />
                                                                     }
-                                                                    @if (m.SupportsVideo)
+                                                                    @if (view.VideoInput is true)
                                                                     {
                                                                         <Badge Text="@($"🎬 {L["models.badge.video"]}")" Variant="BadgeVariant.Pink" />
                                                                     }
-                                                                    @if (!m.IsManual && m.ContextWindow is null && !m.SupportsVision && !m.SupportsThink
-                                                                         && !m.SupportsAudio && !m.SupportsVideo)
+                                                                    @if (!m.IsManual && m.ContextWindow is null && !HasVisibleCapabilityBadges(view))
                                                                     {
                                                                         @* Ký hiệu language-neutral — không qua i18n (spec §3.3) *@
                                                                         <span class="opacity-70" data-testid="caps-placeholder">&#8212;</span>
@@ -324,7 +370,7 @@ else
                                                                     <button type="button" class="btn btn-outline-info px-1.5"
                                                                             disabled="@_busy" data-testid="caps-edit"
                                                                             title="@L["models.action.editCapabilities"]"
-                                                                            @onclick="() => BeginEditCapabilities(m)">
+                                                                            @onclick="() => BeginEditCapabilitiesAsync(m)">
                                                                             &#9998;
                                                                     </button>
                                                                 </div>
@@ -706,6 +752,18 @@ else
                    OnCancel="() => _confirmDeleteModel = null" />
 }
 
+@if (_confirmResetModel is { } modelToReset)
+{
+    <ConfirmDialog Visible="true"
+                   Title="@L["models.action.resetCapabilities"]"
+                   Message="@string.Format(L["models.confirmResetCapabilities"], modelToReset.ModelId)"
+                   Danger="true"
+                   ConfirmText="@L["models.action.resetCapabilities"]"
+                   CancelText="@L["confirm.cancel"]"
+                   OnConfirm="ResetCapabilitiesAsync"
+                   OnCancel="() => _confirmResetModel = null" />
+}
+
 @if (_confirmRemoveAll is { } providerToRemoveAll)
 {
     <ConfirmDialog Visible="true"
@@ -732,6 +790,9 @@ else
 
 @code {
     private List<Provider> _providers = [];
+    // Badge model đọc từ fact capability, nạp một lần mỗi LoadAsync — không query trong render loop.
+    private IReadOnlyDictionary<long, ModelCapabilityView> _capabilityViews =
+        new Dictionary<long, ModelCapabilityView>();
     private bool _loading = true;
     private bool _busy;
 
@@ -751,16 +812,18 @@ else
 
     // Edit inline capabilities — 1 bộ state duy nhất nên mở row khác tự đóng row cũ (chỉ 1 model sửa 1 lúc)
     private long? _editingCapabilitiesId;
+    private ModelCapabilityView _editView = ModelCapabilityView.Empty;
     private string _editCtx = string.Empty;
-    private bool _editVision;
-    private bool _editThink;
-    private bool _editAudio;
-    private bool _editVideo;
+    private string _editMaxOut = string.Empty;
+    private CapabilityChoice _editTools;
+    private CapabilityChoice _editReasoning;
+    private readonly Dictionary<(ModalityDirection Direction, ModalityKind Modality), CapabilityChoice> _editModalities = [];
     private bool _bulkOpen;
     private string _bulkText = string.Empty;
 
     private Provider? _confirmDeleteProvider;
     private Model? _confirmDeleteModel;
+    private Model? _confirmResetModel;
     private Provider? _confirmRemoveAll;
 
     // ===== Modal Add/Edit (Task 9) =====
@@ -829,6 +892,23 @@ else
             // Sau khi xóa bớt, trang hiện tại có thể vượt số trang — clamp về hợp lệ
             var providerPages = Math.Max(1, (_providers.Count + _providerPageSize - 1) / _providerPageSize);
             _providerPage = Math.Clamp(_providerPage, 1, providerPages);
+
+            // Một query/bảng cho tất cả model của mọi provider; lỗi đọc fact không được
+            // chặn bảng provider — badge sẽ trống cho tới lần tải sau.
+            try
+            {
+                var modelIds = _providers
+                    .SelectMany(p => p.Models)
+                    .Select(m => m.Id)
+                    .Distinct()
+                    .ToList();
+                _capabilityViews = await CapReader.ReadManyAsync(modelIds);
+            }
+            catch (Exception ex)
+            {
+                _capabilityViews = new Dictionary<long, ModelCapabilityView>();
+                Log.Error("Không tải được khả năng của model.", ex);
+            }
         }
         catch (Exception ex)
         {
@@ -932,7 +1012,9 @@ else
         try
         {
             var count = await FreeSyncSvc.SyncProviderAsync(provider.Id);
-            Toast.Show(string.Format(L["providers.sync.success"], count), ToastSeverity.Success);
+            // R-T8-3: bulk fill gắn với nút bấm tay; periodic sync (worker) giữ nguyên.
+            var filled = await MetadataSvc.FillMissingAsync(provider.Id);
+            Toast.Show(string.Format(L["providers.sync.successFilled"], count, filled), ToastSeverity.Success);
             // LoadAsync giữ nguyên trạng thái expand/ trang — không ép mở row như ReloadKeepExpandAsync
             await LoadAsync();
         }
@@ -1046,8 +1128,8 @@ else
         _fetchingId = provider.Id;
         try
         {
-            var (added, skipped) = await ModelSvc.FetchFromProviderAsync(provider.Id);
-            Toast.Show(string.Format(L["models.result.added"], added, skipped), ToastSeverity.Success);
+            var (added, skipped, filled) = await ModelSvc.FetchFromProviderAsync(provider.Id);
+            Toast.Show(string.Format(L["models.result.fetched"], added, skipped, filled), ToastSeverity.Success);
             await ReloadKeepExpandAsync(provider.Id);
         }
         catch (HttpRequestException ex)
@@ -1108,21 +1190,50 @@ else
         }
     }
 
-    private void BeginEditCapabilities(Model model)
+    private async Task BeginEditCapabilitiesAsync(Model model)
     {
         if (_busy) return;
-        _editingCapabilitiesId = model.Id;
-        // Trống = clear (null) — phân biệt với giá trị thật 0 (0 vốn bị range chặn)
-        _editCtx = model.ContextWindow?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
-        _editVision = model.SupportsVision;
-        _editThink = model.SupportsThink;
-        _editAudio = model.SupportsAudio;
-        _editVideo = model.SupportsVideo;
+        _busy = true;
+        try
+        {
+            _editView = ModelCapabilityView.Empty;
+            // Trống = clear (null) — phân biệt với giá trị thật 0 (0 vốn bị range chặn)
+            _editCtx = model.ContextWindow?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+            _editMaxOut = model.MaxOutputTokens?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+
+            // View là baseline cho cả hiển thị nguồn lẫn diff khi Save: chỉ cell đổi
+            // mới được ghi User, cell giữ nguyên phải giữ nguyên catalog/endpoint.
+            _editView = await CapReader.ReadAsync(model.Id);
+            _editTools = ChoiceOf(_editView.Tools);
+            _editReasoning = ChoiceOf(_editView.Reasoning);
+            _editModalities.Clear();
+            foreach (var direction in new[] { ModalityDirection.Input, ModalityDirection.Output })
+            {
+                foreach (var modality in new[] { ModalityKind.Text, ModalityKind.Image, ModalityKind.Audio, ModalityKind.Video })
+                {
+                    _editModalities[(direction, modality)] = ChoiceOf(_editView.Supports(direction, modality));
+                }
+            }
+            // Chỉ mở editor sau khi view sẵn sàng — tránh render form rỗng (mọi ô
+            // "chưa rõ") trong lúc chờ đọc DB.
+            _editingCapabilitiesId = model.Id;
+        }
+        catch (Exception ex)
+        {
+            _editingCapabilitiesId = null;
+            Log.Error("Không tải được capability của model.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 
     private void CancelEditCapabilities()
     {
         _editingCapabilitiesId = null;
+        _editView = ModelCapabilityView.Empty;
     }
 
     private async Task SaveCapabilitiesAsync(Model model)
@@ -1133,27 +1244,42 @@ else
         if (!string.IsNullOrWhiteSpace(_editCtx))
         {
             // Parse InvariantCulture để "128000" không phụ thuộc locale của máy user
-            if (!int.TryParse(_editCtx, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
-                || parsed is < 1 or > 10_000_000)
+            if (!int.TryParse(_editCtx, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedCtx)
+                || parsedCtx is < 1 or > 10_000_000)
             {
                 Toast.Show(L["models.error.contextRange"], ToastSeverity.Error);
                 return;
             }
-            ctx = parsed;
+            ctx = parsedCtx;
+        }
+
+        int? maxOut = null;
+        if (!string.IsNullOrWhiteSpace(_editMaxOut))
+        {
+            if (!int.TryParse(_editMaxOut, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedMax)
+                || parsedMax is < 1 or > 10_000_000)
+            {
+                Toast.Show(L["models.error.maxOutputRange"], ToastSeverity.Error);
+                return;
+            }
+            maxOut = parsedMax;
         }
 
         _busy = true;
         try
         {
-            await ModelSvc.UpdateCapabilitiesAsync(model.Id, ctx, _editVision, _editThink, _editAudio, _editVideo);
+            await ModelSvc.SetCapabilitiesAsync(model.Id, ctx, maxOut, BuildCapabilityPatch());
             _editingCapabilitiesId = null;
             await ReloadKeepExpandAsync(model.ProviderId);
             Toast.Show(L["models.msg.capabilitiesSaved"], ToastSeverity.Success);
         }
-        catch (ArgumentOutOfRangeException)
+        catch (ArgumentOutOfRangeException ex)
         {
-            // Service ném khi range sai — cùng toast với lỗi parse phía trên
-            Toast.Show(L["models.error.contextRange"], ToastSeverity.Error);
+            // UI đã validate trước; đây là guard cho race/bug — chọn đúng toast theo tham số.
+            var key = ex.ParamName == "maxOutputTokens"
+                ? "models.error.maxOutputRange"
+                : "models.error.contextRange";
+            Toast.Show(L[key], ToastSeverity.Error);
         }
         catch (Exception ex)
         {
@@ -1164,6 +1290,140 @@ else
         {
             _busy = false;
         }
+    }
+
+    private async Task ResetCapabilitiesAsync()
+    {
+        if (_confirmResetModel is not { } model) return;
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await MetadataSvc.ResetToCatalogAsync(model.Id);
+            _editingCapabilitiesId = null;
+            _editView = ModelCapabilityView.Empty;
+            await ReloadKeepExpandAsync(model.ProviderId);
+            Toast.Show(L["models.msg.capabilitiesReset"], ToastSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Không đặt lại được capabilities theo catalog.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+        finally
+        {
+            _busy = false;
+            _confirmResetModel = null;
+        }
+    }
+
+    /// <summary>
+    /// Dựng patch từ diff giữa lựa chọn hiện tại và baseline <see cref="_editView"/> (R-T9-4):
+    /// chỉ cell đổi mới vào patch; known → "chưa rõ" thành ClearKey; unknown → known ghi User.
+    /// </summary>
+    private CapabilityPatch BuildCapabilityPatch()
+    {
+        var capabilities = new Dictionary<CapabilityKind, bool>();
+        var modalities = new Dictionary<(ModalityDirection Direction, ModalityKind Modality), bool>();
+        var clearKeys = new HashSet<(string Kind, string Key)>();
+
+        void ApplyCapability(CapabilityKind kind, CapabilityChoice choice)
+        {
+            var original = kind == CapabilityKind.Tools ? _editView.Tools : _editView.Reasoning;
+            if (choice == CapabilityChoice.Unknown)
+            {
+                if (original is not null)
+                {
+                    clearKeys.Add(CapabilityPatch.CapabilityClearKey(kind));
+                }
+                return;
+            }
+            if (original != (choice == CapabilityChoice.Yes))
+            {
+                capabilities[kind] = choice == CapabilityChoice.Yes;
+            }
+        }
+
+        ApplyCapability(CapabilityKind.Tools, _editTools);
+        ApplyCapability(CapabilityKind.Reasoning, _editReasoning);
+
+        foreach (var (key, choice) in _editModalities)
+        {
+            var original = _editView.Supports(key.Direction, key.Modality);
+            if (choice == CapabilityChoice.Unknown)
+            {
+                if (original is not null)
+                {
+                    clearKeys.Add(CapabilityPatch.ModalityClearKey(key.Direction, key.Modality));
+                }
+                continue;
+            }
+            if (original != (choice == CapabilityChoice.Yes))
+            {
+                modalities[key] = choice == CapabilityChoice.Yes;
+            }
+        }
+
+        return new CapabilityPatch(capabilities, modalities, new HashSet<string>())
+        {
+            ClearKeys = clearKeys,
+        };
+    }
+
+    private static CapabilityChoice ChoiceOf(bool? value) => value switch
+    {
+        true => CapabilityChoice.Yes,
+        false => CapabilityChoice.No,
+        null => CapabilityChoice.Unknown,
+    };
+
+    private static CapabilityChoice ParseChoice(string? value) => value switch
+    {
+        "yes" => CapabilityChoice.Yes,
+        "no" => CapabilityChoice.No,
+        _ => CapabilityChoice.Unknown,
+    };
+
+    private static string ChoiceValue(CapabilityChoice choice) => choice switch
+    {
+        CapabilityChoice.Yes => "yes",
+        CapabilityChoice.No => "no",
+        _ => "unknown",
+    };
+
+    private string SourceLabel(CapabilitySource? source) => source switch
+    {
+        CapabilitySource.Catalog => L["models.cap.source.catalog"],
+        CapabilitySource.Endpoint => L["models.cap.source.endpoint"],
+        CapabilitySource.User => L["models.cap.source.user"],
+        _ => L["models.cap.source.none"],
+    };
+
+    private string DirectionLabel(ModalityDirection direction) => direction == ModalityDirection.Input
+        ? L["models.cap.input"]
+        : L["models.cap.output"];
+
+    private string ModalityLabel(ModalityKind modality) => modality switch
+    {
+        ModalityKind.Text => L["models.cap.text"],
+        ModalityKind.Image => L["models.cap.image"],
+        ModalityKind.Audio => L["models.cap.audio"],
+        ModalityKind.Video => L["models.cap.video"],
+        _ => modality.ToDb(),
+    };
+
+    /// <summary>Option dùng chung cho mọi select ba trạng thái — giữ đúng thứ tự unknown/yes/no.</summary>
+    private RenderFragment ChoiceOptions => @<text>
+        <option value="unknown">@L["models.cap.state.unknown"]</option>
+        <option value="yes">@L["models.cap.state.yes"]</option>
+        <option value="no">@L["models.cap.state.no"]</option>
+    </text>;
+
+    private enum CapabilityChoice
+    {
+        Unknown,
+        Yes,
+        No,
     }
 
     private async Task SetAllModelsAsync(Provider provider, bool enabled)
@@ -1728,6 +1988,15 @@ else
             m.ModelId.Contains(term, StringComparison.OrdinalIgnoreCase) ||
             (m.DisplayName?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false));
     }
+
+    /// <summary>View capability đã nạp sẵn — model chưa có fact trả về <see cref="ModelCapabilityView.Empty"/>.</summary>
+    private ModelCapabilityView CapabilitiesOf(Model model) =>
+        _capabilityViews.TryGetValue(model.Id, out var view) ? view : ModelCapabilityView.Empty;
+
+    /// <summary>Chỉ badge khi fact là true; false/null đều không hiện (spec §11).</summary>
+    private static bool HasVisibleCapabilityBadges(ModelCapabilityView view) =>
+        view.Tools is true || view.Vision is true || view.Reasoning is true
+        || view.AudioInput is true || view.VideoInput is true;
 
     /// <summary>Model của trang hiện tại trong tập khớp search, sắp xếp ổn định theo ModelId (client-side).</summary>
     private IEnumerable<Model> PagedModels(Provider provider) => SearchModels(provider)

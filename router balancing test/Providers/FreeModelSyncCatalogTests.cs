@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
@@ -10,8 +11,9 @@ namespace router_balancing_test.Providers;
 
 /// <summary>
 /// Sync preset OpenCode Free qua catalog v2 (models.opencode.ai/api.json): fetch đúng catalog URL,
-/// parse nhánh <see cref="FreeDetectKind.OpenCodeCatalog"/> và merge capabilities vào Model
-/// (spec opencode-tools-page §6).
+/// parse nhánh <see cref="FreeDetectKind.OpenCodeCatalog"/> và ghi capability qua fact tables
+/// (reader là lối đọc duy nhất — Task 5 chuyển sync sang writer, không ghi cột cũ nữa;
+/// spec opencode-tools-page §6 + capability-model §5).
 /// </summary>
 public class FreeModelSyncCatalogTests : IDisposable
 {
@@ -28,7 +30,8 @@ public class FreeModelSyncCatalogTests : IDisposable
     public void Dispose() => _testDb.Dispose();
 
     private FreeModelSyncService ServiceWith(string json) =>
-        new(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog());
+        new(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog(),
+            new ModelCapabilityWriter(_db, new NullLog()));
 
     private async Task<long> OpenCodeIdAsync()
     {
@@ -54,21 +57,30 @@ public class FreeModelSyncCatalogTests : IDisposable
     {
         var id = await OpenCodeIdAsync();
         var handler = new JsonHandler(FreeModelFixtures.OpenCodeCatalog);
-        var service = new FreeModelSyncService(_db, _protector, new StubFactory(handler), new NullLog());
+        var service = new FreeModelSyncService(_db, _protector, new StubFactory(handler), new NullLog(),
+            new ModelCapabilityWriter(_db, new NullLog()));
 
         var count = await service.SyncProviderAsync(id);
 
         Assert.Equal(3, count);
         Assert.Equal("https://models.opencode.ai/api.json", handler.LastRequestUri!.ToString());
-        using var db = _db.CreateDbContext();
-        var big = await db.Models.AsNoTracking().SingleAsync(m => m.ProviderId == id && m.ModelId == "big-pickle");
-        Assert.True(big.Enabled);
-        Assert.False(big.IsManual);
-        Assert.Equal(200000, big.ContextWindow);
-        Assert.Equal(32000, big.MaxOutputTokens);
-        Assert.True(big.SupportsTools);
-        Assert.True(big.SupportsThink);
-        Assert.False(big.SupportsVision);
+        long bigId;
+        using (var db = _db.CreateDbContext())
+        {
+            var big = await db.Models.AsNoTracking()
+                .SingleAsync(m => m.ProviderId == id && m.ModelId == "big-pickle");
+            Assert.True(big.Enabled);
+            Assert.False(big.IsManual);
+            Assert.Equal(200000, big.ContextWindow);
+            Assert.Equal(32000, big.MaxOutputTokens);
+            bigId = big.Id;
+        }
+        // Capability đọc qua reader (lối đọc duy nhất, Task 4): big-pickle có tool_call:true,
+        // reasoning:true, attachment:false → KnownAbsent cho vision (catalog là full-list).
+        var view = await new ModelCapabilityReader(_db).ReadAsync(bigId);
+        Assert.True(view.Tools);
+        Assert.True(view.Reasoning);
+        Assert.False(view.Vision);
     }
 
     [Fact]
@@ -122,7 +134,8 @@ public class FreeModelSyncCatalogTests : IDisposable
         }
         var handler = new JsonHandler(FreeModelFixtures.OpenCodeCatalog);
         var service = new FreeModelSyncService(
-            _db, new UndecryptableKeyProtector(), new StubFactory(handler), new NullLog());
+            _db, new UndecryptableKeyProtector(), new StubFactory(handler), new NullLog(),
+            new ModelCapabilityWriter(_db, new NullLog()));
 
         var count = await service.SyncProviderAsync(id);
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Storage;
 using RouterBalancing.Core.Tools;
@@ -8,6 +9,8 @@ namespace router_balancing_test.Tools;
 
 /// <summary>
 /// Test service trang Tools: dựng bảng chọn từ DB (SQLite tạm) + tick mặc định C7 + dedupe khi generate.
+/// Task 4: capability của row/model phải đến từ fact tables qua IModelCapabilityReader —
+/// không còn đọc cột capability cũ trên Models.
 /// </summary>
 public class OpenCodeConfigServiceTests : IDisposable
 {
@@ -22,7 +25,7 @@ public class OpenCodeConfigServiceTests : IDisposable
 
     public void Dispose() => _testDb.Dispose();
 
-    private OpenCodeConfigService Service() => new(_db);
+    private OpenCodeConfigService Service() => new(_db, new ModelCapabilityReader(_db));
 
     private async Task SetProviderEnabledAsync(string providerName, bool enabled)
     {
@@ -116,5 +119,97 @@ public class OpenCodeConfigServiceTests : IDisposable
 
         // Provider bật nhưng 0 model Enabled → nhóm rỗng, không xuất hiện trên bảng chọn
         Assert.DoesNotContain(data.Groups, g => g.ProviderName == "OpenRouter Free");
+    }
+
+    [Fact]
+    public async Task GetPageData_ModelWithoutFacts_RowFlagsAreUnknownNull()
+    {
+        // Task 4: row dựng từ reader — model chưa có dòng fact phải ra toàn null ("chưa biết"),
+        // KHÔNG phải false; đây là guard chống reader bị thay bằng đọc cột cũ (default false).
+        await SetProviderEnabledAsync("OpenCode Free", true);
+        await AddModelAsync("OpenCode Free", "no-fact-model", enabled: true);
+
+        var data = await Service().GetPageDataAsync();
+
+        var row = data.Groups.Single(g => g.IsFreePreset).Models.Single(m => m.ModelId == "no-fact-model");
+        Assert.Null(row.Tools);
+        Assert.Null(row.Reasoning);
+        Assert.Null(row.Vision);
+        Assert.Null(row.AudioInput);
+        Assert.Null(row.VideoInput);
+        Assert.Empty(row.InputModalities!);
+        Assert.Empty(row.OutputModalities!);
+    }
+
+    [Fact]
+    public async Task GetPageData_FactRows_MapThreeStateToRow()
+    {
+        // Ba trạng thái phải đi qua row nguyên vẹn: present→true, KnownAbsent→false, không dòng→null.
+        await SetProviderEnabledAsync("OpenCode Free", true);
+        var id = await AddModelAsync("OpenCode Free", "fact-model", enabled: true);
+        using (var db = _db.CreateDbContext())
+        {
+            db.ModelCapabilities.Add(new ModelCapability
+            {
+                ModelId = id, Capability = CapabilityKind.Tools, KnownAbsent = false,
+                Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+            });
+            db.ModelModalities.Add(new ModelModality
+            {
+                ModelId = id, Direction = ModalityDirection.Input, Modality = ModalityKind.Image,
+                KnownAbsent = true, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var data = await Service().GetPageDataAsync();
+
+        var row = data.Groups.Single(g => g.IsFreePreset).Models.Single(m => m.ModelId == "fact-model");
+        Assert.True(row.Tools);            // dòng present → true
+        Assert.False(row.Vision);          // KnownAbsent → false (đã biết là không), khác null
+        Assert.Null(row.Reasoning);        // không có dòng → chưa biết
+        Assert.Empty(row.InputModalities); // chỉ khẳng định thuận — image KnownAbsent bị loại, text chưa seed
+    }
+
+    [Fact]
+    public async Task GenerateAsync_FactRows_EmitCapabilitiesFromView()
+    {
+        // Đường generate cũng phải đọc fact (ReadManyAsync một lần cho cả nhóm), không đọc cột cũ.
+        await SetProviderEnabledAsync("OpenCode Free", true);
+        var id = await AddModelAsync("OpenCode Free", "gen-fact-model", enabled: true);
+        using (var db = _db.CreateDbContext())
+        {
+            db.ModelCapabilities.Add(new ModelCapability
+            {
+                ModelId = id, Capability = CapabilityKind.Tools, KnownAbsent = true,
+                Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+            });
+            db.ModelModalities.Add(new ModelModality
+            {
+                ModelId = id, Direction = ModalityDirection.Input, Modality = ModalityKind.Text,
+                KnownAbsent = false, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+            });
+            db.ModelModalities.Add(new ModelModality
+            {
+                ModelId = id, Direction = ModalityDirection.Input, Modality = ModalityKind.Image,
+                KnownAbsent = false, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+            });
+            db.ModelReasoningEfforts.Add(new ModelReasoningEffort
+            {
+                ModelId = id, Level = "high", Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var result = await Service().GenerateAsync([id], "http://127.0.0.1:8317/v1", null);
+
+        var caps = JsonDocument.Parse(result.Json).RootElement.GetProperty("providers")
+            .GetProperty("router-balancing").GetProperty("models").GetProperty("gen-fact-model")
+            .GetProperty("capabilities");
+        Assert.Equal(JsonValueKind.False, caps.GetProperty("tools").ValueKind); // KnownAbsent → "tools": false
+        // view chỉ phát khẳng định thuận, theo ModalityKind tăng dần: text(0) < image(1)
+        Assert.Equal(new[] { "text", "image" },
+            caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
+        Assert.False(caps.TryGetProperty("reasoning", out _)); // view.Reasoning chưa biết → không emit cả khi có effort
     }
 }

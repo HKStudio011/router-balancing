@@ -140,16 +140,16 @@ else
                                                 {
                                                     <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
                                                 }
-                                                @* Emoji + nhãn language-neutral cho tools (không có key i18n) — theo pattern Providers.razor *@
-                                                @if (m.SupportsTools == true)
+                                                @* Emoji + nhãn i18n; chỉ badge khi fact đã biết là true — null/false cùng ẩn (spec §11). *@
+                                                @if (m.Tools == true)
                                                 {
-                                                    <Badge Text="🛠 tools" Variant="BadgeVariant.Success" />
+                                                    <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
                                                 }
-                                                @if (m.SupportsVision)
+                                                @if (m.Vision == true)
                                                 {
                                                     <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
                                                 }
-                                                @if (m.SupportsThink)
+                                                @if (m.Reasoning == true)
                                                 {
                                                     <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
                                                 }

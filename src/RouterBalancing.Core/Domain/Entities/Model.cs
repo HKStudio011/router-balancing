@@ -25,27 +25,14 @@ public class Model
     /// <summary>Giới hạn token output; null = chưa rõ.</summary>
     public int? MaxOutputTokens { get; set; }
 
-    public bool SupportsVision { get; set; }
-
-    public bool SupportsThink { get; set; }
-
-    /// <summary>Model hỗ trợ tool/function calling; null = chưa rõ (khác các bool cũ: false = không/chưa rõ).</summary>
-    public bool? SupportsTools { get; set; }
-
-    /// <summary>Model nhận input audio; false = không hỗ trợ/chưa rõ (fill chỉ viết true).</summary>
-    public bool SupportsAudio { get; set; }
-
-    /// <summary>Model nhận input video; false = không hỗ trợ/chưa rõ (fill chỉ viết true).</summary>
-    public bool SupportsVideo { get; set; }
-
-    /// <summary>JSON array mức think effort, ví dụ <c>["low","high"]</c>; null = không rõ.</summary>
-    public string? ThinkEfforts { get; set; }
-
-    /// <summary>JSON array modalities đầu vào, ví dụ <c>["text","image"]</c>.</summary>
-    public string? InputModalities { get; set; }
-
-    /// <summary>JSON array modalities đầu ra, ví dụ <c>["text"]</c>.</summary>
-    public string? OutputModalities { get; set; }
-
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Dòng capability (tools/reasoning) per nguồn — xóa model cascade xóa hết fact (spec §6).</summary>
+    public ICollection<ModelCapability> ModelCapabilities { get; set; } = [];
+
+    /// <summary>Dòng modality input/output per nguồn — cascade như <see cref="ModelCapabilities"/>.</summary>
+    public ICollection<ModelModality> ModelModalities { get; set; } = [];
+
+    /// <summary>Mức reasoning effort đã biết per nguồn — cascade như <see cref="ModelCapabilities"/>.</summary>
+    public ICollection<ModelReasoningEffort> ModelReasoningEfforts { get; set; } = [];
 }

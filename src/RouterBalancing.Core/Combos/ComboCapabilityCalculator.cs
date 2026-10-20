@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Storage;
 
@@ -11,11 +12,15 @@ public sealed class ComboCapabilityCalculator : IComboCapabilityCalculator
     private static readonly ComboCapabilities AllUnknown = new(null, null, null, null, null);
 
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
+    private readonly IModelCapabilityReader _capabilities;
 
     /// <inheritdoc/>
-    public ComboCapabilityCalculator(IDbContextFactory<RouterBalancingDbContext> db)
+    public ComboCapabilityCalculator(IDbContextFactory<RouterBalancingDbContext> db, IModelCapabilityReader capabilities)
     {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(capabilities);
         _db = db;
+        _capabilities = capabilities;
     }
 
     /// <inheritdoc/>
@@ -24,6 +29,10 @@ public sealed class ComboCapabilityCalculator : IComboCapabilityCalculator
         using var db = _db.CreateDbContext();
         var combos = await db.Combos.Include(c => c.Items).ToListAsync(ct);
         var models = await db.Models.ToDictionaryAsync(m => m.Id, ct);
+
+        // Capability model đọc qua reader (C-H) — một lần cho mọi model, một query/bảng;
+        // ContextWindow KHÔNG phải capability nên vẫn lấy từ entity Models.
+        var views = await _capabilities.ReadManyAsync(models.Keys.ToList(), ct);
 
         var comboById = combos.ToDictionary(c => c.Id);
         var memo = new Dictionary<long, ComboCapabilities>();
@@ -45,7 +54,8 @@ public sealed class ComboCapabilityCalculator : IComboCapabilityCalculator
                 {
                     if (models.TryGetValue(modelId, out var model))
                     {
-                        members.Add(FromModel(model));
+                        var view = views.TryGetValue(modelId, out var found) ? found : ModelCapabilityView.Empty;
+                        members.Add(FromView(view) with { ContextWindow = model.ContextWindow });
                     }
                 }
                 else if (item.TargetComboId is { } childId && !visiting.Contains(childId))
@@ -69,9 +79,10 @@ public sealed class ComboCapabilityCalculator : IComboCapabilityCalculator
         return all;
     }
 
-    private static ComboCapabilities FromModel(Model model) =>
-        // Enabled=false vẫn tính: capabilities là thông tin mô tả, không phải filter selection
-        new(model.ContextWindow, model.SupportsVision, model.SupportsAudio, model.SupportsVideo, model.SupportsThink);
+    private static ComboCapabilities FromView(ModelCapabilityView view) =>
+        // Enabled=false vẫn tính: capabilities là thông tin mô tả, không phải filter selection.
+        // Audio/Video của combo ánh xạ theo chiều INPUT (đúng nghĩa cột SupportsAudio/SupportsVideo cũ).
+        new(null, view.Vision, view.AudioInput, view.VideoInput, view.Reasoning);
 
     private static ComboCapabilities Combine(List<ComboCapabilities> members)
     {

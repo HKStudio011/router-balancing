@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
@@ -22,7 +23,8 @@ public class FreeModelSyncMergeTests : IDisposable
     public void Dispose() => _testDb.Dispose();
 
     private FreeModelSyncService ServiceWith(string json) =>
-        new(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog());
+        new(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog(),
+            new ModelCapabilityWriter(_db, new NullLog()));
 
     private async Task<long> OpenRouterIdAsync()
     {

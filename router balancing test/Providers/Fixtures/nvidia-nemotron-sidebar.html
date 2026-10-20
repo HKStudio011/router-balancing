@@ -1,0 +1,98 @@
+<!--
+  Bản cắt từ https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b
+  (probe 2026-10-20). Giữ nguyên cấu trúc aside > section > dl > dt/dd, text,
+  entity (&amp;, [&amp;&gt;*]) và indentation kiểu server-rendered của Next.js;
+  chỉ bỏ bớt SVG path/class dài không ảnh hưởng parser.
+-->
+<!DOCTYPE html>
+<html lang="en">
+  <body>
+    <main class="nv-layout nv-layout--detail">
+      <article class="nv-flex nv-flex--direction-col">
+        <h1 class="nv-text nv-text--display-lg">Nemotron 3.5 Super VL 120B A12B</h1>
+        <aside aria-label="Model information" class="nv-flex nv-flex--align-stretch nv-flex--direction-col nv-flex--justify-start nv-flex--wrap-nowrap nv-primitive--gap-4 rounded-2 border border-tw120 p-6" data-testid="nv-flex">
+          <section aria-labelledby="sidebar-specifications-heading">
+            <h3 class="nv-text nv-text--body-bold-lg mb-4" data-testid="nv-text" id="sidebar-specifications-heading">Specifications</h3>
+            <p class="nv-text nv-text--body-regular-md mb-4" data-testid="nv-text">Nemotron 3.5 Super early-access reasoning model for agentic, coding, tool-calling, and multimodal workloads</p>
+            <div class="relative flex w-full items-center justify-start gap-2" style="--edge-limit-width:0px">
+              <ul class="m-0 flex list-none items-center gap-2 p-0 min-w-0 flex-wrap" aria-label="Labels">
+                <li class="min-w-0 shrink [&amp;&gt;*]:min-w-0 [&amp;&gt;*]:shrink">
+                  <a class="nv-tag nv-tag--color-gray nv-density-standard nv-tag--kind-outline" data-testid="nv-tag-root" href="/models?label=Agent"><span class="inline-block truncate">Agent</span></a>
+                </li>
+              </ul>
+            </div>
+            <dl class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2 [&amp;&gt;*]:min-w-0">
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_q6hrmlubsnpfbpfklb_">
+                <svg data-icon-name="business" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/fill/business.svg#business"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Provider</span>
+              </dt>
+              <dd aria-labelledby="_R_q6hrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text">
+                  <span class="inline-flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 16 16" width="14" height="14" data-icon-name="checkmark-badge" class="text-accent-blue"><path fill="currentColor" d="m8 .258 1.603 1.76z"></path></svg>
+                    NVIDIA
+                  </span>
+                </span>
+              </dd>
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_1a6hrmlubsnpfbpfklb_">
+                <svg data-icon-name="clock" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/line/clock.svg#clock"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Last Modified</span>
+              </dt>
+              <dd aria-labelledby="_R_1a6hrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text"><time dateTime="2026-10-15T14:13:52.977Z">4 days ago</time></span>
+              </dd>
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_2a6hrmlubsnpfbpfklb_">
+                <svg data-icon-name="arrow-left-right" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/fill/arrow-left-right.svg#arrow-left-right"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Context Length</span>
+              </dt>
+              <dd aria-labelledby="_R_2a6hrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text">262K</span>
+              </dd>
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_2q6hrmlubsnpfbpfklb_">
+                <svg data-icon-name="sliders" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/fill/sliders.svg#sliders"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Parameters</span>
+              </dt>
+              <dd aria-labelledby="_R_2q6hrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text">124B</span>
+              </dd>
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_3a6hrmlubsnpfbpfklb_">
+                <svg data-icon-name="enter" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/fill/enter.svg#enter"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Input Modalities</span>
+              </dt>
+              <dd aria-labelledby="_R_3a6hrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text">Text, Image, Video</span>
+              </dd>
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_3q6hrmlubsnpfbpfklb_">
+                <svg data-icon-name="exit" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/fill/exit.svg#exit"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Output Modalities</span>
+              </dt>
+              <dd aria-labelledby="_R_3q6hrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text">Text</span>
+              </dd>
+            </dl>
+          </section>
+          <div class="nv-divider-root" data-testid="nv-divider-root"><div class="nv-divider-element nv-divider-element--orientation-horizontal" data-testid="nv-divider-element" role="separator"></div></div>
+          <section aria-labelledby="sidebar-availability-heading">
+            <h3 class="nv-text nv-text--body-bold-lg mb-4" data-testid="nv-text" id="sidebar-availability-heading">Model Availability</h3>
+            <dl class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2">
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_dehrmlubsnpfbpfklb_">
+                <svg data-icon-name="lightning" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/fill/lightning.svg#lightning"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Free Endpoint</span>
+              </dt>
+              <dd aria-labelledby="_R_dehrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text"><span class="inline-flex items-center gap-1"><svg data-icon-name="check-circle" display="inline-block" height="16" width="16" aria-hidden="true" class="text-feedback-success"><use href="/assets/icons/3.8.0/fill/check-circle.svg#check-circle"></use></svg>Available</span></span>
+              </dd>
+              <dt class="flex min-h-10 items-center gap-2 text-placeholder" id="_R_tehrmlubsnpfbpfklb_">
+                <svg data-icon-name="arrow-down-max" display="inline-block" height="12" width="12" aria-hidden="true" class="shrink-0"><use href="/assets/icons/3.8.0/fill/arrow-down-max.svg#arrow-down-max"></use></svg>
+                <span class="nv-text nv-text--label-regular-md truncate leading-loose" data-testid="nv-text">Download Available</span>
+              </dt>
+              <dd aria-labelledby="_R_tehrmlubsnpfbpfklb_" class="flex min-h-10 items-center">
+                <span class="nv-text nv-text--label-regular-md" data-testid="nv-text"><span class="inline-flex items-center gap-1"><svg data-icon-name="cancel" display="inline-block" height="16" width="16" aria-hidden="true" class="text-feedback-danger"><use href="/assets/icons/3.8.0/fill/cancel.svg#cancel"></use></svg>Not available</span></span>
+              </dd>
+            </dl>
+          </section>
+        </aside>
+      </article>
+    </main>
+  </body>
+</html>

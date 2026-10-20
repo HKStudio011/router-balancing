@@ -1,4 +1,5 @@
 @using Microsoft.JSInterop
+@using RouterBalancing.Core.Capabilities
 @using RouterBalancing.Core.Domain
 @inject LocalizationService L
 @inject IJSRuntime JS
@@ -156,9 +157,10 @@
             @* Dòng 3 — capabilities của model đang chọn, cùng ngữ nghĩa emoji với cột caps ở bảng combo *@
             @if (SelectedModelInfo is { } capsModel)
             {
+                var caps = SelectedCaps;
                 var hasCaps = capsModel.ContextWindow is not null
-                    || capsModel.SupportsVision || capsModel.SupportsThink
-                    || capsModel.SupportsAudio || capsModel.SupportsVideo;
+                    || caps.Tools is true || caps.Vision is true || caps.Reasoning is true
+                    || caps.AudioInput is true || caps.VideoInput is true;
                 if (hasCaps)
                 {
                     <span class="modelcombo__caps">
@@ -166,20 +168,24 @@
                         {
                             <Badge Text="@($"ctx: {FormatCtx(ctx)}")" Variant="BadgeVariant.Info" />
                         }
-                        @* Chỉ hiện cờ khi true — false của Model = "chưa rõ/chưa fill", ghi ✕ sẽ hiểu sai là "không hỗ trợ" *@
-                        @if (capsModel.SupportsVision)
+                        @* Chỉ hiện cờ khi fact đã biết là true — false (KnownAbsent) và null (chưa biết) cùng ẩn *@
+                        @if (caps.Tools is true)
+                        {
+                            <Badge Text="🛠" Variant="BadgeVariant.Success" />
+                        }
+                        @if (caps.Vision is true)
                         {
                             <Badge Text="👁" Variant="BadgeVariant.Success" />
                         }
-                        @if (capsModel.SupportsThink)
+                        @if (caps.Reasoning is true)
                         {
                             <Badge Text="⚡" Variant="BadgeVariant.Warning" />
                         }
-                        @if (capsModel.SupportsAudio)
+                        @if (caps.AudioInput is true)
                         {
                             <Badge Text="🔊" Variant="BadgeVariant.Purple" />
                         }
-                        @if (capsModel.SupportsVideo)
+                        @if (caps.VideoInput is true)
                         {
                             <Badge Text="🎬" Variant="BadgeVariant.Pink" />
                         }
@@ -229,6 +235,9 @@
     /// <summary>Phát khi người dùng chọn/bỏ chọn model.</summary>
     [Parameter] public EventCallback<long?> ValueChanged { get; set; }
 
+    /// <summary>View capability theo model Id — nguồn badge dòng 3; null/không có key = chưa biết.</summary>
+    [Parameter] public IReadOnlyDictionary<long, ModelCapabilityView>? Capabilities { get; set; }
+
     private sealed record GroupRow(string Label, IReadOnlyList<Model> Models);
 
     private bool _open;
@@ -253,6 +262,12 @@
 
     /// <summary>Model đang chọn — nguồn dòng capabilities (dòng 3); null khi chưa chọn model.</summary>
     private Model? SelectedModelInfo => FindSelected() is { } e ? e.Model : null;
+
+    /// <summary>View capability của model đang chọn; Empty khi chưa chọn hoặc chưa có fact.</summary>
+    private ModelCapabilityView SelectedCaps =>
+        Value is { } id && Capabilities is { } caps && caps.TryGetValue(id, out var view)
+            ? view
+            : ModelCapabilityView.Empty;
 
     /// <summary>128000 → "128k"; ≥1000000 → "1M" (1000k đọc thành chữ dài); dưới 1000 giữ nguyên.</summary>
     private static string FormatCtx(int contextWindow) =>
