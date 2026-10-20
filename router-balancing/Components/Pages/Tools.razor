@@ -140,12 +140,10 @@ else
                                                 {
                                                     <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
                                                 }
-                                                @* Emoji + nhãn language-neutral cho tools (không có key i18n) — theo pattern Providers.razor.
-                                                   Cờ capability là bool? (view 3 trạng thái, Task 4): chỉ badge khi ĐÃ BIẾT true —
-                                                   null (chưa biết) và false hiển thị như nhau cho tới Task 10 (badge media/unknown). *@
+                                                @* Emoji + nhãn i18n; chỉ badge khi fact đã biết là true — null/false cùng ẩn (spec §11). *@
                                                 @if (m.Tools == true)
                                                 {
-                                                    <Badge Text="🛠 tools" Variant="BadgeVariant.Success" />
+                                                    <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
                                                 }
                                                 @if (m.Vision == true)
                                                 {

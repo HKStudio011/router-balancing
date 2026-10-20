@@ -232,6 +232,7 @@ else
                                             <tbody>
                                                 @foreach (var m in PagedModels(p))
                                                 {
+                                                    var view = CapabilitiesOf(m);
                                                     <tr @key="m.Id" class="border-b border-border last:border-b-0">
                                                         <td class="px-2 py-1.5 font-mono">
                                                             <div>@(m.DisplayName is null ? m.ModelId : $"{m.DisplayName} ({m.ModelId})")</div>
@@ -339,25 +340,29 @@ else
                                                                     {
                                                                         <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
                                                                     }
-                                                                    @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt *@
-                                                                    @if (m.SupportsVision)
+                                                                    @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt.
+                                                                       Chỉ hiện khi fact đã biết là true; false (KnownAbsent) và null (chưa biết) cùng ẩn. *@
+                                                                    @if (view.Tools is true)
+                                                                    {
+                                                                        <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
+                                                                    }
+                                                                    @if (view.Vision is true)
                                                                     {
                                                                         <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
                                                                     }
-                                                                    @if (m.SupportsThink)
+                                                                    @if (view.Reasoning is true)
                                                                     {
                                                                         <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
                                                                     }
-                                                                    @if (m.SupportsAudio)
+                                                                    @if (view.AudioInput is true)
                                                                     {
                                                                         <Badge Text="@($"🔊 {L["models.badge.audio"]}")" Variant="BadgeVariant.Purple" />
                                                                     }
-                                                                    @if (m.SupportsVideo)
+                                                                    @if (view.VideoInput is true)
                                                                     {
                                                                         <Badge Text="@($"🎬 {L["models.badge.video"]}")" Variant="BadgeVariant.Pink" />
                                                                     }
-                                                                    @if (!m.IsManual && m.ContextWindow is null && !m.SupportsVision && !m.SupportsThink
-                                                                         && !m.SupportsAudio && !m.SupportsVideo)
+                                                                    @if (!m.IsManual && m.ContextWindow is null && !HasVisibleCapabilityBadges(view))
                                                                     {
                                                                         @* Ký hiệu language-neutral — không qua i18n (spec §3.3) *@
                                                                         <span class="opacity-70" data-testid="caps-placeholder">&#8212;</span>
@@ -785,6 +790,9 @@ else
 
 @code {
     private List<Provider> _providers = [];
+    // Badge model đọc từ fact capability, nạp một lần mỗi LoadAsync — không query trong render loop.
+    private IReadOnlyDictionary<long, ModelCapabilityView> _capabilityViews =
+        new Dictionary<long, ModelCapabilityView>();
     private bool _loading = true;
     private bool _busy;
 
@@ -884,6 +892,23 @@ else
             // Sau khi xóa bớt, trang hiện tại có thể vượt số trang — clamp về hợp lệ
             var providerPages = Math.Max(1, (_providers.Count + _providerPageSize - 1) / _providerPageSize);
             _providerPage = Math.Clamp(_providerPage, 1, providerPages);
+
+            // Một query/bảng cho tất cả model của mọi provider; lỗi đọc fact không được
+            // chặn bảng provider — badge sẽ trống cho tới lần tải sau.
+            try
+            {
+                var modelIds = _providers
+                    .SelectMany(p => p.Models)
+                    .Select(m => m.Id)
+                    .Distinct()
+                    .ToList();
+                _capabilityViews = await CapReader.ReadManyAsync(modelIds);
+            }
+            catch (Exception ex)
+            {
+                _capabilityViews = new Dictionary<long, ModelCapabilityView>();
+                Log.Error("Không tải được khả năng của model.", ex);
+            }
         }
         catch (Exception ex)
         {
@@ -1963,6 +1988,15 @@ else
             m.ModelId.Contains(term, StringComparison.OrdinalIgnoreCase) ||
             (m.DisplayName?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false));
     }
+
+    /// <summary>View capability đã nạp sẵn — model chưa có fact trả về <see cref="ModelCapabilityView.Empty"/>.</summary>
+    private ModelCapabilityView CapabilitiesOf(Model model) =>
+        _capabilityViews.TryGetValue(model.Id, out var view) ? view : ModelCapabilityView.Empty;
+
+    /// <summary>Chỉ badge khi fact là true; false/null đều không hiện (spec §11).</summary>
+    private static bool HasVisibleCapabilityBadges(ModelCapabilityView view) =>
+        view.Tools is true || view.Vision is true || view.Reasoning is true
+        || view.AudioInput is true || view.VideoInput is true;
 
     /// <summary>Model của trang hiện tại trong tập khớp search, sắp xếp ổn định theo ModelId (client-side).</summary>
     private IEnumerable<Model> PagedModels(Provider provider) => SearchModels(provider)
