@@ -173,33 +173,31 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 **Files:**
 - Create: `src/RouterBalancing.Core/Providers/OllamaTagsMetadataProvider.cs` (`IModelMetadataProvider`)
 - Modify: `router-balancing/MauiProgram.cs` (đăng ký chain), `src/RouterBalancing.Core/Providers/FreeProviderCatalog.cs` (bật `CompleteCapabilityList = true` cho entry Ollama — cờ đã được thêm ở Task 5, mặc định `false`)
+- Modify (R-T6-2, dời từ Task 8): `src/RouterBalancing.Core/Providers/ModelMetadata.cs` (đổi 3 field JSON-string sang typed `IReadOnlyList<string>?`), `ProviderEndpointMetadataProvider.cs`, `StaticCatalogMetadataProvider.cs` (+ test của chúng) — làm **một lần** thay đổi shape, tránh viết provider mới rồi sửa lại ngay task sau
 - Test: `router balancing test/Providers/OllamaTagsMetadataProviderTests.cs`
 
 **Interfaces:**
 - Produces: `OllamaTagsMetadataProvider : IModelMetadataProvider` với `Task<ModelMetadata?> FetchAsync(Provider, Model, CancellationToken)`; chỉ nhận diện provider có `BaseUrl` khớp `https://ollama.com` (`FreeProviderCatalog.FindByBaseUrl`).
-- Mapping (pin): gọi `GET https://ollama.com/api/tags` (không auth), tìm phần tử `model` khớp `Model.ModelId` **sau khi bỏ suffix `:tag`** (`deepseek-v4.1-flash:1017` → `deepseek-v4.1-flash`) `[RF-3]`; `capabilities` chứa `vision` → `InputModalities=["image"]`; `tools` → `Tools=true`; `thinking` → `SupportsThink=true`; `completion` bỏ qua. Provider này là **full-list** → được phép sinh negative: model khớp mà không có `tools` trong mảng → `Tools=false`.
-- [ ] **Step 1:** Test đỏ: `FetchAsync_MatchesModelIgnoringTagSuffix` `[RF-3]`, `FetchAsync_ToolsAbsentInCompleteList_ReportsFalse`, `FetchAsync_NonOllamaProvider_ReturnsNull`, `FetchAsync_HttpError_ReturnsNull` (best-effort, không ném).
+- Nguồn (đo thật 2026-10-20): `GET https://ollama.com/api/tags` (không auth) → `{ "models": [ { "name", "model", "capabilities": [...] } ] }`, **23 entry, tất cả đều có `capabilities`**. DB hiện có 22 model Ollama và **khớp chính xác 22/22** theo `name`/`model`.
+- Khớp id (pin): so `Model.ModelId` với `name` rồi `model` **trước** (exact); nếu không có mới fallback bỏ suffix `:tag` (`deepseek-v4.1-flash:1017` → `deepseek-v4.1-flash`) `[RF-3]`. Không khớp → `null`.
+- Mapping capability (pin): `tools` → `Capabilities[Tools]=true`; `thinking` → `Capabilities[Reasoning]=true`; `vision` → `Modalities[(Input, Image)]=true`; `completion` bỏ qua; token lạ (thật đo được: `decision` ở `clef:27b`) → **bỏ + log một lần mỗi model**, không ném.
+- **Quy tắc dimension (R-T6-1 — quan trọng)**: patch do provider này trả về **chỉ chứa** `Tools`, `Reasoning`, `(Input, Image)`. **Không** đưa audio/video/text vào patch — từ vựng của Ollama không có chúng, nên im lặng ở đó là "nguồn không nói", không phải "không hỗ trợ". Nhờ vậy `sourceIsCompleteList=true` an toàn: writer chỉ sinh negative cho key có mặt trong patch (model khớp mà thiếu `tools` → `Tools=false`, đúng).
+- **Cache (R-T6-3)**: danh sách tags cache in-process TTL 24h, clock inject để test → 22 lần `FetchAsync` chỉ tốn **1** HTTP request.
+- [ ] **Step 1:** Test đỏ: `FetchAsync_MatchesExactNameFirst` `[RF-3]`, `FetchAsync_MatchesAfterStrippingTagSuffix` `[RF-3]`, `FetchAsync_ToolsAbsentInCompleteList_ReportsFalse`, `FetchAsync_VisionAbsent_ReportsImageAbsent`, `FetchAsync_PatchHasNoAudioOrVideoKeys` (R-T6-1), `FetchAsync_UnknownToken_IgnoredAndLoggedOnce`, `FetchAsync_SecondCall_UsesCache` (R-T6-3), `FetchAsync_NonOllamaProvider_ReturnsNull`, `FetchAsync_HttpError_ReturnsNull` (best-effort, không ném).
 - [ ] **Step 2:** Chạy `--filter "FullyQualifiedName~OllamaTags"` → FAIL.
-- [ ] **Step 3:** Implement provider; bật `CompleteCapabilityList` cho entry Ollama; `ModelMetadataService` dùng cờ đó khi gọi `ApplyAsync(..., sourceIsCompleteList: …)`.
+- [ ] **Step 3:** Implement provider + cache; làm R-T6-2 (typed `ModelMetadata` một lần cho cả 3 provider hiện có + test); bật `CompleteCapabilityList` cho entry Ollama; `ModelMetadataService` dùng cờ đó khi gọi `ApplyAsync(..., sourceIsCompleteList: …)`.
 - [ ] **Step 4:** Filter → PASS; full suite → PASS. Commit `feat: read ollama cloud model capabilities from its tags endpoint`.
 
 ---
 
-### Task 7: NVIDIA — index `build.nvidia.com/models.md` + sidebar trang model
+### Task 7: NVIDIA catalog source — **HUỶ (không làm)** vì không có nguồn chính thức parse được
 
-**Files:**
-- Create: `src/RouterBalancing.Core/Providers/NvidiaCatalogMetadataProvider.cs`
-- Modify: `router-balancing/MauiProgram.cs`, `src/RouterBalancing.Core/Providers/FreeProviderCatalog.cs` (`Entry.CatalogIndexUrl` cho NVIDIA = `https://build.nvidia.com/models.md`)
-- Test: `router balancing test/Providers/NvidiaCatalogMetadataProviderTests.cs` + fixture `router balancing test/Providers/NvidiaCatalogFixtures.cs`
+**Bằng chứng (probe 2026-10-20, không phải phỏng đoán):**
+- `https://build.nvidia.com/models.md` là index của **NIM microservices**, link dạng opaque id `/qc69jvmznzxy/body-pose.md`; không chứa model id `publisher/slug` nào của DB (`index contains first id? false`, `contains slug? false`).
+- `https://build.nvidia.com/01-ai/yi-large` trả 200 nhưng HTML **client-render**: không có `aria-label="Model information"`, không có chuỗi `Context Length`/`Input Modalities`/`Function Calling`/`Structured Output` (mọi needle = -1, cả trong RSC payload `self.__next_f`).
+- `https://docs.api.nvidia.com/nim/reference/...` → 404 (thử 3 biến thể slug).
 
-**Interfaces:**
-- Produces: `NvidiaCatalogMetadataProvider : IModelMetadataProvider`; cache index trong bộ nhớ (static, TTL 24h — `DateTimeOffset` inject để test) map `"<publisher>/<slug>"` → path `.md`.
-- Quy tắc khớp (pin): `Model.ModelId` đã là `publisher/slug` (dạng `nvidia/nemotron-3.5-super-vl-120b-a12b`); sinh khóa tra bằng cách thay `.`→`_` ở phần slug như catalog của họ, thử cả hai biến thể `[RF-3]`; không khớp → trả `null` (không request trang).
-- Parse sidebar `<aside aria-label="Model information">` → `ModelMetadata`: `Context Length` (`262K`/`1M`/`131K` → nhân 1000; `1M`=1_000_000), `Input Modalities`/`Output Modalities` ("Text, Image, Video" → mảng), `Function Calling`/`Structured Output`/`Reasoning` ("Supported" → true; mục có mặt mà giá trị không phải "Supported" → false; mục **không có** → không phát biểu gì). Sidebar là full-list → `sourceIsCompleteList: true`.
-- [ ] **Step 1:** Test đỏ với fixture HTML thật (cắt từ trang `nvidia/nemotron-3.5-super-vl-120b-a12b`): `FetchAsync_ParsesSidebarModalitiesAndLimits`, `FetchAsync_FunctionCallingMissing_DoesNotAssertTools`, `FetchAsync_IdNotInIndex_ReturnsNullWithoutPageRequest` `[RF-3]`, `FetchAsync_ContextLengthSuffix_Multiplies` (262K → 262000).
-- [ ] **Step 2:** Chạy `--filter "FullyQualifiedName~NvidiaCatalog"` → FAIL.
-- [ ] **Step 3:** Implement provider (fetch index một lần dùng `HttpClient` named client `free-model-sync`, parse markdown link; fetch trang model; parse bằng regex/`IndexOf` trên `aria-label="Model information"`, không kéo thư viện HTML).
-- [ ] **Step 4:** Filter → PASS; full suite → PASS. Commit `feat: read NVIDIA model capabilities from the official API catalog pages`.
+**Quyết định (R-T7-1):** NVIDIA giữ **duy nhất** nguồn `ProviderEndpointMetadataProvider` (probe `/v1/models/{id}` best-effort, **positive-only**), `CompleteCapabilityList = false`; phần còn lại người dùng tick tay trong editor ba trạng thái (Task 9). Không thêm parser HTML/RSC mong manh cho một nguồn không tồn tại — đúng nguyên tắc "chỉ field chắc chắn cấu trúc". Task này **không có commit**; ghi chú vào `docs/backlog.md` (mục B: NVIDIA capability coverage) khi làm Task 12.
 
 ---
 
@@ -207,7 +205,8 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 
 **Files:**
 - Delete: `src/RouterBalancing.Core/Providers/StaticCatalogMetadataProvider.cs`, `router balancing test/Providers/StaticCatalogMetadataProviderTests.cs`
-- Modify: `src/RouterBalancing.Core/Providers/ModelMetadata.cs` (**đổi 3 field JSON-string sang kiểu đúng**: `IReadOnlyList<string>? InputModalities`, `IReadOnlyList<string>? OutputModalities`, `IReadOnlyList<string>? ThinkEfforts` — để `ModelMetadataService` dịch thẳng sang `CapabilityPatch`, không còn chỗ nào parse chuỗi), `src/RouterBalancing.Core/Providers/ProviderEndpointMetadataProvider.cs` (+ `FreeModelDetector` nếu nó còn trả chuỗi JSON cho các field này), `src/RouterBalancing.Core/Providers/ModelMetadataService.cs` (thêm `Task<int> FillMissingAsync(long providerId, CancellationToken)`; dịch `ModelMetadata` → `CapabilityPatch` qua helper `internal static class MetadataPatchMapper { static CapabilityPatch From(ModelMetadata m, bool completeList); }`; ghi qua `IModelCapabilityWriter`, `sourceIsCompleteList` lấy từ `FreeProviderCatalog.Entry.CompleteCapabilityList`), `src/RouterBalancing.Core/Providers/ModelService.cs` (`FetchFromProviderAsync` gọi `FillMissingAsync` sau khi thêm model mới; `AddManualAsync`/`AddBulkAsync` gọi `TryFillAsync` nếu model chưa có fact), `src/RouterBalancing.Core/Providers/IModelService.cs` + `IModelMetadataService.cs`, `router-balancing/Components/Pages/Providers.razor` (hiện số model được điền + progress trên nút "Lấy model"), trang chứa nút "Tải model free" (progress + thông báo), `router balancing test/Providers/ModelMetadataServiceTests.cs` + `ProviderEndpointMetadataProviderTests.cs` (chữ ký `ModelMetadata` đổi)
+- Modify: `src/RouterBalancing.Core/Providers/ModelMetadataService.cs` (thêm `Task<int> FillMissingAsync(long providerId, CancellationToken)`; dịch `ModelMetadata` → `CapabilityPatch` qua helper `internal static class MetadataPatchMapper { static CapabilityPatch From(ModelMetadata m, bool completeList); }`; ghi qua `IModelCapabilityWriter`, `sourceIsCompleteList` lấy từ `FreeProviderCatalog.Entry.CompleteCapabilityList`), `src/RouterBalancing.Core/Providers/ModelService.cs` (`FetchFromProviderAsync` gọi `FillMissingAsync` sau khi thêm model mới; `AddManualAsync`/`AddBulkAsync` gọi `TryFillAsync` nếu model chưa có fact), `src/RouterBalancing.Core/Providers/IModelService.cs` + `IModelMetadataService.cs`, `router-balancing/Components/Pages/Providers.razor` (hiện số model được điền + progress trên nút "Lấy model"), trang chứa nút "Tải model free" (progress + thông báo), `router balancing test/Providers/ModelMetadataServiceTests.cs`
+  - (`ModelMetadata`/`ProviderEndpointMetadataProvider` đã được đổi sang typed ở **Task 6** theo R-T6-2 — task này không đổi shape nữa.)
 - Test: `router balancing test/Providers/ModelMetadataFillMissingTests.cs`
 
 **Interfaces:**
@@ -215,7 +214,7 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 - Luật chi phí (spec §7): gọi tuần tự, tối đa 2 request song song, tổng thời gian giới hạn `TimeSpan.FromSeconds(120)` cho cả đợt (inject trong ctor để test), lỗi từng model → log + đi tiếp.
 - [ ] **Step 1:** Test đỏ: `FillMissingAsync_SkipsModelsThatAlreadyHaveFacts`, `FillMissingAsync_ProbesOnlyMissingOnes`, `FillMissingAsync_OneModelFails_ContinuesOthers`, `AddManualAsync_TriggersFillBestEffort`, `TotalTimeout_Exceeded_StopsAndReturnsFilledCount`.
 - [ ] **Step 2:** Chạy `--filter "FullyQualifiedName~ModelMetadataFillMissing"` → FAIL.
-- [ ] **Step 3:** Implement (bao gồm xóa `StaticCatalogMetadataProvider` + bỏ đăng ký DI của nó; chain còn lại: `NvidiaCatalogMetadataProvider`, `OllamaTagsMetadataProvider`, `ProviderEndpointMetadataProvider`).
+- [ ] **Step 3:** Implement (bao gồm xóa `StaticCatalogMetadataProvider` + bỏ đăng ký DI của nó; chain còn lại: `OllamaTagsMetadataProvider`, `ProviderEndpointMetadataProvider` — NVIDIA chỉ có endpoint probe theo R-T7-1).
 - [ ] **Step 4:** Filter → PASS; full suite → PASS. Commit `feat: fill missing capabilities when models are fetched or added`.
 
 ---
