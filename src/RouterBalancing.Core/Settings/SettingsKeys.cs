@@ -36,4 +36,10 @@ public static class SettingsKeys
 
     /// <summary>Đường dẫn file config opencode app ghi block router-balancing (§9.8) — rỗng = dùng mặc định.</summary>
     public const string OpenCodeConfigPath = "openCodeConfigPath";
+
+    /// <summary>Lựa chọn tick đã nhớ của trang Tools (JSON <c>ToolsSelection</c>) — C-G.</summary>
+    public const string ToolsSelection = "toolsSelection";
+
+    /// <summary>Id provider đang thu gọn trên trang Tools (JSON <c>long[]</c>) — C-G.</summary>
+    public const string ToolsCollapsedProviders = "toolsCollapsedProviders";
 }
