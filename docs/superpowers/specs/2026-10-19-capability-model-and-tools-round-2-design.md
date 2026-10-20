@@ -1,6 +1,6 @@
 # Thiết kế: chuẩn hoá capability model (mô hình quan hệ) + trang Tools vòng 2
 
-Ngày: 2026-10-19 · Cập nhật 2026-10-20 (đã trả lời builder-check) · Trạng thái: **CHỜ USER DUYỆT**
+Ngày: 2026-10-19 · Cập nhật 2026-10-21 (đã thực thi) · Trạng thái: **ĐÃ THỰC THI** — phase 1 ở PR #31 / `v1.6.0`; phase 2 trên nhánh `feat/tools-round-2` (PR đang mở)
 Branch kế tiếp: `feat/capability-model-and-tools-round-2` (tên do plan quyết)
 Liên quan: `docs/backlog.md` (mục A, B, C), PR #30 (`feat/opencode-tools-page`), spec trước: `docs/superpowers/specs/2026-10-19-opencode-tools-page-free-sync-design.md`
 
