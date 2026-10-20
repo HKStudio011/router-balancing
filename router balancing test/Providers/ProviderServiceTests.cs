@@ -340,4 +340,47 @@ public class ProviderServiceTests : IDisposable
         var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
         Assert.Null(saved.ExtraHeaders);
     }
+
+    [Fact]
+    public async Task Create_WhenNameExists_ThrowsDuplicateNameValidation()
+    {
+        await _service.CreateAsync(Draft(name: "OpenAI", identifier: "openai-prod"));
+
+        var ex = await Assert.ThrowsAsync<ProviderValidationException>(
+            () => _service.CreateAsync(Draft(name: "OpenAI", identifier: "openai-copy")));
+
+        Assert.Equal("providers.error.duplicateName", ex.Errors[nameof(ProviderDraft.Name)]);
+    }
+
+    [Fact]
+    public async Task Update_WhenRenamingToAnotherExistingName_ThrowsDuplicateNameValidation()
+    {
+        await _service.CreateAsync(Draft(name: "First", identifier: "first"));
+        var second = await _service.CreateAsync(Draft(name: "Second", identifier: "second"));
+
+        var ex = await Assert.ThrowsAsync<ProviderValidationException>(
+            () => _service.UpdateAsync(second.Id, Draft(name: "First", identifier: "second")));
+
+        Assert.Equal("providers.error.duplicateName", ex.Errors[nameof(ProviderDraft.Name)]);
+    }
+
+    [Fact]
+    public async Task Update_WhenNameUnchanged_IsValid()
+    {
+        var provider = await _service.CreateAsync(Draft(name: "OpenAI", identifier: "openai-prod"));
+
+        await _service.UpdateAsync(provider.Id, Draft(name: "OpenAI", identifier: "openai-prod"));
+
+        using var db = _db.CreateDbContext();
+        Assert.Equal("OpenAI", (await db.Providers.SingleAsync(p => p.Id == provider.Id)).Name);
+    }
+
+    [Fact]
+    public async Task Create_WhenCaseDifferenceOnly_IsAllowed()
+    {
+        var first = await _service.CreateAsync(Draft(name: "OpenAI", identifier: "first"));
+        var second = await _service.CreateAsync(Draft(name: "openai", identifier: "second"));
+
+        Assert.NotEqual(first.Id, second.Id);
+    }
 }
