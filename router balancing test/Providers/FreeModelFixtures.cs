@@ -22,6 +22,32 @@ internal static class FreeModelFixtures
     }
     """;
 
+    /// <summary>
+    /// OpenRouter kèm capability ngay trong list (shape probe thật 2026-10-20, Task 5):
+    /// model 1 multimodal + tools + reasoning, model 2 chỉ text, supported_parameters rỗng
+    /// = full-list khẳng định "không" (KnownAbsent).
+    /// </summary>
+    public const string OpenRouterWithCapabilities = """
+    {
+      "data": [
+        { "id": "vendor/capable-model:free", "name": "Capable Model", "created": 1795000000,
+          "description": "Multimodal reasoner with tools",
+          "architecture": { "modality": "text+image+audio->text", "tokenizer": "Other",
+            "input_modalities": ["text", "image", "audio"], "output_modalities": ["text"] },
+          "supported_parameters": ["max_tokens", "reasoning", "response_format", "tools"],
+          "pricing": { "prompt": "0", "completion": "0" },
+          "top_provider": { "context_length": 262144, "is_moderated": false },
+          "context_length": 262144 },
+        { "id": "vendor/plain-model:free", "name": "Plain Model", "created": 1794000000,
+          "architecture": { "modality": "text->text", "tokenizer": "Other",
+            "input_modalities": ["text"], "output_modalities": ["text"] },
+          "supported_parameters": [],
+          "pricing": { "prompt": "0", "completion": "0" },
+          "context_length": 131072 }
+      ]
+    }
+    """;
+
     /// <summary>OpenRouter toàn model trả phí — detector lọc rỗng → service guard không xoá gì.</summary>
     public const string OpenRouterAllPaid = """
     {

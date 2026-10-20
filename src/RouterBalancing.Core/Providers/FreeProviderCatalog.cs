@@ -29,13 +29,21 @@ public static class FreeProviderCatalog
     /// <summary>1 preset free: tên hiển thị (đồng thời là khóa match), gốc URL, cách detect free.</summary>
     /// <param name="CatalogUrl">Nguồn catalog riêng (absolute URL) khi <paramref name="DetectKind"/> là
     /// <see cref="FreeDetectKind.OpenCodeCatalog"/>; null cho các preset dùng models endpoint thường (spec §6.1).</param>
-    public sealed record Entry(string DisplayName, string BaseUrl, FreeDetectKind DetectKind, string? CatalogUrl = null);
+    /// <param name="CompleteCapabilityList">true khi danh mục của provider liệt kê ĐẦY ĐỦ capability
+    /// cho mỗi model — sync được phép sinh dòng KnownAbsent (C-P, spec capability-model §5 luật (b));
+    /// false khi list không có thông tin capability (NVIDIA/Ollama — Task 6/7 lo phần đó).</param>
+    public sealed record Entry(
+        string DisplayName,
+        string BaseUrl,
+        FreeDetectKind DetectKind,
+        string? CatalogUrl = null,
+        bool CompleteCapabilityList = false);
 
     /// <summary>4 preset seed lúc khởi động — thứ tự = thứ tự insert (spec §4).</summary>
     public static readonly IReadOnlyList<Entry> Entries =
     [
-        new("OpenCode Free", "https://opencode.ai/zen", FreeDetectKind.OpenCodeCatalog, "https://models.opencode.ai/api.json"),
-        new("OpenRouter Free", "https://openrouter.ai/api", FreeDetectKind.PricingZeroOrFreeSuffix),
+        new("OpenCode Free", "https://opencode.ai/zen", FreeDetectKind.OpenCodeCatalog, "https://models.opencode.ai/api.json", CompleteCapabilityList: true),
+        new("OpenRouter Free", "https://openrouter.ai/api", FreeDetectKind.PricingZeroOrFreeSuffix, CompleteCapabilityList: true),
         new("NVIDIA NIM Free", "https://integrate.api.nvidia.com", FreeDetectKind.AllFree),
         new("Ollama Cloud Free", "https://ollama.com", FreeDetectKind.AllFree),
     ];

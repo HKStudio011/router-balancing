@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
@@ -18,18 +19,21 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
     private readonly ISecretProtector _protector;
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
+    private readonly IModelCapabilityWriter _capabilities;
 
     /// <inheritdoc/>
     public FreeModelSyncService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector,
         IHttpClientFactory http,
-        ILogService log)
+        ILogService log,
+        IModelCapabilityWriter capabilities)
     {
         _db = db;
         _protector = protector;
         _http = http;
         _log = log;
+        _capabilities = capabilities;
     }
 
     /// <inheritdoc/>
@@ -103,20 +107,26 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
             db.Models.RemoveRange(stale);
         }
 
+        // Capability KHÔNG còn ghi vào 8 cột cũ trên Models (Task 11 mới xoá cột) — mọi phát biểu
+        // đi qua IModelCapabilityWriter (lối ghi duy nhất, spec capability-model §5). Phải chờ
+        // SaveChanges trước: writer ghi theo PK Models.Id, còn hàng mới insert chỉ có PK sau khi save.
         var byId = provider.Models.ToDictionary(m => m.ModelId, StringComparer.Ordinal);
+        var factWrites = new List<(Model Row, CapabilityPatch Patch)>();
         foreach (var info in free)
         {
+            var patch = BuildCapabilityPatch(info);
             if (byId.TryGetValue(info.ModelId, out var model))
             {
                 // Manual của user: giữ nguyên kể cả metadata (§6.2.6)
                 if (model.IsManual) continue;
                 if (info.DisplayName is not null) model.DisplayName = info.DisplayName;
                 if (info.ContextWindow is not null) model.ContextWindow = info.ContextWindow;
-                ApplyCapabilities(model, info);
+                if (info.MaxOutputTokens is not null) model.MaxOutputTokens = info.MaxOutputTokens;
+                if (patch is not null) factWrites.Add((model, patch));
             }
             else
             {
-                db.Models.Add(new Model
+                var row = new Model
                 {
                     ProviderId = provider.Id,
                     ModelId = info.ModelId,
@@ -124,37 +134,77 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
                     Enabled = true,
                     DisplayName = info.DisplayName,
                     ContextWindow = info.ContextWindow,
-                    SupportsTools = info.SupportsTools,
-                    SupportsVision = info.SupportsVision ?? false,
-                    SupportsThink = info.SupportsThink ?? false,
-                    ThinkEfforts = info.ThinkEfforts,
-                    InputModalities = info.InputModalities,
-                    OutputModalities = info.OutputModalities,
                     MaxOutputTokens = info.MaxOutputTokens,
-                });
+                };
+                db.Models.Add(row);
+                if (patch is not null) factWrites.Add((row, patch));
             }
         }
 
         provider.LastModelSyncAt = DateTimeOffset.UtcNow;
         provider.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+
+        // Ghi fact SAU khi models đã commit (PK đã sinh) — mỗi ApplyAsync tự đóng một
+        // transaction riêng (hợp đồng writer); model mới bị xoá ở bước stale ở trên không
+        // còn trong factWrites, và FK cascade đã dọn dòng fact của nó.
+        foreach (var (row, patch) in factWrites)
+        {
+            await _capabilities.ApplyAsync(
+                row.Id, CapabilitySource.Catalog, patch, entry.CompleteCapabilityList, ct);
+        }
+
         _log.Info($"Synced {free.Count} free models for provider {providerId}.");
         return free.Count;
     }
 
     /// <summary>
-    /// Ghi capabilities từ API vào model đã có — field null (API thiếu) giữ nguyên giá trị cũ,
-    /// không đoán (spec opencode-tools-page §6.2).
+    /// Ghép CapabilityPatch từ các phát biểu trong FreeModelInfo — chỉ key CÓ phát biểu mới vào
+    /// patch (writer giữ nguyên key vắng mặt). Trả <see langword="null"/> khi model không có bất kỳ
+    /// phát biểu nào (preset AllFree): khỏi mở transaction writer rỗng cho từng model.
+    /// Token modality ngoài từ vựng 4 loại (vd "file" của OpenRouter 2026-10) bị loại: ModelModality
+    /// chỉ lưu từ vựng đã chốt (C-H), không tự mở rộng vocab ở đây. Với danh sách modality có mặt,
+    /// mọi loại trong từ vựng của chiều đó đều được phát biểu (có = true, không liệt kê = false) —
+    /// writer chỉ CHẤP NHẬN negative khi nguồn full-list, nên AllFree không sinh dòng nào.
     /// </summary>
-    private static void ApplyCapabilities(Model model, FreeModelInfo info)
+    private static CapabilityPatch? BuildCapabilityPatch(FreeModelInfo info)
     {
-        if (info.SupportsTools is not null) model.SupportsTools = info.SupportsTools;
-        if (info.SupportsVision is not null) model.SupportsVision = info.SupportsVision.Value;
-        if (info.SupportsThink is not null) model.SupportsThink = info.SupportsThink.Value;
-        if (info.ThinkEfforts is not null) model.ThinkEfforts = info.ThinkEfforts;
-        if (info.InputModalities is not null) model.InputModalities = info.InputModalities;
-        if (info.OutputModalities is not null) model.OutputModalities = info.OutputModalities;
-        if (info.MaxOutputTokens is not null) model.MaxOutputTokens = info.MaxOutputTokens;
+        var capabilities = new Dictionary<CapabilityKind, bool>();
+        if (info.SupportsTools is { } tools) capabilities[CapabilityKind.Tools] = tools;
+        if (info.SupportsThink is { } think) capabilities[CapabilityKind.Reasoning] = think;
+
+        var modalities = new Dictionary<(ModalityDirection, ModalityKind), bool>();
+        AddModalityStatements(modalities, ModalityDirection.Input, info.InputModalities);
+        AddModalityStatements(modalities, ModalityDirection.Output, info.OutputModalities);
+        // OpenCode phát biểu vision riêng bằng field `attachment` — đặc hiệu hơn suy từ danh sách
+        // modality của chiều input nên ghi sau để đè (hai nguồn này chưa từng mâu thuẫn trong catalog thật).
+        if (info.SupportsVision is { } vision)
+            modalities[(ModalityDirection.Input, ModalityKind.Image)] = vision;
+
+        var efforts = info.ThinkEfforts is null
+            ? new HashSet<string>()
+            : new HashSet<string>(info.ThinkEfforts); // literal "toggle" là level hợp lệ — generator Task 4 đọc nó từ view
+        if (capabilities.Count == 0 && modalities.Count == 0 && efforts.Count == 0) return null;
+        return new CapabilityPatch(capabilities, modalities, efforts);
+    }
+
+    private static void AddModalityStatements(
+        Dictionary<(ModalityDirection, ModalityKind), bool> target,
+        ModalityDirection direction,
+        IReadOnlyList<string>? tokens)
+    {
+        if (tokens is null) return; // không có danh sách cho chiều này = không phát biểu gì
+        var stated = new HashSet<ModalityKind>();
+        foreach (var token in tokens)
+        {
+            if (!CapabilityNames.TryFromDb(token, out ModalityKind modality)) continue;
+            target[(direction, modality)] = true;
+            stated.Add(modality);
+        }
+        foreach (var modality in Enum.GetValues<ModalityKind>())
+        {
+            if (!stated.Contains(modality)) target[(direction, modality)] = false;
+        }
     }
 
     /// <inheritdoc/>

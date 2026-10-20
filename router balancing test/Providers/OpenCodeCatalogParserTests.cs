@@ -18,15 +18,15 @@ public class OpenCodeCatalogParserTests
         Assert.True(big.SupportsTools);
         Assert.True(big.SupportsThink);
         Assert.Null(big.ThinkEfforts);               // reasoning_options rỗng
-        Assert.Equal("[\"text\"]", big.InputModalities);
-        Assert.Equal("[\"text\"]", big.OutputModalities);
+        Assert.Equal(new[] { "text" }, big.InputModalities);
+        Assert.Equal(new[] { "text" }, big.OutputModalities);
         Assert.Equal(200000, big.ContextWindow);
         Assert.Equal(32000, big.MaxOutputTokens);
 
         var deepseek = models.Single(m => m.ModelId == "deepseek-v4.1-flash-free");
         Assert.True(deepseek.SupportsVision);
-        Assert.Equal("[\"low\",\"high\",\"max\"]", deepseek.ThinkEfforts);
-        Assert.Equal("[\"text\",\"image\"]", deepseek.InputModalities);
+        Assert.Equal(new[] { "low", "high", "max" }, deepseek.ThinkEfforts);
+        Assert.Equal(new[] { "text", "image" }, deepseek.InputModalities);
     }
 
     [Fact]
@@ -34,7 +34,7 @@ public class OpenCodeCatalogParserTests
     {
         var toggle = FreeModelDetector.ParseOpenCodeCatalog(FreeModelFixtures.OpenCodeCatalog)
             .Single(m => m.ModelId == "toggle-model");
-        Assert.Equal("[\"toggle\"]", toggle.ThinkEfforts);
+        Assert.Equal(new[] { "toggle" }, toggle.ThinkEfforts);
         Assert.Null(toggle.DisplayName);             // thiếu name → null
         Assert.Null(toggle.MaxOutputTokens);         // thiếu limit → null
     }
@@ -70,6 +70,6 @@ public class OpenCodeCatalogParserTests
         var nemotron = models.Single(m => m.ModelId == "nemotron-3-ultra-free");
         Assert.Equal(1000000, nemotron.ContextWindow);
         Assert.Equal(128000, nemotron.MaxOutputTokens);
-        Assert.Equal("[\"text\"]", nemotron.InputModalities);
+        Assert.Equal(new[] { "text" }, nemotron.InputModalities);
     }
 }
