@@ -224,6 +224,7 @@ public class CapabilityFactSchemaTests : IDisposable
     [InlineData(ModalityKind.Image, "image")]
     [InlineData(ModalityKind.Audio, "audio")]
     [InlineData(ModalityKind.Video, "video")]
+    [InlineData(ModalityKind.File, "file")]
     public void ModalityVocabulary_RoundTrips(ModalityKind modality, string token)
     {
         Assert.Equal(token, modality.ToDb());

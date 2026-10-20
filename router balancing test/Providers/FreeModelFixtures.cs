@@ -23,18 +23,21 @@ internal static class FreeModelFixtures
     """;
 
     /// <summary>
-    /// OpenRouter kèm capability ngay trong list (shape probe thật 2026-10-20, Task 5):
-    /// model 1 multimodal + tools + reasoning, model 2 chỉ text, supported_parameters rỗng
-    /// = full-list khẳng định "không" (KnownAbsent).
+    /// OpenRouter kèm capability ngay trong list, theo shape probe API THẬT 2026-10-20 (Task 5,
+    /// brief đã sửa theo ruling R-T5-3/4/5): (1) multimodal + file input + tools + reasoning object
+    /// kèm supported_efforts; (2) chỉ text, supported_parameters rỗng, KHÔNG có key reasoning
+    /// → full-list khẳng định "không" (KnownAbsent); (3) reasoning object với supported_efforts
+    /// rỗng và supported_parameters không chứa "reasoning" → Reasoning=true, không effort nào.
     /// </summary>
     public const string OpenRouterWithCapabilities = """
     {
       "data": [
         { "id": "vendor/capable-model:free", "name": "Capable Model", "created": 1795000000,
           "description": "Multimodal reasoner with tools",
-          "architecture": { "modality": "text+image+audio->text", "tokenizer": "Other",
-            "input_modalities": ["text", "image", "audio"], "output_modalities": ["text"] },
+          "architecture": { "modality": "text+image+audio+file->text", "tokenizer": "Other",
+            "input_modalities": ["text", "image", "audio", "file"], "output_modalities": ["text"] },
           "supported_parameters": ["max_tokens", "reasoning", "response_format", "tools"],
+          "reasoning": { "mandatory": false, "supported_efforts": ["low", "high"], "default_effort": "low" },
           "pricing": { "prompt": "0", "completion": "0" },
           "top_provider": { "context_length": 262144, "is_moderated": false },
           "context_length": 262144 },
@@ -43,7 +46,14 @@ internal static class FreeModelFixtures
             "input_modalities": ["text"], "output_modalities": ["text"] },
           "supported_parameters": [],
           "pricing": { "prompt": "0", "completion": "0" },
-          "context_length": 131072 }
+          "context_length": 131072 },
+        { "id": "vendor/silent-reasoner:free", "name": "Silent Reasoner", "created": 1793000000,
+          "architecture": { "modality": "text->text", "tokenizer": "Other",
+            "input_modalities": ["text"], "output_modalities": ["text"] },
+          "supported_parameters": ["temperature", "tools"],
+          "reasoning": { "supported_efforts": [] },
+          "pricing": { "prompt": "0", "completion": "0" },
+          "context_length": 65536 }
       ]
     }
     """;

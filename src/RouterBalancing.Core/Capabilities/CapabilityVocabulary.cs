@@ -27,6 +27,13 @@ public enum ModalityKind
     Image = 1,
     Audio = 2,
     Video = 3,
+
+    /// <summary>
+    /// Input dạng tệp (PDF/DOCX…) — OpenRouter list thật dùng token "file" ở
+    /// architecture.input_modalities (193/470 model, probe 2026-10-20); schema opencode
+    /// capabilities.input là array of string không enum → "file" hợp lệ (R-T5-5).
+    /// </summary>
+    File = 4,
 }
 
 /// <summary>Chiều của modality so với request chat.</summary>
@@ -56,6 +63,7 @@ public static class CapabilityNames
         ModalityKind.Image => "image",
         ModalityKind.Audio => "audio",
         ModalityKind.Video => "video",
+        ModalityKind.File => "file",
         _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unknown modality kind."),
     };
 
@@ -99,6 +107,9 @@ public static class CapabilityNames
                 return true;
             case "video":
                 modality = ModalityKind.Video;
+                return true;
+            case "file":
+                modality = ModalityKind.File;
                 return true;
             default:
                 modality = default;

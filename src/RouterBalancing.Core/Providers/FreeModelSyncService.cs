@@ -114,7 +114,6 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
         var factWrites = new List<(Model Row, CapabilityPatch Patch)>();
         foreach (var info in free)
         {
-            var patch = BuildCapabilityPatch(info);
             if (byId.TryGetValue(info.ModelId, out var model))
             {
                 // Manual của user: giữ nguyên kể cả metadata (§6.2.6)
@@ -122,6 +121,7 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
                 if (info.DisplayName is not null) model.DisplayName = info.DisplayName;
                 if (info.ContextWindow is not null) model.ContextWindow = info.ContextWindow;
                 if (info.MaxOutputTokens is not null) model.MaxOutputTokens = info.MaxOutputTokens;
+                var patch = BuildCapabilityPatch(info);
                 if (patch is not null) factWrites.Add((model, patch));
             }
             else
@@ -137,6 +137,7 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
                     MaxOutputTokens = info.MaxOutputTokens,
                 };
                 db.Models.Add(row);
+                var patch = BuildCapabilityPatch(info);
                 if (patch is not null) factWrites.Add((row, patch));
             }
         }
@@ -162,24 +163,34 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
     /// Ghép CapabilityPatch từ các phát biểu trong FreeModelInfo — chỉ key CÓ phát biểu mới vào
     /// patch (writer giữ nguyên key vắng mặt). Trả <see langword="null"/> khi model không có bất kỳ
     /// phát biểu nào (preset AllFree): khỏi mở transaction writer rỗng cho từng model.
-    /// Token modality ngoài từ vựng 4 loại (vd "file" của OpenRouter 2026-10) bị loại: ModelModality
-    /// chỉ lưu từ vựng đã chốt (C-H), không tự mở rộng vocab ở đây. Với danh sách modality có mặt,
+    /// Token modality ngoài từ vựng (vd "pdf") bị LOẠI + log cảnh báo ĐÚNG MỘT lần mỗi model
+    /// (R-T5-5), không ném — API đổi shape không được giết cả chu kỳ sync. Từ vựng gồm cả "file"
+    /// (R-T5-5: OpenRouter dùng token này ở 193/470 model). Với danh sách modality có mặt,
     /// mọi loại trong từ vựng của chiều đó đều được phát biểu (có = true, không liệt kê = false) —
     /// writer chỉ CHẤP NHẬN negative khi nguồn full-list, nên AllFree không sinh dòng nào.
     /// </summary>
-    private static CapabilityPatch? BuildCapabilityPatch(FreeModelInfo info)
+    private CapabilityPatch? BuildCapabilityPatch(FreeModelInfo info)
     {
         var capabilities = new Dictionary<CapabilityKind, bool>();
         if (info.SupportsTools is { } tools) capabilities[CapabilityKind.Tools] = tools;
         if (info.SupportsThink is { } think) capabilities[CapabilityKind.Reasoning] = think;
 
         var modalities = new Dictionary<(ModalityDirection, ModalityKind), bool>();
-        AddModalityStatements(modalities, ModalityDirection.Input, info.InputModalities);
-        AddModalityStatements(modalities, ModalityDirection.Output, info.OutputModalities);
+        var unknownTokens = new List<string>();
+        AddModalityStatements(modalities, ModalityDirection.Input, info.InputModalities, unknownTokens);
+        AddModalityStatements(modalities, ModalityDirection.Output, info.OutputModalities, unknownTokens);
         // OpenCode phát biểu vision riêng bằng field `attachment` — đặc hiệu hơn suy từ danh sách
         // modality của chiều input nên ghi sau để đè (hai nguồn này chưa từng mâu thuẫn trong catalog thật).
         if (info.SupportsVision is { } vision)
             modalities[(ModalityDirection.Input, ModalityKind.Image)] = vision;
+
+        if (unknownTokens.Count > 0)
+        {
+            // Một dòng log cho cả model (R-T5-5) — list từng token sẽ ngập log khi API thêm token lạ hàng loạt.
+            _log.Warn(
+                $"Dropped modality token(s) outside capability vocabulary for model '{info.ModelId}': "
+                + string.Join(", ", unknownTokens.Distinct(StringComparer.Ordinal)) + ".");
+        }
 
         var efforts = info.ThinkEfforts is null
             ? new HashSet<string>()
@@ -191,13 +202,18 @@ public sealed class FreeModelSyncService : IFreeModelSyncService
     private static void AddModalityStatements(
         Dictionary<(ModalityDirection, ModalityKind), bool> target,
         ModalityDirection direction,
-        IReadOnlyList<string>? tokens)
+        IReadOnlyList<string>? tokens,
+        List<string> unknownTokens)
     {
         if (tokens is null) return; // không có danh sách cho chiều này = không phát biểu gì
         var stated = new HashSet<ModalityKind>();
         foreach (var token in tokens)
         {
-            if (!CapabilityNames.TryFromDb(token, out ModalityKind modality)) continue;
+            if (!CapabilityNames.TryFromDb(token, out ModalityKind modality))
+            {
+                unknownTokens.Add(token);
+                continue;
+            }
             target[(direction, modality)] = true;
             stated.Add(modality);
         }

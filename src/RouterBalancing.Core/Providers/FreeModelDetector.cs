@@ -226,7 +226,9 @@ public static class FreeModelDetector
     /// <item>Reasoning = token "reasoning" trong supported_parameters (match tuyệt đối —
     /// "include_reasoning"/"reasoning_effort" không được tính), HOẶC field <c>reasoning</c>:
     /// boolean true (shape cũ từng tồn tại) hoặc object (shape hiện tại — OpenRouter chỉ
-    /// sinh object này cho model hỗ trợ reasoning). Field boolean false → khẳng định "không".</item>
+    /// sinh object này cho model hỗ trợ reasoning). Field boolean false → khẳng định "không".
+    /// R-T5-4: <c>reasoning.supported_efforts</c> (mảng string) → ThinkEfforts; object có mà
+    /// efforts vắng/rỗng → chỉ phát biểu Reasoning, không bịa effort nào.</item>
     /// <item><c>architecture.input_modalities/output_modalities</c> → danh sách token thô;
     /// token ngoài từ vựng 4 loại ("file"…) được giữ nguyên ở đây, lọc ở bước ghép patch.</item>
     /// </list>
@@ -238,6 +240,7 @@ public static class FreeModelDetector
     {
         bool? tools = null;
         bool? reasoning = null;
+        IReadOnlyList<string>? efforts = null;
         if (item.TryGetProperty("supported_parameters", out var supported)
             && supported.ValueKind == JsonValueKind.Array)
         {
@@ -252,13 +255,19 @@ public static class FreeModelDetector
         if (item.TryGetProperty("reasoning", out var reasoningField))
         {
             // Object = model hỗ trợ reasoning (shape 2026-10); boolean theo shape cũ; giá trị lạ = không phát biểu.
-            reasoning = reasoningField.ValueKind switch
+            switch (reasoningField.ValueKind)
             {
-                JsonValueKind.Object => true,
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                _ => reasoning,
-            };
+                case JsonValueKind.Object:
+                    reasoning = true;
+                    efforts = SupportedEffortsOf(reasoningField);
+                    break;
+                case JsonValueKind.True:
+                    reasoning = true;
+                    break;
+                case JsonValueKind.False:
+                    reasoning = false;
+                    break;
+            }
         }
 
         return new FreeModelInfo(
@@ -267,8 +276,29 @@ public static class FreeModelDetector
             ContextWindowOf(item),
             SupportsTools: tools,
             SupportsThink: reasoning,
+            ThinkEfforts: efforts,
             InputModalities: RouterModalitiesOf(item, "input_modalities"),
             OutputModalities: RouterModalitiesOf(item, "output_modalities"));
+    }
+
+    /// <summary>
+    /// reasoning.supported_efforts (R-T5-4) → danh sách mức effort model hỗ trợ; key vắng hoặc
+    /// không phải mảng string → null (= không phát biểu effort nào, giữ đúng "không bịa").
+    /// </summary>
+    private static IReadOnlyList<string>? SupportedEffortsOf(JsonElement reasoningObject)
+    {
+        if (!reasoningObject.TryGetProperty("supported_efforts", out var efforts)
+            || efforts.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var result = new List<string>();
+        foreach (var value in efforts.EnumerateArray())
+        {
+            if (value.ValueKind == JsonValueKind.String) result.Add(value.GetString()!);
+        }
+        return result;
     }
 
     /// <summary>
