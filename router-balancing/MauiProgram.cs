@@ -148,6 +148,9 @@ namespace router_balancing
             // Capability writer singleton (spec capability-model §5): importer catalog/probe và
             // UI chỉ ghi fact capability qua IModelCapabilityWriter — không tự đụng entity.
             builder.Services.AddSingleton<IModelCapabilityWriter, ModelCapabilityWriter>();
+            // Capability reader singleton (spec capability-model §7): generator config, combo
+            // calculator, badge UI và /v1/models đọc fact capability qua đúng một accessor.
+            builder.Services.AddSingleton<IModelCapabilityReader, ModelCapabilityReader>();
             builder.Services.AddSingleton<LogRetentionWorker>();
             builder.Services.AddSingleton<FreeModelSyncWorker>();
 
