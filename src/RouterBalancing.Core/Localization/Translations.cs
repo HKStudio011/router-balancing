@@ -529,7 +529,7 @@ public static class Translations
         ["tools.hint.merge"] = "Merge this into your opencode.json(c), or use it as the config file.",
         ["tools.provider.disabled"] = "Provider is disabled — its models will not be routed.",
         ["tools.free.cta"] = "Enable the OpenCode Free provider to preselect the free group.",
-        ["tools.duplicates"] = "Some duplicate model ids were skipped.",
+        ["tools.duplicates"] = "Some duplicate keys were skipped.",
     };
 
     public static readonly IReadOnlyDictionary<string, string> Vietnamese = new Dictionary<string, string>
@@ -1054,7 +1054,7 @@ public static class Translations
         ["tools.hint.merge"] = "Merge file này vào opencode.json(c), hoặc dùng làm file config.",
         ["tools.provider.disabled"] = "Provider đang tắt — model của nhóm này không được định tuyến.",
         ["tools.free.cta"] = "Bật provider OpenCode Free để chọn sẵn nhóm free.",
-        ["tools.duplicates"] = "Một số model trùng id đã bị bỏ qua.",
+        ["tools.duplicates"] = "Một số key trùng đã bị bỏ qua.",
     };
 
     /// <summary>Chọn bảng theo ngôn ngữ hiệu lực — không có bảng → English (fallback mọi keys).</summary>

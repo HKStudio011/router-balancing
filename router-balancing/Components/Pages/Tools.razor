@@ -255,9 +255,9 @@ else
 
         try
         {
-            var result = await ConfigSvc.GenerateAsync(_selected.ToArray(), _baseUrl, _apiKey);
+            var result = await ConfigSvc.GenerateAsync(_selected.ToArray(), [], _baseUrl, _apiKey);
             _json = result.Json;
-            _skipped = result.SkippedDuplicateModelIds;
+            _skipped = result.SkippedKeys;
         }
         catch (Exception ex)
         {

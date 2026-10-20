@@ -86,12 +86,21 @@ public static class OpenCodeConfigGenerator
         ArgumentNullException.ThrowIfNull(baseUrl);
         ArgumentNullException.ThrowIfNull(models);
 
+        return GenerateFromProvider(BuildProviderObject(baseUrl, apiKey, models, combos));
+    }
+
+    /// <summary>
+    /// Bọc object provider <c>router-balancing</c> vào root <c>providers</c> rồi serialize
+    /// (JSON indent) — preview và ghi file dùng chung đúng object provider đã dựng.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="providerObject"/> là <see langword="null"/>.</exception>
+    public static string GenerateFromProvider(JsonObject providerObject)
+    {
+        ArgumentNullException.ThrowIfNull(providerObject);
+
         var root = new JsonObject
         {
-            ["providers"] = new JsonObject
-            {
-                [ProviderId] = BuildProviderObject(baseUrl, apiKey, models, combos),
-            },
+            ["providers"] = new JsonObject { [ProviderId] = providerObject },
         };
         return root.ToJsonString(IndentedOptions);
     }

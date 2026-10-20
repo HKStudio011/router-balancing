@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Capabilities;
+using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Storage;
 using RouterBalancing.Core.Tools;
@@ -9,8 +10,8 @@ namespace router_balancing_test.Tools;
 
 /// <summary>
 /// Test service trang Tools: dựng bảng chọn từ DB (SQLite tạm) + tick mặc định C7 + dedupe khi generate.
-/// Task 4: capability của row/model phải đến từ fact tables qua IModelCapabilityReader —
-/// không còn đọc cột capability cũ trên Models.
+/// Plan 1 Task 4: capability của row/model phải đến từ fact tables qua IModelCapabilityReader.
+/// Plan 2: combo thành một entry config (U12), key model có prefix Identifier (C-A), skipped key được báo.
 /// </summary>
 public class OpenCodeConfigServiceTests : IDisposable
 {
@@ -25,7 +26,15 @@ public class OpenCodeConfigServiceTests : IDisposable
 
     public void Dispose() => _testDb.Dispose();
 
-    private OpenCodeConfigService Service() => new(_db, new ModelCapabilityReader(_db));
+    private OpenCodeConfigService Service() =>
+        new(_db, new ModelCapabilityReader(_db), new ComboCapabilityCalculator(_db, new ModelCapabilityReader(_db)));
+
+    private static JsonElement Models(string json) =>
+        JsonDocument.Parse(json).RootElement.GetProperty("providers")
+            .GetProperty("router-balancing").GetProperty("models");
+
+    private static JsonElement CapabilitiesOf(string json, string key) =>
+        Models(json).GetProperty(key).GetProperty("capabilities");
 
     private async Task SetProviderEnabledAsync(string providerName, bool enabled)
     {
@@ -35,8 +44,15 @@ public class OpenCodeConfigServiceTests : IDisposable
         await db.SaveChangesAsync();
     }
 
-    /// <summary>Thêm 1 model vào provider; trả về Id entity để test chọn model theo Id như UI.</summary>
-    private async Task<long> AddModelAsync(string providerName, string modelId, bool enabled, string? displayName = null)
+    private async Task<long> ProviderIdAsync(string providerName)
+    {
+        using var db = _db.CreateDbContext();
+        return (await db.Providers.AsNoTracking().SingleAsync(p => p.Name == providerName)).Id;
+    }
+
+    /// <summary>Thêm 1 model vào provider preset; trả về Id entity để test chọn model theo Id như UI.</summary>
+    private async Task<long> AddModelAsync(
+        string providerName, string modelId, bool enabled, string? displayName = null, int? contextWindow = null)
     {
         using var db = _db.CreateDbContext();
         var provider = await db.Providers.SingleAsync(p => p.Name == providerName);
@@ -46,10 +62,87 @@ public class OpenCodeConfigServiceTests : IDisposable
             ModelId = modelId,
             Enabled = enabled,
             DisplayName = displayName,
+            ContextWindow = contextWindow,
         };
         db.Models.Add(model);
         await db.SaveChangesAsync();
         return model.Id;
+    }
+
+    /// <summary>Provider thường (không preset) để test đường key bare khi Identifier null.</summary>
+    private async Task<long> AddProviderAsync(string name, string? identifier = null)
+    {
+        using var db = _db.CreateDbContext();
+        var provider = new Provider
+        {
+            Name = name,
+            Identifier = identifier,
+            Type = ProviderType.OpenAI,
+            BaseUrl = "https://api.example.com",
+            Enabled = true,
+        };
+        db.Providers.Add(provider);
+        await db.SaveChangesAsync();
+        return provider.Id;
+    }
+
+    private async Task<long> AddModelToProviderAsync(
+        long providerId, string modelId, string? displayName = null, int? contextWindow = null)
+    {
+        using var db = _db.CreateDbContext();
+        var model = new Model
+        {
+            ProviderId = providerId,
+            ModelId = modelId,
+            Enabled = true,
+            DisplayName = displayName,
+            ContextWindow = contextWindow,
+        };
+        db.Models.Add(model);
+        await db.SaveChangesAsync();
+        return model.Id;
+    }
+
+    private async Task<long> AddComboAsync(string name, params long[] modelIds)
+    {
+        using var db = _db.CreateDbContext();
+        var combo = new Combo { Name = name };
+        for (var i = 0; i < modelIds.Length; i++)
+        {
+            combo.Items.Add(new ComboItem { TargetModelId = modelIds[i], Position = i });
+        }
+        db.Combos.Add(combo);
+        await db.SaveChangesAsync();
+        return combo.Id;
+    }
+
+    private async Task SeedCapabilityAsync(long modelId, CapabilityKind kind, bool present)
+    {
+        using var db = _db.CreateDbContext();
+        db.ModelCapabilities.Add(new ModelCapability
+        {
+            ModelId = modelId,
+            Capability = kind,
+            KnownAbsent = !present,
+            Source = CapabilitySource.Catalog,
+            UpdatedAt = DateTimeOffset.UnixEpoch,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SeedModalityAsync(long modelId, ModalityDirection direction, ModalityKind kind, bool present)
+    {
+        using var db = _db.CreateDbContext();
+        db.ModelModalities.Add(new ModelModality
+        {
+            ModelId = modelId,
+            Direction = direction,
+            Modality = kind,
+            KnownAbsent = !present,
+            Source = CapabilitySource.Catalog,
+            UpdatedAt = DateTimeOffset.UnixEpoch,
+        });
+        await db.SaveChangesAsync();
     }
 
     [Fact]
@@ -80,18 +173,20 @@ public class OpenCodeConfigServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task GenerateAsync_DuplicateIds_KeepsFreePresetThenIdOrder_AndReportsSkipped()
+    public async Task GenerateAsync_SameModelIdInDifferentProviders_EmitsBothPrefixedKeys()
     {
+        // C-A: prefix Identifier hết nhập nhằng ModelId trùng giữa provider — không còn dedupe oan.
         await SetProviderEnabledAsync("OpenCode Free", true);
+        await SetProviderEnabledAsync("OpenRouter Free", true);
         var freeRow = await AddModelAsync("OpenCode Free", "shared-id", enabled: true, displayName: "Free copy");
-        var otherRow = await AddModelAsync("OpenRouter Free", "shared-id", enabled: true, displayName: "Other copy"); // provider khác, cùng ModelId
+        var otherRow = await AddModelAsync("OpenRouter Free", "shared-id", enabled: true, displayName: "Other copy");
 
-        var result = await Service().GenerateAsync([otherRow, freeRow], "http://127.0.0.1:8317/v1", null);
+        var result = await Service().GenerateAsync([otherRow, freeRow], [], "http://127.0.0.1:8317/v1", null);
 
-        Assert.Equal(new[] { "shared-id" }, result.SkippedDuplicateModelIds);
-        var name = JsonDocument.Parse(result.Json).RootElement.GetProperty("providers")
-            .GetProperty("router-balancing").GetProperty("models").GetProperty("shared-id").GetProperty("name");
-        Assert.Equal("Free copy", name.GetString());   // preset OpenCode Free thắng (IsFreePreset sort trước)
+        Assert.Empty(result.SkippedKeys);
+        var models = Models(result.Json);
+        Assert.Equal("Free copy", models.GetProperty("opencode-free/shared-id").GetProperty("name").GetString());
+        Assert.Equal("Other copy", models.GetProperty("openrouter-free/shared-id").GetProperty("name").GetString());
     }
 
     [Fact]
@@ -104,9 +199,8 @@ public class OpenCodeConfigServiceTests : IDisposable
     [Fact]
     public async Task GenerateAsync_EmptySelection_EmitsEmptyModels()
     {
-        var result = await Service().GenerateAsync([], "http://127.0.0.1:8317/v1", null);
-        Assert.Empty(JsonDocument.Parse(result.Json).RootElement.GetProperty("providers")
-            .GetProperty("router-balancing").GetProperty("models").EnumerateObject());
+        var result = await Service().GenerateAsync([], [], "http://127.0.0.1:8317/v1", null);
+        Assert.Empty(Models(result.Json).EnumerateObject());
     }
 
     [Fact]
@@ -147,20 +241,8 @@ public class OpenCodeConfigServiceTests : IDisposable
         // Ba trạng thái phải đi qua row nguyên vẹn: present→true, KnownAbsent→false, không dòng→null.
         await SetProviderEnabledAsync("OpenCode Free", true);
         var id = await AddModelAsync("OpenCode Free", "fact-model", enabled: true);
-        using (var db = _db.CreateDbContext())
-        {
-            db.ModelCapabilities.Add(new ModelCapability
-            {
-                ModelId = id, Capability = CapabilityKind.Tools, KnownAbsent = false,
-                Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
-            });
-            db.ModelModalities.Add(new ModelModality
-            {
-                ModelId = id, Direction = ModalityDirection.Input, Modality = ModalityKind.Image,
-                KnownAbsent = true, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
-            });
-            await db.SaveChangesAsync();
-        }
+        await SeedCapabilityAsync(id, CapabilityKind.Tools, present: true);
+        await SeedModalityAsync(id, ModalityDirection.Input, ModalityKind.Image, present: false);
 
         var data = await Service().GetPageDataAsync();
 
@@ -168,7 +250,7 @@ public class OpenCodeConfigServiceTests : IDisposable
         Assert.True(row.Tools);            // dòng present → true
         Assert.False(row.Vision);          // KnownAbsent → false (đã biết là không), khác null
         Assert.Null(row.Reasoning);        // không có dòng → chưa biết
-        Assert.Empty(row.InputModalities); // chỉ khẳng định thuận — image KnownAbsent bị loại, text chưa seed
+        Assert.Empty(row.InputModalities!); // chỉ khẳng định thuận — image KnownAbsent bị loại, text chưa seed
     }
 
     [Fact]
@@ -177,23 +259,11 @@ public class OpenCodeConfigServiceTests : IDisposable
         // Đường generate cũng phải đọc fact (ReadManyAsync một lần cho cả nhóm), không đọc cột cũ.
         await SetProviderEnabledAsync("OpenCode Free", true);
         var id = await AddModelAsync("OpenCode Free", "gen-fact-model", enabled: true);
+        await SeedCapabilityAsync(id, CapabilityKind.Tools, present: false);
+        await SeedModalityAsync(id, ModalityDirection.Input, ModalityKind.Text, present: true);
+        await SeedModalityAsync(id, ModalityDirection.Input, ModalityKind.Image, present: true);
         using (var db = _db.CreateDbContext())
         {
-            db.ModelCapabilities.Add(new ModelCapability
-            {
-                ModelId = id, Capability = CapabilityKind.Tools, KnownAbsent = true,
-                Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
-            });
-            db.ModelModalities.Add(new ModelModality
-            {
-                ModelId = id, Direction = ModalityDirection.Input, Modality = ModalityKind.Text,
-                KnownAbsent = false, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
-            });
-            db.ModelModalities.Add(new ModelModality
-            {
-                ModelId = id, Direction = ModalityDirection.Input, Modality = ModalityKind.Image,
-                KnownAbsent = false, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
-            });
             db.ModelReasoningEfforts.Add(new ModelReasoningEffort
             {
                 ModelId = id, Level = "high", Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
@@ -201,15 +271,137 @@ public class OpenCodeConfigServiceTests : IDisposable
             await db.SaveChangesAsync();
         }
 
-        var result = await Service().GenerateAsync([id], "http://127.0.0.1:8317/v1", null);
+        var result = await Service().GenerateAsync([id], [], "http://127.0.0.1:8317/v1", null);
 
-        var caps = JsonDocument.Parse(result.Json).RootElement.GetProperty("providers")
-            .GetProperty("router-balancing").GetProperty("models").GetProperty("gen-fact-model")
-            .GetProperty("capabilities");
+        var caps = CapabilitiesOf(result.Json, "opencode-free/gen-fact-model");
         Assert.Equal(JsonValueKind.False, caps.GetProperty("tools").ValueKind); // KnownAbsent → "tools": false
         // view chỉ phát khẳng định thuận, theo ModalityKind tăng dần: text(0) < image(1)
         Assert.Equal(new[] { "text", "image" },
             caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
         Assert.False(caps.TryGetProperty("reasoning", out _)); // view.Reasoning chưa biết → không emit cả khi có effort
+    }
+
+    [Fact]
+    public async Task GetPageData_GroupCarriesProviderId()
+    {
+        // Trang Tools lưu trạng thái thu/giãn theo ProviderId — record group phải mang id thật.
+        var data = await Service().GetPageDataAsync();
+        var providerId = await ProviderIdAsync("OpenCode Free");
+
+        var free = data.Groups.Single(g => g.IsFreePreset);
+        Assert.Equal(providerId, free.ProviderId);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_ModelUsesProviderIdentifierPrefix()
+    {
+        var providerId = await AddProviderAsync("Custom Provider", identifier: "px");
+        var modelId = await AddModelToProviderAsync(providerId, "m1");
+
+        var result = await Service().GenerateAsync([modelId], [], "http://127.0.0.1:8317/v1", null);
+
+        Assert.True(Models(result.Json).TryGetProperty("px/m1", out _));
+    }
+
+    [Fact]
+    public async Task GenerateAsync_ProviderWithoutIdentifier_UsesBareModelId()
+    {
+        // C-A: Identifier null (hàng cũ chưa backfill) → giữ id trần, không bịa prefix.
+        var providerId = await AddProviderAsync("No Id Provider");
+        var modelId = await AddModelToProviderAsync(providerId, "bare-model");
+
+        var result = await Service().GenerateAsync([modelId], [], "http://127.0.0.1:8317/v1", null);
+
+        Assert.True(Models(result.Json).TryGetProperty("bare-model", out _));
+    }
+
+    [Fact]
+    public async Task GenerateAsync_KeyConflictWithoutIdentifier_ReportsSkippedKey()
+    {
+        // RF-4: hai provider chưa có Identifier + cùng ModelId → key trần trùng; first-wins theo Id,
+        // key bị bỏ được báo để UI ghi chú (không im lặng mất model).
+        var providerA = await AddProviderAsync("No Id A");
+        var providerB = await AddProviderAsync("No Id B");
+        var modelA = await AddModelToProviderAsync(providerA, "dup", displayName: "A model");
+        var modelB = await AddModelToProviderAsync(providerB, "dup", displayName: "B model");
+
+        var result = await Service().GenerateAsync([modelB, modelA], [], "http://127.0.0.1:8317/v1", null);
+
+        var models = Models(result.Json);
+        Assert.Single(models.EnumerateObject());
+        Assert.Equal("A model", models.GetProperty("dup").GetProperty("name").GetString()); // Id nhỏ hơn thắng
+        Assert.Equal(new[] { "dup" }, result.SkippedKeys);
+    }
+
+    [Fact]
+    public async Task GetPageData_ListsCombosWithCapabilitiesAndMemberCount()
+    {
+        await SetProviderEnabledAsync("OpenCode Free", true);
+        var modelA = await AddModelAsync("OpenCode Free", "combo-a", enabled: true, contextWindow: 128_000);
+        var modelB = await AddModelAsync("OpenCode Free", "combo-b", enabled: true, contextWindow: 64_000);
+        await SeedCapabilityAsync(modelA, CapabilityKind.Tools, present: true);
+        await SeedCapabilityAsync(modelB, CapabilityKind.Tools, present: true);
+        await SeedModalityAsync(modelA, ModalityDirection.Input, ModalityKind.Text, present: true);
+        await SeedModalityAsync(modelA, ModalityDirection.Input, ModalityKind.Image, present: true);
+        await SeedModalityAsync(modelA, ModalityDirection.Output, ModalityKind.Text, present: true);
+        await SeedModalityAsync(modelA, ModalityDirection.Output, ModalityKind.Audio, present: true);
+        await SeedModalityAsync(modelB, ModalityDirection.Input, ModalityKind.Text, present: true);
+        await SeedModalityAsync(modelB, ModalityDirection.Output, ModalityKind.Text, present: true);
+        var comboId = await AddComboAsync("studio", modelA, modelB);
+
+        var data = await Service().GetPageDataAsync();
+
+        var row = Assert.Single(data.Combos, c => c.Id == comboId);
+        Assert.Equal(2, row.MemberCount);
+        Assert.Equal(ComboMode.RoundRobin, row.Mode);
+        Assert.Equal(64_000, row.ContextWindow);            // min member
+        Assert.True(row.Tools);
+        Assert.Equal(new[] { "text" }, row.InputModalities);  // giao [text,image] ∩ [text]
+        Assert.Equal(new[] { "text" }, row.OutputModalities); // giao [text,audio] ∩ [text]
+    }
+
+    [Fact]
+    public async Task GenerateAsync_ComboOnly_EmitsSingleEntryAndNoMemberModels()
+    {
+        // U12: tick combo = một entry duy nhất key tên combo; model thành viên KHÔNG bị nhân bản.
+        await SetProviderEnabledAsync("OpenCode Free", true);
+        var member = await AddModelAsync("OpenCode Free", "member-model", enabled: true);
+        await SeedCapabilityAsync(member, CapabilityKind.Tools, present: true);
+        await SeedModalityAsync(member, ModalityDirection.Input, ModalityKind.Text, present: true);
+        await SeedModalityAsync(member, ModalityDirection.Input, ModalityKind.Image, present: true);
+        var comboId = await AddComboAsync("unsloth-studio", member);
+
+        var result = await Service().GenerateAsync([], [comboId], "http://127.0.0.1:8317/v1", null);
+
+        var models = Models(result.Json);
+        Assert.Single(models.EnumerateObject());
+        var entry = models.GetProperty("unsloth-studio");
+        Assert.Equal("unsloth-studio", entry.GetProperty("name").GetString());
+        Assert.Equal(new[] { "text", "image" },
+            entry.GetProperty("capabilities").GetProperty("input").EnumerateArray().Select(e => e.GetString()));
+        Assert.False(models.TryGetProperty("opencode-free/member-model", out _));
+    }
+
+    [Fact]
+    public async Task GenerateAsync_ComboCapabilities_UseIntersectionWeakestMember()
+    {
+        // C-L: entry combo nói capability của member yếu nhất, không phải mạnh nhất.
+        var providerId = await AddProviderAsync("Combo Provider");
+        var strong = await AddModelToProviderAsync(providerId, "strong");
+        var weak = await AddModelToProviderAsync(providerId, "weak");
+        await SeedCapabilityAsync(strong, CapabilityKind.Tools, present: true);
+        await SeedCapabilityAsync(weak, CapabilityKind.Tools, present: false);
+        await SeedModalityAsync(strong, ModalityDirection.Input, ModalityKind.Text, present: true);
+        await SeedModalityAsync(strong, ModalityDirection.Input, ModalityKind.Audio, present: true);
+        await SeedModalityAsync(weak, ModalityDirection.Input, ModalityKind.Text, present: true);
+        await SeedModalityAsync(weak, ModalityDirection.Input, ModalityKind.Audio, present: false);
+        var comboId = await AddComboAsync("weak-combo", strong, weak);
+
+        var result = await Service().GenerateAsync([], [comboId], "http://127.0.0.1:8317/v1", null);
+
+        var caps = CapabilitiesOf(result.Json, "weak-combo");
+        Assert.False(caps.GetProperty("tools").GetBoolean()); // true ∧ false = false
+        Assert.Equal(new[] { "text" },
+            caps.GetProperty("input").EnumerateArray().Select(e => e.GetString())); // audio bị member yếu loại
     }
 }
