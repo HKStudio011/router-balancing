@@ -84,4 +84,19 @@ public interface IOpenCodeConfigService
     Task<OpenCodeConfigResult> GenerateAsync(
         IReadOnlyList<long> selectedModelIds, IReadOnlyList<long> selectedComboIds,
         string baseUrl, string? apiKey, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ghi block <c>providers["router-balancing"]</c> vào file config opencode (spec §9.8):
+    /// xoá block cũ trong <c>provider</c>/<c>providers</c>, chèn block mới, giữ nguyên phần khác.
+    /// </summary>
+    /// <param name="path">Đường dẫn file config (đã expand <c>~</c>; xem <c>OpenCodeConfigPaths</c>).</param>
+    /// <param name="selectedModelIds">Id entity của model được tick.</param>
+    /// <param name="selectedComboIds">Id entity của combo được tick.</param>
+    /// <param name="baseUrl">Base URL endpoint proxy của app.</param>
+    /// <param name="apiKey">API key client gửi kèm; <see langword="null"/>/rỗng → không emit.</param>
+    /// <param name="ct">Token hủy.</param>
+    /// <exception cref="OpenCodeConfigFormatException">File hiện có không phải JSON object hợp lệ.</exception>
+    Task<OpenCodeConfigWriteResult> WriteAsync(
+        string path, IReadOnlyList<long> selectedModelIds, IReadOnlyList<long> selectedComboIds,
+        string baseUrl, string? apiKey, CancellationToken ct = default);
 }

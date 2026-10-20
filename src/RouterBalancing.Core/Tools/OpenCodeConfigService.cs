@@ -13,19 +13,23 @@ public sealed class OpenCodeConfigService : IOpenCodeConfigService
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly IModelCapabilityReader _capabilities;
     private readonly IComboCapabilityCalculator _comboCapabilities;
+    private readonly IOpenCodeConfigFileWriter _writer;
 
     /// <inheritdoc/>
     public OpenCodeConfigService(
         IDbContextFactory<RouterBalancingDbContext> db,
         IModelCapabilityReader capabilities,
-        IComboCapabilityCalculator comboCapabilities)
+        IComboCapabilityCalculator comboCapabilities,
+        IOpenCodeConfigFileWriter writer)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(capabilities);
         ArgumentNullException.ThrowIfNull(comboCapabilities);
+        ArgumentNullException.ThrowIfNull(writer);
         _db = db;
         _capabilities = capabilities;
         _comboCapabilities = comboCapabilities;
+        _writer = writer;
     }
 
     /// <inheritdoc/>
@@ -80,6 +84,16 @@ public sealed class OpenCodeConfigService : IOpenCodeConfigService
     {
         var (provider, skipped) = await BuildProviderAsync(selectedModelIds, selectedComboIds, baseUrl, apiKey, ct);
         return new OpenCodeConfigResult(OpenCodeConfigGenerator.GenerateFromProvider(provider), skipped);
+    }
+
+    /// <inheritdoc/>
+    public async Task<OpenCodeConfigWriteResult> WriteAsync(
+        string path, IReadOnlyList<long> selectedModelIds, IReadOnlyList<long> selectedComboIds,
+        string baseUrl, string? apiKey, CancellationToken ct = default)
+    {
+        var (provider, _) = await BuildProviderAsync(selectedModelIds, selectedComboIds, baseUrl, apiKey, ct);
+        // SkippedKeys không cần cho write: preview đã báo cho user trước khi bấm ghi.
+        return await _writer.WriteAsync(path, provider, ct);
     }
 
     /// <summary>

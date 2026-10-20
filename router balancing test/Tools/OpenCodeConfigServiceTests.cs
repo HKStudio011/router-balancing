@@ -17,17 +17,40 @@ public class OpenCodeConfigServiceTests : IDisposable
 {
     private readonly TestDb _testDb = new();
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
+    private readonly string _configDir = Path.Combine(
+        Path.GetTempPath(), "rb-tools-service-" + Guid.NewGuid().ToString("N"));
 
     public OpenCodeConfigServiceTests()
     {
         _db = _testDb.CreateFactory();
         DbInitializer.Initialize(_db); // 4 preset free, Enabled=false (D9)
+        Directory.CreateDirectory(_configDir);
     }
 
-    public void Dispose() => _testDb.Dispose();
+    public void Dispose()
+    {
+        _testDb.Dispose();
+        try
+        {
+            if (Directory.Exists(_configDir))
+            {
+                foreach (var file in Directory.GetFiles(_configDir, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(file, FileAttributes.Normal);
+                }
+                Directory.Delete(_configDir, recursive: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Dọn best-effort — không che test failure.
+        }
+    }
 
     private OpenCodeConfigService Service() =>
-        new(_db, new ModelCapabilityReader(_db), new ComboCapabilityCalculator(_db, new ModelCapabilityReader(_db)));
+        new(_db, new ModelCapabilityReader(_db),
+            new ComboCapabilityCalculator(_db, new ModelCapabilityReader(_db)),
+            new OpenCodeConfigFileWriter());
 
     private static JsonElement Models(string json) =>
         JsonDocument.Parse(json).RootElement.GetProperty("providers")
@@ -403,5 +426,54 @@ public class OpenCodeConfigServiceTests : IDisposable
         Assert.False(caps.GetProperty("tools").GetBoolean()); // true ∧ false = false
         Assert.Equal(new[] { "text" },
             caps.GetProperty("input").EnumerateArray().Select(e => e.GetString())); // audio bị member yếu loại
+    }
+
+    [Fact]
+    public async Task WriteAsync_SelectedModelAndCombo_WritesBlockAndReturnsPaths()
+    {
+        await SetProviderEnabledAsync("OpenCode Free", true);
+        var model = await AddModelAsync("OpenCode Free", "big-pickle", enabled: true);
+        var comboMember = await AddModelAsync("OpenCode Free", "member", enabled: true);
+        var comboId = await AddComboAsync("studio", comboMember);
+        var path = Path.Combine(_configDir, "opencode.json");
+        const string original = "{ \"plugin\": [\"keep-me\"] }";
+        await File.WriteAllTextAsync(path, original);
+
+        var result = await Service().WriteAsync(path, [model], [comboId], "http://127.0.0.1:8317/v1", null);
+
+        Assert.Equal(Path.GetFullPath(path), result.Path);
+        Assert.Equal(path + ".bak", result.BackupPath);
+        Assert.Equal(original, await File.ReadAllTextAsync(result.BackupPath!));
+        var written = await File.ReadAllTextAsync(path);
+        Assert.Contains("\"plugin\": [\"keep-me\"]", written);
+        var models = Models(written);
+        Assert.True(models.TryGetProperty("opencode-free/big-pickle", out _));
+        Assert.True(models.TryGetProperty("studio", out _));
+    }
+
+    [Fact]
+    public async Task WriteAsync_InvalidConfigFile_Throws_LeavesFileUntouched()
+    {
+        var path = Path.Combine(_configDir, "broken.json");
+        const string original = "{ \"providers\": { \"a\": } }";
+        await File.WriteAllTextAsync(path, original);
+
+        await Assert.ThrowsAsync<OpenCodeConfigFormatException>(() =>
+            Service().WriteAsync(path, [], [], "http://127.0.0.1:8317/v1", null));
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+        Assert.False(File.Exists(path + ".bak"));
+    }
+
+    [Fact]
+    public async Task WriteAsync_NoSelection_WritesProviderBlockWithEmptyModels()
+    {
+        // Service không chặn selection rỗng (UI chặn bằng nút disabled) — ghim hành vi: block hợp lệ, models {}.
+        var path = Path.Combine(_configDir, "empty.json");
+
+        var result = await Service().WriteAsync(path, [], [], "http://127.0.0.1:8317/v1", null);
+
+        Assert.Null(result.BackupPath);
+        Assert.Empty(Models(await File.ReadAllTextAsync(path)).EnumerateObject());
     }
 }
