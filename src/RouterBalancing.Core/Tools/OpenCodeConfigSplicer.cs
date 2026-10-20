@@ -66,7 +66,7 @@ public static class OpenCodeConfigSplicer
         CollectRemovalRanges(providers, removals);
 
         var edits = new List<TextEdit>();
-        foreach (var (start, end) in MergeOverlaps(removals))
+        foreach (var (start, end) in removals)
         {
             edits.Add(new TextEdit(start, end, Replacement: "", IsInsertion: false));
         }
@@ -213,53 +213,46 @@ public static class OpenCodeConfigSplicer
         if (parentMember?.Child is not { } parent) return;
 
         var members = parent.Members;
-        for (var i = 0; i < members.Count; i++)
+        var index = 0;
+        while (index < members.Count)
         {
-            if (!string.Equals(members[i].Name, OpenCodeConfigGenerator.ProviderId, StringComparison.Ordinal))
+            if (!IsProviderBlock(members[index]))
+            {
+                index++;
                 continue;
+            }
 
-            var target = members[i];
-            var next = i + 1 < members.Count ? members[i + 1] : null;
-            var previous = i > 0 ? members[i - 1] : null;
+            // Gom cả run block trùng liền kề thành MỘT range — xử lý từng block riêng sẽ sinh
+            // range chồng nhau và dễ bỏ sót dấu phẩy khi run nằm cuối object (review fix).
+            var first = index;
+            while (index + 1 < members.Count && IsProviderBlock(members[index + 1])) index++;
+            var last = index;
+
+            var next = last + 1 < members.Count ? members[last + 1] : null;
             if (next is not null)
             {
-                // Xoá target + dấu phẩy + whitespace tới member kế (kể cả target trùng nhau liền kề).
-                ranges.Add((target.NameStart, next.NameStart));
+                // Còn member sau run: xoá từ tên block đầu tới tên member kế (gồm dấu phẩy sau run,
+                // giữ dấu phẩy + whitespace trước run).
+                ranges.Add((members[first].NameStart, next.NameStart));
             }
-            else if (previous is not null)
+            else if (first > 0)
             {
-                // Target cuối: xoá từ sau member trước (dấu phẩy nằm trong khoảng) tới hết target.
-                ranges.Add((previous.ValueEnd, target.ValueEnd));
+                // Run ở cuối, có member trước: xoá từ sau value member trước (dấu phẩy nằm trong)
+                // tới hết block cuối.
+                ranges.Add((members[first - 1].ValueEnd, members[last].ValueEnd));
             }
             else
             {
-                // Target duy nhất: xoá từ sau '{' tới hết value, giữ whitespace trước '}'.
-                ranges.Add((parent.Start + 1, target.ValueEnd));
+                // Run là toàn bộ object: xoá từ sau '{' tới hết block cuối, giữ whitespace trước '}'.
+                ranges.Add((parent.Start + 1, members[last].ValueEnd));
             }
+
+            index++;
         }
     }
 
-    /// <summary>
-    /// Gộp các range chồng nhau (2 block trùng liền kề sinh range overlap) — nếu không gộp,
-    /// range thấp hơn sẽ xoá nhầm phần text đã dịch sau khi range cao hơn bị xoá.
-    /// </summary>
-    private static List<(int Start, int End)> MergeOverlaps(List<(int Start, int End)> ranges)
-    {
-        ranges.Sort((a, b) => a.Start.CompareTo(b.Start));
-        var merged = new List<(int Start, int End)>(ranges.Count);
-        foreach (var range in ranges)
-        {
-            if (merged.Count > 0 && range.Start < merged[^1].End)
-            {
-                merged[^1] = (merged[^1].Start, Math.Max(merged[^1].End, range.End));
-            }
-            else
-            {
-                merged.Add(range);
-            }
-        }
-        return merged;
-    }
+    private static bool IsProviderBlock(JsonMember member) =>
+        string.Equals(member.Name, OpenCodeConfigGenerator.ProviderId, StringComparison.Ordinal);
 
     // ---------- insertion ----------
 

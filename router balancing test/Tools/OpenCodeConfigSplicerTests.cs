@@ -21,7 +21,9 @@ public class OpenCodeConfigSplicerTests
         }
         """)!.AsObject();
 
-    private static JsonDocument Parse(string text) => JsonDocument.Parse(text, new JsonDocumentOptions
+    private static JsonDocument Parse(string text) => JsonDocument.Parse(text);
+
+    private static JsonDocument ParseJsonc(string text) => JsonDocument.Parse(text, new JsonDocumentOptions
     {
         CommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
@@ -241,7 +243,7 @@ public class OpenCodeConfigSplicerTests
 
         Assert.Contains("// giữ comment này", result);
         Assert.Contains("// comment trong providers", result);
-        using var doc = Parse(result);
+        using var doc = ParseJsonc(result);
         Assert.True(doc.RootElement.GetProperty("providers")
             .GetProperty("router-balancing").GetProperty("settings").TryGetProperty("timeout", out _));
     }
@@ -249,7 +251,8 @@ public class OpenCodeConfigSplicerTests
     [Fact]
     public void Upsert_DuplicateRouterBalancingBlocks_LeavesExactlyOne()
     {
-        // RF-4: user hand-edit để lại 2 block trong cùng providers → dọn hết, chỉ còn block mới.
+        // RF-4 + review fix: run block trùng nằm CUỐI object từng để lại dấu phẩy thừa;
+        // parse STRICT (không AllowTrailingCommas) mới bắt được — guard của splicer phải chịu được.
         const string input = """
         {
             "provider": {

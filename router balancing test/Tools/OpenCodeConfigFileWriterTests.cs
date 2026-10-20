@@ -149,6 +149,37 @@ public sealed class OpenCodeConfigFileWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteAsync_ReadOnlyTarget_AfterClearingAttribute_RetrySucceeds()
+    {
+        // Review fix: File.Copy giữ attribute nguồn → .bak của lần fail là read-only; nếu writer
+        // không clear thì MỌI lần ghi sau chết ở File.Copy dù user đã bỏ read-only file gốc.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var path = FileIn("readonly-retry.json");
+        const string original = "{ \"plugin\": [] }";
+        await File.WriteAllTextAsync(path, original);
+        File.SetAttributes(path, FileAttributes.ReadOnly);
+        try
+        {
+            await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() => _writer.WriteAsync(path, Block()));
+
+            File.SetAttributes(path, FileAttributes.Normal);
+            var result = await _writer.WriteAsync(path, Block());
+
+            Assert.Equal(path + ".bak", result.BackupPath);
+            Assert.Equal(original, await File.ReadAllTextAsync(result.BackupPath!));
+            Assert.Equal("Router Balancing", ProviderName(await File.ReadAllTextAsync(path)));
+        }
+        finally
+        {
+            File.SetAttributes(path, FileAttributes.Normal);
+        }
+    }
+
+    [Fact]
     public async Task WriteAsync_UnrelatedTextPreserved()
     {
         var path = FileIn("opencode.json");

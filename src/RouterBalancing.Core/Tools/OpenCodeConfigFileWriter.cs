@@ -67,6 +67,12 @@ public sealed class OpenCodeConfigFileWriter : IOpenCodeConfigFileWriter
         var updated = OpenCodeConfigSplicer.Upsert(original, providerBlock);
 
         var backupPath = fullPath + ".bak";
+        if (File.Exists(backupPath))
+        {
+            // File.Copy giữ attribute của nguồn: lần ghi fail giữa đường có thể để lại .bak
+            // read-only, và lần ghi sau sẽ chết ngay ở đích Copy — clear trước để tự phục hồi.
+            File.SetAttributes(backupPath, FileAttributes.Normal);
+        }
         File.Copy(fullPath, backupPath, overwrite: true);
 
         var tempPath = fullPath + ".tmp-" + Guid.NewGuid().ToString("N");
