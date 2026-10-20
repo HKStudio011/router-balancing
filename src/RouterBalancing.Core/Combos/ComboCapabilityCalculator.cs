@@ -82,7 +82,13 @@ public sealed class ComboCapabilityCalculator : IComboCapabilityCalculator
     private static ComboCapabilities FromView(ModelCapabilityView view) =>
         // Enabled=false vẫn tính: capabilities là thông tin mô tả, không phải filter selection.
         // Audio/Video của combo ánh xạ theo chiều INPUT (đúng nghĩa cột SupportsAudio/SupportsVideo cũ).
-        new(null, view.Vision, view.AudioInput, view.VideoInput, view.Reasoning);
+        // List rỗng = view không có khẳng định thuận nào → null (chưa biết), không phải "biết là không có".
+        new(null, view.Vision, view.AudioInput, view.VideoInput, view.Reasoning)
+        {
+            Tools = view.Tools,
+            InputModalities = view.InputModalities.Count > 0 ? view.InputModalities : null,
+            OutputModalities = view.OutputModalities.Count > 0 ? view.OutputModalities : null,
+        };
 
     private static ComboCapabilities Combine(List<ComboCapabilities> members)
     {
@@ -100,11 +106,20 @@ public sealed class ComboCapabilityCalculator : IComboCapabilityCalculator
                 And(acc.Vision, m.Vision),
                 And(acc.Audio, m.Audio),
                 And(acc.Video, m.Video),
-                And(acc.Thinking, m.Thinking));
+                And(acc.Thinking, m.Thinking))
+            {
+                Tools = And(acc.Tools, m.Tools),
+                InputModalities = Intersect(acc.InputModalities, m.InputModalities),
+                OutputModalities = Intersect(acc.OutputModalities, m.OutputModalities),
+            };
         }
 
         return acc;
     }
+
+    /// <summary>Giao hai danh sách khẳng định thuận; một bên chưa rõ (null) → giao cũng chưa rõ.</summary>
+    private static IReadOnlyList<string>? Intersect(IReadOnlyList<string>? a, IReadOnlyList<string>? b) =>
+        a is null || b is null ? null : a.Intersect(b, StringComparer.Ordinal).ToArray();
 
     /// <summary>
     /// AND 3 mức: false "thắng" null vì false = đã rõ là KHÔNG hỗ trợ, null = chưa rõ —
