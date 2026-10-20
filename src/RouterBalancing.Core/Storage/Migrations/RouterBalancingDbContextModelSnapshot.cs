@@ -227,9 +227,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("InputModalities")
-                        .HasColumnType("TEXT");
-
                     b.Property<bool>("IsManual")
                         .HasColumnType("INTEGER");
 
@@ -241,29 +238,8 @@ namespace RouterBalancing.Core.Storage.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("OutputModalities")
-                        .HasColumnType("TEXT");
-
                     b.Property<long>("ProviderId")
                         .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsAudio")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsThink")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool?>("SupportsTools")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsVideo")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SupportsVision")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("ThinkEfforts")
-                        .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 

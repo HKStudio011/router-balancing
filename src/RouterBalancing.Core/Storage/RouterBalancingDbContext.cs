@@ -179,8 +179,9 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
 
         // --- Capability fact (spec capability-model §6): 3 bảng per-source, PK ghép,
         // enum → TEXT chữ thường qua CapabilityNames (token là storage contract, xem §6 DDL).
-        // Cascade theo Models(Id) — xóa model là sạch hết fact ([RF-5]). Cột cũ trên
-        // Models vẫn sống tới Task 11; phase 1 chỉ thêm bảng, chưa dời dữ liệu.
+        // Cascade theo Models(Id) — xóa model là sạch hết fact ([RF-5]). 8 cột capability
+        // legacy trên Models đã được migration DropLegacyModelCapabilityColumns dời dữ liệu
+        // rồi bỏ; từ đây ba bảng fact là nguồn sự thật duy nhất.
         modelBuilder.Entity<ModelCapability>(e =>
         {
             e.HasKey(x => new { x.ModelId, x.Capability });

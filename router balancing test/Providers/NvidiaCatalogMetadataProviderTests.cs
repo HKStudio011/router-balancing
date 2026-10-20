@@ -354,11 +354,6 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         Assert.Equal(10, await db.ModelModalities.CountAsync(m => m.ModelId == model.Id));
         var stored = await db.Models.SingleAsync(m => m.Id == model.Id);
         Assert.Equal(262_000, stored.ContextWindow);
-        // 8 cột legacy không bị provider mới ghi (Task 11 mới bỏ).
-        Assert.Null(stored.SupportsTools);
-        Assert.Null(stored.ThinkEfforts);
-        Assert.Null(stored.InputModalities);
-        Assert.Null(stored.OutputModalities);
     }
 
     [Fact]

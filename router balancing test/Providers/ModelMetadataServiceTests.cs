@@ -410,7 +410,7 @@ public class ModelMetadataServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task TryFillAsync_WritesFactsOnly_NotLegacyColumns()
+    public async Task TryFillAsync_WritesFacts()
     {
         var modelId = await SeedModelAsync();
         var service = ServiceWith(new FixedProvider(
@@ -426,16 +426,5 @@ public class ModelMetadataServiceTests : IDisposable
         Assert.True(view.AudioInput);
         Assert.True(view.VideoInput);
         Assert.Equal(new[] { "high" }, view.Efforts);
-
-        // 8 cột capability cũ nằm im (chỉ còn schema + consumer cũ đọc) cho tới Task 11.
-        var model = await ReadModelAsync(modelId);
-        Assert.Null(model.SupportsTools); // bool? cũ — chưa từng được fill ghi
-        Assert.False(model.SupportsVision);
-        Assert.False(model.SupportsThink);
-        Assert.False(model.SupportsAudio);
-        Assert.False(model.SupportsVideo);
-        Assert.Null(model.ThinkEfforts);
-        Assert.Null(model.InputModalities);
-        Assert.Null(model.OutputModalities);
     }
 }

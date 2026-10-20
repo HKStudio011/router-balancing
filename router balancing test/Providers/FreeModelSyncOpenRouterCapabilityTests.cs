@@ -117,15 +117,11 @@ public class FreeModelSyncOpenRouterCapabilityTests : IDisposable
             Assert.Equal(8, modRows.Count(f => f.KnownAbsent)); // 10 key trừ 2 dòng text present
         }
 
-        // Cột capability cũ KHÔNG còn được ghi (Task 11 mới xoá cột); context_length vẫn là cột.
+        // Context window vẫn là cột scalar của Models — fact capability nằm ở bảng riêng.
         using (var db = _db.CreateDbContext())
         {
             var plainRow = await db.Models.AsNoTracking()
                 .SingleAsync(m => m.ProviderId == providerId && m.ModelId == "vendor/plain-model:free");
-            Assert.Null(plainRow.SupportsTools);
-            Assert.Null(plainRow.ThinkEfforts);
-            Assert.Null(plainRow.InputModalities);
-            Assert.Null(plainRow.OutputModalities);
             Assert.Equal(131072, plainRow.ContextWindow);
         }
     }

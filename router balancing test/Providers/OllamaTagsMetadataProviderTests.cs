@@ -338,18 +338,6 @@ public class OllamaTagsMetadataProviderTests : IDisposable
         Assert.True(view.Vision);
         Assert.Single(view.Modalities); // chỉ (input, image) — R-T6-1
         Assert.Empty(view.ReasoningEfforts);
-
-        using var db = _db.CreateDbContext();
-        var stored = await db.Models.SingleAsync(m => m.Id == model.Id);
-        // Các cột capability cũ không còn được ghi (Task 11 mới bỏ hẳn cột).
-        Assert.Null(stored.SupportsTools);
-        Assert.False(stored.SupportsVision);
-        Assert.False(stored.SupportsThink);
-        Assert.False(stored.SupportsAudio);
-        Assert.False(stored.SupportsVideo);
-        Assert.Null(stored.ThinkEfforts);
-        Assert.Null(stored.InputModalities);
-        Assert.Null(stored.OutputModalities);
     }
 
     private sealed class RecordingLog : ILogService
