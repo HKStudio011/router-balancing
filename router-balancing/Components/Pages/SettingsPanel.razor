@@ -4,6 +4,7 @@
 @using RouterBalancing.Core.Server
 @using RouterBalancing.Core.Settings
 @using RouterBalancing.Core.Storage
+@using RouterBalancing.Core.Tools
 @using RouterBalancing.Core.Update
 @implements IDisposable
 @inject IAppSettingsService Settings
@@ -59,6 +60,22 @@
         <input type="checkbox" @bind="_draft.StartWithWindows" />
         @L["settings.field.startWithWindows"]
     </label>
+
+    @* §9.8: đường dẫn file config opencode — nút "mặc định" trả về ~/.config/opencode/opencode.json *@
+    <div class="mt-3 flex flex-col gap-1 text-sm">
+        <span>@L["settings.field.openCodeConfigPath"]</span>
+        <div class="flex flex-wrap items-center gap-2">
+            <input class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1.5"
+                   spellcheck="false" @bind="_draft.OpenCodeConfigPath" />
+            <button type="button" class="btn btn-outline-secondary" @onclick="ResetOpenCodeConfigPath">
+                @L["settings.action.default"]
+            </button>
+        </div>
+    </div>
+    @if (Error(nameof(SettingsDraft.OpenCodeConfigPath)) is { } openCodePathError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[openCodePathError]</div>
+    }
 
     @if (Error(nameof(SettingsDraft.Language)) is { } languageError)
     {
@@ -315,6 +332,7 @@
     [
         nameof(SettingsDraft.Language),
         nameof(SettingsDraft.Theme),
+        nameof(SettingsDraft.OpenCodeConfigPath),
     ];
     private static readonly string[] ServerFields =
     [
@@ -374,7 +392,11 @@
         UpstreamIdleTimeoutSec = Settings.UpstreamIdleTimeoutSec,
         LogRetentionDays = Settings.LogRetentionDays,
         StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
+        OpenCodeConfigPath = Settings.OpenCodeConfigPath,
     };
+
+    /// <summary>Nút "mặc định" của field đường dẫn config opencode (§9.8).</summary>
+    private void ResetOpenCodeConfigPath() => _draft.OpenCodeConfigPath = OpenCodeConfigPaths.DefaultPath;
 
     private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
 
@@ -402,6 +424,7 @@
         Settings.Set(SettingsKeys.Language, _draft.Language);
         Settings.Set(SettingsKeys.Theme, _draft.Theme);
         Settings.Set(SettingsKeys.CloseToTray, _draft.CloseToTray);
+        Settings.Set(SettingsKeys.OpenCodeConfigPath, _draft.OpenCodeConfigPath);
 
         // Registry có thể bị chính sách máy chặn ghi — lỗi không được chặn cả lượt lưu chung
         try

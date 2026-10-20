@@ -33,4 +33,7 @@ public static class SettingsKeys
 
     /// <summary>Ngưỡng idle-read watchdog upstream — 0..3600 giây, mặc định 300 (0 = tắt watchdog).</summary>
     public const string UpstreamIdleTimeoutSec = "upstreamIdleTimeoutSec";
+
+    /// <summary>Đường dẫn file config opencode app ghi block router-balancing (§9.8) — rỗng = dùng mặc định.</summary>
+    public const string OpenCodeConfigPath = "openCodeConfigPath";
 }

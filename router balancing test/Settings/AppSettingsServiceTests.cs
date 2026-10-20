@@ -1,5 +1,6 @@
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Tools;
 
 namespace router_balancing_test.Settings;
 
@@ -90,5 +91,28 @@ public class AppSettingsServiceTests : IDisposable
         Assert.InRange(service.Port, 0, (taskCount - 1) * 1000 + iterationsPerTask);
         Assert.Equal(service.Theme, reopened.Theme);
         Assert.Equal(service.Port, reopened.Port);
+    }
+
+    [Fact]
+    public void OpenCodeConfigPath_WhenUnset_ReturnsDefault()
+    {
+        using var service = Create();
+
+        Assert.Equal(OpenCodeConfigPaths.DefaultPath, service.OpenCodeConfigPath);
+    }
+
+    [Fact]
+    public void OpenCodeConfigPath_TildeStored_ExpandsToProfile()
+    {
+        using (var service = Create())
+        {
+            service.Set(SettingsKeys.OpenCodeConfigPath, "~");
+        }
+
+        using var reopened = Create();
+
+        Assert.Equal(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            reopened.OpenCodeConfigPath);
     }
 }

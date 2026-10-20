@@ -1,4 +1,5 @@
 using RouterBalancing.Core.Settings;
+using RouterBalancing.Core.Tools;
 
 namespace router_balancing_test.Settings;
 
@@ -15,6 +16,7 @@ public class SettingsValidatorTests
         TransientMaxRetries = 5,
         TransientBackoffBaseMs = 1000,
         UpstreamIdleTimeoutSec = 300,
+        OpenCodeConfigPath = OpenCodeConfigPaths.DefaultPath,
     };
 
     [Fact]
@@ -23,6 +25,24 @@ public class SettingsValidatorTests
         var errors = SettingsValidator.Validate(ValidDraft());
 
         Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Validate_WhenOpenCodeConfigPathEmpty_ReturnsError()
+    {
+        var draft = ValidDraft() with { OpenCodeConfigPath = "" };
+
+        var errors = SettingsValidator.Validate(draft);
+
+        Assert.Equal("settings.error.openCodeConfigPath", errors[nameof(SettingsDraft.OpenCodeConfigPath)]);
+    }
+
+    [Fact]
+    public void Validate_WhenOpenCodeConfigPathValid_ReturnsNoError()
+    {
+        var errors = SettingsValidator.Validate(ValidDraft());
+
+        Assert.False(errors.ContainsKey(nameof(SettingsDraft.OpenCodeConfigPath)));
     }
 
     [Fact]

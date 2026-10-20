@@ -50,6 +50,12 @@ public static class SettingsValidator
         if (draft.UpstreamIdleTimeoutSec is < 0 or > 3600)
             errors[nameof(SettingsDraft.UpstreamIdleTimeoutSec)] = "settings.error.upstreamIdleTimeout";
 
+        // Rỗng = không có đường dẫn để ghi (service có thể fallback mặc định, nhưng UI Save phải chặn
+        // để user thấy ngay field sai thay vì âm thầm quay về mặc định).
+        if (string.IsNullOrWhiteSpace(draft.OpenCodeConfigPath)
+            || draft.OpenCodeConfigPath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+            errors[nameof(SettingsDraft.OpenCodeConfigPath)] = "settings.error.openCodeConfigPath";
+
         return errors;
     }
 }
