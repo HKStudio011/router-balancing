@@ -54,11 +54,11 @@ public sealed record ModelCapabilityView(
     public IReadOnlyList<string> OutputModalities => ModalitiesOf(ModalityDirection.Output);
 
     /// <summary>
-    /// Các mức effort đã biết, sort ordinal. Tách khỏi <see cref="ReasoningEfforts"/> (set,
-    /// dùng cho test membership) vì brief đặt trùng tên hai member — C# không cho phép;
-    /// bản sort tách tên để record shape (positional set) giữ đúng hợp đồng construction.
+    /// Các mức effort đã biết, sort ordinal (R-T3-1). Tách khỏi <see cref="ReasoningEfforts"/>
+    /// (set, dùng cho test membership) vì C# không cho hai member trùng tên; bản sort tách
+    /// tên để record shape (positional set) giữ đúng hợp đồng construction.
     /// </summary>
-    public IReadOnlyList<string> SortedReasoningEfforts =>
+    public IReadOnlyList<string> Efforts =>
         ReasoningEfforts.OrderBy(e => e, StringComparer.Ordinal).ToArray();
 
     /// <summary>Model chưa có bất kỳ phát biểu capability nào — UI/badge hiển thị "không rõ".</summary>

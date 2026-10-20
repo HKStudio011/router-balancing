@@ -5,19 +5,24 @@ namespace RouterBalancing.Core.Tools;
 
 /// <summary>
 /// Model (dữ liệu thuần) để sinh entry config opencode v2 — tách khỏi entity DB
-/// để generator không phụ thuộc EF; tầng service (Task 5) map entity → record này.
+/// để generator không phụ thuộc EF; tầng service map entity + <c>ModelCapabilityView</c>
+/// (Task 4) → record này, mọi danh sách đã parse sẵn.
 /// </summary>
 /// <param name="ModelId">Id model trong app, dùng làm key của object models.</param>
 /// <param name="DisplayName">Tên hiển thị; <see langword="null"/> → dùng <paramref name="ModelId"/>.</param>
 /// <param name="ContextWindow">Context window (token); <see langword="null"/> = không rõ.</param>
 /// <param name="MaxOutputTokens">Trần token output; <see langword="null"/> = không rõ.</param>
-/// <param name="SupportsTools">Model gọi tool được; <see langword="null"/> = không rõ (không emit).</param>
-/// <param name="SupportsVision">Model nhận ảnh; dùng khi <paramref name="InputModalities"/> không parse được.</param>
-/// <param name="SupportsThink">Model suy nghĩ (reasoning) được — quyết định có emit <c>reasoning</c>.</param>
-/// <param name="ThinkEfforts">JSON array mức think effort, ví dụ <c>["toggle","low"]</c>; <see langword="null"/> = không rõ.</param>
-/// <param name="InputModalities">JSON array modalities đầu vào, ví dụ <c>["text","image"]</c>; <see langword="null"/> = không rõ.</param>
-/// <param name="OutputModalities">JSON array modalities đầu ra, ví dụ <c>["text"]</c>; <see langword="null"/> = không rõ.</param>
-public sealed record OpenCodeConfigModel(string ModelId, string? DisplayName, int? ContextWindow, int? MaxOutputTokens, bool? SupportsTools, bool SupportsVision, bool SupportsThink, string? ThinkEfforts, string? InputModalities, string? OutputModalities);
+/// <param name="SupportsTools">Ba trạng thái: <see langword="null"/> = chưa biết (không emit),
+/// <see langword="false"/> = KnownAbsent (emit <c>false</c>), true = emit <c>true</c>.</param>
+/// <param name="SupportsVision">Model nhận ảnh; chỉ dùng làm fallback khi <paramref name="InputModalities"/>
+/// không có khẳng định thuận.</param>
+/// <param name="SupportsThink">Ba trạng thái reasoning; chỉ khi true mới emit <c>reasoning</c>.</param>
+/// <param name="ThinkEfforts">Các mức effort đã biết (rỗng/null = chưa biết — R-T2-2 → không emit
+/// key <c>effort</c>); phần tử <c>"toggle"</c> → emit <c>toggle: true</c>.</param>
+/// <param name="InputModalities">Các modality input khẳng định thuận (rỗng/null = chưa biết →
+/// fallback mặc định theo <paramref name="SupportsVision"/>).</param>
+/// <param name="OutputModalities">Các modality output khẳng định thuận (rỗng/null → mặc định text).</param>
+public sealed record OpenCodeConfigModel(string ModelId, string? DisplayName, int? ContextWindow, int? MaxOutputTokens, bool? SupportsTools, bool? SupportsVision, bool? SupportsThink, IReadOnlyList<string>? ThinkEfforts, IReadOnlyList<string>? InputModalities, IReadOnlyList<string>? OutputModalities);
 
 /// <summary>
 /// Sinh JSON config opencode v2 (thuần, không I/O) cho custom provider trỏ về app:
@@ -91,8 +96,10 @@ public static class OpenCodeConfigGenerator
             ["input"] = ResolveInputModalities(model),
             ["output"] = ResolveOutputModalities(model),
         };
+        // Ba trạng thái (C-I): null = chưa biết → omit; false = KnownAbsent → PHẢI emit false
+        // (client cần biết "chắc chắn không tool" để không chọn nhầm model).
         if (model.SupportsTools is not null) capabilities["tools"] = model.SupportsTools.Value;
-        if (model.SupportsThink) capabilities["reasoning"] = BuildReasoning(model.ThinkEfforts);
+        if (model.SupportsThink is true) capabilities["reasoning"] = BuildReasoning(model.ThinkEfforts);
 
         var entry = new JsonObject { ["name"] = model.DisplayName ?? model.ModelId };
         entry["capabilities"] = capabilities;
@@ -106,34 +113,34 @@ public static class OpenCodeConfigGenerator
         return entry;
     }
 
-    /// <summary>Input modalities: dùng chuỗi đã lưu nếu parse được, không thì mặc định theo vision.</summary>
-    private static JsonArray ResolveInputModalities(OpenCodeConfigModel model)
-    {
-        var stored = TryParseStringArray(model.InputModalities);
-        if (stored is not null) return ToJsonArray(stored);
-        return model.SupportsVision ? ["text", "image"] : ["text"];
-    }
+    /// <summary>
+    /// Input modalities: phát danh sách khẳng định thuận từ view; null/rỗng = chưa biết →
+    /// mặc định theo vision (opencode lúc nào cũng cần key input, không omit).
+    /// </summary>
+    private static JsonArray ResolveInputModalities(OpenCodeConfigModel model) =>
+        model.InputModalities is { Count: > 0 }
+            ? ToJsonArray(model.InputModalities)
+            : model.SupportsVision is true ? ["text", "image"] : ["text"];
 
-    /// <summary>Output modalities: dùng chuỗi đã lưu nếu parse được, không thì mặc định <c>["text"]</c>.</summary>
-    private static JsonArray ResolveOutputModalities(OpenCodeConfigModel model)
-    {
-        var stored = TryParseStringArray(model.OutputModalities);
-        return stored is not null ? ToJsonArray(stored) : ["text"];
-    }
+    /// <summary>Output modalities: như input nhưng mặc định <c>["text"]</c> khi chưa biết.</summary>
+    private static JsonArray ResolveOutputModalities(OpenCodeConfigModel model) =>
+        model.OutputModalities is { Count: > 0 }
+            ? ToJsonArray(model.OutputModalities)
+            : ["text"];
 
     /// <summary>
     /// Reasoning: literal <c>"toggle"</c> trong efforts → <c>toggle: true</c>;
     /// phần còn lại giữ nguyên thứ tự và giá trị (kể cả giá trị lạ ngoài low/medium/high — pass-through).
+    /// R-T2-2: efforts null/rỗng = chưa biết → chỉ emit <c>supported</c>, không emit <c>effort</c>.
     /// </summary>
-    private static JsonObject BuildReasoning(string? thinkEfforts)
+    private static JsonObject BuildReasoning(IReadOnlyList<string>? thinkEfforts)
     {
         var reasoning = new JsonObject { ["supported"] = true };
-        var efforts = TryParseStringArray(thinkEfforts);
-        if (efforts is null) return reasoning;
+        if (thinkEfforts is not { Count: > 0 }) return reasoning;
 
         var toggle = false;
-        var remaining = new List<string>(efforts.Count);
-        foreach (var effort in efforts)
+        var remaining = new List<string>(thinkEfforts.Count);
+        foreach (var effort in thinkEfforts)
         {
             if (string.Equals(effort, "toggle", StringComparison.Ordinal)) toggle = true;
             else remaining.Add(effort);
@@ -141,32 +148,6 @@ public static class OpenCodeConfigGenerator
         if (toggle) reasoning["toggle"] = true;
         if (remaining.Count > 0) reasoning["effort"] = ToJsonArray(remaining);
         return reasoning;
-    }
-
-    /// <summary>
-    /// Parse chuỗi JSON array lưu trong DB (modalities / think efforts) → list string.
-    /// Hỏng/rỗng/toàn phần tử không phải string → <see langword="null"/> (coi như không rõ)
-    /// để caller rơi về mặc định thay vì emit giá trị rác vào config.
-    /// </summary>
-    private static List<string>? TryParseStringArray(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return null;
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Array) return null;
-            var values = new List<string>();
-            foreach (var element in doc.RootElement.EnumerateArray())
-            {
-                if (element.ValueKind == JsonValueKind.String) values.Add(element.GetString()!);
-            }
-            return values.Count == 0 ? null : values;
-        }
-        catch (JsonException)
-        {
-            // Dữ liệu cũ/catalog đổi shape — không làm sập generate vì 1 field metadata hỏng.
-            return null;
-        }
     }
 
     private static JsonArray ToJsonArray(IReadOnlyList<string> values)

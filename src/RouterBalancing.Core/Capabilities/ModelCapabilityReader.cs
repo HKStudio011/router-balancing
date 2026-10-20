@@ -32,6 +32,7 @@ public sealed class ModelCapabilityReader : IModelCapabilityReader
 
     public ModelCapabilityReader(IDbContextFactory<RouterBalancingDbContext> db)
     {
+        ArgumentNullException.ThrowIfNull(db);
         _db = db;
     }
 
@@ -46,6 +47,7 @@ public sealed class ModelCapabilityReader : IModelCapabilityReader
     public async Task<IReadOnlyDictionary<long, ModelCapabilityView>> ReadManyAsync(
         IReadOnlyList<long> modelIds, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(modelIds);
         var views = new Dictionary<long, ModelCapabilityView>();
         if (modelIds.Count == 0) return views;
 
@@ -89,7 +91,9 @@ public sealed class ModelCapabilityReader : IModelCapabilityReader
             var modalityMap = new Dictionary<(ModalityDirection, ModalityKind), bool>();
             foreach (var row in mods)
                 modalityMap[(row.Direction, row.Modality)] = !row.KnownAbsent;
-            var effortSet = new HashSet<string>(efforts.Select(r => r.Level));
+            // R-T3-1: SortedSet + StringComparer.Ordinal — bản thân set iterate ordinal,
+            // consumer không cần qua Efforts mới có thứ tự ổn định.
+            var effortSet = new SortedSet<string>(efforts.Select(r => r.Level), StringComparer.Ordinal);
 
             views[modelId] = new ModelCapabilityView(capabilityMap, modalityMap, effortSet);
         }

@@ -56,7 +56,7 @@ public class ModelCapabilityReaderTests : IDisposable
         Assert.Null(viewA.Vision);
         Assert.Empty(viewA.InputModalities);
         Assert.Empty(viewA.OutputModalities);
-        Assert.Empty(viewA.SortedReasoningEfforts);
+        Assert.Empty(viewA.Efforts);
         Assert.Equal(ModelCapabilityView.Empty, views[idB]);
 
         var single = await _reader.ReadAsync(idA);
@@ -137,7 +137,7 @@ public class ModelCapabilityReaderTests : IDisposable
         Assert.False(view.Modalities.ContainsKey((ModalityDirection.Input, ModalityKind.Image)));
         Assert.False(view.Capabilities.ContainsKey(CapabilityKind.Reasoning));
         Assert.Empty(view.ReasoningEfforts);
-        Assert.Empty(view.SortedReasoningEfforts);
+        Assert.Empty(view.Efforts);
     }
 
     // ---------- thứ tự ổn định của danh sách modality/effort ----------
@@ -166,10 +166,12 @@ public class ModelCapabilityReaderTests : IDisposable
 
     /// <summary>
     /// Efforts sort theo ordinal (brief: "đã sort theo ordinal") — output generator/UI
-    /// phải ổn định bất kể thứ tự dòng trong DB.
+    /// phải ổn định bất kể thứ tự dòng trong DB. R-T3-1: cả bản thân set
+    /// <see cref="ModelCapabilityView.ReasoningEfforts"/> cũng phải iterate ordinal
+    /// (reader dựng bằng SortedSet + StringComparer.Ordinal).
     /// </summary>
     [Fact]
-    public async Task SortedReasoningEfforts_OrdersOrdinalStably()
+    public async Task Efforts_OrdersOrdinalStably()
     {
         var id = await AddModelAsync("reader-efforts-order");
         foreach (var level in new[] { "xhigh", "minimal", "high", "medium", "low" })
@@ -177,7 +179,9 @@ public class ModelCapabilityReaderTests : IDisposable
 
         var view = await _reader.ReadAsync(id);
 
-        Assert.Equal(new[] { "high", "low", "medium", "minimal", "xhigh" }, view.SortedReasoningEfforts);
+        Assert.Equal(new[] { "high", "low", "medium", "minimal", "xhigh" }, view.Efforts);
+        // Set phải tự enumerate theo ordinal — consumer không cần gọi Efforts mới có thứ tự.
+        Assert.Equal(new[] { "high", "low", "medium", "minimal", "xhigh" }, view.ReasoningEfforts);
     }
 
     // ---------- ReadManyAsync: một query cho mỗi bảng (không N+1) ----------

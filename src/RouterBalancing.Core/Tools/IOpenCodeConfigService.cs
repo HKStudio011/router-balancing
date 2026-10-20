@@ -1,16 +1,26 @@
 namespace RouterBalancing.Core.Tools;
 
-/// <summary>Một model trong bảng chọn của trang Tools — dữ liệu đủ để render row, không mang entity EF.</summary>
+/// <summary>
+/// Một model trong bảng chọn của trang Tools — dữ liệu đủ để render row, không mang entity EF.
+/// Capability đến từ <c>ModelCapabilityView</c> (Task 4): ba trạng thái —
+/// <see langword="null"/> = chưa biết (không có fact), <see langword="false"/> = đã biết là không.
+/// </summary>
 /// <param name="Id">Id entity — value của checkbox chọn model.</param>
 /// <param name="ModelId">Model id phía provider, cũng là key trong config opencode.</param>
 /// <param name="DisplayName">Tên hiển thị; <see langword="null"/> → UI/generator fallback về <paramref name="ModelId"/>.</param>
 /// <param name="ContextWindow">Context window (token); <see langword="null"/> = không rõ.</param>
-/// <param name="SupportsTools">Model gọi tool được; <see langword="null"/> = không rõ (badge UI).</param>
-/// <param name="SupportsVision">Model nhận ảnh (badge UI).</param>
-/// <param name="SupportsThink">Model suy nghĩ được (badge UI).</param>
+/// <param name="Tools">Model gọi tool được (badge UI); <see langword="null"/> = chưa biết.</param>
+/// <param name="Reasoning">Model suy nghĩ được (badge UI); <see langword="null"/> = chưa biết.</param>
+/// <param name="Vision">Model nhận ảnh (badge UI); <see langword="null"/> = chưa biết.</param>
+/// <param name="AudioInput">Model nhận audio đầu vào (badge media — Task 10); <see langword="null"/> = chưa biết.</param>
+/// <param name="VideoInput">Model nhận video đầu vào (badge media — Task 10); <see langword="null"/> = chưa biết.</param>
+/// <param name="InputModalities">Các modality input khẳng định thuận (chỉ true, thứ tự ModalityKind
+/// tăng dần); rỗng = không có phát biểu thuận nào.</param>
+/// <param name="OutputModalities">Các modality output khẳng định thuận; rỗng = không có phát biểu thuận.</param>
 public sealed record ToolsModelRow(
     long Id, string ModelId, string? DisplayName, int? ContextWindow,
-    bool? SupportsTools, bool SupportsVision, bool SupportsThink);
+    bool? Tools, bool? Reasoning, bool? Vision, bool? AudioInput, bool? VideoInput,
+    IReadOnlyList<string>? InputModalities, IReadOnlyList<string>? OutputModalities);
 
 /// <summary>
 /// Nhóm model theo provider trong bảng chọn của trang Tools.

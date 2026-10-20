@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Storage;
@@ -18,30 +19,47 @@ public class ComboCapabilityCalculatorTests : IDisposable
     {
         _db = _testDb.CreateFactory();
         DbInitializer.Initialize(_db);
-        _calculator = new ComboCapabilityCalculator(_db);
+        _calculator = new ComboCapabilityCalculator(_db, new ModelCapabilityReader(_db));
     }
 
     public void Dispose() => _testDb.Dispose();
 
-    private async Task<long> SeedModelAsync(int? ctx = null, bool vision = false, bool audio = false,
-        bool video = false, bool think = false, bool enabled = true)
+    /// <summary>
+    /// Seed model + capability qua FACT tables (Task 4: calculator chỉ đọc qua reader).
+    /// bool? = ba trạng thái view: true → dòng KnownAbsent=0, false → dòng KnownAbsent=1,
+    /// null → không dòng (chưa biết). ContextWindow vẫn là cột trên Models (không thuộc capability model).
+    /// </summary>
+    private async Task<long> SeedModelAsync(int? ctx = null, bool? vision = null, bool? audio = null,
+        bool? video = null, bool? think = null, bool enabled = true)
     {
         using var db = _db.CreateDbContext();
         var provider = new Provider { Name = $"P{_providerSeq++}", Type = ProviderType.OpenAI, BaseUrl = "https://api.example.com" };
-        provider.Models.Add(new Model
-        {
-            ModelId = "m",
-            ContextWindow = ctx,
-            SupportsVision = vision,
-            SupportsAudio = audio,
-            SupportsVideo = video,
-            SupportsThink = think,
-            Enabled = enabled,
-        });
+        provider.Models.Add(new Model { ModelId = "m", ContextWindow = ctx, Enabled = enabled });
         db.Providers.Add(provider);
         await db.SaveChangesAsync();
-        return provider.Models[0].Id;
+
+        var modelId = provider.Models[0].Id;
+        if (vision is not null) SeedModality(db, modelId, ModalityKind.Image, vision.Value);
+        if (audio is not null) SeedModality(db, modelId, ModalityKind.Audio, audio.Value);
+        if (video is not null) SeedModality(db, modelId, ModalityKind.Video, video.Value);
+        if (think is not null) SeedCapability(db, modelId, CapabilityKind.Reasoning, think.Value);
+        await db.SaveChangesAsync();
+        return modelId;
     }
+
+    private static void SeedModality(RouterBalancingDbContext db, long modelId, ModalityKind kind, bool supported) =>
+        db.ModelModalities.Add(new ModelModality
+        {
+            ModelId = modelId, Direction = ModalityDirection.Input, Modality = kind,
+            KnownAbsent = !supported, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+    private static void SeedCapability(RouterBalancingDbContext db, long modelId, CapabilityKind kind, bool supported) =>
+        db.ModelCapabilities.Add(new ModelCapability
+        {
+            ModelId = modelId, Capability = kind,
+            KnownAbsent = !supported, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
+        });
 
     private async Task<long> SeedComboAsync(string name, params ComboItem[] items)
     {
@@ -63,7 +81,7 @@ public class ComboCapabilityCalculatorTests : IDisposable
     private static ComboItem ItemToCombo(long comboId) => new() { TargetComboId = comboId };
 
     [Fact]
-    public async Task ComputeAll_SingleModelMember_CopiesEntityValues()
+    public async Task ComputeAll_SingleModelMember_CopiesFactValues()
     {
         var modelId = await SeedModelAsync(ctx: 128_000, vision: true, audio: true, video: false, think: false);
         var comboId = await SeedComboAsync("combo", ItemToModel(modelId));
