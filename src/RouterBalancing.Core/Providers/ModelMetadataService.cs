@@ -130,7 +130,11 @@ internal static class MetadataPatchMapper
             modalities[(direction, kind)] = false;
         foreach (var token in tokens)
         {
-            if (CapabilityNames.TryFromDb(token, out ModalityKind kind))
+            // Provider giữ case gốc ("Text"/"Image"), còn từ vựng DB so khớp tuyệt đối
+            // lowercase — normalize để token hợp lệ khác case vẫn bật positive thay vì
+            // bị vòng negative phía trên ghi đè (regression mixed-case).
+            var normalized = token.Trim().ToLowerInvariant();
+            if (CapabilityNames.TryFromDb(normalized, out ModalityKind kind))
                 modalities[(direction, kind)] = true;
         }
     }

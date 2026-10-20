@@ -297,6 +297,52 @@ public class ModelMetadataServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task TryFillAsync_MixedCaseModalityTokens_IncompleteProvider_PreservesPositiveVision()
+    {
+        var modelId = await SeedModelAsync();
+        // Regression: endpoint giữ case gốc ("Text"/"Image"), còn CapabilityNames.TryFromDb
+        // so khớp tuyệt đối. Mapper phải normalize trước khi tra từ vựng, nếu không list sẽ
+        // ghi Image=false đè lên SupportsVision=true.
+        var service = ServiceWith(new FixedProvider(
+            new ModelMetadata(null, SupportsVision: true, SupportsThink: null, ThinkEfforts: null,
+                InputModalities: ["Text", "Image"], OutputModalities: null),
+            returnsCompleteFacts: false));
+
+        await service.TryFillAsync(modelId);
+
+        var view = await Reader.ReadAsync(modelId);
+        Assert.True(view.Supports(ModalityDirection.Input, ModalityKind.Text));
+        Assert.True(view.Supports(ModalityDirection.Input, ModalityKind.Image));
+        // Probe positive-only: không có audio trong list = chưa biết, không được sinh negative.
+        Assert.Null(view.AudioInput);
+        using var db = _db.CreateDbContext();
+        Assert.Empty(await db.ModelModalities.Where(m =>
+            m.ModelId == modelId
+            && m.Direction == ModalityDirection.Input
+            && m.Modality == ModalityKind.Audio).ToListAsync());
+    }
+
+    [Fact]
+    public async Task TryFillAsync_MixedCaseModalityTokens_CompleteProvider_WritesCorrectNegatives()
+    {
+        var modelId = await SeedModelAsync();
+        // Full-list: list có mặt nghĩa là các modality không được nhắc (audio/video/file)
+        // là "đã biết là không"; token mixed-case vẫn phải bật đúng positive text/image.
+        var service = ServiceWith(new FixedProvider(
+            new ModelMetadata(null, SupportsVision: true, SupportsThink: null, ThinkEfforts: null,
+                InputModalities: ["Text", "Image"], OutputModalities: null),
+            returnsCompleteFacts: true));
+
+        await service.TryFillAsync(modelId);
+
+        var view = await Reader.ReadAsync(modelId);
+        Assert.True(view.Supports(ModalityDirection.Input, ModalityKind.Text));
+        Assert.True(view.Supports(ModalityDirection.Input, ModalityKind.Image));
+        Assert.False(view.AudioInput);
+        Assert.False(view.VideoInput);
+    }
+
+    [Fact]
     public async Task TryFillAsync_CompleteProvider_ToolsFalse_WritesKnownAbsent()
     {
         var modelId = await SeedModelAsync();
