@@ -19,6 +19,24 @@ public sealed record ModelCapabilityView(
     IReadOnlyDictionary<(ModalityDirection Direction, ModalityKind Modality), bool> Modalities,
     IReadOnlySet<string> ReasoningEfforts)
 {
+    private static readonly IReadOnlyDictionary<CapabilityKind, CapabilitySource> NoCapabilitySources =
+        new Dictionary<CapabilityKind, CapabilitySource>();
+
+    private static readonly IReadOnlyDictionary<(ModalityDirection Direction, ModalityKind Modality), CapabilitySource> NoModalitySources =
+        new Dictionary<(ModalityDirection, ModalityKind), CapabilitySource>();
+
+    /// <summary>
+    /// Nguồn của từng dòng capability (C-E): UI hiện catalog/endpoint/user để user biết
+    /// giá trị đang thấy đến từ đâu. Model không có dòng → không có key trong map.
+    /// Init-only thay vì positional để mọi construction cũ và <see cref="Empty"/> vẫn hợp lệ.
+    /// </summary>
+    public IReadOnlyDictionary<CapabilityKind, CapabilitySource> CapabilitySources { get; init; } =
+        NoCapabilitySources;
+
+    /// <summary>Nguồn của từng dòng modality theo chiều — cùng quy ước với <see cref="CapabilitySources"/>.</summary>
+    public IReadOnlyDictionary<(ModalityDirection Direction, ModalityKind Modality), CapabilitySource> ModalitySources { get; init; } =
+        NoModalitySources;
+
     /// <summary>View không có bất kỳ phát biểu nào — model chưa có dòng fact (reader trả về cho model trống).</summary>
     public static ModelCapabilityView Empty { get; } = new(
         new Dictionary<CapabilityKind, bool>(),
@@ -63,6 +81,14 @@ public sealed record ModelCapabilityView(
 
     /// <summary>Model chưa có bất kỳ phát biểu capability nào — UI/badge hiển thị "không rõ".</summary>
     public bool IsEmpty => Capabilities.Count == 0 && Modalities.Count == 0 && ReasoningEfforts.Count == 0;
+
+    /// <summary>Nguồn của dòng capability; <see langword="null"/> = chưa có phát biểu.</summary>
+    public CapabilitySource? SourceOf(CapabilityKind kind) =>
+        CapabilitySources.TryGetValue(kind, out var source) ? source : null;
+
+    /// <summary>Nguồn của dòng modality theo chiều; <see langword="null"/> = chưa có phát biểu.</summary>
+    public CapabilitySource? SourceOf(ModalityDirection direction, ModalityKind modality) =>
+        ModalitySources.TryGetValue((direction, modality), out var source) ? source : null;
 
     private static bool? Get<TKey>(IReadOnlyDictionary<TKey, bool> map, TKey key) =>
         map.TryGetValue(key, out var value) ? value : null;

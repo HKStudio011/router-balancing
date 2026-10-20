@@ -39,10 +39,14 @@ public class ModelMetadataServiceTests : IDisposable
         return await db.Models.SingleAsync(m => m.Id == modelId);
     }
 
-    private sealed class FixedProvider(ModelMetadata? result, bool returnsCompleteFacts = false) : IModelMetadataProvider
+    private sealed class FixedProvider(
+        ModelMetadata? result,
+        bool returnsCompleteFacts = false,
+        CapabilitySource source = CapabilitySource.Catalog) : IModelMetadataProvider
     {
         public int Calls { get; private set; }
         public bool ReturnsCompleteFacts { get; } = returnsCompleteFacts;
+        public CapabilitySource Source { get; } = source;
 
         public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default)
         {
@@ -56,6 +60,7 @@ public class ModelMetadataServiceTests : IDisposable
     {
         public ProxyTarget? CapturedTarget { get; private set; }
         public bool ReturnsCompleteFacts => false;
+        public CapabilitySource Source => CapabilitySource.Catalog;
 
         public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default)
         {
@@ -98,6 +103,33 @@ public class ModelMetadataServiceTests : IDisposable
         Assert.Equal(128_000, (await ReadModelAsync(modelId)).ContextWindow);
         // Bước 1 trả non-null → service dừng, bước 2 không chạy (fact của nó không được ghi)
         Assert.Equal(0, second.Calls);
+    }
+
+    [Fact]
+    public async Task TryFillAsync_EndpointProvider_WritesEndpointSourceWithoutNegatives()
+    {
+        var modelId = await SeedModelAsync();
+        var endpoint = new FixedProvider(
+            new ModelMetadata(
+                null, SupportsVision: true, SupportsThink: null,
+                ThinkEfforts: null, InputModalities: ["text", "image"], OutputModalities: null,
+                SupportsTools: true),
+            returnsCompleteFacts: false,
+            source: CapabilitySource.Endpoint);
+        var service = ServiceWith(endpoint);
+
+        await service.TryFillAsync(modelId);
+
+        var view = await Reader.ReadAsync(modelId);
+        Assert.True(view.Tools);
+        Assert.True(view.Vision);
+        Assert.Equal(CapabilitySource.Endpoint, view.SourceOf(CapabilityKind.Tools));
+        Assert.Equal(CapabilitySource.Endpoint, view.SourceOf(ModalityDirection.Input, ModalityKind.Image));
+        // Endpoint không phải full-list → không được sinh KnownAbsent cho modality vắng mặt.
+        Assert.Null(view.Supports(ModalityDirection.Input, ModalityKind.Audio));
+        Assert.DoesNotContain(
+            (ModalityDirection.Input, ModalityKind.Audio),
+            view.Modalities.Keys);
     }
 
     [Fact]

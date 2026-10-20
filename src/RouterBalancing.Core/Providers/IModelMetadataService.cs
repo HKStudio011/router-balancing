@@ -8,7 +8,8 @@ public interface IModelMetadataService
 {
     /// <summary>
     /// Chạy chain metadata: ghi <c>ContextWindow</c> khi còn trống và ghi capability fact
-    /// qua <see cref="Capabilities.IModelCapabilityWriter"/> (nguồn <c>Catalog</c>).
+    /// qua <see cref="Capabilities.IModelCapabilityWriter"/> với nguồn do bước thắng khai báo
+    /// (<see cref="IModelMetadataProvider.Source"/> — Catalog hoặc Endpoint).
     /// Lỗi (mạng, DPAPI, model biến mất) được log warning và nuốt — model đã lưu vẫn OK.
     /// </summary>
     Task TryFillAsync(long modelId, CancellationToken ct = default);
@@ -24,4 +25,13 @@ public interface IModelMetadataService
     /// </param>
     /// <returns>Số model có view rỗng trước đợt và không còn rỗng sau đợt.</returns>
     Task<int> FillMissingAsync(long providerId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Đặt lại capability của model theo catalog: xóa toàn bộ fact (kể cả user) rồi chạy
+    /// chain metadata. <c>ContextWindow</c>/<c>MaxOutputTokens</c> là scalar, không bị xóa.
+    /// User fact bị mất có chủ đích kể cả khi chain không tìm lại được gì.
+    /// </summary>
+    /// <param name="modelId">PK <c>Models.Id</c>; model không tồn tại → không làm gì.</param>
+    /// <param name="ct">Token hủy của caller.</param>
+    Task ResetToCatalogAsync(long modelId, CancellationToken ct = default);
 }

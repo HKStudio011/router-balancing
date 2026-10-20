@@ -37,6 +37,16 @@ public class ProviderEndpointMetadataProviderTests
          new Model { ProviderId = 1, ModelId = "gpt-4o" });
 
     [Fact]
+    public void Source_IsEndpointAndNotCompleteList()
+    {
+        var provider = new ProviderEndpointMetadataProvider(
+            new StubFactory(new JsonHandler("{}")), new DpapiSecretProtector());
+
+        Assert.Equal(RouterBalancing.Core.Capabilities.CapabilitySource.Endpoint, provider.Source);
+        Assert.False(provider.ReturnsCompleteFacts);
+    }
+
+    [Fact]
     public async Task FetchAsync_WhenEndpointReturnsContextWindow_ParsesMetadata()
     {
         var handler = new JsonHandler("""

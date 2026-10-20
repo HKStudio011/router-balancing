@@ -1,3 +1,4 @@
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 
 namespace RouterBalancing.Core.Providers;
@@ -33,16 +34,23 @@ public interface IModelService
     /// <summary>Bật/tắt toàn bộ models của provider.</summary>
     Task SetAllEnabledAsync(long providerId, bool enabled, CancellationToken ct = default);
 
-    /// <summary>Cập nhật capabilities tay (Context window, Vision, Think, Audio, Video) — user sửa inline ở UI.</summary>
+    /// <summary>
+    /// Ghi lựa chọn tay của user: scalar limits + capability/modality qua writer với <c>Source=User</c>.
+    /// Chỉ key có trong <paramref name="patch"/> mới bị đụng — UI dựng patch theo diff so với
+    /// baseline để không biến các fact catalog/endpoint không đổi thành User.
+    /// </summary>
     /// <param name="modelId">Id model cần sửa.</param>
     /// <param name="contextWindow"><see langword="null"/> = xóa giá trị; hợp lệ 1..10_000_000.</param>
-    /// <param name="supportsVision">Model có nhận input ảnh không.</param>
-    /// <param name="supportsThink">Model có chế độ suy luận không.</param>
-    /// <param name="supportsAudio">Model có nhận input audio không.</param>
-    /// <param name="supportsVideo">Model có nhận input video không.</param>
+    /// <param name="maxOutputTokens"><see langword="null"/> = xóa giá trị; hợp lệ 1..10_000_000.</param>
+    /// <param name="patch">Phát biểu user thêm/sửa; <see cref="CapabilityPatch.ClearKeys"/> = trả về "chưa rõ".</param>
     /// <param name="ct">Token hủy.</param>
-    /// <exception cref="ArgumentOutOfRangeException">Khi <paramref name="contextWindow"/> ngoài 1..10_000_000.</exception>
+    /// <exception cref="ArgumentNullException">Khi <paramref name="patch"/> null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Khi context/max output ngoài 1..10_000_000.</exception>
     /// <exception cref="KeyNotFoundException">Khi model không tồn tại.</exception>
-    Task UpdateCapabilitiesAsync(long modelId, int? contextWindow, bool supportsVision, bool supportsThink,
-        bool supportsAudio, bool supportsVideo, CancellationToken ct = default);
+    /// <remarks>
+    /// Fact được ghi trước qua transaction của writer, sau đó scalar được lưu ở context riêng —
+    /// hai bước không nguyên tử với nhau. Lỗi DB ở bước scalar có thể để lại fact đã ghi.
+    /// </remarks>
+    Task SetCapabilitiesAsync(long modelId, int? contextWindow, int? maxOutputTokens,
+        CapabilityPatch patch, CancellationToken ct = default);
 }

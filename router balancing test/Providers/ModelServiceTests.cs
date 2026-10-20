@@ -56,7 +56,8 @@ public class ModelServiceTests : IDisposable
     {
         metadata ??= new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
             new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
-        return new ModelService(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog(), metadata);
+        return new ModelService(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog(),
+            metadata, new ModelCapabilityWriter(_db, new NullLog()));
     }
 
     /// <summary>Ghi lại lời gọi fill để assert button semantics mà không cần HTTP/DB fact.</summary>
@@ -76,12 +77,16 @@ public class ModelServiceTests : IDisposable
             FillMissingCalls.Add(providerId);
             return Task.FromResult(0);
         }
+
+        public Task ResetToCatalogAsync(long modelId, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     /// <summary>Catalog stub không biết gì — tests CRUD không quan tâm metadata.</summary>
     private sealed class NoopMetadata : IModelMetadataProvider
     {
         public bool ReturnsCompleteFacts => false;
+
+        public CapabilitySource Source => CapabilitySource.Catalog;
 
         public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default) =>
             Task.FromResult<ModelMetadata?>(null);
@@ -169,7 +174,8 @@ public class ModelServiceTests : IDisposable
         var probe = new ProbeRecordingHandler("""{"data":[]}""");
         var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
             new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
-        var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
+        var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata,
+            new ModelCapabilityWriter(_db, new NullLog()));
 
         await service.FetchFromProviderAsync(providerId);
 
@@ -202,7 +208,8 @@ public class ModelServiceTests : IDisposable
         var probe = new ProbeRecordingHandler("""{"data":[]}""");
         var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
             new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
-        var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
+        var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata,
+            new ModelCapabilityWriter(_db, new NullLog()));
 
         await service.FetchFromProviderAsync(providerId);
 
@@ -348,123 +355,5 @@ public class ModelServiceTests : IDisposable
 
         using var db2 = _db.CreateDbContext();
         Assert.False((await db2.Models.SingleAsync(m => m.ModelId == "a")).Enabled);
-    }
-
-    [Fact]
-    public async Task UpdateCapabilities_WhenNewValues_PersistsAllThree()
-    {
-        var providerId = await SeedProviderAsync("a");
-        var service = ServiceWith("{}");
-        long modelId;
-        using (var db = _db.CreateDbContext())
-        {
-            modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
-        }
-
-        await service.UpdateCapabilitiesAsync(modelId, 128_000, supportsVision: true, supportsThink: true,
-            supportsAudio: false, supportsVideo: false);
-
-        using var db2 = _db.CreateDbContext();
-        var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
-        Assert.Equal(128_000, saved.ContextWindow);
-        Assert.True(saved.SupportsVision);
-        Assert.True(saved.SupportsThink);
-        Assert.Equal(providerId, saved.ProviderId); // không đụng quan hệ
-    }
-
-    [Fact]
-    public async Task UpdateCapabilities_WhenAudioVideoSet_PersistsBoth()
-    {
-        await SeedProviderAsync("a");
-        var service = ServiceWith("{}");
-        long modelId;
-        using (var db = _db.CreateDbContext())
-        {
-            modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
-        }
-
-        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null,
-            supportsVision: false, supportsThink: false, supportsAudio: true, supportsVideo: true);
-
-        using var db2 = _db.CreateDbContext();
-        var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
-        Assert.True(saved.SupportsAudio);
-        Assert.True(saved.SupportsVideo);
-    }
-
-    [Fact]
-    public async Task UpdateCapabilities_WhenAudioVideoCleared_ClearsBoth()
-    {
-        await SeedProviderAsync("a");
-        var service = ServiceWith("{}");
-        long modelId;
-        using (var db = _db.CreateDbContext())
-        {
-            modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
-        }
-        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null,
-            supportsVision: false, supportsThink: false, supportsAudio: true, supportsVideo: true);
-
-        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null,
-            supportsVision: false, supportsThink: false, supportsAudio: false, supportsVideo: false);
-
-        using var db2 = _db.CreateDbContext();
-        var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
-        Assert.False(saved.SupportsAudio);
-        Assert.False(saved.SupportsVideo);
-    }
-
-    [Fact]
-    public async Task UpdateCapabilities_WhenContextNull_ClearsValue()
-    {
-        await SeedProviderAsync("a");
-        var service = ServiceWith("{}");
-        long modelId;
-        using (var db = _db.CreateDbContext())
-        {
-            modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
-        }
-        await service.UpdateCapabilitiesAsync(modelId, 64_000, supportsVision: false, supportsThink: false,
-            supportsAudio: false, supportsVideo: false);
-
-        // Ô trống trong UI → null = clear (fill chain không tự chạy lại — chấp nhận theo spec §3.1)
-        await service.UpdateCapabilitiesAsync(modelId, contextWindow: null, supportsVision: false, supportsThink: false,
-            supportsAudio: false, supportsVideo: false);
-
-        using var db2 = _db.CreateDbContext();
-        var saved = await db2.Models.SingleAsync(m => m.Id == modelId);
-        Assert.Null(saved.ContextWindow);
-        Assert.False(saved.SupportsVision);
-        Assert.False(saved.SupportsThink);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    [InlineData(10_000_001)]
-    public async Task UpdateCapabilities_WhenContextOutOfRange_ThrowsArgumentOutOfRange(int badValue)
-    {
-        await SeedProviderAsync("a");
-        var service = ServiceWith("{}");
-        long modelId;
-        using (var db = _db.CreateDbContext())
-        {
-            modelId = (await db.Models.SingleAsync(m => m.ModelId == "a")).Id;
-        }
-
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            service.UpdateCapabilitiesAsync(modelId, badValue, supportsVision: false, supportsThink: false,
-                supportsAudio: false, supportsVideo: false));
-    }
-
-    [Fact]
-    public async Task UpdateCapabilities_WhenModelUnknown_ThrowsKeyNotFound()
-    {
-        await SeedProviderAsync("a");
-        var service = ServiceWith("{}");
-
-        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
-            service.UpdateCapabilitiesAsync(modelId: 999_999, contextWindow: 1000,
-                supportsVision: false, supportsThink: false, supportsAudio: false, supportsVideo: false));
     }
 }

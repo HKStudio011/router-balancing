@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 
@@ -38,6 +39,9 @@ public sealed class OllamaTagsMetadataProvider : IModelMetadataProvider
 
     /// <inheritdoc/>
     public bool ReturnsCompleteFacts => true;
+
+    /// <inheritdoc/>
+    public CapabilitySource Source => CapabilitySource.Catalog;
 
     /// <inheritdoc/>
     public async Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default)

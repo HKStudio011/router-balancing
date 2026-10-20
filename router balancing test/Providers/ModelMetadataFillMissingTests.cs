@@ -71,6 +71,7 @@ public class ModelMetadataFillMissingTests : IDisposable
         }
 
         public bool ReturnsCompleteFacts => false;
+        public CapabilitySource Source => CapabilitySource.Catalog;
 
         public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default)
         {

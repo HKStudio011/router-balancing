@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Security;
 
@@ -7,7 +8,7 @@ namespace RouterBalancing.Core.Providers;
 /// <summary>
 /// Bước 1: GET {base}/v1/models/{id} — thử parse field mà một số gateway
 /// (OpenRouter, Together, v.v.) trả thêm. Shape "sạch" của OpenAI gốc không có
-/// capabilities → trả null, nhường static catalog.
+/// capabilities → trả null, nhường bước sau trong chain (Ollama/NVIDIA catalog).
 /// </summary>
 public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
 {
@@ -23,6 +24,9 @@ public sealed class ProviderEndpointMetadataProvider : IModelMetadataProvider
 
     /// <inheritdoc/>
     public bool ReturnsCompleteFacts => false;
+
+    /// <inheritdoc/>
+    public CapabilitySource Source => CapabilitySource.Endpoint;
 
     /// <inheritdoc/>
     public async Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default)

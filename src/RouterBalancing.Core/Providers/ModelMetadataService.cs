@@ -86,7 +86,7 @@ public sealed class ModelMetadataService : IModelMetadataService
                 // (R-T7-2: lấy từ chính provider, không lấy từ Entry của preset).
                 await _capabilities.ApplyAsync(
                     model.Id,
-                    CapabilitySource.Catalog,
+                    provider.Source,
                     MetadataPatchMapper.From(meta),
                     provider.ReturnsCompleteFacts,
                     ct);
@@ -156,6 +156,16 @@ public sealed class ModelMetadataService : IModelMetadataService
         // Đếm bằng đúng MỘT ReadManyAsync sau đợt (không đọc từng model).
         var after = await _reader.ReadManyAsync(candidates, ct);
         return candidates.Count(id => after.TryGetValue(id, out var view) && !view.IsEmpty);
+    }
+
+    /// <inheritdoc />
+    public async Task ResetToCatalogAsync(long modelId, CancellationToken ct = default)
+    {
+        // Xóa trước rồi mới fill: chain chỉ ghi được dòng chưa có hoặc dòng cùng nguồn
+        // (C-E), nên nếu giữ user fact thì reset sẽ không lấy lại được catalog.
+        await _capabilities.ClearAllAsync(modelId, ct);
+        _log.Info($"Capability facts cleared for model {modelId}; refilling from catalog chain.");
+        await TryFillAsync(modelId, ct);
     }
 }
 

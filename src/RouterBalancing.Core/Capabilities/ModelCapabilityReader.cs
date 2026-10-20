@@ -86,16 +86,28 @@ public sealed class ModelCapabilityReader : IModelCapabilityReader
             }
 
             var capabilityMap = new Dictionary<CapabilityKind, bool>();
+            var capabilitySources = new Dictionary<CapabilityKind, CapabilitySource>();
             foreach (var row in caps)
+            {
                 capabilityMap[row.Capability] = !row.KnownAbsent;
+                capabilitySources[row.Capability] = row.Source;
+            }
             var modalityMap = new Dictionary<(ModalityDirection, ModalityKind), bool>();
+            var modalitySources = new Dictionary<(ModalityDirection, ModalityKind), CapabilitySource>();
             foreach (var row in mods)
+            {
                 modalityMap[(row.Direction, row.Modality)] = !row.KnownAbsent;
+                modalitySources[(row.Direction, row.Modality)] = row.Source;
+            }
             // R-T3-1: SortedSet + StringComparer.Ordinal — bản thân set iterate ordinal,
             // consumer không cần qua Efforts mới có thứ tự ổn định.
             var effortSet = new SortedSet<string>(efforts.Select(r => r.Level), StringComparer.Ordinal);
 
-            views[modelId] = new ModelCapabilityView(capabilityMap, modalityMap, effortSet);
+            views[modelId] = new ModelCapabilityView(capabilityMap, modalityMap, effortSet)
+            {
+                CapabilitySources = capabilitySources,
+                ModalitySources = modalitySources,
+            };
         }
 
         return views;

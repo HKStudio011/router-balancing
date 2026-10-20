@@ -67,6 +67,9 @@ public sealed class NvidiaCatalogMetadataProvider : IModelMetadataProvider
     public bool ReturnsCompleteFacts => true;
 
     /// <inheritdoc/>
+    public CapabilitySource Source => CapabilitySource.Catalog;
+
+    /// <inheritdoc/>
     public async Task<ModelMetadata?> FetchAsync(
         Provider provider, Model model, CancellationToken ct = default)
     {

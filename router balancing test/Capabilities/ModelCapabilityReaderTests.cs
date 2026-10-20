@@ -114,6 +114,41 @@ public class ModelCapabilityReaderTests : IDisposable
         Assert.True(view.ReasoningEfforts.SetEquals(new[] { "high" }));
     }
 
+    [Fact]
+    public async Task ReadAsync_ExposesSourceForCapabilitiesAndModalities()
+    {
+        var id = await AddModelAsync("reader-sources");
+        await SeedCapabilityAsync(id, CapabilityKind.Tools, knownAbsent: false, CapabilitySource.Catalog);
+        await SeedCapabilityAsync(id, CapabilityKind.Reasoning, knownAbsent: true, CapabilitySource.User);
+        await SeedModalityAsync(id, ModalityDirection.Input, ModalityKind.Image, knownAbsent: false, CapabilitySource.Endpoint);
+        await SeedModalityAsync(id, ModalityDirection.Output, ModalityKind.Audio, knownAbsent: false, CapabilitySource.User);
+        await SeedEffortAsync(id, "high", CapabilitySource.Catalog);
+
+        var view = await _reader.ReadAsync(id);
+
+        Assert.Equal(CapabilitySource.Catalog, view.SourceOf(CapabilityKind.Tools));
+        Assert.Equal(CapabilitySource.User, view.SourceOf(CapabilityKind.Reasoning));
+        Assert.Equal(CapabilitySource.Endpoint, view.SourceOf(ModalityDirection.Input, ModalityKind.Image));
+        Assert.Equal(CapabilitySource.User, view.SourceOf(ModalityDirection.Output, ModalityKind.Audio));
+        // Không có dòng → không bịa nguồn (kể cả khi model có fact ở mục khác).
+        Assert.Null(view.SourceOf(ModalityDirection.Output, ModalityKind.Video));
+        Assert.Null(view.SourceOf(ModalityDirection.Input, ModalityKind.File));
+    }
+
+    [Fact]
+    public async Task ReadAsync_UnknownFactHasNullSource()
+    {
+        var id = await AddModelAsync("reader-no-source");
+
+        var view = await _reader.ReadAsync(id);
+
+        Assert.Null(view.SourceOf(CapabilityKind.Tools));
+        Assert.Null(view.SourceOf(CapabilityKind.Reasoning));
+        Assert.Null(view.SourceOf(ModalityDirection.Input, ModalityKind.Image));
+        Assert.Empty(view.CapabilitySources);
+        Assert.Empty(view.ModalitySources);
+    }
+
     /// <summary>
     /// [RF-1] Không có dòng fact = chưa biết — view không được biến "không biết" thành
     /// "biết là không" (C-I). R-T2-2: ReasoningEfforts rỗng = chưa biết, không phải
