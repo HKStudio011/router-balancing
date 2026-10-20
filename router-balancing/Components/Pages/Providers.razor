@@ -8,6 +8,7 @@
 @inject IProviderAccountService AccountSvc
 @inject IModelService ModelSvc
 @inject IFreeModelSyncService FreeSyncSvc
+@inject IModelMetadataService MetadataSvc
 @inject LocalizationService L
 @inject ToastService Toast
 @inject ILogService Log
@@ -106,7 +107,7 @@ else
                                     <button type="button" class="btn btn-outline-secondary"
                                             disabled="@(_busy || _syncingId == p.Id)"
                                             @onclick="() => SyncFreeModelsAsync(p)">
-                                        @L["providers.sync.now"]
+                                        @(_syncingId == p.Id ? L["providers.syncing"] : L["providers.sync.now"])
                                     </button>
                                 }
                                 <button type="button" class="btn btn-outline-secondary"
@@ -932,7 +933,9 @@ else
         try
         {
             var count = await FreeSyncSvc.SyncProviderAsync(provider.Id);
-            Toast.Show(string.Format(L["providers.sync.success"], count), ToastSeverity.Success);
+            // R-T8-3: bulk fill gắn với nút bấm tay; periodic sync (worker) giữ nguyên.
+            var filled = await MetadataSvc.FillMissingAsync(provider.Id);
+            Toast.Show(string.Format(L["providers.sync.successFilled"], count, filled), ToastSeverity.Success);
             // LoadAsync giữ nguyên trạng thái expand/ trang — không ép mở row như ReloadKeepExpandAsync
             await LoadAsync();
         }
@@ -1046,8 +1049,8 @@ else
         _fetchingId = provider.Id;
         try
         {
-            var (added, skipped) = await ModelSvc.FetchFromProviderAsync(provider.Id);
-            Toast.Show(string.Format(L["models.result.added"], added, skipped), ToastSeverity.Success);
+            var (added, skipped, filled) = await ModelSvc.FetchFromProviderAsync(provider.Id);
+            Toast.Show(string.Format(L["models.result.fetched"], added, skipped, filled), ToastSeverity.Success);
             await ReloadKeepExpandAsync(provider.Id);
         }
         catch (HttpRequestException ex)

@@ -52,11 +52,30 @@ public class ModelServiceTests : IDisposable
         }
     }
 
-    private ModelService ServiceWith(string json)
+    private ModelService ServiceWith(string json, IModelMetadataService? metadata = null)
     {
-        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
-            new ModelCapabilityWriter(_db, new NullLog()));
+        metadata ??= new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
+            new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
         return new ModelService(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog(), metadata);
+    }
+
+    /// <summary>Ghi lại lời gọi fill để assert button semantics mà không cần HTTP/DB fact.</summary>
+    private sealed class TrackingMetadataService : IModelMetadataService
+    {
+        public List<long> TryFillCalls { get; } = [];
+        public List<long> FillMissingCalls { get; } = [];
+
+        public Task TryFillAsync(long modelId, CancellationToken ct = default)
+        {
+            TryFillCalls.Add(modelId);
+            return Task.CompletedTask;
+        }
+
+        public Task<int> FillMissingAsync(long providerId, CancellationToken ct = default)
+        {
+            FillMissingCalls.Add(providerId);
+            return Task.FromResult(0);
+        }
     }
 
     /// <summary>Catalog stub không biết gì — tests CRUD không quan tâm metadata.</summary>
@@ -103,7 +122,7 @@ public class ModelServiceTests : IDisposable
             {"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"},{"id":"gpt-4o"}]}
             """);
 
-        var (added, skipped) = await service.FetchFromProviderAsync(providerId);
+        var (added, skipped, _) = await service.FetchFromProviderAsync(providerId);
 
         // Payload cố ý chứa bản sao gpt-4o: unique index (ProviderId, ModelId) chặn
         // duplicate → service phải skip cả bản sao trong payload (spec §4: "skip thay vì
@@ -125,7 +144,7 @@ public class ModelServiceTests : IDisposable
             {"data":[{"type":"model","id":"claude-3-5-sonnet-20241022","display_name":"Claude 3.5 Sonnet","created_at":"2024-10-22"}]}
             """);
 
-        var (added, skipped) = await service.FetchFromProviderAsync(providerId);
+        var (added, skipped, _) = await service.FetchFromProviderAsync(providerId);
 
         Assert.Equal(1, added);
         Assert.Equal(0, skipped);
@@ -149,7 +168,7 @@ public class ModelServiceTests : IDisposable
         var providerId = await SeedProviderAsync();
         var probe = new ProbeRecordingHandler("""{"data":[]}""");
         var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
-            new ModelCapabilityWriter(_db, new NullLog()));
+            new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
         var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
 
         await service.FetchFromProviderAsync(providerId);
@@ -182,7 +201,7 @@ public class ModelServiceTests : IDisposable
 
         var probe = new ProbeRecordingHandler("""{"data":[]}""");
         var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
-            new ModelCapabilityWriter(_db, new NullLog()));
+            new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
         var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
 
         await service.FetchFromProviderAsync(providerId);
@@ -206,6 +225,37 @@ public class ModelServiceTests : IDisposable
         using var db = _db.CreateDbContext();
         var saved = await db.Models.SingleAsync(m => m.Id == model.Id);
         Assert.Equal("my-model", saved.ModelId);
+    }
+
+    [Fact]
+    public async Task AddManualAsync_TriggersFillBestEffort()
+    {
+        var providerId = await SeedProviderAsync();
+        var metadata = new TrackingMetadataService();
+        var service = ServiceWith("""{"data":[]}""", metadata);
+
+        var model = await service.AddManualAsync(providerId, "my-model");
+
+        // R-T8-5: row mới luôn IsEmpty theo construction nên AddManual đi thẳng TryFillAsync;
+        // không gọi FillMissingAsync (method đó thuộc semantics của nút Fetch/sync).
+        Assert.Equal([model.Id], metadata.TryFillCalls);
+        Assert.Empty(metadata.FillMissingCalls);
+    }
+
+    [Fact]
+    public async Task FetchFromProvider_WhenNoNewModels_StillFillsMissingExistingEmptyModels()
+    {
+        var providerId = await SeedProviderAsync("already-there");
+        var metadata = new TrackingMetadataService();
+        var service = ServiceWith("""{"data":[{"id":"already-there"}]}""", metadata);
+
+        var (added, skipped, filled) = await service.FetchFromProviderAsync(providerId);
+
+        Assert.Equal(0, added);
+        Assert.Equal(1, skipped);
+        // R-T8-1: nút Fetch vẫn retry các model cũ đang rỗng dù lần này không thêm model nào.
+        Assert.Equal([providerId], metadata.FillMissingCalls);
+        Assert.Equal(0, filled); // fake trả 0 — giá trị thật đến từ FillMissingAsync
     }
 
     [Fact]

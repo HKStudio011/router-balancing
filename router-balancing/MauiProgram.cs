@@ -144,11 +144,10 @@ namespace router_balancing
             builder.Services.AddSingleton<IModelMetadataService, ModelMetadataService>();
             // Thứ tự đăng ký = thứ tự chain: nguồn giàu nhất trước — Ollama tags (full-list
             // 3 dimension) → NVIDIA catalog (modality + context từ trang chính thức) → endpoint
-            // probe (positive-only) → static catalog (sắp bị xóa, Task 8).
+            // probe (positive-only).
             builder.Services.AddSingleton<IModelMetadataProvider, OllamaTagsMetadataProvider>();
             builder.Services.AddSingleton<IModelMetadataProvider, NvidiaCatalogMetadataProvider>();
             builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();
-            builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
             // Capability writer singleton (spec capability-model §5): importer catalog/probe và
             // UI chỉ ghi fact capability qua IModelCapabilityWriter — không tự đụng entity.
             builder.Services.AddSingleton<IModelCapabilityWriter, ModelCapabilityWriter>();

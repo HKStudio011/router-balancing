@@ -33,7 +33,8 @@ public sealed class ModelService : IModelService
     }
 
     /// <inheritdoc/>
-    public async Task<(int Added, int Skipped)> FetchFromProviderAsync(long providerId, CancellationToken ct = default)
+    public async Task<(int Added, int Skipped, int Filled)> FetchFromProviderAsync(
+        long providerId, CancellationToken ct = default)
     {
         using var db = _db.CreateDbContext();
         var provider = await db.Providers
@@ -95,15 +96,14 @@ public sealed class ModelService : IModelService
             if (created.Count > 0)
             {
                 await db.SaveChangesAsync(ct);
-                foreach (var entity in created)
-                {
-                    // Metadata best-effort — lỗi không ảnh hưởng kết quả fetch (đã log bên trong)
-                    await _metadata.TryFillAsync(entity.Id, ct);
-                }
-                _log.Info($"Fetched {added} models for provider {providerId}.");
             }
 
-            return (added, skipped);
+            // R-T8-1: FillMissing chạy cả khi không thêm model nào — nút Fetch retry các
+            // model cũ đang rỗng, và đây cũng là nơi duy nhất tính "Filled" cho UI.
+            // (TryFillAsync từng model ở đây là thừa: fill-missing đã bao gồm model mới.)
+            var filled = await _metadata.FillMissingAsync(providerId, ct);
+            _log.Info($"Fetched {added} models for provider {providerId}; filled metadata for {filled}.");
+            return (added, skipped, filled);
         }
     }
 
@@ -126,6 +126,8 @@ public sealed class ModelService : IModelService
         var model = new Model { ProviderId = providerId, ModelId = trimmed, IsManual = true };
         db.Models.Add(model);
         await db.SaveChangesAsync(ct);
+        // R-T8-5: row mới luôn IsEmpty theo construction — TryFill là đủ; không thêm
+        // dependency reader vào ModelService cho đường thêm tay.
         await _metadata.TryFillAsync(model.Id, ct);
         return model;
     }
@@ -165,6 +167,8 @@ public sealed class ModelService : IModelService
             await db.SaveChangesAsync(ct);
             foreach (var entity in created)
             {
+                // R-T8-5: mỗi row mới IsEmpty theo construction — fill trực tiếp, không
+                // cần query reader để xác định candidate.
                 await _metadata.TryFillAsync(entity.Id, ct);
             }
         }

@@ -327,7 +327,8 @@ public class OllamaTagsMetadataProviderTests : IDisposable
         var (_, model) = await OllamaModelAsync("llama3.1:8b");
         var metadataProvider = ProviderWith(new JsonHandler(json));
         var service = new ModelMetadataService(
-            _db, new NullLog(), [metadataProvider], new ModelCapabilityWriter(_db, new NullLog()));
+            _db, new NullLog(), [metadataProvider], new ModelCapabilityWriter(_db, new NullLog()),
+            new ModelCapabilityReader(_db));
 
         await service.TryFillAsync(model.Id);
 

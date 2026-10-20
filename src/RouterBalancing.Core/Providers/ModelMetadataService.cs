@@ -14,18 +14,28 @@ public sealed class ModelMetadataService : IModelMetadataService
     private readonly ILogService _log;
     private readonly IEnumerable<IModelMetadataProvider> _chain;
     private readonly IModelCapabilityWriter _capabilities;
+    private readonly IModelCapabilityReader _reader;
+    private readonly TimeSpan _fillTimeout;
+
+    // Spec §7: tổng budget cho một đợt fill hàng loạt; inject để test timeout tất định.
+    private static readonly TimeSpan DefaultFillTimeout = TimeSpan.FromSeconds(120);
+    private const int FillMaxDegreeOfParallelism = 2;
 
     /// <inheritdoc/>
     public ModelMetadataService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ILogService log,
         IEnumerable<IModelMetadataProvider> chain,
-        IModelCapabilityWriter capabilities)
+        IModelCapabilityWriter capabilities,
+        IModelCapabilityReader reader,
+        TimeSpan? fillTimeout = null)
     {
         _db = db;
         _log = log;
         _chain = chain;
         _capabilities = capabilities;
+        _reader = reader;
+        _fillTimeout = fillTimeout ?? DefaultFillTimeout;
     }
 
     /// <inheritdoc />
@@ -87,6 +97,65 @@ public sealed class ModelMetadataService : IModelMetadataService
         {
             ProxyTarget.Current.Value = null;
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<int> FillMissingAsync(long providerId, CancellationToken ct = default)
+    {
+        // Chỉ lấy id — không cần load entity; reader là nguồn duy nhất quyết định
+        // "còn thiếu fact" (R-T8-2: IsEmpty, không phải thiếu từng dimension).
+        using var db = _db.CreateDbContext();
+        var modelIds = await db.Models.AsNoTracking()
+            .Where(m => m.ProviderId == providerId)
+            .Select(m => m.Id)
+            .ToListAsync(ct);
+        if (modelIds.Count == 0) return 0;
+
+        var before = await _reader.ReadManyAsync(modelIds, ct);
+        var candidates = modelIds
+            .Where(id => before.TryGetValue(id, out var view) && view.IsEmpty)
+            .ToList();
+        if (candidates.Count == 0) return 0;
+
+        using var fillCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        fillCts.CancelAfter(_fillTimeout);
+        try
+        {
+            await Parallel.ForEachAsync(candidates, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = FillMaxDegreeOfParallelism,
+                CancellationToken = fillCts.Token,
+            }, async (modelId, token) =>
+            {
+                try
+                {
+                    await TryFillAsync(modelId, token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    // Hết budget (hoặc caller huỷ) — để vòng ngoài quyết định mềm/cứng.
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // Lỗi DB/lock riêng của một model không được làm hỏng cả đợt (spec §7).
+                    _log.Warn($"Fill metadata lỗi cho model {modelId}: {ex.Message}");
+                }
+            });
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Timeout là dừng MỀM (R-T8-4): model đã xong vẫn được đếm; lần bấm sau
+            // tiếp tục nhờ cache của provider (Ollama/NVIDIA TTL 24h).
+            _log.Warn($"Fill metadata provider {providerId} dừng sau {_fillTimeout.TotalSeconds:0.##}s.");
+        }
+
+        // Caller huỷ phải propagate — chỉ timeout nội bộ mới được nuốt (R-T8-4).
+        ct.ThrowIfCancellationRequested();
+
+        // Đếm bằng đúng MỘT ReadManyAsync sau đợt (không đọc từng model).
+        var after = await _reader.ReadManyAsync(candidates, ct);
+        return candidates.Count(id => after.TryGetValue(id, out var view) && !view.IsEmpty);
     }
 }
 

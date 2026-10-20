@@ -5,10 +5,14 @@ namespace RouterBalancing.Core.Providers;
 /// <summary>Quản lý models trong một provider — fetch tự động, thêm tay, toggle, xóa.</summary>
 public interface IModelService
 {
-    /// <summary>GET /v1/models rồi thêm ids thiếu; trả (số thêm, số bỏ qua).</summary>
+    /// <summary>
+    /// GET /v1/models rồi thêm ids thiếu; sau đó điền metadata cho mọi model của provider
+    /// còn thiếu fact (kể cả model cũ — nút Fetch là đường retry có chủ đích).
+    /// </summary>
+    /// <returns>(số thêm, số bỏ qua, số model được điền metadata trong đợt này).</returns>
     /// <exception cref="KeyNotFoundException">Khi provider không tồn tại.</exception>
     /// <exception cref="HttpRequestException">Khi HTTP không 2xx (UI hiện toast).</exception>
-    Task<(int Added, int Skipped)> FetchFromProviderAsync(long providerId, CancellationToken ct = default);
+    Task<(int Added, int Skipped, int Filled)> FetchFromProviderAsync(long providerId, CancellationToken ct = default);
 
     /// <summary>Thêm 1 model thủ công (IsManual = true).</summary>
     /// <exception cref="InvalidOperationException">Khi modelId đã tồn tại trong provider.</exception>

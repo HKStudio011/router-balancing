@@ -328,7 +328,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         var (_, model) = await NvidiaModelAsync();
         var service = new ModelMetadataService(
             _db, new NullLog(), [ProviderWith(new HtmlHandler(await FixtureAsync()))],
-            new ModelCapabilityWriter(_db, new NullLog()));
+            new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
 
         await service.TryFillAsync(model.Id);
 
@@ -373,7 +373,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         }
         var service = new ModelMetadataService(
             _db, new NullLog(), [ProviderWith(new HtmlHandler(await FixtureAsync()))],
-            new ModelCapabilityWriter(_db, new NullLog()));
+            new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
 
         await service.TryFillAsync(model.Id);
 
@@ -389,7 +389,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         var (_, model) = await NvidiaModelAsync();
         var service = new ModelMetadataService(
             _db, new NullLog(), [ProviderWith(new HtmlHandler(PageWith(output: null)))],
-            new ModelCapabilityWriter(_db, new NullLog()));
+            new ModelCapabilityWriter(_db, new NullLog()), new ModelCapabilityReader(_db));
 
         await service.TryFillAsync(model.Id);
 

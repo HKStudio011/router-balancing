@@ -28,7 +28,8 @@ public class ModelMetadataServiceTests : IDisposable
     public void Dispose() => _testDb.Dispose();
 
     private ModelMetadataService ServiceWith(params IModelMetadataProvider[] chain) =>
-        new(_db, new NullLog(), chain, new ModelCapabilityWriter(_db, new NullLog()));
+        new(_db, new NullLog(), chain, new ModelCapabilityWriter(_db, new NullLog()),
+            new ModelCapabilityReader(_db));
 
     private ModelCapabilityReader Reader => new(_db);
 
