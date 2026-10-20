@@ -1,5 +1,5 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
@@ -13,16 +13,19 @@ public sealed class ModelMetadataService : IModelMetadataService
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ILogService _log;
     private readonly IEnumerable<IModelMetadataProvider> _chain;
+    private readonly IModelCapabilityWriter _capabilities;
 
     /// <inheritdoc/>
     public ModelMetadataService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ILogService log,
-        IEnumerable<IModelMetadataProvider> chain)
+        IEnumerable<IModelMetadataProvider> chain,
+        IModelCapabilityWriter capabilities)
     {
         _db = db;
         _log = log;
         _chain = chain;
+        _capabilities = capabilities;
     }
 
     /// <inheritdoc />
@@ -61,95 +64,74 @@ public sealed class ModelMetadataService : IModelMetadataService
                 }
                 if (meta is null) continue;
 
-                // Chỉ ghi field còn trống — không ghi đè giá trị đã có (spec §3.3);
-                // bool không nullable trên entity coi false = "chưa rõ"
-                // (fill chỉ chạy lúc model được tạo — false tại thời điểm đó luôn là "chưa rõ").
-                var changed = false;
+                // ContextWindow vẫn là cột scalar (C-J) — chỉ ghi khi còn trống (spec §3.3);
+                // capability đi qua writer để giữ luật nguồn (C-E/C-N).
                 if (meta.ContextWindow is not null && model.ContextWindow is null)
                 {
                     model.ContextWindow = meta.ContextWindow;
-                    changed = true;
-                }
-                if (meta.SupportsVision == true && !model.SupportsVision)
-                {
-                    model.SupportsVision = true;
-                    changed = true;
-                }
-                if (meta.SupportsThink == true && !model.SupportsThink)
-                {
-                    model.SupportsThink = true;
-                    changed = true;
-                }
-                if (meta.ThinkEfforts is not null && model.ThinkEfforts is null)
-                {
-                    model.ThinkEfforts = meta.ThinkEfforts;
-                    changed = true;
-                }
-                if (meta.InputModalities is not null && model.InputModalities is null)
-                {
-                    model.InputModalities = meta.InputModalities;
-                    changed = true;
-                }
-                if (meta.OutputModalities is not null && model.OutputModalities is null)
-                {
-                    model.OutputModalities = meta.OutputModalities;
-                    changed = true;
-                }
-
-                // Derive cờ audio/video từ InputModalities — best-effort: JSON null/hỏng
-                // hoặc sai contract (không phải array string) → bỏ qua, không log error
-                // (spec B1). Chỉ set true, không clear (false = "chưa rõ" như SupportsVision).
-                // JsonDocument không có TryParse — exception là cách duy nhất bắt JSON hỏng.
-                JsonDocument? modalities = null;
-                if (meta.InputModalities is not null)
-                {
-                    try
-                    {
-                        modalities = JsonDocument.Parse(meta.InputModalities);
-                    }
-                    catch (JsonException)
-                    {
-                        // contract-violating provider trả garbage → skip derive, field raw vẫn ghi
-                    }
-                }
-                if (modalities is not null)
-                {
-                    using (modalities)
-                    {
-                        if (modalities.RootElement.ValueKind == JsonValueKind.Array)
-                        {
-                            foreach (var entry in modalities.RootElement.EnumerateArray())
-                            {
-                                if (entry.ValueKind != JsonValueKind.String) continue;
-                                var modality = entry.GetString();
-                                if (modality is null) continue;
-                                if (!model.SupportsAudio
-                                    && string.Equals(modality, "audio", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    model.SupportsAudio = true;
-                                    changed = true;
-                                }
-                                if (!model.SupportsVideo
-                                    && string.Equals(modality, "video", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    model.SupportsVideo = true;
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (changed)
-                {
                     await db.SaveChangesAsync(ct);
                 }
+
+                // Mọi dimension khác là fact — nguồn full-list mới được sinh KnownAbsent
+                // (R-T7-2: lấy từ chính provider, không lấy từ Entry của preset).
+                await _capabilities.ApplyAsync(
+                    model.Id,
+                    CapabilitySource.Catalog,
+                    MetadataPatchMapper.From(meta),
+                    provider.ReturnsCompleteFacts,
+                    ct);
                 return; // bước đầu biết → dừng chain
             }
         }
         finally
         {
             ProxyTarget.Current.Value = null;
+        }
+    }
+}
+
+/// <summary>
+/// Dịch <see cref="ModelMetadata"/> (shape provider trả về) sang <see cref="CapabilityPatch"/>
+/// (shape writer nhận) — tách riêng để Task 8 giải phóng <c>FillMissingAsync</c> khỏi logic map.
+/// Luật: bool non-null → một dòng capability; mảng modality CÓ MẶT → positive cho token nhận
+/// diện được + negative toàn từ vựng cho hướng đó (writer tự suppress negative nếu nguồn
+/// không phải full-list); token lạ bị bỏ, không ném; mảng vắng = không phát biểu (R-T5-7).
+/// </summary>
+internal static class MetadataPatchMapper
+{
+    public static CapabilityPatch From(ModelMetadata metadata)
+    {
+        var capabilities = new Dictionary<CapabilityKind, bool>();
+        if (metadata.SupportsTools is { } tools) capabilities[CapabilityKind.Tools] = tools;
+        if (metadata.SupportsThink is { } think) capabilities[CapabilityKind.Reasoning] = think;
+
+        var modalities = new Dictionary<(ModalityDirection Direction, ModalityKind Modality), bool>();
+        if (metadata.SupportsVision is { } vision)
+            modalities[(ModalityDirection.Input, ModalityKind.Image)] = vision;
+        AddModalities(modalities, ModalityDirection.Input, metadata.InputModalities);
+        AddModalities(modalities, ModalityDirection.Output, metadata.OutputModalities);
+
+        var efforts = metadata.ThinkEfforts is null
+            ? new HashSet<string>()
+            : new HashSet<string>(metadata.ThinkEfforts, StringComparer.Ordinal);
+
+        return new CapabilityPatch(capabilities, modalities, efforts);
+    }
+
+    private static void AddModalities(
+        Dictionary<(ModalityDirection Direction, ModalityKind Modality), bool> modalities,
+        ModalityDirection direction,
+        IReadOnlyList<string>? tokens)
+    {
+        if (tokens is null) return;
+        // Mảng có mặt = nguồn liệt kê đầy đủ cho hướng này → mọi loại không được nhắc
+        // là "đã biết là không" (writer quyết định có ghi hay không theo full-list của nguồn).
+        foreach (var kind in Enum.GetValues<ModalityKind>())
+            modalities[(direction, kind)] = false;
+        foreach (var token in tokens)
+        {
+            if (CapabilityNames.TryFromDb(token, out ModalityKind kind))
+                modalities[(direction, kind)] = true;
         }
     }
 }

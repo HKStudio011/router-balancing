@@ -11,19 +11,22 @@ public sealed class StaticCatalogMetadataProvider : IModelMetadataProvider
 {
     private sealed record Entry(string Prefix, ModelMetadata Meta);
 
+    /// <inheritdoc/>
+    public bool ReturnsCompleteFacts => false;
+
     // Thứ tự quan trọng: prefix dài/đặc thù trước prefix chung chung
     private static readonly Entry[] Catalog =
     [
-        new("gpt-4o-mini", new(128_000, SupportsVision: true, SupportsThink: false, null, """["text","image"]""", """["text"]""")),
-        new("gpt-4o",     new(128_000, SupportsVision: true, SupportsThink: false, null, """["text","image"]""", """["text"]""")),
-        new("gpt-4.1",    new(1_047_576, SupportsVision: true, SupportsThink: false, null, """["text","image"]""", """["text"]""")),
-        new("o1",         new(200_000, SupportsVision: true, SupportsThink: true, """["low","medium","high"]""", """["text","image"]""", """["text"]""")),
-        new("o3",         new(200_000, SupportsVision: true, SupportsThink: true, """["low","medium","high"]""", """["text","image"]""", """["text"]""")),
-        new("claude-3-7-sonnet", new(200_000, SupportsVision: true, SupportsThink: true, """["low","high"]""", """["text","image"]""", """["text"]""")),
-        new("claude-3-5",  new(200_000, SupportsVision: true, SupportsThink: false, null, """["text","image"]""", """["text"]""")),
-        new("claude-4",    new(200_000, SupportsVision: true, SupportsThink: true, """["low","high"]""", """["text","image"]""", """["text"]""")),
-        new("deepseek-reasoner", new(64_000, SupportsVision: false, SupportsThink: true, null, """["text"]""", """["text"]""")),
-        new("deepseek-chat",     new(64_000, SupportsVision: false, SupportsThink: false, null, """["text"]""", """["text"]""")),
+        new("gpt-4o-mini", new(128_000, SupportsVision: true, SupportsThink: false, null, ["text", "image"], ["text"])),
+        new("gpt-4o",     new(128_000, SupportsVision: true, SupportsThink: false, null, ["text", "image"], ["text"])),
+        new("gpt-4.1",    new(1_047_576, SupportsVision: true, SupportsThink: false, null, ["text", "image"], ["text"])),
+        new("o1",         new(200_000, SupportsVision: true, SupportsThink: true, ["low", "medium", "high"], ["text", "image"], ["text"])),
+        new("o3",         new(200_000, SupportsVision: true, SupportsThink: true, ["low", "medium", "high"], ["text", "image"], ["text"])),
+        new("claude-3-7-sonnet", new(200_000, SupportsVision: true, SupportsThink: true, ["low", "high"], ["text", "image"], ["text"])),
+        new("claude-3-5",  new(200_000, SupportsVision: true, SupportsThink: false, null, ["text", "image"], ["text"])),
+        new("claude-4",    new(200_000, SupportsVision: true, SupportsThink: true, ["low", "high"], ["text", "image"], ["text"])),
+        new("deepseek-reasoner", new(64_000, SupportsVision: false, SupportsThink: true, null, ["text"], ["text"])),
+        new("deepseek-chat",     new(64_000, SupportsVision: false, SupportsThink: false, null, ["text"], ["text"])),
     ];
 
     /// <inheritdoc/>

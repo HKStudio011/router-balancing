@@ -142,7 +142,9 @@ namespace router_balancing
             // của CHÍNH instance này làm auth cache của proxy invalidate khi UI CRUD key.
             builder.Services.AddSingleton<IClientKeyService, ClientKeyService>();
             builder.Services.AddSingleton<IModelMetadataService, ModelMetadataService>();
-            // Thứ tự đăng ký = thứ tự chain: endpoint trước, static catalog sau
+            // Thứ tự đăng ký = thứ tự chain: nguồn giàu nhất trước — Ollama tags (full-list
+            // 3 dimension) → endpoint probe (positive-only) → static catalog (sắp bị xóa, Task 8).
+            builder.Services.AddSingleton<IModelMetadataProvider, OllamaTagsMetadataProvider>();
             builder.Services.AddSingleton<IModelMetadataProvider, ProviderEndpointMetadataProvider>();
             builder.Services.AddSingleton<IModelMetadataProvider, StaticCatalogMetadataProvider>();
             // Capability writer singleton (spec capability-model §5): importer catalog/probe và

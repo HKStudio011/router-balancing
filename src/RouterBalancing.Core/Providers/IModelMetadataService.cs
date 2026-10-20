@@ -4,7 +4,8 @@ namespace RouterBalancing.Core.Providers;
 public interface IModelMetadataService
 {
     /// <summary>
-    /// Chạy chain metadata và ghi vào model (chỉ field còn trống).
+    /// Chạy chain metadata: ghi <c>ContextWindow</c> khi còn trống và ghi capability fact
+    /// qua <see cref="Capabilities.IModelCapabilityWriter"/> (nguồn <c>Catalog</c>).
     /// Lỗi (mạng, DPAPI, model biến mất) được log warning và nuốt — model đã lưu vẫn OK.
     /// </summary>
     Task TryFillAsync(long modelId, CancellationToken ct = default);

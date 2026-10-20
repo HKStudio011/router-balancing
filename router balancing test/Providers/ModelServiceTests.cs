@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Proxies;
@@ -53,13 +54,16 @@ public class ModelServiceTests : IDisposable
 
     private ModelService ServiceWith(string json)
     {
-        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()]);
+        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
+            new ModelCapabilityWriter(_db, new NullLog()));
         return new ModelService(_db, _protector, new StubFactory(new JsonHandler(json)), new NullLog(), metadata);
     }
 
     /// <summary>Catalog stub không biết gì — tests CRUD không quan tâm metadata.</summary>
     private sealed class NoopMetadata : IModelMetadataProvider
     {
+        public bool ReturnsCompleteFacts => false;
+
         public Task<ModelMetadata?> FetchAsync(Provider provider, Model model, CancellationToken ct = default) =>
             Task.FromResult<ModelMetadata?>(null);
     }
@@ -144,7 +148,8 @@ public class ModelServiceTests : IDisposable
     {
         var providerId = await SeedProviderAsync();
         var probe = new ProbeRecordingHandler("""{"data":[]}""");
-        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()]);
+        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
+            new ModelCapabilityWriter(_db, new NullLog()));
         var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
 
         await service.FetchFromProviderAsync(providerId);
@@ -176,7 +181,8 @@ public class ModelServiceTests : IDisposable
         }
 
         var probe = new ProbeRecordingHandler("""{"data":[]}""");
-        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()]);
+        var metadata = new ModelMetadataService(_db, new NullLog(), [new NoopMetadata()],
+            new ModelCapabilityWriter(_db, new NullLog()));
         var service = new ModelService(_db, _protector, new StubFactory(probe), new NullLog(), metadata);
 
         await service.FetchFromProviderAsync(providerId);

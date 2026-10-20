@@ -18,4 +18,13 @@ public class FreeProviderCatalogTests
         Assert.NotNull(FreeProviderCatalog.FindByBaseUrl("HTTPS://OpenCode.ai/zen"));
         Assert.Null(FreeProviderCatalog.FindByBaseUrl("https://example.com"));
     }
+
+    [Fact]
+    public void Entries_Ollama_IsCompleteCapabilityList()
+    {
+        // Task 6: tags API liệt kê đầy đủ capabilities cho mọi model Ollama → sync list
+        // được phép sinh KnownAbsent (R-T5-2 hết hiệu lực cho Ollama).
+        var entry = FreeProviderCatalog.Entries.Single(e => e.DisplayName == "Ollama Cloud Free");
+        Assert.True(entry.CompleteCapabilityList);
+    }
 }

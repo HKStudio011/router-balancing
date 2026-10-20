@@ -31,7 +31,8 @@ public static class FreeProviderCatalog
     /// <see cref="FreeDetectKind.OpenCodeCatalog"/>; null cho các preset dùng models endpoint thường (spec §6.1).</param>
     /// <param name="CompleteCapabilityList">true khi danh mục của provider liệt kê ĐẦY ĐỦ capability
     /// cho mỗi model — sync được phép sinh dòng KnownAbsent (C-P, spec capability-model §5 luật (b));
-    /// false khi list không có thông tin capability (NVIDIA/Ollama — Task 6/7 lo phần đó).</param>
+    /// false khi list không có thông tin capability (NVIDIA — Task 7 lo phần đó). Cờ này chỉ dùng
+    /// cho đường sync list; đường fill dùng <see cref="IModelMetadataProvider.ReturnsCompleteFacts"/> (R-T7-2).</param>
     public sealed record Entry(
         string DisplayName,
         string BaseUrl,
@@ -45,7 +46,7 @@ public static class FreeProviderCatalog
         new("OpenCode Free", "https://opencode.ai/zen", FreeDetectKind.OpenCodeCatalog, "https://models.opencode.ai/api.json", CompleteCapabilityList: true),
         new("OpenRouter Free", "https://openrouter.ai/api", FreeDetectKind.PricingZeroOrFreeSuffix, CompleteCapabilityList: true),
         new("NVIDIA NIM Free", "https://integrate.api.nvidia.com", FreeDetectKind.AllFree),
-        new("Ollama Cloud Free", "https://ollama.com", FreeDetectKind.AllFree),
+        new("Ollama Cloud Free", "https://ollama.com", FreeDetectKind.AllFree, CompleteCapabilityList: true),
     ];
 
     /// <summary>

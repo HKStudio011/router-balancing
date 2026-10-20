@@ -23,6 +23,9 @@ public class StaticCatalogMetadataProviderTests
         Assert.Equal(128_000, meta.ContextWindow);
         Assert.True(meta.SupportsVision);
         Assert.False(meta.SupportsThink);
+        Assert.Null(meta.SupportsTools); // nguồn không phát biểu tools
+        Assert.Equal(new[] { "text", "image" }, meta.InputModalities);
+        Assert.False(catalog.ReturnsCompleteFacts);
     }
 
     [Fact]
@@ -36,7 +39,8 @@ public class StaticCatalogMetadataProviderTests
         Assert.NotNull(meta);
         Assert.Equal(200_000, meta.ContextWindow);
         Assert.True(meta.SupportsThink);
-        Assert.NotNull(meta.ThinkEfforts);
+        Assert.Equal(new[] { "low", "high" }, meta.ThinkEfforts);
+        Assert.Equal(new[] { "text", "image" }, meta.InputModalities);
     }
 
     [Fact]
