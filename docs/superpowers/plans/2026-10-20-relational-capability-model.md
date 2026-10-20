@@ -178,6 +178,7 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 
 **Interfaces:**
 - Produces: `OllamaTagsMetadataProvider : IModelMetadataProvider` với `Task<ModelMetadata?> FetchAsync(Provider, Model, CancellationToken)`; chỉ nhận diện provider có `BaseUrl` khớp `https://ollama.com` (`FreeProviderCatalog.FindByBaseUrl`).
+- **R-T7-2**: `IModelMetadataProvider` thêm `bool ReturnsCompleteFacts { get; }`. `true` cho `OllamaTagsMetadataProvider` + `NvidiaCatalogMetadataProvider` (patch của chúng chỉ chứa đúng những dimension mà nguồn liệt kê đầy đủ); `false` cho `ProviderEndpointMetadataProvider` (probe positive-only) và `StaticCatalogMetadataProvider` (sắp bị xóa). `ModelMetadataService` dùng **thuộc tính của provider** khi gọi `ApplyAsync(..., sourceIsCompleteList: provider.ReturnsCompleteFacts)`; `FreeProviderCatalog.Entry.CompleteCapabilityList` chỉ còn dùng cho đường sync list (Task 5), không dùng cho fill.
 - Nguồn (đo thật 2026-10-20): `GET https://ollama.com/api/tags` (không auth) → `{ "models": [ { "name", "model", "capabilities": [...] } ] }`, **23 entry, tất cả đều có `capabilities`**. DB hiện có 22 model Ollama và **khớp chính xác 22/22** theo `name`/`model`.
 - Khớp id (pin): so `Model.ModelId` với `name` rồi `model` **trước** (exact); nếu không có mới fallback bỏ suffix `:tag` (`deepseek-v4.1-flash:1017` → `deepseek-v4.1-flash`) `[RF-3]`. Không khớp → `null`.
 - Mapping capability (pin): `tools` → `Capabilities[Tools]=true`; `thinking` → `Capabilities[Reasoning]=true`; `vision` → `Modalities[(Input, Image)]=true`; `completion` bỏ qua; token lạ (thật đo được: `decision` ở `clef:27b`) → **bỏ + log một lần mỗi model**, không ném.
@@ -190,14 +191,31 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 
 ---
 
-### Task 7: NVIDIA catalog source — **HUỶ (không làm)** vì không có nguồn chính thức parse được
+### Task 7: NVIDIA — trang model trên `build.nvidia.com` (phủ một phần: 15/81)
 
-**Bằng chứng (probe 2026-10-20, không phải phỏng đoán):**
-- `https://build.nvidia.com/models.md` là index của **NIM microservices**, link dạng opaque id `/qc69jvmznzxy/body-pose.md`; không chứa model id `publisher/slug` nào của DB (`index contains first id? false`, `contains slug? false`).
-- `https://build.nvidia.com/01-ai/yi-large` trả 200 nhưng HTML **client-render**: không có `aria-label="Model information"`, không có chuỗi `Context Length`/`Input Modalities`/`Function Calling`/`Structured Output` (mọi needle = -1, cả trong RSC payload `self.__next_f`).
-- `https://docs.api.nvidia.com/nim/reference/...` → 404 (thử 3 biến thể slug).
+**Bằng chứng (probe 2026-10-20, sửa lại kết luận trước — model legacy không đại diện):**
+- Trang `https://build.nvidia.com/{publisher}/{slug}` render **server-side** khối `<aside aria-label="Model information">` khi model có model card. Ví dụ `nvidia/nemotron-3.5-super-vl-120b-a12b`: `Context Length 262K`, `Input Modalities: Text, Image, Video`, `Output Modalities: Text`.
+- **15/81** model NVIDIA trong DB có sidebar; 66 trang còn lại trả 200 nhưng **không có** sidebar (`black-forest-labs/flux-3-image-klein`, `01-ai/yi-large`, …) → trả `null`, không bịa fact.
+- Sidebar chỉ có các cặp: `Provider`, `Last Modified`, `Context Length`, `Parameters`, `Input Modalities`, `Output Modalities`, `Free Endpoint`, `Partner Endpoint`, `Download Available` (+ `API calls in last 30 days` ở 8 trang). **Không có** Function Calling/Structured Output/Reasoning → NVIDIA **không** cấp fact tools/reasoning; người dùng tick tay.
+- `https://build.nvidia.com/models.md` **không dùng được** (index NIM microservice với path opaque `/qc69jvmznzxy/body-pose.md`, không chứa id `publisher/slug` của DB) → bỏ khỏi thiết kế, probe thẳng trang model.
 
-**Quyết định (R-T7-1):** NVIDIA giữ **duy nhất** nguồn `ProviderEndpointMetadataProvider` (probe `/v1/models/{id}` best-effort, **positive-only**), `CompleteCapabilityList = false`; phần còn lại người dùng tick tay trong editor ba trạng thái (Task 9). Không thêm parser HTML/RSC mong manh cho một nguồn không tồn tại — đúng nguyên tắc "chỉ field chắc chắn cấu trúc". Task này **không có commit**; ghi chú vào `docs/backlog.md` (mục B: NVIDIA capability coverage) khi làm Task 12.
+**Files:**
+- Create: `src/RouterBalancing.Core/Providers/NvidiaCatalogMetadataProvider.cs`
+- Modify: `router-balancing/MauiProgram.cs` (đăng ký chain)
+- Test: `router balancing test/Providers/NvidiaCatalogMetadataProviderTests.cs` + fixture HTML (cắt từ trang Nemotron thật, giữ nguyên `<aside>`/`<dt>`/`<dd>`)
+
+**Interfaces:**
+- Produces: `NvidiaCatalogMetadataProvider : IModelMetadataProvider`, `ReturnsCompleteFacts => true` (patch chỉ gồm các modality direction mà sidebar nói; không có key tools/reasoning nên không sinh negative cho chúng). Chỉ nhận diện provider có `BaseUrl` khớp `https://integrate.api.nvidia.com`.
+- `FetchAsync(provider, model, ct)`: `GET https://build.nvidia.com/{Model.ModelId}` (không auth). 200 **và** có `aria-label="Model information"` → parse; còn lại → `null` (66/81).
+- Parse: lấy khối `<aside aria-label="Model information">`, đọc các cặp `<dt>`/`<dd>` (strip tag, chuẩn hoá whitespace):
+  - `Context Length`: `262K` → 262_000; `1M` → 1_000_000; số thuần → int. → `ContextWindow` (cột, không phải fact).
+  - `Input Modalities` / `Output Modalities`: chuỗi `"Text, Image, Video"` → tách dấu phẩy, map `Text/Image/Audio/Video` theo `ModalityKind`; token lạ → bỏ + log một lần/model (cùng chính sách R-T5-5).
+- Cache: trang theo model id, TTL 24h (clock inject) — lần fill sau không tải lại 81 trang.
+- Chi phí: lần fill đầu 81 trang (~200 KB/trang), 2 request song song, nằm trong budget 120 s của Task 8; hết giờ thì dừng mềm, lần sau tiếp tục nhờ cache.
+- [ ] **Step 1:** Test đỏ: `FetchAsync_ParsesSidebarModalitiesAndContext`, `FetchAsync_PageWithoutSidebar_ReturnsNull`, `FetchAsync_NonNvidiaProvider_ReturnsNull`, `FetchAsync_ContextLengthSuffix_Converts` (262K → 262000, 1M → 1000000), `FetchAsync_UnknownModalityToken_Dropped`, `FetchAsync_SecondCall_UsesCache`, `FetchAsync_HttpError_ReturnsNull`, `FetchAsync_PatchHasNoToolsOrReasoningKeys`.
+- [ ] **Step 2:** Chạy `--filter "FullyQualifiedName~NvidiaCatalog"` → FAIL.
+- [ ] **Step 3:** Implement provider + cache; đăng ký trong chain DI.
+- [ ] **Step 4:** Filter → PASS; full suite → PASS. Commit `feat: read nvidia model modalities from the official catalog pages`.
 
 ---
 
@@ -205,7 +223,7 @@ Năm lớp hành vi mà spec ngụ ý nhưng test của từng task dễ bỏ s�
 
 **Files:**
 - Delete: `src/RouterBalancing.Core/Providers/StaticCatalogMetadataProvider.cs`, `router balancing test/Providers/StaticCatalogMetadataProviderTests.cs`
-- Modify: `src/RouterBalancing.Core/Providers/ModelMetadataService.cs` (thêm `Task<int> FillMissingAsync(long providerId, CancellationToken)`; dịch `ModelMetadata` → `CapabilityPatch` qua helper `internal static class MetadataPatchMapper { static CapabilityPatch From(ModelMetadata m, bool completeList); }`; ghi qua `IModelCapabilityWriter`, `sourceIsCompleteList` lấy từ `FreeProviderCatalog.Entry.CompleteCapabilityList`), `src/RouterBalancing.Core/Providers/ModelService.cs` (`FetchFromProviderAsync` gọi `FillMissingAsync` sau khi thêm model mới; `AddManualAsync`/`AddBulkAsync` gọi `TryFillAsync` nếu model chưa có fact), `src/RouterBalancing.Core/Providers/IModelService.cs` + `IModelMetadataService.cs`, `router-balancing/Components/Pages/Providers.razor` (hiện số model được điền + progress trên nút "Lấy model"), trang chứa nút "Tải model free" (progress + thông báo), `router balancing test/Providers/ModelMetadataServiceTests.cs`
+- Modify: `src/RouterBalancing.Core/Providers/ModelMetadataService.cs` (thêm `Task<int> FillMissingAsync(long providerId, CancellationToken)`; dịch `ModelMetadata` → `CapabilityPatch` qua helper `internal static class MetadataPatchMapper { static CapabilityPatch From(ModelMetadata m); }`; ghi qua `IModelCapabilityWriter`, `sourceIsCompleteList` lấy từ **`provider.ReturnsCompleteFacts`** — R-T7-2, không lấy từ `Entry`), `src/RouterBalancing.Core/Providers/ModelService.cs` (`FetchFromProviderAsync` gọi `FillMissingAsync` sau khi thêm model mới; `AddManualAsync`/`AddBulkAsync` gọi `TryFillAsync` nếu model chưa có fact), `src/RouterBalancing.Core/Providers/IModelService.cs` + `IModelMetadataService.cs`, `router-balancing/Components/Pages/Providers.razor` (hiện số model được điền + progress trên nút "Lấy model"), trang chứa nút "Tải model free" (progress + thông báo), `router balancing test/Providers/ModelMetadataServiceTests.cs`
   - (`ModelMetadata`/`ProviderEndpointMetadataProvider` đã được đổi sang typed ở **Task 6** theo R-T6-2 — task này không đổi shape nữa.)
 - Test: `router balancing test/Providers/ModelMetadataFillMissingTests.cs`
 
