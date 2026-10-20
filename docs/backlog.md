@@ -9,7 +9,7 @@ Trạng thái nền: `feat/opencode-tools-page` = `2326d98`, PR #30 mở, `maste
 
 ## A. Trang Tools (OpenCode config) — vòng kế tiếp
 
-**Đã xong 2026-10-21** trên nhánh `feat/tools-round-2` (Plan 2, spec capability-model §9; PR kế tiếp). Các mục dưới giữ lại làm hồ sơ.
+**Đã xong 2026-10-21** trên nhánh `feat/tools-round-2` (Plan 2, spec capability-model §9; PR #33). Các mục dưới giữ lại làm hồ sơ.
 
 1. `[x]` **Nhớ lựa chọn đã tick + nút "Reset về mặc định"** — `AppSettings(Key, ValueJson)` với `ToolsSelection`, resolver lọc id đã xoá; "Về mặc định" = tập C7 (model `Enabled` của preset OpenCode Free khi provider bật).
 2. `[x]` **Đưa combo vào phần chọn model** — combo là mục riêng trong bảng chọn; tick combo = **một entry config key = tên combo** (U12), không kéo/nhân bản model thành viên; capability là giao an toàn của member (C-L).
