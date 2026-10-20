@@ -230,7 +230,7 @@ public static class FreeModelDetector
     /// R-T5-4: <c>reasoning.supported_efforts</c> (mảng string) → ThinkEfforts; object có mà
     /// efforts vắng/rỗng → chỉ phát biểu Reasoning, không bịa effort nào.</item>
     /// <item><c>architecture.input_modalities/output_modalities</c> → danh sách token thô;
-    /// token ngoài từ vựng 4 loại ("file"…) được giữ nguyên ở đây, lọc ở bước ghép patch.</item>
+    /// token ngoài từ vựng (vd "pdf") được giữ nguyên ở đây, lọc ở bước ghép patch.</item>
     /// </list>
     /// Không dùng <c>architecture.modality</c> làm tín hiệu reasoning: giá trị thật luôn dạng
     /// "in-&gt;out" (vd "text+image-&gt;text") và mô tả modality, không phải reasoning —
