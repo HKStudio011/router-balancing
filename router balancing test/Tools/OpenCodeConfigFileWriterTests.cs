@@ -200,7 +200,9 @@ public sealed class OpenCodeConfigFileWriterTests : IDisposable
         await _writer.WriteAsync(path, Block());
 
         var written = await File.ReadAllTextAsync(path);
-        Assert.Contains("\"mcp\": {\n        \"some-mcp\": {\n            \"type\": \"local\"\n        }\n    },", written);
+        // windows-latest checkout cho raw literal CRLF — chuẩn hoá trước khi so khối nguyên văn.
+        var normalized = written.Replace("\r\n", "\n", StringComparison.Ordinal);
+        Assert.Contains("\"mcp\": {\n        \"some-mcp\": {\n            \"type\": \"local\"\n        }\n    },", normalized);
         Assert.Equal("Router Balancing", ProviderName(written));
     }
 }
