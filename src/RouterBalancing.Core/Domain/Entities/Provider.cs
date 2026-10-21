@@ -38,9 +38,9 @@ public class Provider
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    /// <summary>Header tùy chỉnh bổ sung cho mọi request tới provider (JSON object, plaintext).
+    /// <summary>Header tùy chỉnh bổ sung cho mọi request tới provider (plaintext).
     /// Fingerprint/attributions thắng — chỉ thêm key chưa tồn tại (xem <c>ProviderRequestFactory</c>).</summary>
-    public string? ExtraHeaders { get; set; }
+    public List<ProviderHeader> Headers { get; set; } = [];
 
     public List<Model> Models { get; set; } = [];
 

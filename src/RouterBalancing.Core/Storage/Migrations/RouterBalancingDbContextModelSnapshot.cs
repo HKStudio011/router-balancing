@@ -393,9 +393,6 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("ExtraHeaders")
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Identifier")
                         .HasMaxLength(50)
                         .HasColumnType("TEXT");
@@ -528,6 +525,25 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.ToTable("ProviderAccountProxies", (string)null);
                 });
 
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ProviderHeader", b =>
+                {
+                    b.Property<long>("ProviderId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT")
+                        .UseCollation("NOCASE");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ProviderId", "Name");
+
+                    b.ToTable("ProviderHeaders");
+                });
+
             modelBuilder.Entity("RouterBalancing.Core.Domain.ProviderProxy", b =>
                 {
                     b.Property<long>("ProviderId")
@@ -630,6 +646,17 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Navigation("Proxy");
                 });
 
+            modelBuilder.Entity("RouterBalancing.Core.Domain.ProviderHeader", b =>
+                {
+                    b.HasOne("RouterBalancing.Core.Domain.Provider", "Provider")
+                        .WithMany("Headers")
+                        .HasForeignKey("ProviderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Provider");
+                });
+
             modelBuilder.Entity("RouterBalancing.Core.Domain.ProviderProxy", b =>
                 {
                     b.HasOne("RouterBalancing.Core.Domain.Provider", "Provider")
@@ -666,6 +693,8 @@ namespace RouterBalancing.Core.Storage.Migrations
             modelBuilder.Entity("RouterBalancing.Core.Domain.Provider", b =>
                 {
                     b.Navigation("Accounts");
+
+                    b.Navigation("Headers");
 
                     b.Navigation("Models");
 

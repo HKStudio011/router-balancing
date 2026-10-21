@@ -1510,7 +1510,9 @@ else
             BaseUrl = provider.BaseUrl,
             ApiKey = string.Empty,
             MaxConcurrent = provider.MaxConcurrent,
-            ExtraHeaders = DeserializeExtraHeaders(provider.ExtraHeaders),
+            ExtraHeaders = [.. provider.Headers
+                .OrderBy(h => h.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(h => new ExtraHeaderEntry { Key = h.Name, Value = h.Value })],
         };
         ResetModalState();
         _accountForm = null;
@@ -1537,28 +1539,6 @@ else
     /// <summary>Lấy key lỗi i18n của field; null nếu field không có lỗi (pattern SettingsPanel).</summary>
     private string? ModalError(string field) =>
         _errors.TryGetValue(field, out var key) ? key : null;
-
-    /// <summary>
-    /// Parse JSON cột ExtraHeaders về dòng form. Cột null/rỗng/JSON hỏng (chỉnh tay DB)
-    /// → danh sách rỗng, không chặn mở form.
-    /// </summary>
-    private static List<ExtraHeaderEntry> DeserializeExtraHeaders(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return [];
-        }
-
-        try
-        {
-            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];
-            return [.. dict.Select(kv => new ExtraHeaderEntry { Key = kv.Key, Value = kv.Value })];
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
-    }
 
     // NoKey trong signature: test pass rồi mới bật/tắt toggle → test mất hiệu lực, phải test lại
     private string DraftSignature() =>

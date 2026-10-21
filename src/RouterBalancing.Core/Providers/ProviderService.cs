@@ -76,8 +76,9 @@ public sealed class ProviderService : IProviderService
             Type = draft.Type,
             BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl),
             MaxConcurrent = draft.MaxConcurrent,
-            ExtraHeaders = SerializeExtraHeaders(draft.ExtraHeaders),
         };
+        provider.Headers.AddRange(MapHeaderValues(draft.ExtraHeaders)
+            .Select(kv => new ProviderHeader { Name = kv.Key, Value = kv.Value }));
 
         // Key ở create = tạo kèm account "Default" — key sống hoàn toàn ở ProviderAccount (spec §4.2).
         // Luôn tạo đúng 1 account: có key → mã hóa DPAPI; NoKey → cột rỗng (free endpoint, D1/D4)
@@ -110,7 +111,7 @@ public sealed class ProviderService : IProviderService
         provider.Type = draft.Type;
         provider.BaseUrl = ProviderUrl.Canonicalize(draft.BaseUrl);
         provider.MaxConcurrent = draft.MaxConcurrent;
-        provider.ExtraHeaders = SerializeExtraHeaders(draft.ExtraHeaders);
+        ApplyHeaders(db, provider, draft.ExtraHeaders);
         // draft.ApiKey bị BỎ QUA khi update — key quản lý ở ProviderAccount (spec §4.2)
         provider.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -118,27 +119,49 @@ public sealed class ProviderService : IProviderService
     }
 
     /// <summary>
-    /// Gộp dòng form thành JSON object (key đã trim); danh sách rỗng → null (không ghi cột).
-    /// Dòng key rỗng bị bỏ qua — form đã validate, nhánh này chỉ phòng service boundary.
+    /// Đồng bộ header theo draft: giữ dòng cùng tên (cập nhật value), xoá dòng không còn,
+    /// thêm dòng mới. Diff thay vì xoá-tạo cả bảng để tránh tracking conflict khi
+    /// key (ProviderId, Name) không đổi trong cùng một SaveChanges.
     /// </summary>
-    private static string? SerializeExtraHeaders(IReadOnlyList<ExtraHeaderEntry> entries)
+    private static void ApplyHeaders(
+        RouterBalancingDbContext db, Provider provider, IReadOnlyList<ExtraHeaderEntry> entries)
     {
-        if (entries.Count == 0)
+        var desired = MapHeaderValues(entries);
+        foreach (var existing in provider.Headers.ToList())
         {
-            return null;
-        }
-
-        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in entries)
-        {
-            var key = entry.Key.Trim();
-            if (key.Length > 0)
+            if (desired.Remove(existing.Name, out var value))
             {
-                dict[key] = entry.Value;
+                existing.Value = value;
+            }
+            else
+            {
+                db.ProviderHeaders.Remove(existing);
             }
         }
 
-        return dict.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(dict);
+        foreach (var (name, value) in desired)
+        {
+            provider.Headers.Add(new ProviderHeader { Name = name, Value = value });
+        }
+    }
+
+    /// <summary>
+    /// Gộp dòng form thành map key → value (key đã trim, trùng hoa thường last-wins).
+    /// Dòng key rỗng bị bỏ qua — form đã validate, nhánh này chỉ phòng service boundary.
+    /// </summary>
+    private static Dictionary<string, string> MapHeaderValues(IReadOnlyList<ExtraHeaderEntry> entries)
+    {
+        var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            var name = entry.Key.Trim();
+            if (name.Length > 0)
+            {
+                byName[name] = entry.Value;
+            }
+        }
+
+        return byName;
     }
 
     /// <inheritdoc/>

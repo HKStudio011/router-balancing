@@ -19,6 +19,9 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
     /// <summary>Bảng tài khoản (API key) của provider — đa tài khoản mỗi nhà cung cấp.</summary>
     public DbSet<ProviderAccount> ProviderAccounts => Set<ProviderAccount>();
 
+    /// <summary>Header tùy chỉnh per provider — thay cột JSON cũ (backlog C5).</summary>
+    public DbSet<ProviderHeader> ProviderHeaders => Set<ProviderHeader>();
+
     /// <summary>API key inbound của client - chỉ lưu hash.</summary>
     public DbSet<ClientKey> ClientKeys => Set<ClientKey>();
 
@@ -52,6 +55,23 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             // hàng cũ được backfill trong DbInitializer sau Migrate
             e.HasIndex(x => x.Identifier).IsUnique();
             e.Property(x => x.BaseUrl).IsRequired().HasMaxLength(2000);
+            // Header luôn cần khi tạo request (dispatcher, test connection, sync model).
+            // AutoInclude tránh lỗi "quên Include" ở một trong nhiều đường load provider;
+            // bảng nhỏ nên chi phí query thêm không đáng kể.
+            e.Navigation(x => x.Headers).AutoInclude();
+        });
+
+        modelBuilder.Entity<ProviderHeader>(e =>
+        {
+            // PK ghép + NOCASE: "X-Custom" và "x-custom" không thể cùng tồn tại.
+            // Giữ chữ gốc trong cột để hiển thị; SQLite so sánh NOCASE, lưu nguyên bytes.
+            e.Property(x => x.Name).IsRequired().HasMaxLength(200).UseCollation("NOCASE");
+            e.Property(x => x.Value).IsRequired();
+            e.HasKey(x => new { x.ProviderId, x.Name });
+            e.HasOne(x => x.Provider)
+                .WithMany(p => p.Headers)
+                .HasForeignKey(x => x.ProviderId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Model>(e =>
