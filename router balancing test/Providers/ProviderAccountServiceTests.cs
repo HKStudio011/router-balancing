@@ -5,6 +5,7 @@ using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Usage;
 
 namespace router_balancing_test.Providers;
 
@@ -14,6 +15,7 @@ public class ProviderAccountServiceTests : IDisposable
     private readonly TestDb _testDb = new();
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ISecretProtector _protector = new DpapiSecretProtector();
+    private readonly IUsageDailyService _usage;
     private readonly ProviderAccountService _service;
     // Providers.Name có unique index (spec capability-model §6, B4) — mỗi seed một tên riêng;
     // test này nói về tên ACCOUNT trùng nhau giữa các provider, không phải tên provider.
@@ -23,8 +25,9 @@ public class ProviderAccountServiceTests : IDisposable
     {
         _db = _testDb.CreateFactory();
         DbInitializer.Initialize(_db);
+        _usage = new UsageDailyService(_db, TimeProvider.System);
         // CRUD dùng factory ném — không được phép đụng network
-        _service = new ProviderAccountService(_db, _protector, new NeverHttpFactory(), new NullLog());
+        _service = new ProviderAccountService(_db, _protector, new NeverHttpFactory(), new NullLog(), _usage);
     }
 
     /// <summary>Giải phóng TestDb (xóa file tạm).</summary>
@@ -39,7 +42,7 @@ public class ProviderAccountServiceTests : IDisposable
 
     /// <summary>Service với HTTP stub — test TestAll không đụng mạng.</summary>
     private ProviderAccountService ServiceWith(HttpMessageHandler handler) =>
-        new(_db, _protector, new StubFactory(handler), new NullLog());
+        new(_db, _protector, new StubFactory(handler), new NullLog(), _usage);
 
     /// <summary>IHttpClientFactory trả HttpClient gắn handler test.</summary>
     private sealed class StubFactory(HttpMessageHandler handler) : IHttpClientFactory
@@ -394,6 +397,20 @@ public class ProviderAccountServiceTests : IDisposable
         var list = await _service.ListAsync(providerId);
 
         Assert.Equal(new[] { "first", "last", "mid" }, list.Select(a => a.Name).ToArray());
+    }
+
+    /// <summary>Usage hôm nay trên account được nạp từ UsageDaily, không phải cột cấu hình.</summary>
+    [Fact]
+    public async Task ListAsync_PopulatesTodayUsageFromLedger()
+    {
+        var providerId = await SeedProviderAsync(("a1", true));
+        var accountId = (await _service.ListAsync(providerId))[0].Id;
+        await _usage.RecordAsync(UsageSubjectKind.ProviderAccount, accountId, requests: 2, tokens: 30);
+
+        var account = Assert.Single(await _service.ListAsync(providerId));
+
+        Assert.Equal(2, account.RequestsUsed);
+        Assert.Equal(30, account.TokensUsed);
     }
 
     /// <summary>Xoá provider cascade accounts (FK OnDelete).</summary>

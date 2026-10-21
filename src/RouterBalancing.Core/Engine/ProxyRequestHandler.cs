@@ -23,7 +23,7 @@ public sealed class ProxyRequestHandler(
     IUpstreamClient upstream,
     ISecretProtector protector,
     ILogService log,
-    IClientKeyUsageSink usageSink,
+    IRequestUsageSink usageSink,
     IApiMonitorStore monitor,
     IAppSettingsService settings)
 {
@@ -255,9 +255,6 @@ public sealed class ProxyRequestHandler(
                     {
                         log.LogRequestUsage(ClientKeyItems.RequestIdOf(ctx), ClientKeyItems.IdOf(ctx),
                             tee.Usage.PromptTokens, tee.Usage.CompletionTokens);
-                        // Fail-open nằm trong sink: DB lỗi → log Error, không nổ sau khi đã stream (spec §10)
-                        await usageSink.RecordAsync(ClientKeyItems.IdOf(ctx),
-                            tee.Usage.PromptTokens, tee.Usage.CompletionTokens, ct);
                     }
                     else if (expectsUsage)
                     {
@@ -274,6 +271,12 @@ public sealed class ProxyRequestHandler(
                             ClientKeyId = ClientKeyItems.IdOf(ctx),
                         });
                     }
+
+                    // Gọi cho MỌI 2xx: account cần đếm request kể cả khi upstream thiếu usage;
+                    // token truyền 0 trong trường hợp đó. Fail-open nằm trong sink: DB lỗi →
+                    // log Error, không nổ sau khi đã stream (spec §10).
+                    await usageSink.RecordAsync(ClientKeyItems.IdOf(ctx), account.Id,
+                        tee.Usage?.PromptTokens ?? 0, tee.Usage?.CompletionTokens ?? 0, ct);
                     return new DispatchOutcome.Handled();
                 }
 

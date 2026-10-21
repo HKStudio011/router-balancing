@@ -1,6 +1,11 @@
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace RouterBalancing.Core.Domain;
 
-/// <summary>Tài khoản (API key) thuộc một nhà cung cấp — đa tài khoản, key sống hoàn toàn ở đây.</summary>
+/// <summary>
+/// Tài khoản (API key) thuộc một nhà cung cấp — đa tài khoản, key sống hoàn toàn ở đây.
+/// Usage ngày được lưu trong <see cref="UsageDaily"/>, không còn counter trên bảng này.
+/// </summary>
 public class ProviderAccount
 {
     /// <summary>Khóa chính — EF tự sinh khi tạo tài khoản.</summary>
@@ -27,20 +32,25 @@ public class ProviderAccount
     /// <summary>Trọng số chia tải khi nhiều key cùng match (Phase 3). 0–10000, mặc định 100.</summary>
     public int Weight { get; set; } = 100;
 
-    /// <summary>Giới hạn token mỗi ngày UTC; <see langword="null"/> = không giới hạn (enforce Phase 3).</summary>
+    /// <summary>Giới hạn token mỗi ngày UTC; <see langword="null"/> = không giới hạn (enforcement là follow-up).</summary>
     public int? DailyTokenLimit { get; set; }
 
-    /// <summary>Token đã dùng trong ngày <c>UsageDate</c> — reset khi sang ngày (Phase 3 ghi).</summary>
-    public long TokensUsed { get; set; }
-
-    /// <summary>Giới hạn request mỗi ngày UTC; <see langword="null"/> = không giới hạn (enforce Phase 3).</summary>
+    /// <summary>Giới hạn request mỗi ngày UTC; <see langword="null"/> = không giới hạn (enforcement là follow-up).</summary>
     public int? DailyRequestLimit { get; set; }
 
-    /// <summary>Request đã dùng trong ngày <c>UsageDate</c> — reset khi sang ngày (Phase 3 ghi).</summary>
-    public long RequestsUsed { get; set; }
+    /// <summary>
+    /// Token đã dùng hôm nay (UTC) — chỉ để hiển thị, nạp từ <see cref="UsageDaily"/>
+    /// trong <c>ProviderAccountService.ListAsync</c>; không phải cột DB.
+    /// </summary>
+    [NotMapped]
+    public long TokensUsed { get; set; }
 
-    /// <summary>Ngày UTC của 2 counter trên — reset khi sang ngày (Phase 3 ghi).</summary>
-    public DateOnly? UsageDate { get; set; }
+    /// <summary>
+    /// Request đã dùng hôm nay (UTC) — chỉ để hiển thị, nạp từ <see cref="UsageDaily"/>
+    /// trong <c>ProviderAccountService.ListAsync</c>; không phải cột DB.
+    /// </summary>
+    [NotMapped]
+    public long RequestsUsed { get; set; }
 
     /// <summary>Kết quả test gần nhất; null = chưa test.</summary>
     public bool? LastTestSuccess { get; set; }

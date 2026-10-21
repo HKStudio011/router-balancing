@@ -1,8 +1,10 @@
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace RouterBalancing.Core.Domain;
 
 /// <summary>
 /// API key inbound của client gọi proxy - chỉ lưu SHA-256 (KeyHash), không lưu plaintext.
-/// Counter Requests/Tokens reset lười theo <see cref="UsageDate"/> (ngày UTC).
+/// Usage ngày được lưu trong <see cref="UsageDaily"/>, không còn counter trên bảng này.
 /// </summary>
 public class ClientKey
 {
@@ -20,14 +22,19 @@ public class ClientKey
     /// <summary>Revoke mềm: tắt vẫn giữ row, chỉ không match ở middleware.</summary>
     public bool Enabled { get; set; } = true;
 
-    /// <summary>Counter request trong ngày UTC <see cref="UsageDate"/>.</summary>
+    /// <summary>
+    /// Request đã dùng hôm nay (UTC) — chỉ để hiển thị, nạp từ <see cref="UsageDaily"/>
+    /// trong <c>ClientKeyService.ListAsync</c>; không phải cột DB.
+    /// </summary>
+    [NotMapped]
     public long RequestsUsed { get; set; }
 
-    /// <summary>Counter token (prompt+completion) trong ngày UTC <see cref="UsageDate"/>.</summary>
+    /// <summary>
+    /// Token (prompt+completion) đã dùng hôm nay (UTC) — chỉ để hiển thị, nạp từ
+    /// <see cref="UsageDaily"/>; không phải cột DB.
+    /// </summary>
+    [NotMapped]
     public long TokensUsed { get; set; }
-
-    /// <summary>Ngày UTC của 2 counter trên - lệch ngày thì reset tại lần ghi đầu tiên.</summary>
-    public DateOnly? UsageDate { get; set; }
 
     public DateTimeOffset? LastUsedAt { get; set; }
 

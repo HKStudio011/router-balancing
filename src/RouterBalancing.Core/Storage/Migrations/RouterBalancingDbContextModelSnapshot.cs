@@ -65,19 +65,10 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<int?>("RatePerMinute")
                         .HasColumnType("INTEGER");
 
-                    b.Property<long>("RequestsUsed")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int?>("TokensPerMinute")
                         .HasColumnType("INTEGER");
 
-                    b.Property<long>("TokensUsed")
-                        .HasColumnType("INTEGER");
-
                     b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("UsageDate")
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
@@ -487,16 +478,7 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.Property<bool>("ProxyOverrideEnabled")
                         .HasColumnType("INTEGER");
 
-                    b.Property<long>("RequestsUsed")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<long>("TokensUsed")
-                        .HasColumnType("INTEGER");
-
                     b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateOnly?>("UsageDate")
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Weight")
@@ -557,6 +539,30 @@ namespace RouterBalancing.Core.Storage.Migrations
                     b.HasIndex("ProxyId");
 
                     b.ToTable("ProviderProxies", (string)null);
+                });
+
+            modelBuilder.Entity("RouterBalancing.Core.Domain.UsageDaily", b =>
+                {
+                    b.Property<string>("SubjectKind")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("SubjectId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Date")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Requests")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Tokens")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("SubjectKind", "SubjectId", "Date");
+
+                    b.HasIndex("SubjectKind", "Date");
+
+                    b.ToTable("UsageDaily");
                 });
 
             modelBuilder.Entity("RouterBalancing.Core.Domain.ComboItem", b =>

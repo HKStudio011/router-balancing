@@ -3,7 +3,7 @@ using RouterBalancing.Core.Domain;
 namespace RouterBalancing.Core.Server;
 
 /// <summary>
-/// CRUD + counter daily cho API key inbound. <see cref="KeysChanged"/> phát sau mọi thay đổi
+/// CRUD + ghi usage ngày cho API key inbound. <see cref="KeysChanged"/> phát sau mọi thay đổi
 /// ảnh hưởng auth (create/update/delete/enable) để auth cache của proxy invalidate ngay (spec §4.1).
 /// </summary>
 public interface IClientKeyService
@@ -25,9 +25,9 @@ public interface IClientKeyService
     /// <summary>Bật/tắt key theo id rồi phát <see cref="KeysChanged"/> để auth cache invalidate.</summary>
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
 
-    /// <summary>Cộng 1 vào counter daily + cập nhật LastUsedAt (gọi từ middleware sau khi auth qua).</summary>
+    /// <summary>Ghi 1 request vào sổ UsageDaily + cập nhật LastUsedAt (gọi từ middleware sau khi auth qua).</summary>
     Task RecordRequestAsync(long id, CancellationToken ct = default);
 
-    /// <summary>Cộng prompt+completion vào counter daily (gọi từ usage sink).</summary>
+    /// <summary>Ghi prompt+completion vào sổ UsageDaily (gọi từ usage sink).</summary>
     Task RecordTokensAsync(long id, int promptTokens, int completionTokens, CancellationToken ct = default);
 }

@@ -25,6 +25,9 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
     /// <summary>API key inbound của client - chỉ lưu hash.</summary>
     public DbSet<ClientKey> ClientKeys => Set<ClientKey>();
 
+    /// <summary>Sổ usage theo ngày UTC cho client key và provider account (backlog C3).</summary>
+    public DbSet<UsageDaily> UsageDaily => Set<UsageDaily>();
+
     /// <summary>Bảng proxy outbound toàn cục — pool round-robin đọc khi Invalidate (spec proxy-pool §3.1).</summary>
     public DbSet<OutboundProxy> OutboundProxies => Set<OutboundProxy>();
 
@@ -152,10 +155,21 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             e.Property(x => x.KeyHash).IsRequired().HasMaxLength(64);
             e.Property(x => x.KeyMask).IsRequired().HasMaxLength(16);
             e.HasIndex(x => x.KeyHash).IsUnique();
-            // DateOnly → "yyyy-MM-dd" TEXT: tường minh, không phụ thuộc mapping mặc định của provider
-            e.Property(x => x.UsageDate).HasConversion(
-                d => d.HasValue ? d.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) : null,
-                s => s == null ? null : DateOnly.Parse(s, System.Globalization.CultureInfo.InvariantCulture));
+            // Usage ngày nằm ở UsageDaily — RequestsUsed/TokensUsed chỉ là [NotMapped] cho UI.
+        });
+
+        modelBuilder.Entity<UsageDaily>(e =>
+        {
+            // PK ghép đủ để upsert atomic theo (chủ thể, ngày); SubjectKind lưu TEXT để
+            // DB bên ngoài đọc được, Date lưu "yyyy-MM-dd" tường minh như ClientKeys cũ.
+            e.HasKey(x => new { x.SubjectKind, x.SubjectId, x.Date });
+            e.Property(x => x.SubjectKind)
+                .HasConversion(v => UsageSubjectKinds.ToDb(v), s => UsageSubjectKinds.FromDb(s));
+            e.Property(x => x.Date).HasConversion(
+                d => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                s => DateOnly.ParseExact(s, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+            // Query tổng theo ngày (dashboard/tương lai) không cần quét toàn bảng.
+            e.HasIndex(x => new { x.SubjectKind, x.Date });
         });
 
         modelBuilder.Entity<OutboundProxy>(e =>
