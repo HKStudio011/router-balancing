@@ -118,6 +118,14 @@ public sealed class ComboService : IComboService
                 $"Name must be {MaxNameLength} characters or fewer.");
         }
 
+        // D21: tên combo không được đụng namespace model "<Identifier>/<ModelId>" —
+        // ComboResolver thử model trước combo nên tên có '/' có thể bị che hoàn toàn.
+        if (name.Contains('/'))
+        {
+            throw new ComboValidationException(ComboValidationError.NameContainsSlash,
+                "Combo names cannot contain '/'.");
+        }
+
         if (items.Count == 0)
         {
             throw new ComboValidationException(ComboValidationError.EmptyItems,

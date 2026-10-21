@@ -9,6 +9,7 @@ public enum ComboValidationError
     InvalidItemTarget,
     TargetNotFound,
     NameTooLong,
+    NameContainsSlash,
 }
 
 /// <summary>Exception validation combo — giữ Code để UI chọn đúng thông điệp i18n.</summary>
