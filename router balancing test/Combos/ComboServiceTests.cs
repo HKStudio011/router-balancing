@@ -133,6 +133,47 @@ public class ComboServiceTests : IDisposable
         Assert.Equal(ComboValidationError.NameTooLong, ex.Code);
     }
 
+    [Theory]
+    [InlineData("openai/gpt-4o")]
+    [InlineData("  openai/gpt-4o  ")]
+    public async Task Create_WhenNameContainsSlash_ThrowsNameContainsSlash(string name)
+    {
+        var modelId = await SeedModelAsync();
+
+        var ex = await Assert.ThrowsAsync<ComboValidationException>(() => _service.CreateAsync(
+            Draft(name, new ComboItemDraft { TargetModelId = modelId })));
+
+        Assert.Equal(ComboValidationError.NameContainsSlash, ex.Code);
+    }
+
+    [Fact]
+    public async Task Update_WhenNameContainsSlash_ThrowsNameContainsSlash()
+    {
+        var modelId = await SeedModelAsync();
+        var comboId = await SeedComboAsync("clean", targetModelId: modelId);
+
+        var ex = await Assert.ThrowsAsync<ComboValidationException>(() => _service.UpdateAsync(
+            comboId,
+            Draft("bad/name", new ComboItemDraft { TargetModelId = modelId })));
+
+        Assert.Equal(ComboValidationError.NameContainsSlash, ex.Code);
+    }
+
+    /// <summary>Combo cũ đang có '/' phải sửa được sang tên sạch — không dead-end.</summary>
+    [Fact]
+    public async Task Update_ExistingSlashName_ToCleanName_Succeeds()
+    {
+        var modelId = await SeedModelAsync();
+        var comboId = await SeedComboAsync("old/name", targetModelId: modelId);
+
+        await _service.UpdateAsync(
+            comboId,
+            Draft("clean-name", new ComboItemDraft { TargetModelId = modelId }));
+
+        using var db = _db.CreateDbContext();
+        Assert.Equal("clean-name", db.Combos.Single(c => c.Id == comboId).Name);
+    }
+
     [Fact]
     public async Task Create_WhenItemTargetsNothing_ThrowsInvalidItemTarget()
     {

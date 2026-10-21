@@ -14,6 +14,7 @@ using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 using RouterBalancing.Core.Update;
+using RouterBalancing.Core.Usage;
 
 namespace RouterBalancing.Core.Server;
 
@@ -125,11 +126,12 @@ public static class ProxyApp
         // Đồng hồ system — service time-sensitive trong proxy container
         // (ClientKeyRateLimiter) resolve cùng 1 instance
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<IUsageDailyService, UsageDailyService>();
         builder.Services.AddSingleton<IClientKeyRateLimiter, ClientKeyRateLimiter>();
         // Singleton (không factory): cache phải sống 1 lần/proxy container để event KeysChanged
         // attach đúng 1 lần; Dispose của container unsubscribe khi proxy dừng.
         builder.Services.AddSingleton<ClientKeyAuthCache>();
-        builder.Services.AddSingleton<IClientKeyUsageSink, ClientKeyUsageSink>();
+        builder.Services.AddSingleton<IRequestUsageSink, RequestUsageSink>();
         builder.Services.AddHostedService<DispatcherLoop>();
     }
 

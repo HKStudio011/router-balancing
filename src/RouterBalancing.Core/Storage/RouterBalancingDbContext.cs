@@ -19,8 +19,14 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
     /// <summary>Bảng tài khoản (API key) của provider — đa tài khoản mỗi nhà cung cấp.</summary>
     public DbSet<ProviderAccount> ProviderAccounts => Set<ProviderAccount>();
 
+    /// <summary>Header tùy chỉnh per provider — thay cột JSON cũ (backlog C5).</summary>
+    public DbSet<ProviderHeader> ProviderHeaders => Set<ProviderHeader>();
+
     /// <summary>API key inbound của client - chỉ lưu hash.</summary>
     public DbSet<ClientKey> ClientKeys => Set<ClientKey>();
+
+    /// <summary>Sổ usage theo ngày UTC cho client key và provider account (backlog C3).</summary>
+    public DbSet<UsageDaily> UsageDaily => Set<UsageDaily>();
 
     /// <summary>Bảng proxy outbound toàn cục — pool round-robin đọc khi Invalidate (spec proxy-pool §3.1).</summary>
     public DbSet<OutboundProxy> OutboundProxies => Set<OutboundProxy>();
@@ -52,6 +58,23 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             // hàng cũ được backfill trong DbInitializer sau Migrate
             e.HasIndex(x => x.Identifier).IsUnique();
             e.Property(x => x.BaseUrl).IsRequired().HasMaxLength(2000);
+            // Header luôn cần khi tạo request (dispatcher, test connection, sync model).
+            // AutoInclude tránh lỗi "quên Include" ở một trong nhiều đường load provider;
+            // bảng nhỏ nên chi phí query thêm không đáng kể.
+            e.Navigation(x => x.Headers).AutoInclude();
+        });
+
+        modelBuilder.Entity<ProviderHeader>(e =>
+        {
+            // PK ghép + NOCASE: "X-Custom" và "x-custom" không thể cùng tồn tại.
+            // Giữ chữ gốc trong cột để hiển thị; SQLite so sánh NOCASE, lưu nguyên bytes.
+            e.Property(x => x.Name).IsRequired().HasMaxLength(200).UseCollation("NOCASE");
+            e.Property(x => x.Value).IsRequired();
+            e.HasKey(x => new { x.ProviderId, x.Name });
+            e.HasOne(x => x.Provider)
+                .WithMany(p => p.Headers)
+                .HasForeignKey(x => x.ProviderId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Model>(e =>
@@ -98,7 +121,12 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             // Restrict: app tự kiểm tra combo đang được tham chiếu trước khi xóa
             e.HasOne<Combo>().WithMany().HasForeignKey(x => x.TargetComboId)
                 .OnDelete(DeleteBehavior.Restrict);
-            e.HasIndex(x => new { x.ComboId, x.Position });
+            // Đúng một target: chặn dòng vô nghĩa/cả hai target ở tầng DB, không chỉ service.
+            e.ToTable(t => t.HasCheckConstraint(
+                "CK_ComboItems_ExactlyOneTarget",
+                "(TargetModelId IS NULL) <> (TargetComboId IS NULL)"));
+            // Fallback phụ thuộc thứ tự → Position phải duy nhất trong một combo.
+            e.HasIndex(x => new { x.ComboId, x.Position }).IsUnique();
         });
 
         modelBuilder.Entity<LogEntry>(e =>
@@ -127,10 +155,21 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             e.Property(x => x.KeyHash).IsRequired().HasMaxLength(64);
             e.Property(x => x.KeyMask).IsRequired().HasMaxLength(16);
             e.HasIndex(x => x.KeyHash).IsUnique();
-            // DateOnly → "yyyy-MM-dd" TEXT: tường minh, không phụ thuộc mapping mặc định của provider
-            e.Property(x => x.UsageDate).HasConversion(
-                d => d.HasValue ? d.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) : null,
-                s => s == null ? null : DateOnly.Parse(s, System.Globalization.CultureInfo.InvariantCulture));
+            // Usage ngày nằm ở UsageDaily — RequestsUsed/TokensUsed chỉ là [NotMapped] cho UI.
+        });
+
+        modelBuilder.Entity<UsageDaily>(e =>
+        {
+            // PK ghép đủ để upsert atomic theo (chủ thể, ngày); SubjectKind lưu TEXT để
+            // DB bên ngoài đọc được, Date lưu "yyyy-MM-dd" tường minh như ClientKeys cũ.
+            e.HasKey(x => new { x.SubjectKind, x.SubjectId, x.Date });
+            e.Property(x => x.SubjectKind)
+                .HasConversion(v => UsageSubjectKinds.ToDb(v), s => UsageSubjectKinds.FromDb(s));
+            e.Property(x => x.Date).HasConversion(
+                d => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                s => DateOnly.ParseExact(s, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+            // Query tổng theo ngày (dashboard/tương lai) không cần quét toàn bảng.
+            e.HasIndex(x => new { x.SubjectKind, x.Date });
         });
 
         modelBuilder.Entity<OutboundProxy>(e =>

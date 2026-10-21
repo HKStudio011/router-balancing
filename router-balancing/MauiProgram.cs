@@ -19,6 +19,7 @@ using RouterBalancing.Core.Stats;
 using RouterBalancing.Core.Storage;
 using RouterBalancing.Core.Tools;
 using RouterBalancing.Core.Update;
+using RouterBalancing.Core.Usage;
 #if WINDOWS
 using router_balancing.Platforms.Windows;
 #endif
@@ -136,6 +137,8 @@ namespace router_balancing
             // Sync list model free lớn hơn probe 10s — timeout 30s (spec provider-free §6.1)
             builder.Services.AddHttpClient(FreeModelSyncService.HttpClientName,
                 client => client.Timeout = TimeSpan.FromSeconds(30));
+            // Sổ usage ngày dùng chung cho UI + proxy; TimeProvider.System đã đăng ký phía trên.
+            builder.Services.AddSingleton<IUsageDailyService, UsageDailyService>();
             builder.Services.AddSingleton<IProviderAccountService, ProviderAccountService>();
             builder.Services.AddSingleton<IComboService, ComboService>();
             builder.Services.AddSingleton<IComboCapabilityCalculator, ComboCapabilityCalculator>();

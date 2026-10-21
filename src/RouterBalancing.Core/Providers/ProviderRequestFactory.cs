@@ -99,33 +99,16 @@ public static class ProviderRequestFactory
     }
 
     /// <summary>
-    /// Parse JSON object trong <see cref="Provider.ExtraHeaders"/> và gắn từng entry
-    /// (TryAddWithoutValidation) khi header tương ứng chưa có. JSON hỏng (chỉnh tay DB)
-    /// → bỏ qua, không chặn traffic.
+    /// Gắn header tùy chỉnh (TryAddWithoutValidation) khi header tương ứng chưa có.
+    /// Fingerprint/attributions/Authorization built-in đã set trước nên thắng.
     /// </summary>
     private static void ApplyExtraHeaders(HttpRequestMessage request, Provider provider)
     {
-        if (provider.ExtraHeaders is not { Length: > 0 })
+        foreach (var header in provider.Headers)
         {
-            return;
-        }
-
-        Dictionary<string, string> headers;
-        try
-        {
-            headers = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
-                provider.ExtraHeaders) ?? [];
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            return;
-        }
-
-        foreach (var (key, value) in headers)
-        {
-            if (!request.Headers.Contains(key))
+            if (!request.Headers.Contains(header.Name))
             {
-                request.Headers.TryAddWithoutValidation(key, value);
+                request.Headers.TryAddWithoutValidation(header.Name, header.Value);
             }
         }
     }

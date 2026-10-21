@@ -165,7 +165,7 @@ public class ProxyRequestHandlerTests
     }
 
     private ProxyRequestHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
-        IClientKeyUsageSink? sink = null, ApiMonitorStore? monitor = null,
+        IRequestUsageSink? sink = null, ApiMonitorStore? monitor = null,
         StubSettings? settings = null)
     {
         var effectiveLog = log ?? new CapturingLog();
@@ -558,13 +558,13 @@ public class ProxyRequestHandlerTests
         }
     }
 
-    private sealed class CapturingUsageSink : IClientKeyUsageSink
+    private sealed class CapturingUsageSink : IRequestUsageSink
     {
-        public List<(long? KeyId, int Prompt, int Completion)> Records { get; } = [];
-        public Task RecordAsync(long? clientKeyId, int promptTokens, int completionTokens,
-            CancellationToken ct = default)
+        public List<(long? KeyId, long? AccountId, int Prompt, int Completion)> Records { get; } = [];
+        public Task RecordAsync(long? clientKeyId, long? providerAccountId, int promptTokens,
+            int completionTokens, CancellationToken ct = default)
         {
-            Records.Add((clientKeyId, promptTokens, completionTokens));
+            Records.Add((clientKeyId, providerAccountId, promptTokens, completionTokens));
             return Task.CompletedTask;
         }
     }
@@ -609,7 +609,10 @@ public class ProxyRequestHandlerTests
         Assert.Contains("\"prompt_tokens\":11", body);
         Assert.Contains("\"completion_tokens\":7", body);
         Assert.Equal(("abc12345", 42L, 11, 7), Assert.Single(log.Usages));
-        Assert.Equal((42L, 11, 7), Assert.Single(sink.Records));
+        var usageRecord = Assert.Single(sink.Records);
+        Assert.Equal(42L, usageRecord.KeyId);
+        Assert.Equal(AccountIdOf(provider), usageRecord.AccountId);
+        Assert.Equal((11, 7), (usageRecord.Prompt, usageRecord.Completion));
         Assert.Single(log.Infos);                                  // LogForwarded vẫn đúng 1 Info
     }
 
@@ -617,7 +620,9 @@ public class ProxyRequestHandlerTests
     public async Task ForwardAsync_WhenIncludeUsageButNoUsage_LogsDebugAndStillHandled()
     {
         var log = new CapturingLog();
-        var sut = Create(new StubUpstream(() => Upstream(200, "data: [DONE]\n\n", "text/event-stream")), log);
+        var sink = new CapturingUsageSink();
+        var sut = Create(new StubUpstream(() => Upstream(200, "data: [DONE]\n\n", "text/event-stream")),
+            log, sink);
         var ctx = Ctx();
         var provider = SeedProvider();
 
@@ -627,6 +632,11 @@ public class ProxyRequestHandlerTests
         Assert.Single(log.Debugs);
         Assert.Empty(log.Usages);
         Assert.Single(log.Infos);
+        // Thiếu usage vẫn phải đếm 1 request cho account (C3), token = 0.
+        var record = Assert.Single(sink.Records);
+        Assert.Null(record.KeyId);
+        Assert.Equal(AccountIdOf(provider), record.AccountId);
+        Assert.Equal((0, 0), (record.Prompt, record.Completion));
     }
 
     [Fact]

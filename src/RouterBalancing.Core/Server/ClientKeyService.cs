@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Usage;
 
 namespace RouterBalancing.Core.Server;
 
@@ -9,15 +10,41 @@ namespace RouterBalancing.Core.Server;
 public sealed class ClientKeyService : IClientKeyService
 {
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
+    private readonly IUsageDailyService _usage;
 
     public event Action? KeysChanged;
 
-    public ClientKeyService(IDbContextFactory<RouterBalancingDbContext> db) => _db = db;
+    /// <summary>
+    /// Khởi tạo service với usage ledger dùng system clock — dành cho test/consumer
+    /// không đi qua DI; DI dùng constructor có <see cref="IUsageDailyService"/>.
+    /// </summary>
+    public ClientKeyService(IDbContextFactory<RouterBalancingDbContext> db)
+        : this(db, new UsageDailyService(db, TimeProvider.System))
+    {
+    }
+
+    /// <summary>Khởi tạo service với dependency usage ledger được inject.</summary>
+    public ClientKeyService(IDbContextFactory<RouterBalancingDbContext> db, IUsageDailyService usage)
+    {
+        _db = db;
+        _usage = usage;
+    }
 
     public async Task<IReadOnlyList<ClientKey>> ListAsync(CancellationToken ct = default)
     {
         await using var db = await _db.CreateDbContextAsync(ct);
-        return await db.ClientKeys.AsNoTracking().OrderBy(k => k.Id).ToListAsync(ct);
+        var keys = await db.ClientKeys.AsNoTracking().OrderBy(k => k.Id).ToListAsync(ct);
+        var totals = await _usage.GetTodayTotalsAsync(
+            UsageSubjectKind.ClientKey, keys.Select(k => k.Id).ToList(), ct);
+        foreach (var key in keys)
+        {
+            if (totals.TryGetValue(key.Id, out var usage))
+            {
+                key.RequestsUsed = usage.Requests;
+                key.TokensUsed = usage.Tokens;
+            }
+        }
+        return keys;
     }
 
     public async Task<(ClientKey Key, string Plaintext)> CreateAsync(ClientKeyDraft draft, CancellationToken ct = default)
@@ -90,34 +117,18 @@ public sealed class ClientKeyService : IClientKeyService
     {
         await using var db = await _db.CreateDbContextAsync(ct);
         var key = await db.ClientKeys.FirstOrDefaultAsync(k => k.Id == id, ct);
-        // Key bị xóa giữa chừng sau khi auth qua — bỏ qua counter, không throw ra middleware
+        // Key bị xóa giữa chừng sau khi auth qua — bỏ qua, không throw ra middleware
         if (key is null) return;
-        ResetDailyIfNeeded(key, DateTimeOffset.UtcNow);
-        key.RequestsUsed++;
         key.LastUsedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+
+        // Ghi sổ sau khi key còn tồn tại; ledger tự bỏ qua nếu key bị xóa ngay sau đó.
+        await _usage.RecordAsync(UsageSubjectKind.ClientKey, id, requests: 1, tokens: 0, ct);
     }
 
-    public async Task RecordTokensAsync(long id, int promptTokens, int completionTokens, CancellationToken ct = default)
-    {
-        await using var db = await _db.CreateDbContextAsync(ct);
-        var key = await db.ClientKeys.FirstOrDefaultAsync(k => k.Id == id, ct);
-        if (key is null) return;
-        ResetDailyIfNeeded(key, DateTimeOffset.UtcNow);
-        key.TokensUsed += promptTokens + completionTokens;
-        await db.SaveChangesAsync(ct);
-    }
-
-    // Reset lười tại thời điểm ghi thay vì job nền: counter daily không cần chính xác tuyệt đối
-    // tại 00:00 UTC, chỉ cần không bao giờ cộng dồn qua ngày (spec §6.2).
-    private static void ResetDailyIfNeeded(ClientKey key, DateTimeOffset now)
-    {
-        var today = DateOnly.FromDateTime(now.UtcDateTime);
-        if (key.UsageDate == today) return;
-        key.UsageDate = today;
-        key.RequestsUsed = 0;
-        key.TokensUsed = 0;
-    }
+    public Task RecordTokensAsync(long id, int promptTokens, int completionTokens, CancellationToken ct = default)
+        => _usage.RecordAsync(
+            UsageSubjectKind.ClientKey, id, requests: 0, tokens: promptTokens + completionTokens, ct);
 
     // ArgumentException → UI bắt được và hiện validation message cạnh field (không cần custom exception)
     private static void Validate(ClientKeyDraft draft)

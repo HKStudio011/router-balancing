@@ -103,10 +103,22 @@ public class DbInitializerTests : IDisposable
         long comboId;
         using (var db = factory.CreateDbContext())
         {
+            // ComboItems giờ có CHECK đúng một target (backlog C2) — dòng mồ côi
+            // trước đây dùng cho round-trip phải trỏ model thật.
+            var provider = new Provider
+            {
+                Name = "combo-roundtrip-provider",
+                Type = ProviderType.OpenAI,
+                BaseUrl = "https://api.example.com",
+                Models = { new Model { ModelId = "m1" } },
+            };
+            db.Providers.Add(provider);
+            db.SaveChanges();
+
             var combo = new Combo
             {
                 Name = "combo-roundtrip",
-                Items = [new ComboItem { Position = 0 }],
+                Items = [new ComboItem { Position = 0, TargetModelId = provider.Models[0].Id }],
             };
             db.Combos.Add(combo);
             db.SaveChanges();

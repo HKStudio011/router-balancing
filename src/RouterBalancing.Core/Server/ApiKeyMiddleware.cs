@@ -54,14 +54,14 @@ public sealed class ApiKeyMiddleware(RequestDelegate next, ClientKeyAuthCache ke
 
         context.Items[ClientKeyItems.Id] = match.Id;
 
-        // Counter daily là thống kê — DB lỗi không được chặn request (fail-open, spec §10)
+        // Usage ngày là thống kê — DB lỗi không được chặn request (fail-open, spec §10)
         try
         {
             await service.RecordRequestAsync(match.Id);
         }
         catch (Exception ex)
         {
-            log.Error("Không ghi được counter request cho client key.", ex, LogCategory.Request);
+            log.Error("Không ghi được usage request cho client key.", ex, LogCategory.Request);
         }
 
         await next(context);

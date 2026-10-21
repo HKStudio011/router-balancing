@@ -24,11 +24,11 @@ internal sealed class NullJournalWriter : IRequestJournalWriter
 {
 }
 
-/// <summary>IClientKeyUsageSink rỗng — unit test không cần DB/thật.</summary>
-internal sealed class NullUsageSink : IClientKeyUsageSink
+/// <summary>IRequestUsageSink rỗng — unit test không cần DB/thật.</summary>
+internal sealed class NullUsageSink : IRequestUsageSink
 {
-    public Task RecordAsync(long? clientKeyId, int promptTokens, int completionTokens,
-        CancellationToken ct = default) => Task.CompletedTask;
+    public Task RecordAsync(long? clientKeyId, long? providerAccountId, int promptTokens,
+        int completionTokens, CancellationToken ct = default) => Task.CompletedTask;
 }
 
 /// <summary>TimeProvider cố định — test đóng băng GetUtcNow để kiểm chứng cửa sổ UTC của StatsService.</summary>

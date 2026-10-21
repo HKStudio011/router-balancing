@@ -281,7 +281,7 @@ public class ProviderServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Create_WhenExtraHeadersSet_PersistsAsJsonObject()
+    public async Task Create_WhenExtraHeadersSet_PersistsHeaderRows()
     {
         var draft = Draft();
         draft.ExtraHeaders =
@@ -292,43 +292,59 @@ public class ProviderServiceTests : IDisposable
 
         var provider = await _service.CreateAsync(draft);
 
-        var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
-            provider.ExtraHeaders!)!;
-        // Key đã trim khi serialize
-        Assert.Equal("a", dict["X-Custom"]);
-        Assert.Equal("b", dict["X-Other"]);
-
         using var db = _db.CreateDbContext();
         var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
-        Assert.Equal(provider.ExtraHeaders, saved.ExtraHeaders);
+        Assert.Equal(2, saved.Headers.Count);
+        // Key đã trim; giữ nguyên chữ gốc để hiển thị.
+        Assert.Equal("a", saved.Headers.Single(h => h.Name == "X-Custom").Value);
+        Assert.Equal("b", saved.Headers.Single(h => h.Name == "X-Other").Value);
     }
 
     [Fact]
-    public async Task Create_WhenExtraHeadersEmpty_PersistsNull()
+    public async Task Create_WhenExtraHeadersEmpty_PersistsNoRows()
     {
         var provider = await _service.CreateAsync(Draft());
 
-        Assert.Null(provider.ExtraHeaders);
+        using var db = _db.CreateDbContext();
+        Assert.False(await db.ProviderHeaders.AnyAsync(h => h.ProviderId == provider.Id));
     }
 
     [Fact]
-    public async Task Update_WhenExtraHeadersChanged_PersistsNewJson()
+    public async Task Update_WhenExtraHeaderValueChanged_UpdatesSameRow()
     {
-        var provider = await _service.CreateAsync(Draft());
+        var create = Draft();
+        create.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-Key", Value = "old" }];
+        var provider = await _service.CreateAsync(create);
+
         var update = Draft();
-        update.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-New", Value = "v" }];
-
+        // Khác hoa thường nhưng cùng header name — update tại chỗ, không thêm dòng.
+        update.ExtraHeaders = [new ExtraHeaderEntry { Key = "x-key", Value = "new" }];
         await _service.UpdateAsync(provider.Id, update);
 
         using var db = _db.CreateDbContext();
-        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
-        var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
-            saved.ExtraHeaders!)!;
-        Assert.Equal("v", dict["X-New"]);
+        var saved = await db.ProviderHeaders.SingleAsync(h => h.ProviderId == provider.Id);
+        Assert.Equal("new", saved.Value);
     }
 
     [Fact]
-    public async Task Update_WhenExtraHeadersRemoved_PersistsNull()
+    public async Task Update_WhenExtraHeadersChanged_ReplacesSet()
+    {
+        var create = Draft();
+        create.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-Old", Value = "v" }];
+        var provider = await _service.CreateAsync(create);
+
+        var update = Draft();
+        update.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-New", Value = "w" }];
+        await _service.UpdateAsync(provider.Id, update);
+
+        using var db = _db.CreateDbContext();
+        var saved = await db.ProviderHeaders.SingleAsync(h => h.ProviderId == provider.Id);
+        Assert.Equal("X-New", saved.Name);
+        Assert.Equal("w", saved.Value);
+    }
+
+    [Fact]
+    public async Task Update_WhenExtraHeadersRemoved_DeletesRows()
     {
         var create = Draft();
         create.ExtraHeaders = [new ExtraHeaderEntry { Key = "X-Old", Value = "v" }];
@@ -337,8 +353,7 @@ public class ProviderServiceTests : IDisposable
         await _service.UpdateAsync(provider.Id, Draft());
 
         using var db = _db.CreateDbContext();
-        var saved = await db.Providers.SingleAsync(p => p.Id == provider.Id);
-        Assert.Null(saved.ExtraHeaders);
+        Assert.False(await db.ProviderHeaders.AnyAsync(h => h.ProviderId == provider.Id));
     }
 
     [Fact]

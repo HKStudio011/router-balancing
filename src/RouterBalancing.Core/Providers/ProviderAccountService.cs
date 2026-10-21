@@ -6,6 +6,7 @@ using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Usage;
 
 namespace RouterBalancing.Core.Providers;
 
@@ -16,28 +17,47 @@ public sealed class ProviderAccountService : IProviderAccountService
     private readonly ISecretProtector _protector;
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
+    private readonly IUsageDailyService _usage;
 
     /// <inheritdoc/>
     public ProviderAccountService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector,
         IHttpClientFactory http,
-        ILogService log)
+        ILogService log,
+        IUsageDailyService usage)
     {
         _db = db;
         _protector = protector;
         _http = http;
         _log = log;
+        _usage = usage;
     }
 
     /// <inheritdoc/>
     public async Task<IReadOnlyList<ProviderAccount>> ListAsync(long providerId, CancellationToken ct = default)
     {
-        using var db = _db.CreateDbContext();
-        return await db.ProviderAccounts
-            .Where(a => a.ProviderId == providerId)
-            .OrderBy(a => a.Name)
-            .ToListAsync(ct);
+        List<ProviderAccount> accounts;
+        using (var db = _db.CreateDbContext())
+        {
+            accounts = await db.ProviderAccounts
+                .Where(a => a.ProviderId == providerId)
+                .OrderBy(a => a.Name)
+                .ToListAsync(ct);
+        }
+
+        // UI cần usage hôm nay trên từng dòng; nạp một query theo tập id thay vì N+1.
+        var totals = await _usage.GetTodayTotalsAsync(
+            UsageSubjectKind.ProviderAccount, accounts.Select(a => a.Id).ToList(), ct);
+        foreach (var account in accounts)
+        {
+            if (totals.TryGetValue(account.Id, out var usage))
+            {
+                account.RequestsUsed = usage.Requests;
+                account.TokensUsed = usage.Tokens;
+            }
+        }
+        return accounts;
     }
 
     /// <inheritdoc/>

@@ -93,7 +93,11 @@ public class ProviderRequestFactoryTests
     public void Create_WhenExtraHeadersSet_AppliesOnGetProbe()
     {
         var provider = P("https://api.openai.com");
-        provider.ExtraHeaders = """{"X-Custom":"a","X-Other":"b"}""";
+        provider.Headers =
+        [
+            new ProviderHeader { Name = "X-Custom", Value = "a" },
+            new ProviderHeader { Name = "X-Other", Value = "b" },
+        ];
 
         using var request = ProviderRequestFactory.Create(provider, "sk-test");
 
@@ -106,25 +110,12 @@ public class ProviderRequestFactoryTests
     {
         // Fingerprint/attributions thắng — user chỉ bổ sung key chưa tồn tại
         var provider = P("https://api.openai.com");
-        provider.ExtraHeaders = """{"Authorization":"Custom evil"}""";
+        provider.Headers = [new ProviderHeader { Name = "Authorization", Value = "Custom evil" }];
 
         using var request = ProviderRequestFactory.Create(provider, "sk-test");
 
         Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
         Assert.Equal("sk-test", request.Headers.Authorization.Parameter);
-    }
-
-    [Fact]
-    public void Create_WhenExtraHeadersJsonCorrupt_SkipsWithoutThrowing()
-    {
-        // JSON hỏng do chỉnh tay DB — fail-open, không chặn traffic
-        var provider = P("https://api.openai.com");
-        provider.ExtraHeaders = "{not json";
-
-        using var request = ProviderRequestFactory.Create(provider, "sk-test");
-
-        Assert.False(request.Headers.Contains("X-Custom"));
-        Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
     }
 
     [Fact]

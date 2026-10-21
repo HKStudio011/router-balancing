@@ -3,18 +3,23 @@ using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Usage;
 
 namespace router_balancing_test.Server;
 
 public class ClientKeyServiceTests : IDisposable
 {
+    private static readonly DateTimeOffset Now = new(2026, 10, 21, 12, 0, 0, TimeSpan.Zero);
+    private static readonly DateOnly Today = DateOnly.FromDateTime(Now.UtcDateTime);
+
     private readonly TestDb _db = new();
     private readonly ClientKeyService _service;
 
     public ClientKeyServiceTests()
     {
         DbInitializer.Initialize(_db.CreateFactory());
-        _service = new ClientKeyService(_db.CreateFactory());
+        var usage = new UsageDailyService(_db.CreateFactory(), new FixedTimeProvider(Now));
+        _service = new ClientKeyService(_db.CreateFactory(), usage);
     }
 
     public void Dispose() => _db.Dispose();
@@ -119,7 +124,7 @@ public class ClientKeyServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task RecordRequest_IncrementsCounterAndLastUsed()
+    public async Task RecordRequest_IncrementsTodayUsageAndLastUsed()
     {
         var (key, _) = await _service.CreateAsync(Draft());
 
@@ -128,27 +133,39 @@ public class ClientKeyServiceTests : IDisposable
         var saved = (await _service.ListAsync()).Single();
         Assert.Equal(1, saved.RequestsUsed);
         Assert.NotNull(saved.LastUsedAt);
-        Assert.NotNull(saved.UsageDate);
+
+        await using var db = _db.CreateFactory().CreateDbContext();
+        var row = await db.UsageDaily.SingleAsync(
+            u => u.SubjectKind == UsageSubjectKind.ClientKey && u.SubjectId == key.Id);
+        Assert.Equal(Today, row.Date);
+        Assert.Equal(1, row.Requests);
+        Assert.Equal(0, row.Tokens);
     }
 
     [Fact]
-    public async Task RecordRequest_WhenUsageDateOld_ResetsCountersFirst()
+    public async Task RecordRequest_KeepsYesterdayUsageAndStartsTodayRow()
     {
         var (key, _) = await _service.CreateAsync(Draft());
-        await using (var db = _db.CreateFactory().CreateDbContext())
-        {
-            var entity = await db.ClientKeys.SingleAsync(k => k.Id == key.Id);
-            entity.UsageDate = new DateOnly(2000, 1, 1);
-            entity.RequestsUsed = 50;
-            entity.TokensUsed = 100;
-            await db.SaveChangesAsync();
-        }
+        var yesterdayUsage = new UsageDailyService(
+            _db.CreateFactory(), new FixedTimeProvider(Now.AddDays(-1)));
+        await yesterdayUsage.RecordAsync(UsageSubjectKind.ClientKey, key.Id, requests: 50, tokens: 100);
 
         await _service.RecordRequestAsync(key.Id);
 
         var saved = (await _service.ListAsync()).Single();
-        Assert.Equal(1, saved.RequestsUsed);   // reset về 0 rồi +1
+        Assert.Equal(1, saved.RequestsUsed);   // chỉ usage hôm nay, không cộng dồn ngày cũ
         Assert.Equal(0, saved.TokensUsed);
+
+        await using var db = _db.CreateFactory().CreateDbContext();
+        var rows = await db.UsageDaily
+            .Where(u => u.SubjectKind == UsageSubjectKind.ClientKey && u.SubjectId == key.Id)
+            .OrderBy(u => u.Date)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(DateOnly.FromDateTime(Now.AddDays(-1).UtcDateTime), rows[0].Date);
+        Assert.Equal((50L, 100L), (rows[0].Requests, rows[0].Tokens));
+        Assert.Equal(Today, rows[1].Date);
+        Assert.Equal((1L, 0L), (rows[1].Requests, rows[1].Tokens));
     }
 
     [Fact]
@@ -162,28 +179,35 @@ public class ClientKeyServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task RecordTokens_WhenUsageDateOld_ResetsBeforeAdd()
+    public async Task RecordTokens_KeepsYesterdayUsageAndAddsToday()
     {
         var (key, _) = await _service.CreateAsync(Draft());
-        await using (var db = _db.CreateFactory().CreateDbContext())
-        {
-            var entity = await db.ClientKeys.SingleAsync(k => k.Id == key.Id);
-            entity.UsageDate = new DateOnly(2000, 1, 1);
-            entity.RequestsUsed = 50;
-            entity.TokensUsed = 100;
-            await db.SaveChangesAsync();
-        }
+        var yesterdayUsage = new UsageDailyService(
+            _db.CreateFactory(), new FixedTimeProvider(Now.AddDays(-1)));
+        await yesterdayUsage.RecordAsync(UsageSubjectKind.ClientKey, key.Id, requests: 50, tokens: 100);
 
         await _service.RecordTokensAsync(key.Id, 3, 4);
 
         var saved = (await _service.ListAsync()).Single();
-        Assert.Equal(7, saved.TokensUsed);     // reset về 0 rồi +7
+        Assert.Equal(7, saved.TokensUsed);     // chỉ usage hôm nay
         Assert.Equal(0, saved.RequestsUsed);
+
+        await using var db = _db.CreateFactory().CreateDbContext();
+        var rows = await db.UsageDaily
+            .Where(u => u.SubjectKind == UsageSubjectKind.ClientKey && u.SubjectId == key.Id)
+            .OrderBy(u => u.Date)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal((50L, 100L), (rows[0].Requests, rows[0].Tokens));
+        Assert.Equal((0L, 7L), (rows[1].Requests, rows[1].Tokens));
     }
 
     [Fact]
-    public async Task RecordRequest_WhenKeyDeleted_NoThrow()
+    public async Task RecordRequest_WhenKeyDeleted_NoThrowAndNoOrphanUsage()
     {
-        await _service.RecordRequestAsync(999); // fail-open: counter là thống kê, không được nổ
+        await _service.RecordRequestAsync(999); // fail-open: thống kê không được nổ
+
+        await using var db = _db.CreateFactory().CreateDbContext();
+        Assert.Empty(await db.UsageDaily.ToListAsync());
     }
 }
