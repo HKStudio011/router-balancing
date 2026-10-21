@@ -18,8 +18,8 @@ namespace RouterBalancing.Core.Tools;
 /// không có khẳng định thuận.</param>
 /// <param name="SupportsThink">Ba trạng thái reasoning; true → <c>{supported:true}</c>,
 /// false → <c>{supported:false}</c> (KnownAbsent), null → không emit.</param>
-/// <param name="ThinkEfforts">Các mức effort đã biết (rỗng/null = chưa biết — R-T2-2 → không emit
-/// key <c>effort</c>); phần tử <c>"toggle"</c> → emit <c>toggle: true</c>.</param>
+/// <param name="ThinkEfforts">Các mức effort đã biết; null/rỗng (hoặc chỉ có <c>"toggle"</c>) →
+/// dùng bộ effort mặc định khi reasoning=true. Phần tử <c>"toggle"</c> → emit <c>toggle: true</c>.</param>
 /// <param name="InputModalities">Các modality input khẳng định thuận (rỗng/null = chưa biết →
 /// fallback mặc định theo <paramref name="SupportsVision"/>).</param>
 /// <param name="OutputModalities">Các modality output khẳng định thuận (rỗng/null → mặc định text).</param>
@@ -68,6 +68,14 @@ public static class OpenCodeConfigGenerator
 
     // Options bất biến sau khởi tạo — dùng chung thay vì cấp phát mới mỗi lần generate.
     private static readonly JsonSerializerOptions IndentedOptions = new() { WriteIndented = true };
+
+    /// <summary>
+    /// Bộ effort mặc định khi nguồn chỉ nói reasoning=true mà không công bố mức nào.
+    /// Đây là lựa chọn cho UI OpenCode, không phải fact catalog — nhiều model vẫn
+    /// nhận đủ danh sách dù API thực tế chỉ hỗ trợ một tập con.
+    /// </summary>
+    private static readonly string[] DefaultReasoningEfforts =
+        ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
     /// <summary>
     /// Sinh config opencode v2 (JSON indent) từ danh sách model + combo.
@@ -216,22 +224,25 @@ public static class OpenCodeConfigGenerator
     /// <summary>
     /// Reasoning: literal <c>"toggle"</c> trong efforts → <c>toggle: true</c>;
     /// phần còn lại giữ nguyên thứ tự và giá trị (kể cả giá trị lạ ngoài low/medium/high — pass-through).
-    /// R-T2-2: efforts null/rỗng = chưa biết → chỉ emit <c>supported</c>, không emit <c>effort</c>.
+    /// Nếu không còn effort nào (null/rỗng/chỉ toggle), dùng <see cref="DefaultReasoningEfforts"/>
+    /// để OpenCode có danh sách lựa chọn thay vì bỏ trống.
     /// </summary>
     private static JsonObject BuildReasoning(IReadOnlyList<string>? thinkEfforts)
     {
         var reasoning = new JsonObject { ["supported"] = true };
-        if (thinkEfforts is not { Count: > 0 }) return reasoning;
-
         var toggle = false;
-        var remaining = new List<string>(thinkEfforts.Count);
-        foreach (var effort in thinkEfforts)
+        var remaining = new List<string>(thinkEfforts?.Count ?? 0);
+        if (thinkEfforts is not null)
         {
-            if (string.Equals(effort, "toggle", StringComparison.Ordinal)) toggle = true;
-            else remaining.Add(effort);
+            foreach (var effort in thinkEfforts)
+            {
+                if (string.Equals(effort, "toggle", StringComparison.Ordinal)) toggle = true;
+                else remaining.Add(effort);
+            }
         }
         if (toggle) reasoning["toggle"] = true;
-        if (remaining.Count > 0) reasoning["effort"] = ToJsonArray(remaining);
+        if (remaining.Count == 0) remaining.AddRange(DefaultReasoningEfforts);
+        reasoning["effort"] = ToJsonArray(remaining);
         return reasoning;
     }
 

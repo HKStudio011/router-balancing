@@ -151,6 +151,10 @@ Service: `GenerateAsync(selectedModelIds, baseUrl, apiKey?)` → string JSON (in
 | `MaxOutputTokens` | `limit.output` | null → bỏ field |
 | — | `cost`, `disabled` | **không emit** (U1/U2) |
 
+> Cập nhật 2026-10-21: khi `reasoning.supported=true` mà `ThinkEfforts` null/rỗng/chỉ có `"toggle"`,
+> generator dùng bộ effort mặc định `["none","minimal","low","medium","high","xhigh","max","ultra"]`
+> để OpenCode có lựa chọn. Đây là fallback UI, không phải fact catalog.
+
 Provider entry: `package = "@opencode/ai/providers/openai-compatible"`, `settings.baseURL = baseUrl` (+ `apiKey` nếu có), `name = "Router Balancing"`, id = `router-balancing` (C2).
 
 Trùng `ModelId` giữa nhiều provider (key JSON phải unique): ưu tiên model thuộc preset OpenCode Free, rồi theo `Id` nhỏ hơn; model bị bỏ khỏi JSON do trùng key → ghi chú nhỏ dưới preview.

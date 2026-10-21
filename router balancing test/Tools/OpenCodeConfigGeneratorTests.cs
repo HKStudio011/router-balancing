@@ -19,6 +19,9 @@ public class OpenCodeConfigGeneratorTests
     private static JsonElement Model(string json, string id) =>
         Provider(json).GetProperty("models").GetProperty(id);
 
+    private static readonly string[] DefaultReasoningEfforts =
+        ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
     private static OpenCodeConfigModel Minimal(string id) =>
         new(id, null, null, null, null, null, null, null, null, null);
 
@@ -70,14 +73,28 @@ public class OpenCodeConfigGeneratorTests
     }
 
     [Fact]
-    public void Generate_ThinkingSupportedOnly_NoToggleNoEffort()
+    public void Generate_ThinkingWithoutEfforts_EmitsDefaultEfforts()
     {
         var m = new OpenCodeConfigModel("m1", null, null, null, null, null, true, null, null, null);
         var reasoning = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .GetProperty("capabilities").GetProperty("reasoning");
         Assert.True(reasoning.GetProperty("supported").GetBoolean());
         Assert.False(reasoning.TryGetProperty("toggle", out _));
-        Assert.False(reasoning.TryGetProperty("effort", out _));
+        Assert.Equal(DefaultReasoningEfforts,
+            reasoning.GetProperty("effort").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public void Generate_ToggleOnly_EmitsToggleAndDefaultEfforts()
+    {
+        // Nguồn chỉ nói model có công tắc think, không nêu mức effort → vẫn cần danh sách cho UI OpenCode.
+        var m = new OpenCodeConfigModel("m1", null, null, null, null, null, true, ["toggle"], null, null);
+        var reasoning = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
+            .GetProperty("capabilities").GetProperty("reasoning");
+        Assert.True(reasoning.GetProperty("supported").GetBoolean());
+        Assert.True(reasoning.GetProperty("toggle").GetBoolean());
+        Assert.Equal(DefaultReasoningEfforts,
+            reasoning.GetProperty("effort").EnumerateArray().Select(e => e.GetString()));
     }
 
     [Fact]
@@ -136,13 +153,6 @@ public class OpenCodeConfigGeneratorTests
         var caps = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1").GetProperty("capabilities");
         Assert.False(caps.TryGetProperty("tools", out _));                    // SupportsTools null → omit
         Assert.False(caps.TryGetProperty("reasoning", out _));                // SupportsThink null → omit
-        // R-T2-2: SupportsThink=true nhưng efforts rỗng = chưa biết → reasoning không có key effort
-        var m2 = Minimal("m2") with { SupportsThink = true, ThinkEfforts = [] };
-        var reasoning2 = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m2]), "m2")
-            .GetProperty("capabilities").GetProperty("reasoning");
-        Assert.True(reasoning2.GetProperty("supported").GetBoolean());
-        Assert.False(reasoning2.TryGetProperty("toggle", out _));
-        Assert.False(reasoning2.TryGetProperty("effort", out _));
     }
 
     [Fact]
@@ -215,16 +225,16 @@ public class OpenCodeConfigGeneratorTests
     }
 
     [Fact]
-    public void Generate_EmptyThinkEfforts_NoToggleNoEffort()
+    public void Generate_EmptyThinkEfforts_EmitsDefaultEfforts()
     {
-        // R-T2-2: efforts rỗng = chưa biết (không phải "biết là không có mức nào") —
-        // vẫn reasoning {supported:true} nhưng không toggle/effort.
+        // Danh sách rỗng = chưa biết mức nào; generator vẫn cần bộ effort mặc định cho UI OpenCode.
         var m = new OpenCodeConfigModel("m1", null, null, null, null, null, true, [], null, null);
         var reasoning = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .GetProperty("capabilities").GetProperty("reasoning");
         Assert.True(reasoning.GetProperty("supported").GetBoolean());
         Assert.False(reasoning.TryGetProperty("toggle", out _));
-        Assert.False(reasoning.TryGetProperty("effort", out _));
+        Assert.Equal(DefaultReasoningEfforts,
+            reasoning.GetProperty("effort").EnumerateArray().Select(e => e.GetString()));
     }
 
     [Fact]
@@ -250,7 +260,10 @@ public class OpenCodeConfigGeneratorTests
         Assert.Equal("unsloth-studio", entry.GetProperty("name").GetString());
         var caps = entry.GetProperty("capabilities");
         Assert.True(caps.GetProperty("tools").GetBoolean());
-        Assert.True(caps.GetProperty("reasoning").GetProperty("supported").GetBoolean());
+        var reasoning = caps.GetProperty("reasoning");
+        Assert.True(reasoning.GetProperty("supported").GetBoolean());
+        Assert.Equal(DefaultReasoningEfforts,
+            reasoning.GetProperty("effort").EnumerateArray().Select(e => e.GetString()));
         Assert.Equal(new[] { "text", "image" },
             caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
         Assert.Equal(new[] { "text" },
