@@ -137,9 +137,13 @@ namespace RouterBalancing.Core.Storage.Migrations
 
                     b.HasIndex("TargetModelId");
 
-                    b.HasIndex("ComboId", "Position");
+                    b.HasIndex("ComboId", "Position")
+                        .IsUnique();
 
-                    b.ToTable("ComboItems");
+                    b.ToTable("ComboItems", t =>
+                        {
+                            t.HasCheckConstraint("CK_ComboItems_ExactlyOneTarget", "(TargetModelId IS NULL) <> (TargetComboId IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("RouterBalancing.Core.Domain.LogEntry", b =>

@@ -98,7 +98,12 @@ public class RouterBalancingDbContext(DbContextOptions<RouterBalancingDbContext>
             // Restrict: app tự kiểm tra combo đang được tham chiếu trước khi xóa
             e.HasOne<Combo>().WithMany().HasForeignKey(x => x.TargetComboId)
                 .OnDelete(DeleteBehavior.Restrict);
-            e.HasIndex(x => new { x.ComboId, x.Position });
+            // Đúng một target: chặn dòng vô nghĩa/cả hai target ở tầng DB, không chỉ service.
+            e.ToTable(t => t.HasCheckConstraint(
+                "CK_ComboItems_ExactlyOneTarget",
+                "(TargetModelId IS NULL) <> (TargetComboId IS NULL)"));
+            // Fallback phụ thuộc thứ tự → Position phải duy nhất trong một combo.
+            e.HasIndex(x => new { x.ComboId, x.Position }).IsUnique();
         });
 
         modelBuilder.Entity<LogEntry>(e =>
