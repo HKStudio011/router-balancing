@@ -36,6 +36,9 @@ public interface IAppSettingsService
     /// <summary>Ngưỡng idle-read watchdog upstream (giây) — 0 = tắt; đọc mỗi lần bắt đầu stream.</summary>
     int UpstreamIdleTimeoutSec { get; }
 
+    /// <summary>Đường dẫn file config opencode đã expand (<c>~</c> → home); rỗng/chưa set → mặc định.</summary>
+    string OpenCodeConfigPath { get; }
+
     /// <summary>Đọc setting bất kỳ với mặc định khi chưa có trong DB.</summary>
     T Get<T>(string key, T defaultValue);
 

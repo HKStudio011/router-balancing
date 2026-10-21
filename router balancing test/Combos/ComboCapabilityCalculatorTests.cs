@@ -30,7 +30,9 @@ public class ComboCapabilityCalculatorTests : IDisposable
     /// null → không dòng (chưa biết). ContextWindow vẫn là cột trên Models (không thuộc capability model).
     /// </summary>
     private async Task<long> SeedModelAsync(int? ctx = null, bool? vision = null, bool? audio = null,
-        bool? video = null, bool? think = null, bool enabled = true)
+        bool? video = null, bool? think = null, bool enabled = true,
+        bool? tools = null, IReadOnlyList<ModalityKind>? inputModalities = null,
+        IReadOnlyList<ModalityKind>? outputModalities = null)
     {
         using var db = _db.CreateDbContext();
         var provider = new Provider { Name = $"P{_providerSeq++}", Type = ProviderType.OpenAI, BaseUrl = "https://api.example.com" };
@@ -43,14 +45,21 @@ public class ComboCapabilityCalculatorTests : IDisposable
         if (audio is not null) SeedModality(db, modelId, ModalityKind.Audio, audio.Value);
         if (video is not null) SeedModality(db, modelId, ModalityKind.Video, video.Value);
         if (think is not null) SeedCapability(db, modelId, CapabilityKind.Reasoning, think.Value);
+        if (tools is not null) SeedCapability(db, modelId, CapabilityKind.Tools, tools.Value);
+        if (inputModalities is not null)
+            foreach (var modality in inputModalities) SeedModality(db, modelId, modality, supported: true);
+        if (outputModalities is not null)
+            foreach (var modality in outputModalities)
+                SeedModality(db, modelId, modality, supported: true, ModalityDirection.Output);
         await db.SaveChangesAsync();
         return modelId;
     }
 
-    private static void SeedModality(RouterBalancingDbContext db, long modelId, ModalityKind kind, bool supported) =>
+    private static void SeedModality(RouterBalancingDbContext db, long modelId, ModalityKind kind, bool supported,
+        ModalityDirection direction = ModalityDirection.Input) =>
         db.ModelModalities.Add(new ModelModality
         {
-            ModelId = modelId, Direction = ModalityDirection.Input, Modality = kind,
+            ModelId = modelId, Direction = direction, Modality = kind,
             KnownAbsent = !supported, Source = CapabilitySource.Catalog, UpdatedAt = DateTimeOffset.UnixEpoch,
         });
 
@@ -232,5 +241,115 @@ public class ComboCapabilityCalculatorTests : IDisposable
         var combo = caps[comboId];
         Assert.Equal(128_000, combo.ContextWindow);
         Assert.True(combo.Vision);
+    }
+
+    [Fact]
+    public async Task ComputeAll_SingleModelMember_CopiesToolsAndModalityLists()
+    {
+        var modelId = await SeedModelAsync(
+            tools: true,
+            inputModalities: [ModalityKind.Text, ModalityKind.Image],
+            outputModalities: [ModalityKind.Text, ModalityKind.Audio]);
+        var comboId = await SeedComboAsync("combo", ItemToModel(modelId));
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        var combo = caps[comboId];
+        Assert.True(combo.Tools);
+        Assert.Equal(new[] { "text", "image" }, combo.InputModalities);
+        Assert.Equal(new[] { "text", "audio" }, combo.OutputModalities);
+    }
+
+    [Fact]
+    public async Task ComputeAll_MixedMembers_IntersectsToolsAndModalityLists()
+    {
+        var modelA = await SeedModelAsync(
+            tools: true,
+            inputModalities: [ModalityKind.Text, ModalityKind.Image],
+            outputModalities: [ModalityKind.Text, ModalityKind.Audio]);
+        var modelB = await SeedModelAsync(
+            tools: true,
+            inputModalities: [ModalityKind.Text],
+            outputModalities: [ModalityKind.Text]);
+        var comboId = await SeedComboAsync("combo", ItemToModel(modelA), ItemToModel(modelB));
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        var combo = caps[comboId];
+        Assert.True(combo.Tools);
+        Assert.Equal(new[] { "text" }, combo.InputModalities);
+        Assert.Equal(new[] { "text" }, combo.OutputModalities);
+    }
+
+    [Fact]
+    public async Task ComputeAll_UnknownModalitiesOrTools_MakeFieldNull()
+    {
+        var modelWithFacts = await SeedModelAsync(
+            tools: true,
+            inputModalities: [ModalityKind.Text],
+            outputModalities: [ModalityKind.Text]);
+        var modelWithoutFacts = await SeedModelAsync();
+        var comboId = await SeedComboAsync("combo", ItemToModel(modelWithFacts), ItemToModel(modelWithoutFacts));
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        var combo = caps[comboId];
+        // null = chưa biết không bao giờ bị ép thành true/false; giao với "chưa rõ" vẫn là "chưa rõ"
+        Assert.Null(combo.Tools);
+        Assert.Null(combo.InputModalities);
+        Assert.Null(combo.OutputModalities);
+        Assert.Null(combo.Vision);
+    }
+
+    [Fact]
+    public async Task ComputeAll_EmptyCombo_ToolsAndModalityListsNull()
+    {
+        var comboId = await SeedComboAsync("empty");
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        var combo = caps[comboId];
+        Assert.Null(combo.Tools);
+        Assert.Null(combo.InputModalities);
+        Assert.Null(combo.OutputModalities);
+    }
+
+    [Fact]
+    public async Task ComputeAll_NestedCombo_IntersectsToolsAndModalityLists()
+    {
+        var innerModel = await SeedModelAsync(
+            tools: true,
+            inputModalities: [ModalityKind.Text, ModalityKind.Image],
+            outputModalities: [ModalityKind.Text, ModalityKind.Audio]);
+        var innerId = await SeedComboAsync("inner", ItemToModel(innerModel));
+        var outerModel = await SeedModelAsync(
+            tools: true,
+            inputModalities: [ModalityKind.Text],
+            outputModalities: [ModalityKind.Text]);
+        var outerId = await SeedComboAsync("outer", ItemToCombo(innerId), ItemToModel(outerModel));
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        Assert.Equal(new[] { "text", "image" }, caps[innerId].InputModalities);
+        var outer = caps[outerId];
+        Assert.True(outer.Tools);
+        Assert.Equal(new[] { "text" }, outer.InputModalities);
+        Assert.Equal(new[] { "text" }, outer.OutputModalities);
+    }
+
+    [Fact]
+    public async Task ComputeAll_DisabledModelMember_StillCountsForToolsAndModalities()
+    {
+        var modelId = await SeedModelAsync(
+            enabled: false,
+            tools: true,
+            inputModalities: [ModalityKind.Text]);
+        var comboId = await SeedComboAsync("combo", ItemToModel(modelId));
+
+        var caps = await _calculator.ComputeAllAsync();
+
+        var combo = caps[comboId];
+        Assert.True(combo.Tools);
+        Assert.Equal(new[] { "text" }, combo.InputModalities);
     }
 }

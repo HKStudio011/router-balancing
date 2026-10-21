@@ -31,6 +31,7 @@ public class OpenCodeConfigGeneratorTests
         Assert.Equal("@opencode/ai/providers/openai-compatible", p.GetProperty("package").GetString());
         Assert.Equal("http://127.0.0.1:8317/v1", p.GetProperty("settings").GetProperty("baseURL").GetString());
         Assert.False(p.GetProperty("settings").TryGetProperty("apiKey", out _));
+        Assert.False(p.GetProperty("settings").GetProperty("timeout").GetBoolean()); // C-D: không cắt chat dài
         Assert.False(Root(json).TryGetProperty("$schema", out _));             // C6: không emit $schema
         var m = Model(json, "m1");
         Assert.Equal("m1", m.GetProperty("name").GetString());                 // fallback ModelId
@@ -80,9 +81,23 @@ public class OpenCodeConfigGeneratorTests
     }
 
     [Fact]
-    public void Generate_ThinkingOff_OmitsReasoning()
+    public void Generate_ThinkingKnownAbsent_EmitsSupportedFalse()
     {
-        var m = new OpenCodeConfigModel("m1", null, null, null, null, null, false, ["low"], null, null);
+        // C-M: KnownAbsent đến từ full-list/user (writer bảo đảm) → nói rõ "không hỗ trợ".
+        var m = Minimal("m1") with { SupportsThink = false };
+        var caps = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
+            .GetProperty("capabilities");
+        Assert.True(caps.TryGetProperty("reasoning", out var reasoning));
+        Assert.False(reasoning.GetProperty("supported").GetBoolean());
+        Assert.False(reasoning.TryGetProperty("toggle", out _));
+        Assert.False(reasoning.TryGetProperty("effort", out _));
+    }
+
+    [Fact]
+    public void Generate_ThinkingUnknown_OmitsReasoning()
+    {
+        // null = chưa biết → omit, khác false = đã biết là không (C-I).
+        var m = Minimal("m1");
         Assert.False(Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]), "m1")
             .GetProperty("capabilities").TryGetProperty("reasoning", out _));
     }
@@ -104,8 +119,8 @@ public class OpenCodeConfigGeneratorTests
         Assert.True(caps.TryGetProperty("tools", out var tools));
         Assert.Equal(JsonValueKind.False, tools.ValueKind);
         Assert.False(tools.GetBoolean());
-        // Reasoning KnownAbsent=false → không emit reasoning (khác true = emit supported)
-        Assert.False(caps.TryGetProperty("reasoning", out _));
+        // Reasoning KnownAbsent=false → C-M: emit supported:false (không omit — "đã biết là không")
+        Assert.False(caps.GetProperty("reasoning").GetProperty("supported").GetBoolean());
         // Danh sách modality rỗng = không có khẳng định thuận → mặc định text, KHÔNG emit mảng rỗng
         Assert.Equal(new[] { "text" },
             caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
@@ -210,5 +225,62 @@ public class OpenCodeConfigGeneratorTests
         Assert.True(reasoning.GetProperty("supported").GetBoolean());
         Assert.False(reasoning.TryGetProperty("toggle", out _));
         Assert.False(reasoning.TryGetProperty("effort", out _));
+    }
+
+    [Fact]
+    public void Generate_ModelWithKey_UsesKeyForObjectKey_KeepsNameFallback()
+    {
+        // C-A: key config = "<Identifier>/<ModelId>"; name vẫn là tên người đọc được.
+        var m = Minimal("big-pickle") with { Key = "opencode-free/big-pickle" };
+        var json = OpenCodeConfigGenerator.Generate("http://x/v1", null, [m]);
+        var entry = Model(json, "opencode-free/big-pickle");
+        Assert.Equal("big-pickle", entry.GetProperty("name").GetString());
+        Assert.False(Provider(json).GetProperty("models").TryGetProperty("big-pickle", out _));
+    }
+
+    [Fact]
+    public void Generate_Combo_EmitsSingleEntryKeyedByName()
+    {
+        // U12: combo = một entry duy nhất, key = tên combo (không prefix Identifier).
+        var combo = new OpenCodeConfigCombo(
+            "unsloth-studio", 64_000, true, true, true, ["text", "image"], ["text"]);
+        var json = OpenCodeConfigGenerator.Generate("http://x/v1", null, [Minimal("m1")], [combo]);
+
+        var entry = Model(json, "unsloth-studio");
+        Assert.Equal("unsloth-studio", entry.GetProperty("name").GetString());
+        var caps = entry.GetProperty("capabilities");
+        Assert.True(caps.GetProperty("tools").GetBoolean());
+        Assert.True(caps.GetProperty("reasoning").GetProperty("supported").GetBoolean());
+        Assert.Equal(new[] { "text", "image" },
+            caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(new[] { "text" },
+            caps.GetProperty("output").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(64_000, entry.GetProperty("limit").GetProperty("context").GetInt32());
+        Assert.False(entry.GetProperty("limit").TryGetProperty("output", out _));
+        Assert.Single(Provider(json).GetProperty("models").EnumerateObject(), p => p.Name == "unsloth-studio");
+    }
+
+    [Fact]
+    public void Generate_ComboKeyCollidesWithModelKey_ModelWins()
+    {
+        // Trùng key (combo đặt tên đúng bằng key model) — first-wins theo thứ tự models trước combos.
+        var combo = new OpenCodeConfigCombo("combo-a", null, null, null, null, null, null);
+        var json = OpenCodeConfigGenerator.Generate("http://x/v1", null,
+            [Minimal("combo-a") with { DisplayName = "Model" }], [combo]);
+
+        Assert.Equal("Model", Model(json, "combo-a").GetProperty("name").GetString());
+        Assert.Single(Provider(json).GetProperty("models").EnumerateObject());
+    }
+
+    [Fact]
+    public void Generate_ComboUnknownModalities_FallsBackToDefaults()
+    {
+        var combo = new OpenCodeConfigCombo("c1", null, null, true, null, null, null);
+        var caps = Model(OpenCodeConfigGenerator.Generate("http://x/v1", null, [], [combo]), "c1")
+            .GetProperty("capabilities");
+        Assert.Equal(new[] { "text", "image" },
+            caps.GetProperty("input").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(new[] { "text" },
+            caps.GetProperty("output").EnumerateArray().Select(e => e.GetString()));
     }
 }

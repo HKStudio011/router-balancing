@@ -1,4 +1,5 @@
 @page "/tools"
+@using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Tools
 @using RouterBalancing.Core.Settings
 @implements IDisposable
@@ -82,11 +83,14 @@ else
         }
     </div>
 
-    @* ===== Khối 3: chọn model đưa vào config (spec §7.1) ===== *@
+    @* ===== Khối 3: chọn model đưa vào config (spec §7.1 + §9.1–§9.5) ===== *@
     <div class="mb-4 rounded border border-border bg-surface p-4">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 class="text-base font-semibold">@L["tools.models.title"]</h2>
-            <div class="flex gap-2">
+            <div class="flex flex-wrap gap-2">
+                <button type="button" class="btn btn-outline-secondary" @onclick="ResetDefaultAsync">
+                    @L["tools.resetDefault"]
+                </button>
                 <button type="button" class="btn btn-outline-secondary" @onclick="SelectFreeAsync">
                     @L["tools.selectFree"]
                 </button>
@@ -96,72 +100,164 @@ else
             </div>
         </div>
 
-        @if (_groups.Count == 0)
+        @* §9.3: lọc tại client trên danh sách đã nạp — không query lại DB *@
+        <input class="mb-3 w-full rounded border border-border bg-surface px-2 py-1.5"
+               placeholder="@L["tools.search.placeholder"]"
+               @bind="_search" @bind:after="ApplyFilter" />
+
+        @if (_visibleGroups.Count == 0)
         {
             <EmptyState Icon="🧩" Message="@L["models.empty"]" />
         }
         else
         {
-            @foreach (var group in _groups)
+            @foreach (var visible in _visibleGroups)
             {
                 <div class="mb-3">
                     <div class="mb-1 flex flex-wrap items-center gap-2">
-                        <span class="font-medium">@group.ProviderName</span>
-                        @if (!group.ProviderEnabled)
+                        @* §9.4: tên provider là nút thu/giãn; trạng thái lưu theo ProviderId (C-G) *@
+                        <button type="button" class="flex items-center gap-1 font-medium"
+                                @onclick="() => ToggleCollapse(visible.Group.ProviderId)">
+                            <span>@(IsCollapsed(visible.Group.ProviderId) ? "▸" : "▾")</span>
+                            <span>@visible.Group.ProviderName</span>
+                        </button>
+                        @* §9.3: số đếm "khớp/tổng" để user biết filter đang ẩn gì *@
+                        <span class="text-xs opacity-70">@visible.Models.Count/@visible.Group.Models.Count</span>
+                        @if (!visible.Group.ProviderEnabled)
                         {
                             <Badge Text="@L["tools.provider.disabled"]" Variant="BadgeVariant.Danger" />
                         }
-                        @if (group.IsFreePreset)
+                        @if (visible.Group.IsFreePreset)
                         {
                             <Badge Text="@L["providers.badge.free"]" Variant="BadgeVariant.Info" />
                         }
+                        @* §9.5: chọn hết/bỏ hết CHỈ trên model đang hiển thị sau lọc *@
+                        <button type="button" class="btn btn-outline-secondary"
+                                @onclick="() => SelectVisibleAsync(visible, true)">
+                            @L["tools.group.selectAll"]
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary"
+                                @onclick="() => SelectVisibleAsync(visible, false)">
+                            @L["tools.group.selectNone"]
+                        </button>
                     </div>
 
-                    @if (group.IsFreePreset && !group.ProviderEnabled)
+                    @if (visible.Group.IsFreePreset && !visible.Group.ProviderEnabled)
                     {
                         @* Preset free đang tắt → không tick mặc định được; mời user bật ở trang Providers (C7) *@
                         <div class="mb-1 text-xs opacity-70">@L["tools.free.cta"]</div>
                     }
 
-                    <div class="overflow-x-auto rounded border border-border bg-surface">
-                        <table class="w-full text-sm">
-                            <tbody>
-                                @foreach (var m in group.Models)
-                                {
-                                    <tr @key="m.Id" class="border-b border-border last:border-b-0">
-                                        <td class="w-10 px-2 py-1.5">
-                                            <input type="checkbox" checked="@_selected.Contains(m.Id)"
-                                                   @onchange="e => ToggleAsync(m.Id, (bool)e.Value!)" />
-                                        </td>
-                                        <td class="px-2 py-1.5">@(m.DisplayName ?? m.ModelId)</td>
-                                        <td class="px-2 py-1.5">
-                                            <div class="flex flex-wrap items-center gap-1.5">
-                                                @if (m.ContextWindow is { } ctx)
-                                                {
-                                                    <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
-                                                }
-                                                @* Emoji + nhãn i18n; chỉ badge khi fact đã biết là true — null/false cùng ẩn (spec §11). *@
-                                                @if (m.Tools == true)
-                                                {
-                                                    <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
-                                                }
-                                                @if (m.Vision == true)
-                                                {
-                                                    <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
-                                                }
-                                                @if (m.Reasoning == true)
-                                                {
-                                                    <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
-                                                }
-                                            </div>
-                                        </td>
-                                    </tr>
-                                }
-                            </tbody>
-                        </table>
-                    </div>
+                    @if (!IsCollapsed(visible.Group.ProviderId))
+                    {
+                        <div class="overflow-x-auto rounded border border-border bg-surface">
+                            <table class="w-full text-sm">
+                                <tbody>
+                                    @foreach (var m in visible.Models)
+                                    {
+                                        <tr @key="m.Id" class="border-b border-border last:border-b-0">
+                                            <td class="w-10 px-2 py-1.5">
+                                                <input type="checkbox" checked="@_selected.Contains(m.Id)"
+                                                       @onchange="e => ToggleAsync(m.Id, (bool)e.Value!)" />
+                                            </td>
+                                            <td class="px-2 py-1.5">@(m.DisplayName ?? m.ModelId)</td>
+                                            <td class="px-2 py-1.5">
+                                                <div class="flex flex-wrap items-center gap-1.5">
+                                                    @if (m.ContextWindow is { } ctx)
+                                                    {
+                                                        <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
+                                                    }
+                                                    @* Emoji + nhãn i18n; chỉ badge khi fact đã biết là true — null/false cùng ẩn (spec §11). *@
+                                                    @if (m.Tools == true)
+                                                    {
+                                                        <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
+                                                    }
+                                                    @if (m.Vision == true)
+                                                    {
+                                                        <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
+                                                    }
+                                                    @if (m.AudioInput == true)
+                                                    {
+                                                        <Badge Text="@($"🔊 {L["models.badge.audio"]}")" Variant="BadgeVariant.Purple" />
+                                                    }
+                                                    @if (m.VideoInput == true)
+                                                    {
+                                                        <Badge Text="@($"🎬 {L["models.badge.video"]}")" Variant="BadgeVariant.Pink" />
+                                                    }
+                                                    @if (m.Reasoning == true)
+                                                    {
+                                                        <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
+                                                    }
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
                 </div>
             }
+        }
+
+        @* §9.6: combo là hàng riêng — tick = một entry config key = tên combo (U12) *@
+        @if (_visibleCombos.Count > 0)
+        {
+            <div class="mb-3">
+                <div class="mb-1 flex flex-wrap items-center gap-2">
+                    <span class="font-medium">@L["tools.combos.title"]</span>
+                </div>
+                <div class="overflow-x-auto rounded border border-border bg-surface">
+                    <table class="w-full text-sm">
+                        <tbody>
+                            @foreach (var combo in _visibleCombos)
+                            {
+                                <tr @key="combo.Id" class="border-b border-border last:border-b-0">
+                                    <td class="w-10 px-2 py-1.5">
+                                        <input type="checkbox" checked="@_selectedCombos.Contains(combo.Id)"
+                                               @onchange="e => ToggleComboAsync(combo.Id, (bool)e.Value!)" />
+                                    </td>
+                                    <td class="px-2 py-1.5">@combo.Name</td>
+                                    <td class="px-2 py-1.5">
+                                        <Badge Text="@(combo.Mode == ComboMode.RoundRobin ? L["combos.mode.roundRobin"] : L["combos.mode.fallback"])"
+                                               Variant="@(combo.Mode == ComboMode.RoundRobin ? BadgeVariant.Info : BadgeVariant.Warning)" />
+                                    </td>
+                                    <td class="px-2 py-1.5 opacity-80">@string.Format(L["tools.combo.members"], combo.MemberCount)</td>
+                                    <td class="px-2 py-1.5">
+                                        @* spec §11: chỉ badge khẳng định thuận — false/null cùng ẩn trên trang Tools *@
+                                        <div class="flex flex-wrap items-center gap-1.5">
+                                            @if (combo.ContextWindow is { } comboContext)
+                                            {
+                                                <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(comboContext)}")" />
+                                            }
+                                            @if (combo.Tools == true)
+                                            {
+                                                <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
+                                            }
+                                            @if (combo.Vision == true)
+                                            {
+                                                <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
+                                            }
+                                            @if (combo.Audio == true)
+                                            {
+                                                <Badge Text="@($"🔊 {L["models.badge.audio"]}")" Variant="BadgeVariant.Purple" />
+                                            }
+                                            @if (combo.Video == true)
+                                            {
+                                                <Badge Text="@($"🎬 {L["models.badge.video"]}")" Variant="BadgeVariant.Pink" />
+                                            }
+                                            @if (combo.Reasoning == true)
+                                            {
+                                                <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         }
     </div>
 
@@ -170,6 +266,10 @@ else
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 class="text-base font-semibold">@L["tools.preview"]</h2>
             <div class="flex gap-2">
+                <button type="button" class="btn btn-outline-secondary" disabled="@(_json is null || _writing)"
+                        @onclick="WriteConfigAsync">
+                    @L["tools.write"]
+                </button>
                 <button type="button" class="btn btn-outline-secondary" disabled="@(_json is null)"
                         @onclick="CopyAsync">
                     @L["tools.copy"]
@@ -195,15 +295,31 @@ else
             }
             <div class="mt-2 text-xs opacity-70">@L["tools.hint.merge"]</div>
         }
+
+        @* §9.8: đường dẫn đích — đổi trong Settings; ghi vào file này khi bấm nút phía trên *@
+        <div class="mt-2 text-xs opacity-70">
+            @L["tools.write.path"]: <code>@ConfigPath</code>
+        </div>
     </div>
 }
 
 @code {
+    /// <summary>Nhóm provider + model đang hiển thị sau lọc; giữ nhóm gốc để hiện x/y.</summary>
+    private sealed record VisibleGroup(ToolsModelGroup Group, IReadOnlyList<ToolsModelRow> Models);
+
     private bool _loading = true;
     private List<ToolsModelGroup> _groups = [];
+    private List<ToolsComboRow> _combos = [];
+    private List<VisibleGroup> _visibleGroups = [];
+    private List<ToolsComboRow> _visibleCombos = [];
+    private List<long> _defaultSelectedIds = [];
     private HashSet<long> _selected = [];
+    private HashSet<long> _selectedCombos = [];
+    private HashSet<long> _collapsed = [];
+    private string _search = string.Empty;
     private string? _apiKey;
     private bool _keysEnabled;
+    private bool _writing;
     private string? _json;
     private IReadOnlyList<string> _skipped = [];
     private string? _newKeyPlaintext;
@@ -227,7 +343,22 @@ else
             _baseUrl = OpenCodeConfigService.BuildBaseUrl(Proxy.Port, Settings.Port);
             var data = await ConfigSvc.GetPageDataAsync();
             _groups = data.Groups.ToList();
-            _selected = data.DefaultSelectedIds.ToHashSet();
+            _combos = data.Combos.ToList();
+            _defaultSelectedIds = data.DefaultSelectedIds.ToList();
+
+            // §9.1: bản ghi nhớ thắng mặc định C7; id đã bị xoá bị lọc bỏ (kể cả rỗng).
+            var availableModelIds = _groups.SelectMany(g => g.Models).Select(m => m.Id).ToHashSet();
+            var availableComboIds = _combos.Select(c => c.Id).ToHashSet();
+            var stored = Settings.Get<ToolsSelection?>(SettingsKeys.ToolsSelection, null);
+            var selection = ToolsSelectionResolver.Resolve(
+                stored, availableModelIds, availableComboIds, _defaultSelectedIds);
+            _selected = selection.ModelIds.ToHashSet();
+            _selectedCombos = selection.ComboIds.ToHashSet();
+
+            // §9.4: trạng thái thu/giãn nhớ theo provider id.
+            _collapsed = Settings.Get<long[]>(SettingsKeys.ToolsCollapsedProviders, []).ToHashSet();
+
+            ApplyFilter();
             _keysEnabled = (await ClientKeys.ListAsync()).Any(k => k.Enabled);
         }
         catch (Exception ex)
@@ -243,10 +374,43 @@ else
         await RegenerateAsync();
     }
 
-    /// <summary>Sinh lại JSON preview từ các model đang tick; không tick model nào → xoá preview.</summary>
+    /// <summary>§9.3: lọc tại client; nhóm rỗng chỉ giữ khi không lọc (để hiện CTA free).</summary>
+    private void ApplyFilter()
+    {
+        var filtering = !string.IsNullOrWhiteSpace(_search);
+        _visibleGroups = _groups
+            .Select(group => new VisibleGroup(
+                group,
+                group.Models.Where(m => ToolsSearch.MatchesModel(m, _search)).ToList()))
+            .Where(visible => !filtering || visible.Models.Count > 0)
+            .ToList();
+        _visibleCombos = _combos.Where(c => ToolsSearch.MatchesCombo(c, _search)).ToList();
+    }
+
+    /// <summary>Đường dẫn file config opencode đang cấu hình (đã expand <c>~</c>) — Settings đổi thì lần ghi sau dùng ngay.</summary>
+    private string ConfigPath => OpenCodeConfigPaths.Expand(Settings.OpenCodeConfigPath);
+
+    private bool IsCollapsed(long providerId) => _collapsed.Contains(providerId);
+
+    private void ToggleCollapse(long providerId)
+    {
+        if (!_collapsed.Remove(providerId))
+        {
+            _collapsed.Add(providerId);
+        }
+        Settings.Set(SettingsKeys.ToolsCollapsedProviders, _collapsed.OrderBy(id => id).ToArray());
+    }
+
+    /// <summary>Ghi ngay lựa chọn vào AppSettings (spec §9.1 — không có nút Lưu riêng).</summary>
+    private void PersistSelection() =>
+        Settings.Set(SettingsKeys.ToolsSelection, new ToolsSelection(
+            _selected.OrderBy(id => id).ToArray(),
+            _selectedCombos.OrderBy(id => id).ToArray()));
+
+    /// <summary>Sinh lại JSON preview từ model/combo đang tick; không tick gì → xoá preview.</summary>
     private async Task RegenerateAsync()
     {
-        if (_selected.Count == 0)
+        if (_selected.Count == 0 && _selectedCombos.Count == 0)
         {
             _json = null;
             _skipped = [];
@@ -255,12 +419,16 @@ else
 
         try
         {
-            var result = await ConfigSvc.GenerateAsync(_selected.ToArray(), _baseUrl, _apiKey);
+            var result = await ConfigSvc.GenerateAsync(
+                _selected.ToArray(), _selectedCombos.ToArray(), _baseUrl, _apiKey);
             _json = result.Json;
-            _skipped = result.SkippedDuplicateModelIds;
+            _skipped = result.SkippedKeys;
         }
         catch (Exception ex)
         {
+            // Preview cũ không được đứng cạnh tick mới (backlog D14) — xoá trước khi báo lỗi.
+            _json = null;
+            _skipped = [];
             Log.Error("Tools: sinh config opencode thất bại.", ex);
             Toast.Show(ex.Message, ToastSeverity.Error);
         }
@@ -277,6 +445,23 @@ else
             _selected.Remove(id);
         }
 
+        PersistSelection();
+        await RegenerateAsync();
+    }
+
+    /// <summary>§9.6/U12: tick combo = một entry config key = tên combo; persist + regenerate ngay.</summary>
+    private async Task ToggleComboAsync(long id, bool on)
+    {
+        if (on)
+        {
+            _selectedCombos.Add(id);
+        }
+        else
+        {
+            _selectedCombos.Remove(id);
+        }
+
+        PersistSelection();
         await RegenerateAsync();
     }
 
@@ -291,12 +476,43 @@ else
             }
         }
 
+        PersistSelection();
+        await RegenerateAsync();
+    }
+
+    /// <summary>§9.2: về đúng tập mặc định C7 đã tính khi load và ghi đè bản ghi nhớ.</summary>
+    private async Task ResetDefaultAsync()
+    {
+        _selected = _defaultSelectedIds.ToHashSet();
+        _selectedCombos.Clear();
+        PersistSelection();
         await RegenerateAsync();
     }
 
     private async Task ClearAllAsync()
     {
         _selected.Clear();
+        _selectedCombos.Clear();
+        PersistSelection();
+        await RegenerateAsync();
+    }
+
+    /// <summary>§9.5: chọn/bỏ hết CHỈ model đang hiển thị sau lọc của một provider.</summary>
+    private async Task SelectVisibleAsync(VisibleGroup visible, bool on)
+    {
+        foreach (var model in visible.Models)
+        {
+            if (on)
+            {
+                _selected.Add(model.Id);
+            }
+            else
+            {
+                _selected.Remove(model.Id);
+            }
+        }
+
+        PersistSelection();
         await RegenerateAsync();
     }
 
@@ -327,6 +543,35 @@ else
         }
 
         await JS.InvokeVoidAsync("rbTools.download", "opencode-router-balancing.jsonc", _json);
+    }
+
+    /// <summary>
+    /// §9.8: ghi block mới vào file config opencode (xóa block cũ, backup .bak, ghi atomic).
+    /// Lỗi (file khóa/hỏng JSON) chỉ toast — preview đang xem không bị đụng.
+    /// </summary>
+    private async Task WriteConfigAsync()
+    {
+        if (_json is null || _writing)
+        {
+            return;
+        }
+
+        _writing = true;
+        try
+        {
+            var result = await ConfigSvc.WriteAsync(
+                ConfigPath, _selected.ToArray(), _selectedCombos.ToArray(), _baseUrl, _apiKey);
+            Toast.Show(string.Format(L["tools.write.done"], result.Path), ToastSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Tools: ghi config opencode thất bại.", ex);
+            Toast.Show(ex.Message, ToastSeverity.Error);
+        }
+        finally
+        {
+            _writing = false;
+        }
     }
 
     private async Task CreateKeyAsync()

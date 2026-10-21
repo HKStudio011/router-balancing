@@ -30,4 +30,7 @@ public sealed record SettingsDraft
     public int TransientBackoffBaseMs { get; set; } = 1000;
 
     public int UpstreamIdleTimeoutSec { get; set; } = 300;
+
+    /// <summary>Đường dẫn file config opencode (§9.8); hiển thị dạng đã expand, có nút "mặc định".</summary>
+    public string OpenCodeConfigPath { get; set; } = "";
 }

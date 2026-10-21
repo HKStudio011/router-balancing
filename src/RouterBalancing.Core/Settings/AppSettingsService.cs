@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Storage;
+using RouterBalancing.Core.Tools;
 
 namespace RouterBalancing.Core.Settings;
 
@@ -61,6 +62,9 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
     public int TransientBackoffBaseMs => Get(SettingsKeys.TransientBackoffBaseMs, 1000);
 
     public int UpstreamIdleTimeoutSec => Get(SettingsKeys.UpstreamIdleTimeoutSec, 300);
+
+    public string OpenCodeConfigPath =>
+        OpenCodeConfigPaths.Expand(Get<string?>(SettingsKeys.OpenCodeConfigPath, null));
 
     public T Get<T>(string key, T defaultValue = default!)
     {

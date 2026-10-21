@@ -61,6 +61,15 @@ else
                                     {
                                         <Badge Text="@L["combos.caps.ctxUnknown"]" Variant="BadgeVariant.Neutral" />
                                     }
+                                    @* U11: tools là capability ba trạng thái — true/false hiện rõ, null ẩn *@
+                                    @if (caps.Tools is true)
+                                    {
+                                        <Badge Text="🛠" Variant="BadgeVariant.Success" />
+                                    }
+                                    else if (caps.Tools is false)
+                                    {
+                                        <Badge Text="🛠 ✕" Variant="BadgeVariant.Neutral" />
+                                    }
                                     @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt;
                                         false → pill xám Badge Neutral, null → ẩn (chưa rõ) *@
                                     @if (caps.Vision is true)

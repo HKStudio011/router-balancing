@@ -8,6 +8,7 @@ using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
+using RouterBalancing.Core.Tools;
 
 namespace router_balancing_test.Engine;
 
@@ -115,6 +116,7 @@ public class ProxyRequestHandlerTests
         public int TransientMaxRetries => 5;
         public int TransientBackoffBaseMs => 1000;
         public int UpstreamIdleTimeoutSec { get; set; } = 300;
+        public string OpenCodeConfigPath => OpenCodeConfigPaths.DefaultPath;
         public T Get<T>(string key, T defaultValue) => defaultValue;
         public void Set<T>(string key, T value) { }
     }
