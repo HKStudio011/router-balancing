@@ -11,12 +11,12 @@ using router_balancing_test.Engine;
 namespace router_balancing_test.Providers;
 
 /// <summary>
-/// Task 7: NVIDIA API Catalog lấy modality + context từ trang model chính thức
-/// <c>https://build.nvidia.com/{publisher}/{slug}</c>. Sidebar chỉ có
-/// <c>Context Length</c>/<c>Input Modalities</c>/<c>Output Modalities</c> nên provider
-/// KHÔNG phát biểu tools/reasoning (R-T7-2); 66/81 trang 200 nhưng không có sidebar → null.
-/// Cache theo model id TTL 24h, cache cả kết quả 200-không-sidebar (negative cache) nhưng
-/// không cache lỗi HTTP/mạng.
+/// Task 7: NVIDIA API Catalog lấy modality + context từ sidebar và capability từ JSON
+/// <c>modelCapability</c> nhúng trong trang model chính thức
+/// <c>https://build.nvidia.com/{publisher}/{slug}</c>. Function Calling → tools,
+/// Reasoning → think; Structured Output không có dimension trong OpenCode nên bỏ qua.
+/// 66/81 trang 200 nhưng không có sidebar → null. Cache theo model id TTL 24h, cache cả
+/// kết quả 200-không-sidebar (negative cache) nhưng không cache lỗi HTTP/mạng.
 /// </summary>
 public class NvidiaCatalogMetadataProviderTests : IDisposable
 {
@@ -83,9 +83,9 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         Assert.Equal(262_000, meta.ContextWindow);
         Assert.Equal(new[] { "Text", "Image", "Video" }, meta.InputModalities);
         Assert.Equal(new[] { "Text" }, meta.OutputModalities);
-        // Sidebar NVIDIA không nói tools/reasoning/vision-field → không bịa phát biểu.
-        Assert.Null(meta.SupportsTools);
-        Assert.Null(meta.SupportsThink);
+        // Capability lấy từ JSON nhúng: Function Calling → tools, Reasoning → think.
+        Assert.True(meta.SupportsTools);
+        Assert.True(meta.SupportsThink);
         Assert.Null(meta.SupportsVision);
         Assert.Null(meta.ThinkEfforts);
         Assert.True(metadataProvider.ReturnsCompleteFacts);
@@ -93,6 +93,37 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         Assert.Equal(NemotronUrl, handler.LastUri!.ToString());
         Assert.Null(handler.LastAuthorization); // nguồn công khai, không auth
         Assert.Equal(ProviderRequestFactory.HttpClientName, factory.LastClientName);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task FetchAsync_ParsesFunctionCallingAndReasoningFromEmbeddedJson(
+        bool functionCalling, bool reasoning)
+    {
+        var (provider, model) = await NvidiaModelAsync();
+
+        var meta = await ProviderWith(new HtmlHandler(
+                PageWithCapabilities(functionCalling, reasoning)))
+            .FetchAsync(provider, model);
+
+        Assert.NotNull(meta);
+        Assert.Equal(functionCalling, meta.SupportsTools);
+        Assert.Equal(reasoning, meta.SupportsThink);
+    }
+
+    [Fact]
+    public async Task FetchAsync_MissingCapabilityField_RemainsUnknown()
+    {
+        var (provider, model) = await NvidiaModelAsync();
+
+        var meta = await ProviderWith(new HtmlHandler(
+                PageWithCapabilities(functionCalling: true, reasoning: null)))
+            .FetchAsync(provider, model);
+
+        Assert.NotNull(meta);
+        Assert.True(meta.SupportsTools);
+        Assert.Null(meta.SupportsThink);
     }
 
     [Fact]
@@ -208,7 +239,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchAsync_PatchHasNoToolsOrReasoningKeys()
+    public async Task FetchAsync_PatchIncludesToolsAndReasoning()
     {
         var (provider, model) = await NvidiaModelAsync();
 
@@ -218,8 +249,9 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         Assert.NotNull(meta);
         var patch = MetadataPatchMapper.From(meta);
 
-        // R-T7-2: nguồn chỉ nói modality; tools/reasoning để user tick tay.
-        Assert.Empty(patch.Capabilities);
+        Assert.Equal(2, patch.Capabilities.Count);
+        Assert.True(patch.Capabilities[CapabilityKind.Tools]);
+        Assert.True(patch.Capabilities[CapabilityKind.Reasoning]);
         Assert.Empty(patch.ReasoningEfforts);
         // Input + output list có mặt → full direction; không có key thừa ngoài 2 hướng.
         Assert.Equal(10, patch.Modalities.Count); // 5 ModalityKind × 2 direction
@@ -323,7 +355,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task TryFillAsync_WritesOnlyModalityFacts_NoToolsOrReasoningRows()
+    public async Task TryFillAsync_WritesCapabilitiesAndModalityFacts()
     {
         var (_, model) = await NvidiaModelAsync();
         var service = new ModelMetadataService(
@@ -333,8 +365,8 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         await service.TryFillAsync(model.Id);
 
         var view = await new ModelCapabilityReader(_db).ReadAsync(model.Id);
-        Assert.Null(view.Tools);
-        Assert.Null(view.Reasoning);
+        Assert.True(view.Tools);
+        Assert.True(view.Reasoning);
         Assert.Empty(view.Efforts);
         Assert.True(view.Supports(ModalityDirection.Input, ModalityKind.Text));
         Assert.True(view.Supports(ModalityDirection.Input, ModalityKind.Image));
@@ -350,7 +382,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         Assert.Equal(new[] { "text" }, view.OutputModalities);
 
         using var db = _db.CreateDbContext();
-        Assert.Empty(await db.ModelCapabilities.Where(c => c.ModelId == model.Id).ToListAsync());
+        Assert.Equal(2, await db.ModelCapabilities.CountAsync(c => c.ModelId == model.Id));
         Assert.Equal(10, await db.ModelModalities.CountAsync(m => m.ModelId == model.Id));
         var stored = await db.Models.SingleAsync(m => m.Id == model.Id);
         Assert.Equal(262_000, stored.ContextWindow);
@@ -404,6 +436,26 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
     }
 
     // ===== Test doubles (house pattern: handler/factory/recording log cục bộ) =====
+
+    /// <summary>
+    /// Trang có khối JSON nhúng <c>modelCapability</c> giống HTML thật: dữ liệu nằm trong
+    /// script Next.js và quote bị escape (<c>\"</c>), không phải JSON độc lập.
+    /// </summary>
+    private static string PageWithCapabilities(
+        bool? functionCalling = null, bool? reasoning = null, bool? structuredOutput = null)
+    {
+        var fields = new List<string>();
+        if (functionCalling is { } fc)
+            fields.Add($"\"functionCalling\":{(fc ? "true" : "false")}");
+        if (reasoning is { } r)
+            fields.Add($"\"reasoning\":{(r ? "true" : "false")}");
+        if (structuredOutput is { } so)
+            fields.Add($"\"structuredOutput\":{(so ? "true" : "false")}");
+
+        var escaped = string.Join(',', fields).Replace("\"", "\\\"");
+        var script = $"<script>self.__next_f.push([1,\"\\\"modelCapability\\\":{{{escaped}}}\"])</script>";
+        return PageWith().Replace("</body>", script + "\n  </body>");
+    }
 
     /// <summary>Trang tối giản cùng shape sidebar thật — dùng cho các biến thể context/modality.</summary>
     private static string PageWith(
