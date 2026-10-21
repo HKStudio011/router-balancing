@@ -50,10 +50,12 @@ else
                 {
                     <tr @key="@($"{p.Id}-row")" class="border-b border-border">
                         <td class="px-2 py-2">
-                            @* Chevron + cột Models cùng một toggle — expand là thao tác chính *@
+                            @* Chevron mở panel mặc định vùng Tài khoản; cột Models mở thẳng vùng Model. *@
                             <button type="button" class="btn btn-outline-secondary px-1.5"
                                     aria-expanded="@(_expandedId == p.Id)"
-                                    @onclick="() => ToggleExpand(p.Id)">
+                                    disabled="@_busy"
+                                    data-testid="provider-expand"
+                                    @onclick="() => ToggleExpandAsync(p)">
                                 @(_expandedId == p.Id ? "▾" : "▸")
                             </button>
                         </td>
@@ -76,8 +78,8 @@ else
                         <td class="px-2 py-2 font-mono text-xs opacity-80">@p.Identifier</td>
                         <td class="max-w-64 truncate px-2 py-2 opacity-80" title="@p.BaseUrl">@p.BaseUrl</td>
                         <td class="px-2 py-2">
-                            <button type="button" class="hover:underline"
-                                    @onclick="() => ToggleExpand(p.Id)">
+                            <button type="button" class="hover:underline" disabled="@_busy"
+                                    @onclick="() => OpenModelsAsync(p)">
                                 @string.Format(L["models.count"], EnabledCount(p), p.Models.Count)
                             </button>
                         </td>
@@ -137,56 +139,189 @@ else
 
                     @if (_expandedId == p.Id)
                     {
-                        <tr @key="@($"{p.Id}-models")" class="border-b border-border bg-background">
+                        <tr @key="@($"{p.Id}-panel")" class="border-b border-border bg-background">
                             <td></td>
                             @* colspan = 7 để panel khớp 8 cột header sau khi thêm cột Identifier *@
                             <td colspan="7" class="px-3 py-3">
-                                @* ===== Model panel inline (spec §4.2) ===== *@
-                                <div class="mb-2 flex flex-wrap items-center gap-2">
-                                    <span class="text-sm font-semibold">@L["models.section"]</span>
-
-                                    @* Search lọc bảng model theo ModelId/DisplayName — oninput lọc từng phím,
-                                       after về trang 1 vì tổng dòng của bảng đổi (pattern LogPanel) *@
-                                    <input class="w-44 rounded border border-border bg-surface px-2 py-1"
-                                           placeholder="@L["models.search.placeholder"]"
-                                           disabled="@_busy" @bind="_modelSearch" @bind:event="oninput"
-                                           @bind:after="ResetModelPage" />
-
-                                    @* oninput thay vì default change: change chỉ fire khi blur → handler Enter và nút Add
-                                       sẽ đọc giá trị cũ; oninput giữ field luôn khớp từng phím *@
-                                    <input class="w-56 rounded border border-border bg-surface px-2 py-1"
-                                           placeholder="@L["models.addPlaceholder"]"
-                                           disabled="@_busy" @bind="_newModelId" @bind:event="oninput"
-                                           @onkeydown="e => OnModelKeyAsync(e, p)" />
-                                    <button type="button" class="btn btn-outline-secondary"
-                                            disabled="@(_busy || string.IsNullOrWhiteSpace(_newModelId))"
-                                            @onclick="() => AddManualAsync(p)">
-                                        @L["models.action.add"]
+                                @* Hai vùng quản lý của provider — chỉ một vùng mở để panel không cao quá mức *@
+                                <div class="mb-3 flex flex-wrap gap-2 border-b border-border pb-2" role="tablist">
+                                    <button type="button"
+                                            class="@(_expandedSection == ProviderPanelSection.Accounts ? "btn btn-dark" : "btn btn-outline-secondary")"
+                                            role="tab"
+                                            aria-selected="@(_expandedSection == ProviderPanelSection.Accounts)"
+                                            disabled="@_busy"
+                                            data-testid="provider-section-accounts"
+                                            @onclick="() => SetSectionAsync(p, ProviderPanelSection.Accounts)">
+                                        @(_expandedSection == ProviderPanelSection.Accounts ? "▾" : "▸")
+                                        @L["accounts.section.label"] (@AccountCountFor(p))
                                     </button>
-
-                                    <button type="button" class="btn btn-outline-secondary"
-                                            disabled="@(_busy || _fetchingId == p.Id)"
-                                            @onclick="() => FetchAsync(p)">
-                                        @(_fetchingId == p.Id ? L["models.fetching"] : L["models.action.fetch"])
-                                    </button>
-                                    <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
-                                            @onclick="() => _bulkOpen = !_bulkOpen">
-                                        @L["models.action.bulk"]
-                                    </button>
-
-                                    <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
-                                            @onclick="() => SetAllModelsAsync(p, true)">
-                                        @L["models.enableAll"]
-                                    </button>
-                                    <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
-                                            @onclick="() => SetAllModelsAsync(p, false)">
-                                        @L["models.disableAll"]
-                                    </button>
-                                    <button type="button" class="btn btn-outline-danger" disabled="@_busy"
-                                            @onclick="() => _confirmRemoveAll = p">
-                                        @L["models.deleteAll"]
+                                    <button type="button"
+                                            class="@(_expandedSection == ProviderPanelSection.Models ? "btn btn-dark" : "btn btn-outline-secondary")"
+                                            role="tab"
+                                            aria-selected="@(_expandedSection == ProviderPanelSection.Models)"
+                                            disabled="@_busy"
+                                            data-testid="provider-section-models"
+                                            @onclick="() => SetSectionAsync(p, ProviderPanelSection.Models)">
+                                        @(_expandedSection == ProviderPanelSection.Models ? "▾" : "▸")
+                                        @L["models.section"] (@p.Models.Count)
                                     </button>
                                 </div>
+
+                                @if (_expandedSection == ProviderPanelSection.Accounts)
+                                {
+                                    <div class="flex flex-col gap-2">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            @* Search account theo tên hoặc pattern — client-side trong provider đang mở *@
+                                            <input class="w-56 rounded border border-border bg-surface px-2 py-1"
+                                                   placeholder="@L["accounts.search.placeholder"]"
+                                                   disabled="@_busy" @bind="_accountSearch" @bind:event="oninput"
+                                                   @bind:after="ResetAccountPage"
+                                                   data-testid="accounts-search" />
+                                            <button type="button" class="btn btn-outline-secondary"
+                                                    disabled="@_busy || _testingAccounts"
+                                                    data-testid="accounts-add"
+                                                    @onclick="OpenAddAccount">
+                                                @L["accounts.action.add"]
+                                            </button>
+                                            <button type="button" class="btn btn-outline-secondary"
+                                                    disabled="@_busy || _testingAccounts || _accounts.Count == 0"
+                                                    data-testid="accounts-test-all"
+                                                    @onclick="TestAllAccountsAsync">
+                                                @(_testingAccounts ? L["providers.testing"] : L["accounts.action.testAll"])
+                                            </button>
+                                        </div>
+
+                                        @if (_accountsLoadFailed)
+                                        {
+                                            @* Load fail ≠ không có account — không được hiện EmptyState mời thêm account *@
+                                            <div class="text-sm text-danger">@L["dashboard.msg.failed"]</div>
+                                        }
+                                        else if (_accountsLoading && _accounts.Count == 0)
+                                        {
+                                            <p class="text-sm opacity-70">...</p>
+                                        }
+                                        else if (_accounts.Count == 0)
+                                        {
+                                            <EmptyState Message="@L["accounts.empty"]" />
+                                        }
+                                        else if (FilteredAccountCount == 0)
+                                        {
+                                            <EmptyState Message="@L["accounts.search.noResults"]" />
+                                        }
+                                        else
+                                        {
+                                            <div class="overflow-x-auto rounded border border-border bg-surface">
+                                                <table class="w-full text-xs">
+                                                    <thead>
+                                                        <tr class="border-b border-border text-left uppercase opacity-70">
+                                                            <th class="px-2 py-1.5">@L["accounts.field.name"]</th>
+                                                            <th class="px-2 py-1.5">@L["accounts.field.enabled"]</th>
+                                                            <th class="px-2 py-1.5">@L["accounts.field.patterns"]</th>
+                                                            @* Cột info (W/P + usage) và cột test: nhãn language-neutral / tái dùng key test có sẵn *@
+                                                            <th class="px-2 py-1.5"></th>
+                                                            <th class="px-2 py-1.5">@L["providers.action.test"]</th>
+                                                            <th class="px-2 py-1.5 text-right">@L["providers.col.actions"]</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var account in PagedAccounts)
+                                                        {
+                                                            <tr @key="account.Id" class="border-b border-border last:border-b-0">
+                                                                <td class="px-2 py-1.5 font-medium">@account.Name</td>
+                                                                <td class="px-2 py-1.5">
+                                                                    <input type="checkbox" checked="@account.Enabled"
+                                                                           disabled="@_busy"
+                                                                           @onchange="() => ToggleAccountEnabledAsync(account)" />
+                                                                </td>
+                                                                <td class="px-2 py-1.5 opacity-80">@PatternSummary(account)</td>
+                                                                <td class="px-2 py-1.5 opacity-80">
+                                                                    W@(account.Weight) · @UsageText(account)
+                                                                    @if (string.IsNullOrEmpty(account.ApiKeyEncrypted))
+                                                                    {
+                                                                        <span class="opacity-60"> · no key</span>
+                                                                    }
+                                                                </td>
+                                                                <td class="px-2 py-1.5">
+                                                                    @if (account.LastTestSuccess is null)
+                                                                    {
+                                                                        <span class="opacity-70">@L["accounts.test.none"]</span>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        @* Message là dữ liệu HTTP hiển thị thẳng, không qua i18n *@
+                                                                        <span title="@(account.LastTestMessage ?? string.Empty)">
+                                                                            @(account.LastTestSuccess == true ? "✓" : "✗")
+                                                                        </span>
+                                                                    }
+                                                                </td>
+                                                                <td class="px-2 py-1.5 text-right">
+                                                                    <button type="button" class="btn btn-outline-info px-1.5"
+                                                                            disabled="@_busy"
+                                                                            data-testid="account-edit"
+                                                                            title="@L["providers.action.edit"]"
+                                                                            @onclick="() => OpenEditAccount(account)">✏️</button>
+                                                                    <button type="button" class="btn btn-outline-danger px-1.5"
+                                                                            disabled="@(_busy || _accounts.Count <= 1)"
+                                                                            data-testid="account-delete"
+                                                                            title="@L["providers.action.delete"]"
+                                                                            @onclick="() => AskDeleteAccount(account)">🗑</button>
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                            </div>
+
+                                            <Pager Total="FilteredAccountCount" @bind-Page="_accountPage" @bind-PageSize="_accountPageSize" />
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    @* ===== Model panel ===== *@
+                                    <div class="mb-2 flex flex-wrap items-center gap-2">
+                                        @* Search lọc bảng model theo ModelId/DisplayName — oninput lọc từng phím,
+                                       after về trang 1 vì tổng dòng của bảng đổi (pattern LogPanel) *@
+                                        <input class="w-44 rounded border border-border bg-surface px-2 py-1"
+                                               placeholder="@L["models.search.placeholder"]"
+                                               disabled="@_busy" @bind="_modelSearch" @bind:event="oninput"
+                                               @bind:after="ResetModelPage" />
+
+                                        @* oninput thay vì default change: change chỉ fire khi blur → handler Enter và nút Add
+                                           sẽ đọc giá trị cũ; oninput giữ field luôn khớp từng phím *@
+                                        <input class="w-56 rounded border border-border bg-surface px-2 py-1"
+                                               placeholder="@L["models.addPlaceholder"]"
+                                               disabled="@_busy" @bind="_newModelId" @bind:event="oninput"
+                                               @onkeydown="e => OnModelKeyAsync(e, p)" />
+                                        <button type="button" class="btn btn-outline-secondary"
+                                                disabled="@(_busy || string.IsNullOrWhiteSpace(_newModelId))"
+                                                @onclick="() => AddManualAsync(p)">
+                                            @L["models.action.add"]
+                                        </button>
+
+                                        <button type="button" class="btn btn-outline-secondary"
+                                                disabled="@(_busy || _fetchingId == p.Id)"
+                                                @onclick="() => FetchAsync(p)">
+                                            @(_fetchingId == p.Id ? L["models.fetching"] : L["models.action.fetch"])
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                                                @onclick="() => _bulkOpen = !_bulkOpen">
+                                            @L["models.action.bulk"]
+                                        </button>
+
+                                        <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                                                @onclick="() => SetAllModelsAsync(p, true)">
+                                            @L["models.enableAll"]
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                                                @onclick="() => SetAllModelsAsync(p, false)">
+                                            @L["models.disableAll"]
+                                        </button>
+                                        <button type="button" class="btn btn-outline-danger" disabled="@_busy"
+                                                @onclick="() => _confirmRemoveAll = p">
+                                            @L["models.deleteAll"]
+                                        </button>
+                                    </div>
 
                                 @if (_bulkOpen)
                                 {
@@ -250,131 +385,49 @@ else
                                                             }
                                                         </td>
                                                         <td class="px-2 py-1.5">
-                                                            @if (_editingCapabilitiesId == m.Id)
-                                                            {
-                                                                <div class="flex flex-col gap-1.5" data-testid="caps-edit-form">
-                                                                    <div class="flex flex-wrap items-center gap-2">
-                                                                        <label class="flex items-center gap-1">
-                                                                            @L["models.capabilities.contextWindow"]
-                                                                            <input type="number" min="1" max="10000000"
-                                                                                   class="w-24" disabled="@_busy"
-                                                                                   data-testid="caps-ctx-input"
-                                                                                   @bind="_editCtx" @bind:event="oninput" />
-                                                                        </label>
-                                                                        <label class="flex items-center gap-1">
-                                                                            @L["models.capabilities.maxOutput"]
-                                                                            <input type="number" min="1" max="10000000"
-                                                                                   class="w-24" disabled="@_busy"
-                                                                                   data-testid="caps-maxout-input"
-                                                                                   @bind="_editMaxOut" @bind:event="oninput" />
-                                                                        </label>
-                                                                    </div>
-                                                                    @* Ba trạng thái (unknown/yes/no) — không dùng checkbox vì checkbox không biểu diễn được "chưa rõ" *@
-                                                                    <div class="grid grid-cols-[minmax(6rem,auto)_auto] items-center gap-x-2 gap-y-1 text-xs">
-                                                                        <span>🔧 @L["models.cap.tools"]</span>
-                                                                        <span class="flex items-center gap-1.5">
-                                                                            <select class="rounded border border-border bg-surface px-1 py-0.5"
-                                                                                    value="@ChoiceValue(_editTools)" disabled="@_busy"
-                                                                                    data-testid="caps-tools-select"
-                                                                                    @onchange="e => _editTools = ParseChoice(e.Value?.ToString())">
-                                                                                @ChoiceOptions
-                                                                            </select>
-                                                                            <em class="opacity-60">@SourceLabel(_editView.SourceOf(CapabilityKind.Tools))</em>
-                                                                        </span>
-                                                                        <span>⚡ @L["models.cap.reasoning"]</span>
-                                                                        <span class="flex items-center gap-1.5">
-                                                                            <select class="rounded border border-border bg-surface px-1 py-0.5"
-                                                                                    value="@ChoiceValue(_editReasoning)" disabled="@_busy"
-                                                                                    data-testid="caps-reasoning-select"
-                                                                                    @onchange="e => _editReasoning = ParseChoice(e.Value?.ToString())">
-                                                                                @ChoiceOptions
-                                                                            </select>
-                                                                            <em class="opacity-60">@SourceLabel(_editView.SourceOf(CapabilityKind.Reasoning))</em>
-                                                                        </span>
-                                                                        @foreach (var direction in new[] { ModalityDirection.Input, ModalityDirection.Output })
-                                                                        {
-                                                                            <span class="pt-1 font-semibold">@DirectionLabel(direction)</span>
-                                                                            <span></span>
-                                                                            @foreach (var modality in new[] { ModalityKind.Text, ModalityKind.Image, ModalityKind.Audio, ModalityKind.Video })
-                                                                            {
-                                                                                <span>@ModalityLabel(modality)</span>
-                                                                                <span class="flex items-center gap-1.5">
-                                                                                    <select class="rounded border border-border bg-surface px-1 py-0.5"
-                                                                                            value="@ChoiceValue(_editModalities[(direction, modality)])" disabled="@_busy"
-                                                                                            data-testid="@($"caps-{direction.ToDb()}-{modality.ToDb()}-select")"
-                                                                                            @onchange="e => _editModalities[(direction, modality)] = ParseChoice(e.Value?.ToString())">
-                                                                                        @ChoiceOptions
-                                                                                    </select>
-                                                                                    <em class="opacity-60">@SourceLabel(_editView.SourceOf(direction, modality))</em>
-                                                                                </span>
-                                                                            }
-                                                                        }
-                                                                    </div>
-                                                                    <div class="flex flex-wrap items-center gap-1.5">
-                                                                        <button type="button" class="btn btn-primary"
-                                                                                disabled="@_busy" data-testid="caps-save"
-                                                                                @onclick="() => SaveCapabilitiesAsync(m)">
-                                                                            @L["settings.action.save"]
-                                                                        </button>
-                                                                        <button type="button" class="btn btn-outline-info"
-                                                                                disabled="@_busy" data-testid="caps-reset"
-                                                                                @onclick="() => _confirmResetModel = m">
-                                                                            @L["models.action.resetCapabilities"]
-                                                                        </button>
-                                                                        <button type="button" class="btn btn-outline-secondary"
-                                                                                disabled="@_busy" data-testid="caps-cancel"
-                                                                                @onclick="CancelEditCapabilities">
-                                                                            @L["confirm.cancel"]
-                                                                        </button>
-                                                                    </div>
-                                                                </div>
-                                                            }
-                                                            else
-                                                            {
-                                                                <div class="flex flex-wrap items-center gap-1.5">
-                                                                    @if (m.IsManual)
-                                                                    {
-                                                                        <Badge Text="@L["models.manual"]" Variant="BadgeVariant.Neutral" />
-                                                                    }
-                                                                    @if (m.ContextWindow is { } ctx)
-                                                                    {
-                                                                        <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
-                                                                    }
-                                                                    @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt.
-                                                                       Chỉ hiện khi fact đã biết là true; false (KnownAbsent) và null (chưa biết) cùng ẩn. *@
-                                                                    @if (view.Tools is true)
-                                                                    {
-                                                                        <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
-                                                                    }
-                                                                    @if (view.Vision is true)
-                                                                    {
-                                                                        <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
-                                                                    }
-                                                                    @if (view.Reasoning is true)
-                                                                    {
-                                                                        <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
-                                                                    }
-                                                                    @if (view.AudioInput is true)
-                                                                    {
-                                                                        <Badge Text="@($"🔊 {L["models.badge.audio"]}")" Variant="BadgeVariant.Purple" />
-                                                                    }
-                                                                    @if (view.VideoInput is true)
-                                                                    {
-                                                                        <Badge Text="@($"🎬 {L["models.badge.video"]}")" Variant="BadgeVariant.Pink" />
-                                                                    }
-                                                                    @if (!m.IsManual && m.ContextWindow is null && !HasVisibleCapabilityBadges(view))
-                                                                    {
-                                                                        @* Ký hiệu language-neutral — không qua i18n (spec §3.3) *@
-                                                                        <span class="opacity-70" data-testid="caps-placeholder">&#8212;</span>
-                                                                    }
-                                                                    <button type="button" class="btn btn-outline-info px-1.5"
-                                                                            disabled="@_busy" data-testid="caps-edit"
-                                                                            title="@L["models.action.editCapabilities"]"
-                                                                            @onclick="() => BeginEditCapabilitiesAsync(m)">
-                                                                            &#9998;
-                                                                    </button>
-                                                                </div>
-                                                            }
+                                                            <div class="flex flex-wrap items-center gap-1.5">
+                                                                @if (m.IsManual)
+                                                                {
+                                                                    <Badge Text="@L["models.manual"]" Variant="BadgeVariant.Neutral" />
+                                                                }
+                                                                @if (m.ContextWindow is { } ctx)
+                                                                {
+                                                                    <Badge Variant="BadgeVariant.Info" Text="@($"ctx: {FormatCtx(ctx)}")" />
+                                                                }
+                                                                @* Emoji trong markup (không qua i18n) — ký hiệu language-neutral theo mockup đã duyệt.
+                                                                   Chỉ hiện khi fact đã biết là true; false (KnownAbsent) và null (chưa biết) cùng ẩn. *@
+                                                                @if (view.Tools is true)
+                                                                {
+                                                                    <Badge Text="@($"🛠 {L["models.badge.tools"]}")" Variant="BadgeVariant.Success" />
+                                                                }
+                                                                @if (view.Vision is true)
+                                                                {
+                                                                    <Badge Text="@($"👁 {L["models.badge.vision"]}")" Variant="BadgeVariant.Success" />
+                                                                }
+                                                                @if (view.Reasoning is true)
+                                                                {
+                                                                    <Badge Text="@($"⚡ {L["models.badge.think"]}")" Variant="BadgeVariant.Warning" />
+                                                                }
+                                                                @if (view.AudioInput is true)
+                                                                {
+                                                                    <Badge Text="@($"🔊 {L["models.badge.audio"]}")" Variant="BadgeVariant.Purple" />
+                                                                }
+                                                                @if (view.VideoInput is true)
+                                                                {
+                                                                    <Badge Text="@($"🎬 {L["models.badge.video"]}")" Variant="BadgeVariant.Pink" />
+                                                                }
+                                                                @if (!m.IsManual && m.ContextWindow is null && !HasVisibleCapabilityBadges(view))
+                                                                {
+                                                                    @* Ký hiệu language-neutral — không qua i18n (spec §3.3) *@
+                                                                    <span class="opacity-70" data-testid="caps-placeholder">&#8212;</span>
+                                                                }
+                                                                <button type="button" class="btn btn-outline-info px-1.5"
+                                                                        disabled="@_busy" data-testid="caps-edit"
+                                                                        title="@L["models.action.editCapabilities"]"
+                                                                        @onclick="() => BeginEditCapabilitiesAsync(m)">
+                                                                        &#9998;
+                                                                </button>
+                                                            </div>
                                                         </td>
                                                         <td class="px-2 py-1.5">
                                                             <input type="checkbox" checked="@m.Enabled" disabled="@_busy"
@@ -394,6 +447,7 @@ else
                                     </div>
 
                                     <Pager Total="FilteredModelCount(p)" @bind-Page="_modelPage" @bind-PageSize="_modelPageSize" />
+                                }
                                 }
                             </td>
                         </tr>
@@ -522,178 +576,6 @@ else
         <div class="mt-1 text-sm text-danger">@L[apiKeyError]</div>
     }
 
-    @if (_editingId is not null)
-    {
-        @* ===== Section Tài khoản (spec provider-accounts §5.2) — key quản lý hoàn toàn ở đây ===== *@
-        <div class="mt-4 flex flex-col gap-2 text-sm">
-            <div class="flex items-center justify-between">
-                <span class="font-semibold">@L["accounts.section.title"]</span>
-                <div class="flex gap-2">
-                    <button type="button" class="btn btn-outline-secondary"
-                            disabled="@(_busy || _testingAccounts || _accountForm is not null)"
-                            @onclick="TestAllAccountsAsync">
-                        @(_testingAccounts ? L["providers.testing"] : L["accounts.action.testAll"])
-                    </button>
-                    <button type="button" class="btn btn-outline-secondary"
-                            disabled="@(_busy || _accountForm is not null)"
-                            @onclick="AddAccountRow">
-                        @L["accounts.action.add"]
-                    </button>
-                </div>
-            </div>
-
-            @if (_accountsLoadFailed)
-            {
-                @* Load fail ≠ không có account — không được hiện EmptyState mời thêm account *@
-                <div class="text-sm text-danger">@L["dashboard.msg.failed"]</div>
-            }
-            else if (_accounts.Count == 0)
-            {
-                <EmptyState Message="@L["accounts.empty"]" />
-            }
-            else
-            {
-                <div class="overflow-x-auto rounded border border-border bg-surface">
-                    <table class="w-full text-xs">
-                        <thead>
-                            <tr class="border-b border-border text-left uppercase opacity-70">
-                                <th class="px-2 py-1.5">@L["accounts.field.name"]</th>
-                                <th class="px-2 py-1.5">@L["accounts.field.enabled"]</th>
-                                <th class="px-2 py-1.5">@L["accounts.field.patterns"]</th>
-                                @* Cột info (W/P + usage) và cột test: nhãn language-neutral / tái dùng key test có sẵn *@
-                                <th class="px-2 py-1.5"></th>
-                                <th class="px-2 py-1.5">@L["providers.action.test"]</th>
-                                <th class="px-2 py-1.5 text-right">@L["providers.col.actions"]</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach (var account in _accounts)
-                            {
-                                <tr @key="account.Id" class="border-b border-border last:border-b-0">
-                                    <td class="px-2 py-1.5 font-medium">@account.Name</td>
-                                    <td class="px-2 py-1.5">
-                                        <input type="checkbox" checked="@account.Enabled"
-                                               disabled="@(_busy || _accountForm is not null)"
-                                               @onchange="() => ToggleAccountEnabledAsync(account)" />
-                                    </td>
-                                    <td class="px-2 py-1.5 opacity-80">@PatternSummary(account)</td>
-                                    <td class="px-2 py-1.5 opacity-80">
-                                        W@(account.Weight) · @UsageText(account)
-                                        @if (string.IsNullOrEmpty(account.ApiKeyEncrypted))
-                                        {
-                                            @* Nhãn language-neutral theo spec §5 — không cần i18n (xem comment dòng 425) *@
-                                            <span class="opacity-60"> · no key</span>
-                                        }
-                                    </td>
-                                    <td class="px-2 py-1.5">
-                                        @if (account.LastTestSuccess is null)
-                                        {
-                                            <span class="opacity-70">@L["accounts.test.none"]</span>
-                                        }
-                                        else
-                                        {
-                                            @* Message là dữ liệu HTTP hiển thị thẳng, không qua i18n *@
-                                            <span title="@(account.LastTestMessage ?? string.Empty)">
-                                                @(account.LastTestSuccess == true ? "✓" : "✗")
-                                            </span>
-                                        }
-                                    </td>
-                                    <td class="px-2 py-1.5 text-right">
-                                        <button type="button" class="btn btn-outline-info px-1.5"
-                                                disabled="@(_busy || _accountForm is not null)"
-                                                @onclick="() => BeginEditAccount(account)">✏️</button>
-                                        <button type="button" class="btn btn-outline-danger px-1.5"
-                                                disabled="@(_busy || _accounts.Count <= 1 || _accountForm is not null)"
-                                                @onclick="() => AskDeleteAccount(account)">🗑</button>
-                                    </td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                </div>
-            }
-
-            @if (_accountForm is { } accountForm)
-            {
-                <div class="flex flex-col gap-2 rounded border border-border bg-background px-2 py-2">
-                    <div class="grid gap-2 sm:grid-cols-2">
-                        <label class="flex flex-col gap-1">
-                            @L["accounts.field.name"]
-                            <input class="rounded border border-border bg-surface px-2 py-1" maxlength="100"
-                                   disabled="@_busy" @bind="accountForm.Name" @bind:event="oninput" />
-                        </label>
-                        <label class="flex flex-col gap-1">
-                            @L["accounts.field.apiKey"]
-                            <input type="password" class="rounded border border-border bg-surface px-2 py-1"
-                                   autocomplete="off" spellcheck="false"
-                                   disabled="@(_busy || accountForm.NoKey)"
-                                   placeholder="@(accountForm.NoKey
-                                       ? L["accounts.placeholder.noKey"]
-                                       : (accountForm.Id is null ? L["accounts.placeholder.key"] : L["accounts.placeholder.keySaved"]))"
-                                   @bind="accountForm.ApiKey" @bind:event="oninput" />
-                        </label>
-                        <label class="flex items-center gap-1.5">
-                            <input type="checkbox" disabled="@_busy" @bind="accountForm.NoKey" />
-                            @L["accounts.field.noKey"]
-                        </label>
-                        <label class="flex items-center gap-1.5">
-                            <input type="checkbox" disabled="@_busy" @bind="accountForm.Enabled" />
-                            @L["accounts.field.enabled"]
-                        </label>
-                        <label class="flex flex-col gap-1">
-                            @L["accounts.field.weight"]
-                            <input type="number" min="0" max="10000"
-                                   class="rounded border border-border bg-surface px-2 py-1"
-                                   disabled="@_busy" @bind="accountForm.Weight" @bind:event="oninput" />
-                        </label>
-                        <label class="flex flex-col gap-1">
-                            @L["accounts.field.tokenLimit"]
-                            <input type="number" min="1"
-                                   class="rounded border border-border bg-surface px-2 py-1"
-                                   disabled="@_busy" @bind="accountForm.DailyTokenLimit" @bind:event="oninput" />
-                        </label>
-                        <label class="flex flex-col gap-1">
-                            @L["accounts.field.requestLimit"]
-                            <input type="number" min="1"
-                                   class="rounded border border-border bg-surface px-2 py-1"
-                                   disabled="@_busy" @bind="accountForm.DailyRequestLimit" @bind:event="oninput" />
-                        </label>
-                        <label class="flex flex-col gap-1 sm:col-span-2">
-                            @L["accounts.field.patterns"]
-                            <textarea class="h-16 rounded border border-border bg-surface px-2 py-1 font-mono text-xs"
-                                      placeholder="@L["accounts.placeholder.patterns"]"
-                                      disabled="@_busy" @bind="accountForm.PatternsText" @bind:event="oninput"></textarea>
-                        </label>
-                    </div>
-                    <div class="flex justify-end gap-2">
-                        @if (accountForm.NoKey)
-                        {
-                            @* Account no-key phải test pass mới được lưu (D6) — test result hiển thị cạnh nút *@
-                            <button type="button" class="btn btn-outline-info"
-                                    disabled="@(_busy || _saving || _testingAccountNoKey)"
-                                    @onclick="TestAccountNoKeyAsync">
-                                @(_testingAccountNoKey ? L["providers.testing"] : L["providers.action.test"])
-                            </button>
-                            @if (_accountTestResult is { } accountTestResult)
-                            {
-                                <Badge Variant="@(accountTestResult.Success ? BadgeVariant.Success : BadgeVariant.Danger)"
-                                       Text="@(accountTestResult.Success ? L["providers.lastTest.ok"] : L["providers.lastTest.fail"])" />
-                            }
-                        }
-                        <button type="button" class="btn btn-outline-secondary" disabled="@_busy" @onclick="CancelAccountForm">
-                            @L["confirm.cancel"]
-                        </button>
-                        <button type="button" class="btn btn-primary"
-                                disabled="@(!CanSaveAccount || _busy || _saving)"
-                                @onclick="SaveAccountAsync">
-                            @L["settings.action.save"]
-                        </button>
-                    </div>
-                </div>
-            }
-        </div>
-    }
-
     <div class="mt-4 flex flex-wrap items-center gap-2">
         <button type="button" class="btn btn-outline-info" disabled="@(_testing || _saving)"
                 @onclick="TestDraftAsync">
@@ -720,12 +602,191 @@ else
             @L["confirm.cancel"]
         </button>
         @* Nút Save dùng chung key i18n của Settings ("Save"/"Lưu") — cùng nghĩa, tránh nhân đôi key *@
-        @* Disable khi sub-form tài khoản đang mở: tránh tắt modal làm mất input đang gõ *@
         <button type="button" class="btn btn-primary"
-                disabled="@(!CanSave || _saving || _testing || _accountForm is not null)" @onclick="SaveAsync">
+                disabled="@(!CanSave || _saving || _testing)" @onclick="SaveAsync">
             @L["settings.action.save"]
         </button>
     </div>
+</Modal>
+
+<Modal Visible="_accountModalVisible"
+       Title="@AccountModalTitle"
+       MaxWidth="42rem"
+       OnClose="CloseAccountModal">
+    @if (_accountForm is { } accountForm)
+    {
+        <div class="flex flex-col gap-2" data-testid="account-form-modal">
+            <div class="grid gap-2 sm:grid-cols-2">
+                <label class="flex flex-col gap-1 text-sm">
+                    @L["accounts.field.name"]
+                    <input class="rounded border border-border bg-surface px-2 py-1" maxlength="100"
+                           autofocus disabled="@_busy" @bind="accountForm.Name" @bind:event="oninput" />
+                </label>
+                <label class="flex flex-col gap-1 text-sm">
+                    @L["accounts.field.apiKey"]
+                    <input type="password" class="rounded border border-border bg-surface px-2 py-1"
+                           autocomplete="off" spellcheck="false"
+                           disabled="@(_busy || accountForm.NoKey)"
+                           placeholder="@(accountForm.NoKey
+                               ? L["accounts.placeholder.noKey"]
+                               : (accountForm.Id is null ? L["accounts.placeholder.key"] : L["accounts.placeholder.keySaved"]))"
+                           @bind="accountForm.ApiKey" @bind:event="oninput" />
+                </label>
+                <label class="flex items-center gap-1.5 text-sm">
+                    <input type="checkbox" disabled="@_busy" @bind="accountForm.NoKey" />
+                    @L["accounts.field.noKey"]
+                </label>
+                <label class="flex items-center gap-1.5 text-sm">
+                    <input type="checkbox" disabled="@_busy" @bind="accountForm.Enabled" />
+                    @L["accounts.field.enabled"]
+                </label>
+                <label class="flex flex-col gap-1 text-sm">
+                    @L["accounts.field.weight"]
+                    <input type="number" min="0" max="10000"
+                           class="rounded border border-border bg-surface px-2 py-1"
+                           disabled="@_busy" @bind="accountForm.Weight" @bind:event="oninput" />
+                </label>
+                <label class="flex flex-col gap-1 text-sm">
+                    @L["accounts.field.tokenLimit"]
+                    <input type="number" min="1"
+                           class="rounded border border-border bg-surface px-2 py-1"
+                           disabled="@_busy" @bind="accountForm.DailyTokenLimit" @bind:event="oninput" />
+                </label>
+                <label class="flex flex-col gap-1 text-sm">
+                    @L["accounts.field.requestLimit"]
+                    <input type="number" min="1"
+                           class="rounded border border-border bg-surface px-2 py-1"
+                           disabled="@_busy" @bind="accountForm.DailyRequestLimit" @bind:event="oninput" />
+                </label>
+                <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+                    @L["accounts.field.patterns"]
+                    <textarea class="h-16 rounded border border-border bg-surface px-2 py-1 font-mono text-xs"
+                              placeholder="@L["accounts.placeholder.patterns"]"
+                              disabled="@_busy" @bind="accountForm.PatternsText" @bind:event="oninput"></textarea>
+                </label>
+            </div>
+            <div class="mt-2 flex flex-wrap items-center justify-end gap-2">
+                @if (accountForm.NoKey)
+                {
+                    @* Account no-key phải test pass mới được lưu (D6) — test result hiển thị cạnh nút *@
+                    <button type="button" class="btn btn-outline-info"
+                            disabled="@(_busy || _testingAccountNoKey)"
+                            @onclick="TestAccountNoKeyAsync">
+                        @(_testingAccountNoKey ? L["providers.testing"] : L["providers.action.test"])
+                    </button>
+                    @if (_accountTestResult is { } accountTestResult)
+                    {
+                        <Badge Variant="@(accountTestResult.Success ? BadgeVariant.Success : BadgeVariant.Danger)"
+                               Text="@(accountTestResult.Success ? L["providers.lastTest.ok"] : L["providers.lastTest.fail"])" />
+                    }
+                }
+                <button type="button" class="btn btn-outline-secondary" disabled="@_busy"
+                        @onclick="CloseAccountModal">
+                    @L["confirm.cancel"]
+                </button>
+                <button type="button" class="btn btn-primary"
+                        disabled="@(!CanSaveAccount || _busy)"
+                        @onclick="SaveAccountAsync">
+                    @L["settings.action.save"]
+                </button>
+            </div>
+        </div>
+    }
+</Modal>
+
+<Modal Visible="@(_editingCapabilitiesId is not null)"
+       Title="@CapsModalTitle"
+       MaxWidth="48rem"
+       OnClose="CancelEditCapabilities">
+    @if (_editingModel is { } capabilityModel)
+    {
+        <div class="flex flex-col gap-3" data-testid="caps-edit-form">
+            <div class="grid gap-3 sm:grid-cols-2">
+                <label class="flex flex-col gap-1 text-sm">
+                    @L["models.capabilities.contextWindow"]
+                    <input type="number" min="1" max="10000000"
+                           class="rounded border border-border bg-surface px-2 py-1"
+                           disabled="@_busy" data-testid="caps-ctx-input"
+                           @bind="_editCtx" @bind:event="oninput" />
+                </label>
+                <label class="flex flex-col gap-1 text-sm">
+                    @L["models.capabilities.maxOutput"]
+                    <input type="number" min="1" max="10000000"
+                           class="rounded border border-border bg-surface px-2 py-1"
+                           disabled="@_busy" data-testid="caps-maxout-input"
+                           @bind="_editMaxOut" @bind:event="oninput" />
+                </label>
+            </div>
+
+            @* Ba trạng thái (unknown/yes/no) — không dùng checkbox vì checkbox không biểu diễn được "chưa rõ" *@
+            <div class="grid grid-cols-[minmax(7rem,auto)_1fr] items-center gap-2 text-sm">
+                <span>🔧 @L["models.cap.tools"]</span>
+                <span class="flex items-center gap-1.5">
+                    <select class="rounded border border-border bg-surface px-1 py-0.5"
+                            value="@ChoiceValue(_editTools)" disabled="@_busy"
+                            data-testid="caps-tools-select"
+                            @onchange="e => _editTools = ParseChoice(e.Value?.ToString())">
+                        @ChoiceOptions
+                    </select>
+                    <em class="text-xs opacity-60">@SourceLabel(_editView.SourceOf(CapabilityKind.Tools))</em>
+                </span>
+                <span>⚡ @L["models.cap.reasoning"]</span>
+                <span class="flex items-center gap-1.5">
+                    <select class="rounded border border-border bg-surface px-1 py-0.5"
+                            value="@ChoiceValue(_editReasoning)" disabled="@_busy"
+                            data-testid="caps-reasoning-select"
+                            @onchange="e => _editReasoning = ParseChoice(e.Value?.ToString())">
+                        @ChoiceOptions
+                    </select>
+                    <em class="text-xs opacity-60">@SourceLabel(_editView.SourceOf(CapabilityKind.Reasoning))</em>
+                </span>
+            </div>
+
+            <div class="grid gap-2 sm:grid-cols-2">
+                @foreach (var direction in new[] { ModalityDirection.Input, ModalityDirection.Output })
+                {
+                    <div class="rounded border border-border bg-background p-2 text-sm" @key="direction">
+                        <div class="mb-2 font-semibold">@DirectionLabel(direction)</div>
+                        <div class="flex flex-col gap-1.5">
+                            @foreach (var modality in new[] { ModalityKind.Text, ModalityKind.Image, ModalityKind.Audio, ModalityKind.Video })
+                            {
+                                <label class="flex items-center justify-between gap-2">
+                                    <span>@ModalityLabel(modality)</span>
+                                    <span class="flex items-center gap-1.5">
+                                        <select class="rounded border border-border bg-surface px-1 py-0.5"
+                                                value="@ChoiceValue(_editModalities[(direction, modality)])" disabled="@_busy"
+                                                data-testid="@($"caps-{direction.ToDb()}-{modality.ToDb()}-select")"
+                                                @onchange="e => _editModalities[(direction, modality)] = ParseChoice(e.Value?.ToString())">
+                                            @ChoiceOptions
+                                        </select>
+                                        <em class="text-xs opacity-60">@SourceLabel(_editView.SourceOf(direction, modality))</em>
+                                    </span>
+                                </label>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="flex flex-wrap items-center justify-end gap-2">
+                <button type="button" class="btn btn-primary"
+                        disabled="@_busy" data-testid="caps-save"
+                        @onclick="() => SaveCapabilitiesAsync(capabilityModel)">
+                    @L["settings.action.save"]
+                </button>
+                <button type="button" class="btn btn-outline-info"
+                        disabled="@_busy" data-testid="caps-reset"
+                        @onclick="() => _confirmResetModel = capabilityModel">
+                    @L["models.action.resetCapabilities"]
+                </button>
+                <button type="button" class="btn btn-outline-secondary"
+                        disabled="@_busy" data-testid="caps-cancel"
+                        @onclick="CancelEditCapabilities">
+                    @L["confirm.cancel"]
+                </button>
+            </div>
+        </div>
+    }
 </Modal>
 
 @if (_confirmDeleteProvider is { } providerToDelete)
@@ -798,20 +859,30 @@ else
 
     // Expand + phân trang giữ xuyên suốt thao tác (checklist #7: expand persist)
     private long? _expandedId;
+    private ProviderPanelSection _expandedSection = ProviderPanelSection.Accounts;
     private int _providerPage = 1;
     private int _providerPageSize = 10;
     private int _modelPage = 1;
     private int _modelPageSize = 10;
     // Search model trong panel đang expand — 1 state chung (chỉ 1 row mở tại 1 thời điểm)
     private string _modelSearch = string.Empty;
+    private int _accountPage = 1;
+    private int _accountPageSize = 10;
+    private string _accountSearch = string.Empty;
+    private long? _accountsProviderId;
+    private bool _accountsLoaded;
+    private bool _accountsLoading;
+    private int _accountsLoadVersion;
+    private bool _accountModalVisible;
 
     private long? _testingId;
     private long? _fetchingId;
     private long? _syncingId;
     private string _newModelId = string.Empty;
 
-    // Edit inline capabilities — 1 bộ state duy nhất nên mở row khác tự đóng row cũ (chỉ 1 model sửa 1 lúc)
+    // Capability modal — 1 bộ state duy nhất nên mở model khác tự đóng form cũ (chỉ 1 model sửa 1 lúc)
     private long? _editingCapabilitiesId;
+    private Model? _editingModel;
     private ModelCapabilityView _editView = ModelCapabilityView.Empty;
     private string _editCtx = string.Empty;
     private string _editMaxOut = string.Empty;
@@ -835,7 +906,7 @@ else
     private Dictionary<string, string> _errors = [];
     private ProviderTestResult? _testResult;
 
-    // ===== Section Accounts trong modal edit (spec provider-accounts §5.2) =====
+    // ===== Section Accounts trong expansion + account modal =====
     private List<ProviderAccount> _accounts = [];
     private bool _accountsLoadFailed;
     private bool _testingAccounts;
@@ -850,6 +921,8 @@ else
     private sealed class AccountForm
     {
         public long? Id { get; init; } // null = thêm mới
+
+        public long ProviderId { get; init; }
 
         public string Name { get; set; } = string.Empty;
 
@@ -923,18 +996,82 @@ else
 
     private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
 
-    private void ToggleExpand(long id)
+    private async Task ToggleExpandAsync(Provider provider)
     {
-        if (_expandedId == id)
+        // Đang test/lưu provider: không đổi panel để kết quả async không ghi nhầm sang provider khác.
+        if (_busy) return;
+        if (_expandedId == provider.Id)
         {
             _expandedId = null;
             return;
         }
-        _expandedId = id;
-        _modelPage = 1; // đổi provider đang expand → về trang 1 của bảng model
+        await OpenProviderPanelAsync(provider, ProviderPanelSection.Accounts);
+    }
+
+    /// <summary>Bấm số model trên hàng provider — mở thẳng vùng Model thay vì mặc định Tài khoản.</summary>
+    private async Task OpenModelsAsync(Provider provider)
+    {
+        if (_busy) return;
+        if (_expandedId == provider.Id && _expandedSection == ProviderPanelSection.Models)
+        {
+            _expandedId = null;
+            return;
+        }
+        await OpenProviderPanelAsync(provider, ProviderPanelSection.Models);
+    }
+
+    private async Task SetSectionAsync(Provider provider, ProviderPanelSection section)
+    {
+        if (_busy) return;
+        if (_expandedId != provider.Id)
+        {
+            await OpenProviderPanelAsync(provider, section);
+            return;
+        }
+
+        _expandedSection = section;
+        if (section == ProviderPanelSection.Accounts && !_accountsLoaded && !_accountsLoading)
+        {
+            await LoadAccountsAsync(provider.Id);
+        }
+    }
+
+    private async Task OpenProviderPanelAsync(Provider provider, ProviderPanelSection section)
+    {
+        var providerChanged = _expandedId != provider.Id;
+        _expandedId = provider.Id;
+        _expandedSection = section;
+        if (!providerChanged)
+        {
+            if (section == ProviderPanelSection.Accounts && !_accountsLoaded && !_accountsLoading)
+            {
+                await LoadAccountsAsync(provider.Id);
+            }
+            return;
+        }
+
+        // Đổi provider: reset search/page của cả hai vùng để state provider trước không rò sang.
+        _modelPage = 1;
         _bulkOpen = false;
         _newModelId = string.Empty;
-        _modelSearch = string.Empty; // search của provider trước không được áp sang provider mới
+        _modelSearch = string.Empty;
+        _accountPage = 1;
+        _accountSearch = string.Empty;
+        _accountModalVisible = false;
+        _accountForm = null;
+        ResetAccountTestState();
+        _accounts = provider.Accounts.ToList();
+        _accountsProviderId = provider.Id;
+        _accountsLoaded = false;
+        _accountsLoadFailed = false;
+        _accountsLoading = false;
+        // Vô hiệu request accounts của provider trước; nếu không nó có thể ghi đè state provider mới.
+        _accountsLoadVersion++;
+
+        if (section == ProviderPanelSection.Accounts)
+        {
+            await LoadAccountsAsync(provider.Id);
+        }
     }
 
     private async Task ToggleProviderEnabledAsync(Provider provider)
@@ -990,6 +1127,10 @@ else
             var results = await AccountSvc.TestAllAsync(provider.Id);
             ShowTestResultsToast(results);
             await LoadAsync(); // badge LastTest* mới nhất
+            if (_expandedId == provider.Id && _accountsLoaded)
+            {
+                await LoadAccountsAsync(provider.Id); // badge LastTest* từng account cũng đổi
+            }
         }
         catch (Exception ex)
         {
@@ -1214,12 +1355,14 @@ else
                     _editModalities[(direction, modality)] = ChoiceOf(_editView.Supports(direction, modality));
                 }
             }
-            // Chỉ mở editor sau khi view sẵn sàng — tránh render form rỗng (mọi ô
+            // Chỉ mở modal sau khi view sẵn sàng — tránh render form rỗng (mọi ô
             // "chưa rõ") trong lúc chờ đọc DB.
+            _editingModel = model;
             _editingCapabilitiesId = model.Id;
         }
         catch (Exception ex)
         {
+            _editingModel = null;
             _editingCapabilitiesId = null;
             Log.Error("Không tải được capability của model.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
@@ -1232,6 +1375,8 @@ else
 
     private void CancelEditCapabilities()
     {
+        if (_busy) return;
+        _editingModel = null;
         _editingCapabilitiesId = null;
         _editView = ModelCapabilityView.Empty;
     }
@@ -1269,6 +1414,7 @@ else
         try
         {
             await ModelSvc.SetCapabilitiesAsync(model.Id, ctx, maxOut, BuildCapabilityPatch());
+            _editingModel = null;
             _editingCapabilitiesId = null;
             await ReloadKeepExpandAsync(model.ProviderId);
             Toast.Show(L["models.msg.capabilitiesSaved"], ToastSeverity.Success);
@@ -1300,6 +1446,7 @@ else
         try
         {
             await MetadataSvc.ResetToCatalogAsync(model.Id);
+            _editingModel = null;
             _editingCapabilitiesId = null;
             _editView = ModelCapabilityView.Empty;
             await ReloadKeepExpandAsync(model.ProviderId);
@@ -1426,6 +1573,12 @@ else
         No,
     }
 
+    private enum ProviderPanelSection
+    {
+        Accounts,
+        Models,
+    }
+
     private async Task SetAllModelsAsync(Provider provider, bool enabled)
     {
         if (_busy) return;
@@ -1498,10 +1651,10 @@ else
         _modalVisible = true;
     }
 
-    private async Task OpenEdit(Provider provider)
+    private void OpenEdit(Provider provider)
     {
         _editingId = provider.Id;
-        // ApiKey không còn ở form edit — key quản lý ở section Accounts (spec §5.2)
+        // ApiKey không có ở form edit — account/API key quản lý trong expansion của provider.
         _draft = new ProviderDraft
         {
             Name = provider.Name,
@@ -1515,10 +1668,7 @@ else
                 .Select(h => new ExtraHeaderEntry { Key = h.Name, Value = h.Value })],
         };
         ResetModalState();
-        _accountForm = null;
-        _accounts = [];
         _modalVisible = true;
-        await LoadAccountsAsync(provider.Id);
     }
 
     private void ResetModalState()
@@ -1657,16 +1807,43 @@ else
 
     private async Task LoadAccountsAsync(long providerId)
     {
+        // Provider có thể đổi khi request trước còn bay — version chặn kết quả cũ ghi đè provider mới.
+        var version = ++_accountsLoadVersion;
+        _accountsProviderId = providerId;
+        _accountsLoading = true;
         try
         {
-            _accounts = (await AccountSvc.ListAsync(providerId)).ToList();
+            var accounts = (await AccountSvc.ListAsync(providerId)).ToList();
+            if (version != _accountsLoadVersion || _accountsProviderId != providerId)
+            {
+                return;
+            }
+
+            _accounts = accounts;
             _accountsLoadFailed = false;
+            _accountsLoaded = true;
+            // Xoá/thêm account có thể làm trang hiện tại vượt số trang — clamp về hợp lệ.
+            var pages = Math.Max(1, (FilteredAccountCount + _accountPageSize - 1) / _accountPageSize);
+            _accountPage = Math.Clamp(_accountPage, 1, pages);
         }
         catch (Exception ex)
         {
+            if (version != _accountsLoadVersion || _accountsProviderId != providerId)
+            {
+                return;
+            }
+
             Log.Error("Không tải được danh sách tài khoản.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
             _accountsLoadFailed = true;
+            _accountsLoaded = false;
+        }
+        finally
+        {
+            if (version == _accountsLoadVersion)
+            {
+                _accountsLoading = false;
+            }
         }
     }
 
@@ -1676,16 +1853,20 @@ else
         _accountTestedSignature = null;
     }
 
-    private void AddAccountRow()
+    private void OpenAddAccount()
     {
-        _accountForm = new AccountForm();
+        if (_busy || _expandedId is not { } providerId) return;
+        _accountForm = new AccountForm { ProviderId = providerId };
         ResetAccountTestState();
+        _accountModalVisible = true;
     }
 
-    private void BeginEditAccount(ProviderAccount account)
+    private void OpenEditAccount(ProviderAccount account)
     {
+        if (_busy) return;
         _accountForm = new AccountForm
         {
+            ProviderId = account.ProviderId,
             Id = account.Id,
             // Account đang lưu không key = toggle NoKey được bật sẵn (D5)
             NoKey = string.IsNullOrEmpty(account.ApiKeyEncrypted),
@@ -1697,13 +1878,27 @@ else
             DailyRequestLimit = account.DailyRequestLimit,
         };
         ResetAccountTestState();
+        _accountModalVisible = true;
     }
 
-    private void CancelAccountForm()
+    private void CloseAccountModal()
     {
+        if (_busy) return;
+        _accountModalVisible = false;
         _accountForm = null;
         ResetAccountTestState();
     }
+
+    private string AccountModalTitle => _accountForm?.Id is null
+        ? L["accounts.modal.add"]
+        : L["accounts.modal.edit"];
+
+    private string CapsModalTitle => _editingModel is { } model
+        ? $"{L["models.capabilities.title"]}: {model.ModelId}"
+        : L["models.capabilities.title"];
+
+    private Provider? ProviderOf(AccountForm form) =>
+        _providers.FirstOrDefault(p => p.Id == form.ProviderId);
 
     /// <summary>JSON array → textarea 1 pattern/dòng; null/empty hoặc JSON hỏng → chuỗi rỗng.</summary>
     private static string DecodePatterns(string? json)
@@ -1723,31 +1918,30 @@ else
         }
     }
 
-    /// <summary>Chữ ký test account no-key: Type|BaseUrl|NoKey của form — đổi bất kỳ field nào = phải test lại (D6).</summary>
-    private string AccountTestSignature(AccountForm form) =>
-        $"{_draft.Type}|{ProviderUrl.Canonicalize(_draft.BaseUrl)}|{form.NoKey}";
+    /// <summary>Chữ ký test account no-key: Type|BaseUrl|NoKey của provider đã lưu — đổi form = phải test lại (D6).</summary>
+    private static string AccountTestSignature(AccountForm form, Provider provider) =>
+        $"{provider.Type}|{ProviderUrl.Canonicalize(provider.BaseUrl)}|{form.NoKey}";
 
-    private bool AccountNoKeyTestPassed(AccountForm form) =>
+    private bool AccountNoKeyTestPassed(AccountForm form, Provider provider) =>
         _accountTestResult is { Success: true }
-        && _accountTestedSignature == AccountTestSignature(form);
+        && _accountTestedSignature == AccountTestSignature(form, provider);
 
     private async Task TestAccountNoKeyAsync()
     {
-        if (_busy || _editingId is not { } providerId || _accountForm is not { } form) return;
+        if (_busy || _accountForm is not { } form) return;
+        var provider = ProviderOf(form);
+        if (provider is null) return;
 
         _busy = true;
         _testingAccountNoKey = true;
         try
         {
-            // Lấy entity đã lưu (có Type/BaseUrl hiện tại từ modal) rồi vá theo form —
-            // TestConnectionAsync với override "" ép probe không key (D9)
-            var target = await ProviderSvc.GetAsync(providerId)
-                ?? throw new KeyNotFoundException($"Provider {providerId} not found.");
-            target.Type = _draft.Type;
-            target.BaseUrl = ProviderUrl.Canonicalize(_draft.BaseUrl);
+            // Account chỉ quản lý provider đã lưu — dùng Type/BaseUrl persist, không phụ thuộc draft modal provider.
+            var target = await ProviderSvc.GetAsync(form.ProviderId)
+                ?? throw new KeyNotFoundException($"Provider {form.ProviderId} not found.");
 
             _accountTestResult = await ProviderSvc.TestConnectionAsync(target, apiKeyOverride: "");
-            _accountTestedSignature = AccountTestSignature(form);
+            _accountTestedSignature = AccountTestSignature(form, target);
         }
         catch (Exception ex)
         {
@@ -1755,7 +1949,7 @@ else
             Log.Error("Không test được tài khoản không key.", ex);
             Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
             _accountTestResult = new ProviderTestResult(false, ex.Message, DateTimeOffset.UtcNow);
-            _accountTestedSignature = AccountTestSignature(form);
+            _accountTestedSignature = AccountTestSignature(form, provider);
         }
         finally
         {
@@ -1766,16 +1960,18 @@ else
 
     private bool CanSaveAccount =>
         _accountForm is { } form
+        && ProviderOf(form) is { } provider
         && form.Name.Trim().Length > 0
         // Tạo: bắt buộc key hoặc NoKey; sửa: key tùy chọn (để trống = giữ)
         && (form.Id is not null || form.NoKey || form.ApiKey.Trim().Length > 0)
         // Account no-key: test pass với đúng Type|BaseUrl|NoKey hiện tại mới được lưu (D6)
-        && (!form.NoKey || AccountNoKeyTestPassed(form));
+        && (!form.NoKey || AccountNoKeyTestPassed(form, provider));
 
     private async Task SaveAccountAsync()
     {
-        if (_busy || _accountForm is not { } form || _editingId is not { } providerId) return;
+        if (_busy || _accountForm is not { } form) return;
         if (!CanSaveAccount) return; // chặn cứng — nút đã disabled nhưng guard vẫn đứng đây
+        var providerId = form.ProviderId;
 
         var patterns = form.PatternsText.Replace("\r\n", "\n")
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -1806,7 +2002,15 @@ else
             }
 
             Toast.Show(string.Format(L["accounts.msg.saved"], draft.Name), ToastSeverity.Success);
+            // Thêm mới: xoá search để account vừa tạo chắc chắn hiện ra; sửa: giữ nguyên ngữ cảnh.
+            if (form.Id is null)
+            {
+                _accountSearch = string.Empty;
+                _accountPage = 1;
+            }
+            _accountModalVisible = false;
             _accountForm = null;
+            ResetAccountTestState();
             await LoadAccountsAsync(providerId);
         }
         catch (InvalidOperationException)
@@ -1864,7 +2068,7 @@ else
 
     private async Task TestAllAccountsAsync()
     {
-        if (_busy || _editingId is not { } providerId) return;
+        if (_busy || _expandedId is not { } providerId) return;
 
         _busy = true;
         _testingAccounts = true;
@@ -1872,7 +2076,10 @@ else
         {
             var results = await AccountSvc.TestAllAsync(providerId);
             ShowTestResultsToast(results);
-            await LoadAccountsAsync(providerId);
+            if (_expandedId == providerId)
+            {
+                await LoadAccountsAsync(providerId);
+            }
             await LoadAsync(); // Provider.LastTest* (AND các account) đổi theo
         }
         catch (Exception ex)
@@ -1951,6 +2158,32 @@ else
 
     /// <summary>Về trang 1 sau khi search đổi — tổng dòng đã đổi, tránh Skip ra trang trống.</summary>
     private void ResetModelPage() => _modelPage = 1;
+
+    private void ResetAccountPage() => _accountPage = 1;
+
+    /// <summary>Account khớp search theo tên hoặc pattern (client-side, không phân biệt hoa thường).</summary>
+    private IEnumerable<ProviderAccount> FilteredAccounts()
+    {
+        if (string.IsNullOrWhiteSpace(_accountSearch))
+        {
+            return _accounts;
+        }
+
+        var term = _accountSearch.Trim();
+        return _accounts.Where(a =>
+            a.Name.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            (a.ModelPatterns?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
+    private int FilteredAccountCount => FilteredAccounts().Count();
+
+    private IEnumerable<ProviderAccount> PagedAccounts => FilteredAccounts()
+        .Skip((_accountPage - 1) * _accountPageSize)
+        .Take(_accountPageSize);
+
+    /// <summary>Đếm account trước khi section được mở: dùng dữ liệu Provider đã Include Accounts.</summary>
+    private int AccountCountFor(Provider provider) =>
+        _accountsProviderId == provider.Id ? _accounts.Count : provider.Accounts.Count;
 
     /// <summary>Số model khớp search hiện tại — dùng cho Pager + trạng thái "không khớp".</summary>
     private int FilteredModelCount(Provider provider) => SearchModels(provider).Count();

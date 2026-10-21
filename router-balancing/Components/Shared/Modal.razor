@@ -7,6 +7,7 @@
          tabindex="-1" @ref="_dialogRoot" @onclick="CloseAsync" @onkeydown="OnKeydownAsync">
         <div role="dialog" aria-modal="true" aria-label="@Title"
              class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded border border-border bg-surface p-4 shadow-xl"
+             style="@StyleWidth"
              @onclick:stopPropagation="true">
             <div class="mb-3 flex items-center justify-between gap-4">
                 <h2 class="text-base font-semibold">@Title</h2>
@@ -25,7 +26,10 @@
     /// <summary>Tiêu đề dialog — text đã i18n ở nơi gọi.</summary>
     [Parameter] public string Title { get; set; } = string.Empty;
 
-    /// <summary>Gọi khi người dùng đóng (Esc / backdrop / nút &times;).</summary>
+    /// <summary>Chiều rộng tối đa dạng CSS (vd <c>48rem</c>) — form nhiều cột dùng modal rộng hơn mặc định.</summary>
+    [Parameter] public string? MaxWidth { get; set; }
+
+    /// <summary>Gọi khi người dùng đóng (Esc / backdrop / nút ×).</summary>
     [Parameter] public EventCallback OnClose { get; set; }
 
     /// <summary>Nội dung dialog — RenderFragment do nơi gọi truyền vào.</summary>
@@ -33,6 +37,8 @@
 
     private ElementReference? _dialogRoot;
     private bool _wasVisible;
+
+    private string? StyleWidth => MaxWidth is null ? null : $"max-width: {MaxWidth}";
 
     private Task CloseAsync() => OnClose.InvokeAsync();
 
