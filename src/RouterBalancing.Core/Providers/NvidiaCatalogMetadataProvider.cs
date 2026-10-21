@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
@@ -10,10 +11,11 @@ namespace RouterBalancing.Core.Providers;
 
 /// <summary>
 /// Nguồn chính thức của NVIDIA API Catalog: trang model <c>https://build.nvidia.com/{publisher}/{slug}</c>
-/// render server-side khối <c>&lt;aside aria-label="Model information"&gt;</c>. Sidebar chỉ có
-/// <c>Context Length</c>/<c>Input Modalities</c>/<c>Output Modalities</c> — không có
-/// Function Calling/Structured Output/Reasoning — nên provider chỉ phát biểu modality (và
-/// context qua cột scalar), KHÔNG bịa tools/reasoning (R-T7-2).
+/// render server-side khối <c>&lt;aside aria-label="Model information"&gt;</c> cho context/modality,
+/// đồng thời nhúng JSON <c>modelCapability</c> trong payload Next.js cho Function Calling/Reasoning.
+/// Provider map <c>functionCalling</c> → <see cref="ModelMetadata.SupportsTools"/> và
+/// <c>reasoning</c> → <see cref="ModelMetadata.SupportsThink"/>; <c>structuredOutput</c> không có
+/// dimension tương ứng trong config OpenCode nên bỏ qua có chủ ý.
 /// 66/81 model NVIDIA trong DB có trang 200 nhưng không có sidebar → trả <see langword="null"/>.
 /// Kết quả trang được cache theo model id TTL 24h (kể cả 200-không-sidebar) để lần fill sau
 /// không tải lại 81 trang; lỗi HTTP/mạng không cache.
@@ -43,6 +45,12 @@ public sealed class NvidiaCatalogMetadataProvider : IModelMetadataProvider
     private static readonly Regex ContextLengthPattern = new(
         @"^(?<number>\d+(?:\.\d+)?)\s*(?<suffix>[KkMm])?$",
         RegexOptions.CultureInvariant);
+
+    // HTML thật nhúng object này trong script Next.js với quote đã escape:
+    // \"modelCapability\":{\"functionCalling\":true,\"reasoning\":false}
+    private static readonly Regex ModelCapabilityPattern = new(
+        """\\?"modelCapability\\?"\s*:\s*\{(?<body>[^{}]*)\}""",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
 
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
@@ -186,17 +194,48 @@ public sealed class NvidiaCatalogMetadataProvider : IModelMetadataProvider
             : null;
         LogUnknownModalityTokens(modelId, input, output);
 
-        // Sidebar không có field tools/reasoning/vision — để null để mapper không sinh
-        // phát biểu nào cho các dimension đó (R-T7-2).
+        // Capability nằm ở payload JSON, không nằm trong sidebar; field vắng = nguồn
+        // không phát biểu, còn false là phát biểu "không có" (KnownAbsent).
+        var capabilities = ParseCapabilities(html);
         return new ModelMetadata(
             ContextWindow: contextWindow,
             SupportsVision: null,
-            SupportsThink: null,
+            SupportsThink: capabilities.Think,
             ThinkEfforts: null,
             InputModalities: input,
             OutputModalities: output,
-            SupportsTools: null);
+            SupportsTools: capabilities.Tools);
     }
+
+    /// <summary>
+    /// Đọc <c>modelCapability</c> từ payload Next.js. NVIDIA công bố
+    /// <c>functionCalling</c>/<c>reasoning</c> dưới dạng bool; <c>structuredOutput</c> bị bỏ qua
+    /// vì config OpenCode không có dimension tương ứng.
+    /// </summary>
+    private static (bool? Tools, bool? Think) ParseCapabilities(string html)
+    {
+        var match = ModelCapabilityPattern.Match(html);
+        if (!match.Success) return (null, null);
+
+        try
+        {
+            var json = "{" + match.Groups["body"].Value.Replace("\\\"", "\"") + "}";
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            return (ReadBool(root, "functionCalling"), ReadBool(root, "reasoning"));
+        }
+        catch (JsonException)
+        {
+            // Payload lạ/hỏng: coi như nguồn không phát biểu, không làm hỏng cả trang.
+            return (null, null);
+        }
+    }
+
+    private static bool? ReadBool(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) &&
+        value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : null;
 
     private static Dictionary<string, string> ParsePairs(string block)
     {
