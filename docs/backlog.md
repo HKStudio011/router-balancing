@@ -3,7 +3,7 @@
 Nguồn: phiên brainstorm sau khi ship PR #30 (trang Tools + free sync catalog).
 Ký hiệu: `[ ]` chưa làm · **OPEN** = chưa chốt quyết định · *đo được* = có số liệu/chứng minh trong code, không phải cảm giác.
 
-Trạng thái nền: `master` = `0e04681` (PR #33 đã merge). C2 + D21 + C5 (provider header) xong trên nhánh `feat/combo-item-integrity` ngày 2026-10-21.
+Trạng thái nền: `master` = `0e04681` (PR #33 đã merge). C2 + D21 + C3 + C5 (provider header) xong trên nhánh `feat/combo-item-integrity` ngày 2026-10-21.
 
 ---
 
@@ -51,13 +51,18 @@ Ghi chú vật lý: DB **không** mảnh vụn (`integrity_check ok`, `freelist_
    - `ContextWindow`/`MaxOutputTokens` giữ là cột (scalar nguyên tử, có dùng để hiển thị/sắp xếp).
    - **OPEN**: một migration duy nhất (dời dữ liệu cũ sang bảng trị + bỏ cột) hay bắc cầu (thêm bảng mới, code đọc bảng mới, giữ cột cũ một release rồi bỏ)? → đã chọn migration dời + bỏ cột (`DropLegacyModelCapabilityColumns`).
 2. `[x]` **Bỏ liên kết đa hình ở `ComboItems`** **(xong 2026-10-21, `feat/combo-item-integrity`)** — chọn **giữ một bảng** + CHECK `(TargetModelId IS NULL) <> (TargetComboId IS NULL)` thay vì tách hai bảng: `Position` là thứ tự chung, tách bảng sẽ không enforce được unique xuyên bảng. Đã thêm unique index `(ComboId, Position)`; chặn chu trình đã có ở `ComboService.ValidateNoCycleAsync` từ trước.
-3. `[ ]` **`UsageDaily(SubjectKind, SubjectId, Date, Requests, Tokens)`** thay bộ đếm nằm trong bảng cấu hình: `ClientKeys.RequestsUsed/TokensUsed/UsageDate`, `ProviderAccounts` y hệt (mất lịch sử khi sang ngày, reset bằng cách so `UsageDate`).
+3. `[x]` **`UsageDaily(SubjectKind, SubjectId, Date, Requests, Tokens)`** thay bộ đếm nằm trong bảng cấu hình — **xong 2026-10-21**, migration `AddUsageDaily`:
+   - PK ghép `(SubjectKind, SubjectId, Date)`, `SubjectKind` lưu `client_key`/`provider_account`, `Date` lưu `yyyy-MM-dd` UTC; **không FK** để xóa key/account vẫn giữ lịch sử.
+   - Backfill counter cũ (bỏ dòng 0/0, ngày NULL/hỏng) rồi drop `RequestsUsed/TokensUsed/UsageDate` khỏi cả `ClientKeys` và `ProviderAccounts`.
+   - Ghi atomic upsert; request client key đếm ở middleware, token ở `RequestUsageSink`; provider account đếm request + token sau mọi 2xx.
+   - UI vẫn hiển thị "hôm nay" qua `[NotMapped]` totals do `ListAsync` nạp từ ledger.
+   - **Follow-up:** enforce `ProviderAccount.DailyTokenLimit`/`DailyRequestLimit` (hiện limit chỉ để hiển thị).
 4. `[x]` **`ProbeResult`** — đã kiểm tra 2026-10-21: cả 3 bảng (`Providers`, `ProviderAccounts`, `OutboundProxies`) đều dùng `bool? LastTestSuccess` / `DateTimeOffset? LastTestAt` / `string? LastTestMessage`, DB cũng nullable; không cần migration. Khác biệt còn lại chỉ là `LastTestMessage` maxLength 500 ở proxy (không đáng đổi schema).
 5. `[x]` **`ProviderHeader(ProviderId, Name, Value)`** thay JSON `Providers.ExtraHeaders` — xong 2026-10-21, migration `AddProviderHeaders` (PK ghép + `NOCASE`, backfill JSON, bỏ cột). `[ ]` **`AccountModelPattern(AccountId, Pattern)`** thay `ModelPatterns` — độ lợi thấp, làm sau.
 6. `[x]` **Không chuẩn hoá `AppSettings(Key, ValueJson)`** — key/value là mô hình đúng cho config app; mục A1 sẽ nằm đây.
 7. `[ ]` Chặn input bằng CHECK (port, giới hạn token, độ dài tên) — hiện toàn schema **không có CHECK nào**, mọi ràng buộc数值 đều nằm trong code.
 
-Thứ tự gợi ý: C1 → (A4,A5,A6,A8 là UI rẻ, không phụ thuộc schema) → A3 → C2 + B4/B5 (rẻ, thêm ràng buộc) → A7 → C3 → C4/C5, B6. **Còn lại sau 2026-10-21: C3 (UsageDaily + account counters) → B6 → C7; C5 còn `AccountModelPattern` (độ lợi thấp).**
+Thứ tự gợi ý: C1 → (A4,A5,A6,A8 là UI rẻ, không phụ thuộc schema) → A3 → C2 + B4/B5 (rẻ, thêm ràng buộc) → A7 → C3 → C4/C5, B6. **Còn lại sau 2026-10-21: B6 → C7; C5 còn `AccountModelPattern` (độ lợi thấp); C3 còn enforce `DailyTokenLimit`/`DailyRequestLimit` (follow-up).**
 
 ---
 
