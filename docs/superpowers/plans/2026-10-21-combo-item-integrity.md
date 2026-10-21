@@ -365,11 +365,12 @@ Thêm vào `ComboServiceTests` (sau test `Create_WhenNameTooLong_ThrowsNameTooLo
         var modelId = await SeedModelAsync();
         var comboId = await SeedComboAsync("old/name", targetModelId: modelId);
 
-        var updated = await _service.UpdateAsync(
+        await _service.UpdateAsync(
             comboId,
             Draft("clean-name", new ComboItemDraft { TargetModelId = modelId }));
 
-        Assert.Equal("clean-name", updated.Name);
+        using var db = _db.CreateDbContext();
+        Assert.Equal("clean-name", db.Combos.Single(c => c.Id == comboId).Name);
     }
 ```
 

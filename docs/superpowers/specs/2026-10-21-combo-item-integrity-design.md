@@ -1,7 +1,7 @@
 # Spec: Toàn vẹn `ComboItems` + chặn tên combo chứa `/`
 
 - **Ngày:** 2026-10-21
-- **Trạng thái:** Approved — user "ok làm đi" cho hướng đề xuất (C2 + D21)
+- **Trạng thái:** Implemented (2026-10-21) — Approved: user "ok làm đi" cho hướng đề xuất (C2 + D21)
 - **Nguồn gốc:** `docs/backlog.md` mục C2 và D21 (brainstorm 2026-10-19; review Plan 2 ngày 2026-10-21)
 - **Điều kiện đầu:** master tại `0e04681` (sau PR #33), working tree sạch
 
