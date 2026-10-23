@@ -574,7 +574,11 @@
                             aria-expanded="@(_expandedIdleProvider == chip.Provider)"
                             @key="@($"idle-{chip.Provider}")"
                             @onclick="() => ToggleIdleProvider(chip.Provider)">
-                        @string.Format(L["trace.idleAccounts"], chip.IdleCount) @(_expandedIdleProvider == chip.Provider ? "▴" : "▾")
+                        @* TK đang chạy bị cap cắt → nhãn trung tính "+N more" thay vì "+N idle" *@
+                        @(chip.HiddenActive > 0
+                            ? string.Format(L["trace.moreAccounts"], chip.OverflowCount)
+                            : string.Format(L["trace.idleAccounts"], chip.OverflowCount))
+                        @(_expandedIdleProvider == chip.Provider ? "▴" : "▾")
                     </button>
                     @if (_expandedIdleProvider == chip.Provider)
                     {
@@ -758,7 +762,6 @@
     private const int ChipDotOffsetX = 8;      // dot trong chip: border 1.5px + padding 7px
     private const int ChipDotOffsetY = 6;
     private const int ProviderDotOffsetX = 9;  // dot trong provider: border 1.5px + padding 8px
-    private const int MaxAccountChips = 4;     // spec §5.2: max 4 chip + "+N idle"
     private const int MinCanvasHeight = 415;    // chiều cao mockup — canvas không bao giờ thấp hơn
     private const int CanvasBottomPad = 16;     // hở dưới nội dung thật khi mở rộng canvas theo nội dung
     private const int BranchBlockH = 55;        // ước lượng cao block Combo/Provider (cap 12 + slot 12 + tên + padding/border)
@@ -893,10 +896,13 @@
     /// <summary>Block cột Provider — mockup <c>.n</c> tại left 410, kèm tag status lỗi.</summary>
     private sealed record ProviderBlock(string Name, int Top, bool Running, bool HasError, int? ErrorStatus);
 
-    /// <summary>Chip cột Account — mockup <c>.acct</c> tại left 596; IsIdle = chip "+N idle".</summary>
+    /// <summary>
+    /// Chip cột Account — mockup <c>.acct</c> tại left 596; IsIdle = chip gộp "+N" (TK bị cap
+    /// cắt + TK không được tham chiếu), bấm để mở danh sách đầy đủ.
+    /// </summary>
     private sealed record AccountChip(
         string Provider, string Name, int Top, bool IsIdle, bool Running, bool HasError,
-        int IdleCount, IReadOnlyList<IdleAccount> IdleAccounts);
+        int OverflowCount, int HiddenActive, IReadOnlyList<IdleAccount> IdleAccounts);
 
     /// <summary>Một dòng trong panel expand chip idle — Living = còn node sống tham chiếu TK này.</summary>
     private sealed record IdleAccount(string Name, bool Living, bool Running);
@@ -1718,24 +1724,25 @@
             var providerName = providerGroup.Key;
             var pGroups = providerGroup.ToList();
 
-            // TK đang tham chiếu: GroupBy giữ thứ tự xuất hiện, OrderByDescending (stable sort)
-            // đưa TK đang chạy lên trước khi vượt max 4 chip — "active trước" (spec §5.2)
-            var accounts = pGroups
+            // TK đang tham chiếu — planner giữ thứ tự "active trước" + cap chip (spec §5.2).
+            // TK bị cap cắt phải dồn vào chip "+N" kể cả khi đang chạy: trước đây chip "+N"
+            // chỉ đếm TK idle nên 5 TK cùng chạy bị giấu 1 chip mà không có indicator
+            // (bug 2026-10-23: header "5 đang thực thi" nhưng chỉ render 4 chip).
+            var referenced = pGroups
                 .GroupBy(g => g.Account)
-                .Select(ag => (Name: ag.Key,
-                                Running: ag.Any(x => x.Running),
-                                HasError: ag.Any(x => x.HasError)))
-                .OrderByDescending(a => a.Running)
+                .Select(ag => new TraceAccountRef(
+                    ag.Key,
+                    Running: ag.Any(x => x.Running),
+                    HasError: ag.Any(x => x.HasError)))
                 .ToList();
-            var shown = accounts.Take(MaxAccountChips).ToList();
 
             // Tổng số TK lấy từ cache IProviderService; provider chưa có trong cache →
-            // không biết tổng → bỏ chip idle thay vì hiển thị N sai cho người dùng.
+            // planner coi như không biết TK idle, vẫn báo phần TK đang chạy bị cắt.
             var providerEntity = _providers.FirstOrDefault(
                 p => string.Equals(p.Name, providerName, StringComparison.Ordinal));
-            var activeCount = accounts.Count;
-            var idleCount = providerEntity is { } pe ? Math.Max(0, pe.Accounts.Count - activeCount) : 0;
-            var chipTotal = shown.Count + (idleCount > 0 ? 1 : 0);
+            var chipPlan = TraceChipPlanner.Plan(referenced, providerEntity?.Accounts.Count);
+            var shown = chipPlan.Shown;
+            var chipTotal = shown.Count + (chipPlan.OverflowCount > 0 ? 1 : 0);
             var laneHeight = Math.Max(ProviderRowH, ChipLanePadY + chipTotal * ChipRowH);
 
             var running = pGroups.Any(g => g.Running);
@@ -1755,16 +1762,16 @@
                 layout.Chips.Add(new AccountChip(
                     providerName, shown[k].Name, laneTop + k * ChipRowH,
                     IsIdle: false, Running: shown[k].Running, HasError: shown[k].HasError,
-                    IdleCount: 0, IdleAccounts: []));
+                    OverflowCount: 0, HiddenActive: 0, IdleAccounts: []));
             }
 
-            if (idleCount > 0)
+            if (chipPlan.OverflowCount > 0)
             {
                 // Panel expand = toàn bộ TK của provider (spec §5.5); dot active suy ra node
                 // đang sống trong Nodes (Living), pulse nếu TK đang có request chạy (Running).
                 var known = providerEntity?.Accounts.Select(a => a.Name).ToList() ?? [];
-                var referenced = pGroups.Select(g => g.Account).Distinct().ToList();
-                var entryNames = known.Concat(referenced.Where(r => !known.Contains(r))).ToList();
+                var referencedNames = pGroups.Select(g => g.Account).Distinct().ToList();
+                var entryNames = known.Concat(referencedNames.Where(r => !known.Contains(r))).ToList();
                 var entries = entryNames
                     .Select(name => new IdleAccount(
                         name,
@@ -1774,7 +1781,8 @@
                 layout.Chips.Add(new AccountChip(
                     providerName, string.Empty, laneTop + shown.Count * ChipRowH,
                     IsIdle: true, Running: false, HasError: false,
-                    IdleCount: idleCount, IdleAccounts: entries));
+                    OverflowCount: chipPlan.OverflowCount, HiddenActive: chipPlan.HiddenActive,
+                    IdleAccounts: entries));
             }
 
             laneTop += laneHeight;

@@ -43,6 +43,7 @@ public static class Translations
         ["trace.count.cancelled"] = "cancel",
         ["trace.more"] = "+{0}",
         ["trace.idleAccounts"] = "+{0} idle",
+        ["trace.moreAccounts"] = "+{0} more",
         ["trace.fadeHint"] = "terminal circle fades after ~10s",
 
         // Drill-down modal timeline (Task 7)
@@ -586,6 +587,7 @@ public static class Translations
         ["trace.count.cancelled"] = "cancel",
         ["trace.more"] = "+{0}",
         ["trace.idleAccounts"] = "+{0} idle",
+        ["trace.moreAccounts"] = "+{0} tài khoản",
         ["trace.fadeHint"] = "circle terminal fade sau ~10s",
 
         // Drill-down modal timeline (Task 7)
