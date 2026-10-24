@@ -248,6 +248,20 @@ public sealed class ProxyRequestHandler(
                     // store fail-open nên không try/catch ở call site (contract IApiMonitorStore)
                     monitor.RecordResponse(requestId, tee.Usage?.PromptTokens,
                         tee.Usage?.CompletionTokens, tee.FirstTokenAt, tee.ResponseBody);
+                    // Upstream tự đóng SSE không có [DONE]/finish_reason (vd Unsloth cancel/swap
+                    // khi stream dài) — không phải lỗi mạng: client đã nhận trọn bytes như nối
+                    // trực tiếp; Warning để còn dấu vết chẩn đoán server tự kết thúc stream.
+                    if (tee.EndedWithoutTerminal)
+                    {
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Warning,
+                            Category = LogCategory.Request,
+                            Message = $"Upstream '{provider.Name}' đóng SSE không có [DONE]/finish_reason — coi như kết thúc stream.",
+                            RequestId = ClientKeyItems.RequestIdOf(ctx),
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                    }
                     LogForwarded(ctx, provider, model, response, stopwatch);
                     WarnOnDecoyToolCalls(ctx, provider, body, tee.ResponseBody);
 

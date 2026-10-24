@@ -364,21 +364,22 @@ public class UsageCaptureTests
     }
 
     [Fact]
-    public async Task TeeSse_CleanEofMidToolCall_ThrowsTruncatedAfterForwarding()
+    public async Task TeeSse_CleanEofMidStream_CompletesWithEndedWithoutTerminalFlag()
     {
-        // Không [DONE], không finish_reason: upstream đóng SẠCH (EOF) khi tool_call arguments
-        // còn dở — nếu forward im lặng, client parse được tool call với tham số lệch/thiếu.
+        // Không [DONE], không finish_reason: upstream tự đóng SẠCH (EOF) giữa stream
+        // (vd Unsloth cancel/swap khi stream dài). Client nối trực tiếp cũng chỉ thấy
+        // stream hết → tee kết thúc bình thường + cờ EndedWithoutTerminal cho caller log
+        // dấu vết; KHÔNG dựng lỗi mạng / in-band upstream_disconnected (bug 2026-10-24).
         const string sse =
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
             "\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\"\"}}]}}]}\n\n";
         using var dest = new MemoryStream();
 
-        var ex = await Assert.ThrowsAsync<UpstreamTruncatedException>(() =>
-            UsageCapture.TeeSseAsync(new MemoryStream(Encoding.UTF8.GetBytes(sse)), dest,
-                CancellationToken.None));
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Encoding.UTF8.GetBytes(sse)), dest, CancellationToken.None);
 
-        Assert.IsAssignableFrom<IOException>(ex);
-        Assert.NotEmpty(dest.ToArray());   // byte đã lên wire → dispatcher ghi in-band lỗi
+        Assert.True(result.EndedWithoutTerminal);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // byte-forward nguyên vẹn
     }
 
     [Fact]
@@ -406,6 +407,7 @@ public class UsageCaptureTests
             new MemoryStream(Encoding.UTF8.GetBytes(sse)), dest, CancellationToken.None);
 
         Assert.Null(result.Usage);
+        Assert.False(result.EndedWithoutTerminal);   // finish_reason vẫn là dấu kết thúc hợp lệ
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
     }
 }
