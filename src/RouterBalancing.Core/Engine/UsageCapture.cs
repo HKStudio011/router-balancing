@@ -31,7 +31,11 @@ public static class UsageCapture
     /// <param name="ResponseBody">Thân response đã buffer cho monitor: SSE ghép payload dòng
     /// <c>data:</c> (bỏ <c>[DONE]</c>), non-stream là toàn thân; đã cap <c>64 * 1024</c> ký tự
     /// + marker <c>[truncated]</c> nếu dài hơn.</param>
-    public sealed record TeeResult(Usage? Usage, DateTimeOffset? FirstTokenAt, string? ResponseBody);
+    /// <param name="EndedWithoutTerminal">SSE kết thúc SẠCH (EOF) mà không gặp <c>[DONE]</c>/
+    /// <c>finish_reason</c> — upstream tự đóng stream giữa chừng (server-side cancel/swap...),
+    /// không phải lỗi mạng; caller chỉ dùng để log dấu vết chẩn đoán.</param>
+    public sealed record TeeResult(Usage? Usage, DateTimeOffset? FirstTokenAt, string? ResponseBody,
+        bool EndedWithoutTerminal = false);
 
     /// <summary>
     /// Trả body upstream (inject <c>stream_options.include_usage</c> nếu đủ điều kiện) + cờ
@@ -158,13 +162,19 @@ public static class UsageCapture
                 AppendSsePayload(carry, body, ref bodyTruncated);
             }
             // EOF sạch (không RST/exception) nhưng thiếu dấu kết thúc hợp lệ ([DONE] hoặc
-            // finish_reason) = stream CỤT: tool_call arguments có thể còn dở. Chưa có byte
-            // trên wire → marker (retry/failover); đã có byte → giữ IOException để dispatcher
-            // map Aborted → in-band upstream_disconnected, client discard partial tool_call.
+            // finish_reason) = upstream tự đóng stream giữa chừng (vd Unsloth cancel/swap khi
+            // stream dài). Chưa có byte nào tới client → marker (retry/failover); đã có byte →
+            // client nối trực tiếp cũng chỉ thấy stream hết → kết thúc bình thường + cờ
+            // EndedWithoutTerminal cho caller log; KHÔNG dựng lỗi mạng/in-band
+            // upstream_disconnected (bug 2026-10-24: server-side cancel bị hiển thị
+            // "cancel · network"). Lỗi đọc thật (RST) vẫn propagate IOException như cũ.
             if (!terminal)
             {
-                if (wroteAny) throw new UpstreamTruncatedException();
-                throw new UpstreamDiedBeforeContentException(new UpstreamTruncatedException());
+                if (!wroteAny)
+                    throw new UpstreamDiedBeforeContentException(new UpstreamTruncatedException());
+
+                return new TeeResult(usage, firstTokenAt, body.ToString(),
+                    EndedWithoutTerminal: true);
             }
             return new TeeResult(usage, firstTokenAt, body.ToString());
         }

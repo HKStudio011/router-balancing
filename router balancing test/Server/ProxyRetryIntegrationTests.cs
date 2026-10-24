@@ -139,6 +139,15 @@ public class ProxyRetryIntegrationTests : IDisposable
             Encoding.UTF8, "text/event-stream"),
     };
 
+    /// <summary>
+    /// SSE tự đóng SẠCH giữa stream: có content nhưng KHÔNG [DONE]/finish_reason — mô phỏng
+    /// upstream tự kết thúc (vd Unsloth cancel/swap khi stream dài).
+    /// </summary>
+    private static HttpResponseMessage SseCleanEof() => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent("data: {\"x\":1}\n\n", Encoding.UTF8, "text/event-stream"),
+    };
+
     private static HttpResponseMessage Resp429(
         string body = """{"error":{"message":"rate limited"}}""", string? retryAfter = null)
     {
@@ -597,6 +606,34 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal("network", record.FailureKind);
 
         // Đã có byte trên wire → KHÔNG retry (không attempt nào sau attempt đầu)
+        Assert.Equal(1, upstream.Calls);
+    }
+
+    [Fact]
+    public async Task Stream_WhenUpstreamEndsCleanlyMidStream_NoInjectedErrorAndDoneState()
+    {
+        SeedProvider("p-main", maxConcurrent: 4, "m1");
+        var upstream = new ScriptedUpstream((_, _) => SseCleanEof());
+        var client = await StartAsync(upstream);
+
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        // Upstream tự đóng stream giữa chừng (EOF sạch, không [DONE]) — parity client nối
+        // trực tiếp: client nhận trọn bytes, KHÔNG event upstream_disconnected, KHÔNG lỗi
+        // in-band (bug 2026-10-24: server-side cancel từng bị hiển thị "cancel · network").
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("data: {\"x\":1}\n\n", body);
+        Assert.DoesNotContain("upstream_disconnected", body);
+        Assert.DoesNotContain("\"type\":\"error\"", body);
+
+        // Terminal Finished/Done — không còn Canceled + FailureKind network
+        var id = resp.Headers.GetValues("X-Request-Id").Single();
+        var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
+        Assert.Equal(ApiCallState.Done, record!.State);
+        Assert.Null(record.FailureKind);
+
+        // Đã có byte trên wire → KHÔNG retry
         Assert.Equal(1, upstream.Calls);
     }
 
