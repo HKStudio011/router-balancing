@@ -177,14 +177,16 @@ else
                                                    disabled="@_busy" @bind="_accountSearch" @bind:event="oninput"
                                                    @bind:after="ResetAccountPage"
                                                    data-testid="accounts-search" />
+                                            @* Boolean attribute phải bọc @(...): Razor cắt implicit expression tại khoảng trắng,
+                                               phần còn lại thành chuỗi → thuộc tính luôn xuất hiện và nút bị disabled vĩnh viễn *@
                                             <button type="button" class="btn btn-outline-secondary"
-                                                    disabled="@_busy || _testingAccounts"
+                                                    disabled="@(_busy || _testingAccounts)"
                                                     data-testid="accounts-add"
                                                     @onclick="OpenAddAccount">
                                                 @L["accounts.action.add"]
                                             </button>
                                             <button type="button" class="btn btn-outline-secondary"
-                                                    disabled="@_busy || _testingAccounts || _accounts.Count == 0"
+                                                    disabled="@(_busy || _testingAccounts || _accounts.Count == 0)"
                                                     data-testid="accounts-test-all"
                                                     @onclick="TestAllAccountsAsync">
                                                 @(_testingAccounts ? L["providers.testing"] : L["accounts.action.testAll"])
