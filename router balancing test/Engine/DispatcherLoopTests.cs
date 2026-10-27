@@ -1202,6 +1202,36 @@ public class DispatcherLoopTests : IDisposable
     }
 
     [Fact]
+    public async Task ServeAsync_WhenOpenCodeFreeUsageLimit_SkipsProviderWithoutTryingOtherAccounts()
+    {
+        var pidA = SeedProvider("p1", accounts: 2);
+        AddModel(pidA, "m2");
+        var pidB = SeedProvider("p2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pidA, "m1"), Candidate(pidA, "m2"), Candidate(pidB, "m1")],
+            ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((p, key, body, ct) => p.Name == "p1"
+            ? Task.FromResult(Resp429(
+                """{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}"""))
+            : Task.FromResult(Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+
+        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // FreeUsageLimitError = cap toàn provider (không theo key) — xoay TK/model cùng provider
+        // vô ích, phải nhảy thẳng provider kế
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls.Count);
+        Assert.Equal(1, upstream.Calls.Count(c => c.Provider == "p1")); // TK 2 + model khác không bị thử
+        Assert.Equal("p2", upstream.Calls[1].Provider);
+    }
+
+    [Fact]
     public async Task ServeAsync_WhenModelNotFound_SkipsCandidate()
     {
         var pid = SeedProvider("p1");

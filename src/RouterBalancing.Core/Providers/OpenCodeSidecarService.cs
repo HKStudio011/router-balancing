@@ -18,6 +18,9 @@ public sealed partial class OpenCodeSidecarService : IOpenCodeSidecarService
     // — Quit/crash không chạy Dispose, orphan sẽ giữ lock file exe làm updater timeout.
     private readonly WindowsProcessJob? _killOnCloseJob;
     private readonly object _gate = new();
+    // Serialize start (async): check ngoài lock + Process.Start là 2 bước, không có cổng thì
+    // N request đồng thời cùng start N sidecar (bug 26/10: 12 call → 12 process).
+    private readonly SemaphoreSlim _startGate = new(1, 1);
 
     private Process? _process;
     private string? _baseUrl;
@@ -74,81 +77,123 @@ public sealed partial class OpenCodeSidecarService : IOpenCodeSidecarService
             }
         }
 
-        if (!File.Exists(_binaryPath))
+        if (!await TryEnterStartGateAsync(ct).ConfigureAwait(false))
         {
-            _logger.LogWarning("OpenCode sidecar binary missing at {Path}", _binaryPath);
             return false;
         }
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = _binaryPath,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        Process? process;
         try
         {
-            process = Process.Start(startInfo);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to start OpenCode sidecar from {Path}", _binaryPath);
-            return false;
-        }
-        if (process is null)
-        {
-            _logger.LogError("Process.Start returned null for {Path}", _binaryPath);
-            return false;
-        }
-
-        // Gán vào kill-on-close job NGAY sau khi start (trước khi chờ LISTENING):
-        // nếu app chết giữa chừng chờ bind, sidecar vẫn phải bị OS kill theo job.
-        if (_killOnCloseJob is not null && !_killOnCloseJob.Assign(process))
-        {
-            _logger.LogWarning("Could not assign OpenCode sidecar to kill-on-close job object");
-        }
-
-        string? baseUrl;
-        try
-        {
-            // Sidecar in đúng 1 dòng "LISTENING <port>" rồi Serve() blocking —
-            // ReadLine trả null nghĩa là process chết trước khi bind xong.
-            var line = await process.StandardOutput.ReadLineAsync(ct).ConfigureAwait(false);
-            var match = ListeningRegex().Match(line ?? string.Empty);
-            if (!match.Success || !int.TryParse(match.Groups[1].Value, out var port))
+            // Double-check trong cổng — call khác có thể đã start xong lúc ta chờ.
+            lock (_gate)
             {
-                _logger.LogError("Sidecar did not report LISTENING port (got: {Line})", line);
+                if (_disposed)
+                {
+                    return false;
+                }
+                if (_process is { HasExited: false })
+                {
+                    return true;
+                }
+            }
+
+            if (!File.Exists(_binaryPath))
+            {
+                _logger.LogWarning("OpenCode sidecar binary missing at {Path}", _binaryPath);
+                return false;
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = _binaryPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            Process? process;
+            try
+            {
+                process = Process.Start(startInfo);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to start OpenCode sidecar from {Path}", _binaryPath);
+                return false;
+            }
+            if (process is null)
+            {
+                _logger.LogError("Process.Start returned null for {Path}", _binaryPath);
+                return false;
+            }
+
+            // Gán vào kill-on-close job NGAY sau khi start (trước khi chờ LISTENING):
+            // nếu app chết giữa chừng chờ bind, sidecar vẫn phải bị OS kill theo job.
+            if (_killOnCloseJob is not null && !_killOnCloseJob.Assign(process))
+            {
+                _logger.LogWarning("Could not assign OpenCode sidecar to kill-on-close job object");
+            }
+
+            string? baseUrl;
+            try
+            {
+                // Sidecar in đúng 1 dòng "LISTENING <port>" rồi Serve() blocking —
+                // ReadLine trả null nghĩa là process chết trước khi bind xong.
+                var line = await process.StandardOutput.ReadLineAsync(ct).ConfigureAwait(false);
+                var match = ListeningRegex().Match(line ?? string.Empty);
+                if (!match.Success || !int.TryParse(match.Groups[1].Value, out var port))
+                {
+                    _logger.LogError("Sidecar did not report LISTENING port (got: {Line})", line);
+                    TryKill(process);
+                    return false;
+                }
+                baseUrl = $"http://127.0.0.1:{port}";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed reading sidecar stdout");
                 TryKill(process);
                 return false;
             }
-            baseUrl = $"http://127.0.0.1:{port}";
+
+            lock (_gate)
+            {
+                if (_disposed)
+                {
+                    TryKill(process);
+                    return false;
+                }
+                // Cổng start đảm bảo chỉ một process được tạo mỗi lần chuyển từ "chưa có"
+                // sang "đang chạy" — gán process/baseUrl nguyên tử cho mọi reader.
+                _process = process;
+                _baseUrl = baseUrl;
+            }
+
+            _ = Task.Run(() => DrainAndWatchAsync(process), CancellationToken.None);
+            _logger.LogInformation("OpenCode sidecar started on {BaseUrl}", baseUrl);
+            return true;
         }
-        catch (Exception ex)
+        finally
         {
-            _logger.LogError(ex, "Failed reading sidecar stdout");
-            TryKill(process);
+            _startGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Vào cổng start (async) — serialize các lần start song song. Cancel khi đang chờ giữ
+    /// nguyên contract cũ: trả false, không ném OCE ra caller (mirror nhánh ReadLine bị cancel).
+    /// </summary>
+    private async Task<bool> TryEnterStartGateAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _startGate.WaitAsync(ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
             return false;
         }
-
-        lock (_gate)
-        {
-            if (_disposed)
-            {
-                TryKill(process);
-                return false;
-            }
-            // Đóng race: EnsureStartedAsync song song — process vừa start giữ nguyên,
-            // process cũ (nếu có) đã exited nên không cần kill.
-            _process = process;
-            _baseUrl = baseUrl;
-        }
-
-        _ = Task.Run(() => DrainAndWatchAsync(process), CancellationToken.None);
-        _logger.LogInformation("OpenCode sidecar started on {BaseUrl}", baseUrl);
-        return true;
     }
 
     /// <summary>
