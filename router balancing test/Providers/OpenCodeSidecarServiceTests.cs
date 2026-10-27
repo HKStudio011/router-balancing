@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using RouterBalancing.Core.Providers;
+using System.Diagnostics;
 
 namespace router_balancing_test.Providers;
 
@@ -89,6 +90,78 @@ public class OpenCodeSidecarServiceTests
             await Task.Delay(100);
         }
         Assert.Null(service.BaseUrl);
+    }
+
+    /// <summary>
+    /// Bug 26/10: nhiều request opencode.ai đồng thời gọi <c>EnsureStartedAsync</c> trước khi
+    /// process đầu kịp gán <c>_process</c> (TOCTOU check-ngoài-lock) → mỗi call start một
+    /// sidecar; process ghi đè sau cùng là của service, các process trước thành rác.
+    /// Đếm process theo tên file unique để không lẫn sidecar của app đang chạy.
+    /// </summary>
+    [Fact]
+    public async Task EnsureStartedAsync_WhenCalledConcurrently_StartsSingleSidecarProcess()
+    {
+        var binaryPath = FindSidecarBinary();
+        if (binaryPath is null || !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var processName = $"opencode-proxy-race-{Guid.NewGuid():N}";
+        var tempBinary = Path.Combine(Path.GetTempPath(), processName + ".exe");
+        File.Copy(binaryPath, tempBinary, overwrite: true);
+        try
+        {
+            using var service = new OpenCodeSidecarService(tempBinary, NullLogger<OpenCodeSidecarService>.Instance);
+
+            // Gate chung để 12 call ùa vào EnsureStartedAsync cùng thời điểm
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var calls = Enumerable.Range(0, 12)
+                .Select(_ => Task.Run(async () =>
+                {
+                    await start.Task;
+                    return await service.EnsureStartedAsync();
+                }))
+                .ToArray();
+            start.SetResult();
+
+            var results = await Task.WhenAll(calls);
+
+            Assert.All(results, Assert.True);
+            Assert.NotNull(service.BaseUrl);
+            var processes = Process.GetProcessesByName(processName);
+            try
+            {
+                Assert.Single(processes);
+            }
+            finally
+            {
+                foreach (var process in processes)
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            // Dispose service đã kill mọi process thuộc job object — đợi OS nhả file rồi xoá binary tạm.
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && Process.GetProcessesByName(processName).Length > 0)
+            {
+                await Task.Delay(100);
+            }
+            try
+            {
+                File.Delete(tempBinary);
+            }
+            catch (IOException)
+            {
+                // Best-effort: file tạm trong %TEMP% — không làm fail test.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     private static string? FindSidecarBinary()
