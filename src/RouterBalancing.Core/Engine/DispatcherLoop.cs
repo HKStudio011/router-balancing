@@ -361,10 +361,16 @@ public sealed class DispatcherLoop(
                 continue; // vòng serve — publish Attempt start mới (attemptNo++), CÙNG route
             }
 
-            // Retryable (429/408/5xx) dispatcher gán cấp Account (spec exhaustive-failover §3.1)
-            var level = outcome is DispatchOutcome.Fatal fatal
-                ? fatal.Level
-                : FailoverLevel.Account;
+            // Retryable (429/408/5xx) dispatcher gán cấp Account (spec exhaustive-failover §3.1);
+            // riêng quota free-tier của OpenCode (FreeUsageLimitError) là cap toàn provider —
+            // xoay TK cùng provider vô ích, nâng thẳng lên cấp Provider để bỏ mọi candidate cùng provider.
+            var level = outcome switch
+            {
+                DispatchOutcome.Fatal fatal => fatal.Level,
+                DispatchOutcome.Retryable retryable when IsProviderWideQuotaFailure(retryable) =>
+                    FailoverLevel.Provider,
+                _ => FailoverLevel.Account,
+            };
 
             if (level == FailoverLevel.Account)
             {
@@ -652,6 +658,15 @@ public sealed class DispatcherLoop(
                 return false;
         }
     }
+
+    /// <summary>
+    /// 429 kèm <c>error.type=FreeUsageLimitError</c> (OpenCode Zen free tier) = quota cap theo
+    /// provider/IP, không theo key — probe 26/10: key hợp lệ/key sai/không key đều cùng 429.
+    /// Retry account/model khác cùng provider không thể thành công → failover cấp Provider.
+    /// </summary>
+    private static bool IsProviderWideQuotaFailure(DispatchOutcome.Retryable retryable) =>
+        retryable.Status == 429
+        && retryable.Body.AsSpan().IndexOf("FreeUsageLimitError"u8) >= 0;
 
     /// <summary>
     /// Lỗi transient có thể retry backoff cùng TK (spec transient-retry §3.1):
