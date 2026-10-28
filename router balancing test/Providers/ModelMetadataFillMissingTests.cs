@@ -145,25 +145,33 @@ public class ModelMetadataFillMissingTests : IDisposable
         Assert.True((await new ModelCapabilityReader(_db).ReadAsync(modelIds[2])).Tools);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FillMissingAsync_MaxTwoConcurrent()
     {
         var (providerId, _) = await SeedProviderAsync("a", "b", "c", "d", "e", "f");
         var gate = new object();
         var active = 0;
         var maxObserved = 0;
-        var provider = new RecordingProvider(async (_, _, ct) =>
+        // Barrier 2 chiều thay cho delay 100ms: call chỉ nhả khi đã có 2 worker chồng lấn
+        // → không còn phụ thuộc cửa sổ timing (flake CI 28/10: Expected 2 / Actual 1 —
+        // runner tải cao khiến worker thứ 2 không kịp vào trong 100ms). Service chạy
+        // tuần tự thì await không bao giờ xong → [Timeout] cho đỏ có chẩn đoán.
+        var twoActive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var testToken = TestContext.Current.CancellationToken;
+        var provider = new RecordingProvider(async (_, _, _) =>
         {
             lock (gate)
             {
                 active++;
                 maxObserved = Math.Max(maxObserved, active);
+                if (active >= 2)
+                {
+                    twoActive.TrySetResult();
+                }
             }
             try
             {
-                // Giữ request đủ lâu để 2 worker chồng lấn; nếu service chạy tuần tự
-                // maxObserved sẽ là 1 và test đỏ.
-                await Task.Delay(100, ct);
+                await twoActive.Task.WaitAsync(testToken);
                 return Facts();
             }
             finally

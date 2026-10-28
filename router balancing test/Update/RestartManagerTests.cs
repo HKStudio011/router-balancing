@@ -32,7 +32,19 @@ public class RestartManagerTests
         Assert.NotNull(process);
         try
         {
-            var lockers = RestartManager.FindLockingProcesses(exe);
+            // PING.EXE mới start: OS có độ trễ cập nhật trạng thái "đang chạy từ path" —
+            // hỏi ngay lập tức flake dưới tải (run local 28/10). Poll có điều kiện thay vì assert ngay.
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            IReadOnlyList<string> lockers = [];
+            while (DateTime.UtcNow < deadline)
+            {
+                lockers = RestartManager.FindLockingProcesses(exe);
+                if (lockers.Any(l => l.Contains(process.Id.ToString())))
+                {
+                    break;
+                }
+                Thread.Sleep(100);
+            }
 
             Assert.NotEmpty(lockers);
             Assert.Contains(lockers, l => l.Contains(process.Id.ToString()));
