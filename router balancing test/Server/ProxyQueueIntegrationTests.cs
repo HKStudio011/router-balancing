@@ -400,16 +400,18 @@ public class ProxyQueueIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(15));
 
         HttpResponseMessage? resp = null;
         var sendTask = SendStreamAsync(client, "m1");
         try
         {
-            resp = await sendTask.WaitAsync(TimeSpan.FromSeconds(2));
+            // Timeout nới rộng cho CI runner tải cao (keep-alive 5s + độ trễ HTTP);
+            // khít như 2s/5s từng làm cả test + TestDb.Dispose đỏ dây chuyền (run 40282089361).
+            resp = await sendTask.WaitAsync(TimeSpan.FromSeconds(15));
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
             var stream = await resp.Content.ReadAsStreamAsync();
             var reader = new StreamReader(stream);
             var commentLine = await reader.ReadLineAsync(readCts.Token);
@@ -424,16 +426,16 @@ public class ProxyQueueIntegrationTests : IDisposable
         finally
         {
             upstream.Release();
-            await holding.WaitAsync(TimeSpan.FromSeconds(5));
+            await holding.WaitAsync(TimeSpan.FromSeconds(30));
             // Chờ endpoint kết thúc hẳn khi assert fail giữa chừng —
             // tránh Dispose treo vì endpoint còn giữ DB connection
             try
             {
                 if (resp is null)
-                    (await sendTask.WaitAsync(TimeSpan.FromSeconds(5))).Dispose();
+                    (await sendTask.WaitAsync(TimeSpan.FromSeconds(15))).Dispose();
                 else
                 {
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                     await resp.Content.CopyToAsync(Stream.Null, cts.Token);
                 }
             }
@@ -501,11 +503,13 @@ public class ProxyQueueIntegrationTests : IDisposable
         SeedProvider(maxConcurrent: 1, "m1");
         var client = await StartAsync(new StubUpstream(() => Sse(payload)));
 
-        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(2));
+        // Timeout nới cho CI/máy tải cao: head 2s + body 1MB trong 10s từng flake
+        // khi full-suite chạy song song (2 lần trong run local 28/10).
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(15));
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        // 1MB+ vượt PauseWriterThreshold 64KB — timeout 10s bắt deadlock backpressure
-        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        // 1MB+ vượt PauseWriterThreshold 64KB — timeout rộng bắt deadlock backpressure
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(30));
 
         var filtered = StripKeepAlive(body);
         Assert.Equal(payload.Length, filtered.Length);
