@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Proxies;
@@ -39,15 +38,6 @@ public class ProxyOutboundHttpStubTests : IDisposable
         var stub = new LocalHttpProxyStub { RequireUser = user, RequirePassword = password };
         _stubs.Add(stub);
         return stub;
-    }
-
-    private static int ReserveClosedPort()
-    {
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port; // port vừa đóng — connect failover nhanh (connection refused)
     }
 
     private async Task<long> AddRowAsync(int port, string? username = null, string? password = null)
@@ -130,7 +120,7 @@ public class ProxyOutboundHttpStubTests : IDisposable
     [Fact]
     public async Task SendAsync_DeadProxy_FailsOverAndMarksDown()
     {
-        var deadPort = ReserveClosedPort();
+        var deadPort = TestNet.ClosedPort(0);
         var deadId = await AddRowAsync(deadPort);
         var live = AddStub();
         await AddRowAsync(live.Port);
@@ -147,8 +137,8 @@ public class ProxyOutboundHttpStubTests : IDisposable
     [Fact]
     public async Task SendAsync_AllProxiesDead_AttemptsDirect()
     {
-        await AddRowAsync(ReserveClosedPort());
-        await AddRowAsync(ReserveClosedPort());
+        await AddRowAsync(TestNet.ClosedPort(0));
+        await AddRowAsync(TestNet.ClosedPort(1));
         var (client, pool) = CreateClient();
 
         var response = await client.GetAsync(DestinationUrl());

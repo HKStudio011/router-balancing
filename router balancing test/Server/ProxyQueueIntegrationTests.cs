@@ -31,6 +31,13 @@ public class ProxyQueueIntegrationTests : IDisposable
     private WebApplication? _app;
     private HttpClient? _client;
 
+    /// <summary>
+    /// Một mức timeout duy nhất cho mọi wait chờ hệ thống trong test tích hợp:
+    /// CI push chậm gấp ~6 lần máy dev (suite ~6m40s vs ~1m07s) nên các mức khít
+    /// 2s/5s thành nguồn flake liên tục (run 40282089361, 40464350390, 40660344016).
+    /// </summary>
+    private static readonly TimeSpan OpTimeout = TimeSpan.FromSeconds(30);
+
     public ProxyQueueIntegrationTests()
     {
         DbInitializer.Initialize(_db.CreateFactory());
@@ -166,21 +173,21 @@ public class ProxyQueueIntegrationTests : IDisposable
     private async Task<string> WaitForQueuedIdAsync(string model)
     {
         var queue = _app!.Services.GetRequiredService<IRequestQueue>();
-        for (var i = 0; i < 100; i++)
+        for (var i = 0; i < 400; i++)
         {
             var hit = queue.Snapshot().FirstOrDefault(r => r.Model == model);
             if (hit is not null)
                 return hit.Id;
             await Task.Delay(50);
         }
-        throw new TimeoutException($"Request '{model}' không vào queue trong 5s.");
+        throw new TimeoutException($"Request '{model}' không vào queue trong 20s.");
     }
 
     private async Task<string> FindRequestIdByStateAsync(HttpClient client, string state)
     {
         // Poll như WaitForQueuedIdAsync — enqueue chạy song song với roundtrip POST→GET,
         // Single một lần fail ngẫu nhiên khi request chưa kịp vào queue (race pre-existing)
-        for (var i = 0; i < 100; i++)
+        for (var i = 0; i < 400; i++)
         {
             var response = await client.GetAsync("/v1/requests");
             var requests = (await ReadJson(response)).GetProperty("requests").EnumerateArray();
@@ -195,7 +202,7 @@ public class ProxyQueueIntegrationTests : IDisposable
                     $"Nhiều request cùng state '{state}' — không xác định id cần huỷ.");
             await Task.Delay(50);
         }
-        throw new TimeoutException($"Không thấy request nào ở state '{state}' trong 5s.");
+        throw new TimeoutException($"Không thấy request nào ở state '{state}' trong 20s.");
     }
 
     [Fact]
@@ -206,7 +213,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var first = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // request 1 giữ trọn slot
+        await upstream.Entered.WaitAsync(OpTimeout); // request 1 giữ trọn slot
         var second = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
 
         // Park vô hạn (spec §1.1): KHÔNG trả 503 ngay — request 2 chờ event, không polling
@@ -216,8 +223,8 @@ public class ProxyQueueIntegrationTests : IDisposable
 
         // Request 1 xong → Exit → bắn Exited → wake → request 2 được serve
         upstream.Release();
-        var r1 = await first.WaitAsync(TimeSpan.FromSeconds(5));
-        var r2 = await second.WaitAsync(TimeSpan.FromSeconds(5));
+        var r1 = await first.WaitAsync(OpTimeout);
+        var r2 = await second.WaitAsync(OpTimeout);
 
         Assert.Equal(HttpStatusCode.OK, r1.StatusCode);
         Assert.Equal(HttpStatusCode.OK, r2.StatusCode);
@@ -235,7 +242,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var serving = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(OpTimeout);
         var queued = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
 
         // Client chưa nhận header (endpoint còn chờ) — tự discover id qua snapshot (spec §3.5)
@@ -246,7 +253,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         Assert.True((await ReadJson(cancel)).GetProperty("cancelled").GetBoolean());
 
         // Endpoint gốc await TCS → Cancelled → 400 request_cancelled, header khớp id đã huỷ
-        var origin = await queued.WaitAsync(TimeSpan.FromSeconds(5));
+        var origin = await queued.WaitAsync(OpTimeout);
         Assert.Equal(HttpStatusCode.BadRequest, origin.StatusCode);
         var error = (await ReadJson(origin)).GetProperty("error");
         Assert.Equal("request_cancelled", error.GetProperty("code").GetString());
@@ -254,7 +261,7 @@ public class ProxyQueueIntegrationTests : IDisposable
 
         // Request đang phục vụ không bị ảnh hưởng — vẫn trả 200 bình thường
         upstream.Release();
-        var ok = await serving.WaitAsync(TimeSpan.FromSeconds(5));
+        var ok = await serving.WaitAsync(OpTimeout);
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
     }
 
@@ -266,7 +273,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         var upstream = new GatedUpstream();
         var client = await StartAsync(upstream);
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(OpTimeout);
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
         {
@@ -302,7 +309,7 @@ public class ProxyQueueIntegrationTests : IDisposable
             // Poll cho tới khi log xuất hiện — log chạy ngay sau TryRemove trong callback
             // (cùng thread), nên thấy log là chắc item đã rời queue
             var sawLog = () => logged.Exists(e => e.Message.Contains(queuedId) && e.Message.Contains("ngắt"));
-            for (var i = 0; i < 100 && !sawLog(); i++)
+            for (var i = 0; i < 400 && !sawLog(); i++)
                 await Task.Delay(50);
             Assert.False(_app!.Services.GetRequiredService<IRequestQueue>().Contains(queuedId),
                 "Register của endpoint phải gỡ item khỏi queue");
@@ -315,7 +322,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         }
 
         upstream.Release();
-        var ok = await holding.WaitAsync(TimeSpan.FromSeconds(5));
+        var ok = await holding.WaitAsync(OpTimeout);
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
     }
 
@@ -327,14 +334,14 @@ public class ProxyQueueIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(OpTimeout);
 
         HttpResponseMessage? resp = null;
         var sendTask = SendStreamAsync(client, "m1");
         try
         {
             // Head phải về NGAY khi qua enqueue (chưa release) — nếu không thì endpoint chưa flush sớm
-            resp = await sendTask.WaitAsync(TimeSpan.FromSeconds(2));
+            resp = await sendTask.WaitAsync(OpTimeout);
 
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
             Assert.Equal("text/event-stream", resp.Content.Headers.ContentType!.MediaType);
@@ -345,7 +352,7 @@ public class ProxyQueueIntegrationTests : IDisposable
 
             var feed = _app!.Services.GetRequiredService<ITraceFeed>();
             var streamId = resp.Headers.GetValues("X-Request-Id").Single();
-            for (var i = 0; i < 100 && !feed.Snapshot().Any(e => e.RequestId == streamId && e.HeadersSent == true); i++)
+            for (var i = 0; i < 400 && !feed.Snapshot().Any(e => e.RequestId == streamId && e.HeadersSent == true); i++)
                 await Task.Delay(50);
             Assert.Contains(feed.Snapshot(),
                 e => e.RequestId == streamId && e.Stage == TraceStage.Received && e.HeadersSent == true);
@@ -367,16 +374,16 @@ public class ProxyQueueIntegrationTests : IDisposable
         finally
         {
             upstream.Release();
-            await holding.WaitAsync(TimeSpan.FromSeconds(5));
+            await holding.WaitAsync(OpTimeout);
             // Chờ request stream kết thúc hẳn kể cả khi assert fail giữa chừng —
             // nếu endpoint còn sống khi Dispose chạy thì TestDb.DeleteFile nổ "file in use"
             try
             {
                 if (resp is null)
-                    (await sendTask.WaitAsync(TimeSpan.FromSeconds(5))).Dispose();
+                    (await sendTask.WaitAsync(OpTimeout)).Dispose();
                 else
                 {
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    using var cts = new CancellationTokenSource(OpTimeout);
                     await resp.Content.CopyToAsync(Stream.Null, cts.Token);
                 }
             }
@@ -400,7 +407,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(15));
+        await upstream.Entered.WaitAsync(OpTimeout);
 
         HttpResponseMessage? resp = null;
         var sendTask = SendStreamAsync(client, "m1");
@@ -408,10 +415,10 @@ public class ProxyQueueIntegrationTests : IDisposable
         {
             // Timeout nới rộng cho CI runner tải cao (keep-alive 5s + độ trễ HTTP);
             // khít như 2s/5s từng làm cả test + TestDb.Dispose đỏ dây chuyền (run 40282089361).
-            resp = await sendTask.WaitAsync(TimeSpan.FromSeconds(15));
+            resp = await sendTask.WaitAsync(OpTimeout);
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            using var readCts = new CancellationTokenSource(OpTimeout);
             var stream = await resp.Content.ReadAsStreamAsync();
             var reader = new StreamReader(stream);
             var commentLine = await reader.ReadLineAsync(readCts.Token);
@@ -426,16 +433,16 @@ public class ProxyQueueIntegrationTests : IDisposable
         finally
         {
             upstream.Release();
-            await holding.WaitAsync(TimeSpan.FromSeconds(30));
+            await holding.WaitAsync(OpTimeout);
             // Chờ endpoint kết thúc hẳn khi assert fail giữa chừng —
             // tránh Dispose treo vì endpoint còn giữ DB connection
             try
             {
                 if (resp is null)
-                    (await sendTask.WaitAsync(TimeSpan.FromSeconds(15))).Dispose();
+                    (await sendTask.WaitAsync(OpTimeout)).Dispose();
                 else
                 {
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    using var cts = new CancellationTokenSource(OpTimeout);
                     await resp.Content.CopyToAsync(Stream.Null, cts.Token);
                 }
             }
@@ -453,10 +460,10 @@ public class ProxyQueueIntegrationTests : IDisposable
         SeedProvider(maxConcurrent: 1, "m1");
         var client = await StartAsync(new StubUpstream());
 
-        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(2));
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(OpTimeout);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(OpTimeout);
 
         // Không saturation → không keep-alive trong <5s; vẫn filter cho chắc (chống race hai tay viết)
         var filtered = StripKeepAlive(body);
@@ -472,11 +479,11 @@ public class ProxyQueueIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(OpTimeout);
 
         try
         {
-            var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(2));
+            var resp = await SendStreamAsync(client, "m1").WaitAsync(OpTimeout);
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
             var queuedId = await WaitForQueuedIdAsync("m1");
@@ -484,7 +491,7 @@ public class ProxyQueueIntegrationTests : IDisposable
             Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
             Assert.True((await ReadJson(cancel)).GetProperty("cancelled").GetBoolean());
 
-            var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            var body = await resp.Content.ReadAsStringAsync().WaitAsync(OpTimeout);
             Assert.Contains("data: {\"type\":\"error\"", body);
             Assert.Contains("\"code\":\"request_cancelled\"", body);
             Assert.DoesNotContain("[DONE]", body);
@@ -492,7 +499,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         finally
         {
             upstream.Release();
-            await holding.WaitAsync(TimeSpan.FromSeconds(5));
+            await holding.WaitAsync(OpTimeout);
         }
     }
 
@@ -505,11 +512,11 @@ public class ProxyQueueIntegrationTests : IDisposable
 
         // Timeout nới cho CI/máy tải cao: head 2s + body 1MB trong 10s từng flake
         // khi full-suite chạy song song (2 lần trong run local 28/10).
-        var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(15));
+        var resp = await SendStreamAsync(client, "m1").WaitAsync(OpTimeout);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         // 1MB+ vượt PauseWriterThreshold 64KB — timeout rộng bắt deadlock backpressure
-        var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        var body = await resp.Content.ReadAsStringAsync().WaitAsync(OpTimeout);
 
         var filtered = StripKeepAlive(body);
         Assert.Equal(payload.Length, filtered.Length);
@@ -524,7 +531,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(OpTimeout);
 
         var pending = client.SendAsync(
             new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
@@ -536,7 +543,7 @@ public class ProxyQueueIntegrationTests : IDisposable
             // Adjudication (E): head về ngay khi qua enqueue → task headers-read hoàn thành
             // trước khi abort; assert OCE trên pending là bất khả thi dưới TestServer
             // (đã chốt với controller) — RED: endpoint chưa flush → TimeoutException.
-            var resp = await pending.WaitAsync(TimeSpan.FromSeconds(2));
+            var resp = await pending.WaitAsync(OpTimeout);
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
             var queuedId = await WaitForQueuedIdAsync("m1");
@@ -547,7 +554,7 @@ public class ProxyQueueIntegrationTests : IDisposable
 
             // Gỡ khỏi queue — Register của endpoint chạy khi RequestAborted nổ
             var queue = _app!.Services.GetRequiredService<IRequestQueue>();
-            for (var i = 0; i < 100 && queue.Contains(queuedId); i++)
+            for (var i = 0; i < 400 && queue.Contains(queuedId); i++)
                 await Task.Delay(50);
             Assert.False(queue.Contains(queuedId), "Client ngắt phải gỡ item khỏi queue.");
 
@@ -556,7 +563,7 @@ public class ProxyQueueIntegrationTests : IDisposable
             // khi RunStreamLoopAsync return.
             var store = _app.Services.GetRequiredService<IApiMonitorStore>();
             ApiCallRecord? record = null;
-            for (var i = 0; i < 100; i++)
+            for (var i = 0; i < 400; i++)
             {
                 record = store.Find(queuedId);
                 if (record?.State == ApiCallState.Cancelled)
@@ -568,7 +575,7 @@ public class ProxyQueueIntegrationTests : IDisposable
         finally
         {
             upstream.Release();
-            await holding.WaitAsync(TimeSpan.FromSeconds(5));
+            await holding.WaitAsync(OpTimeout);
         }
     }
 }

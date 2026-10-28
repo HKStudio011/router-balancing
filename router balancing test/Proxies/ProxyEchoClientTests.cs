@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Proxies;
@@ -53,10 +52,7 @@ public class ProxyEchoClientTests : IDisposable
     [Fact]
     public async Task EchoAsync_DeadProxy_ThrowsHttpRequestException()
     {
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var deadPort = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
+        var deadPort = TestNet.ClosedPort(0);
 
         var echo = new ProxyEchoClient($"http://127.0.0.1:{_destination.Port}/ip");
         var attempt = new ProxyAttempt(1, new Uri($"http://127.0.0.1:{deadPort}"),
