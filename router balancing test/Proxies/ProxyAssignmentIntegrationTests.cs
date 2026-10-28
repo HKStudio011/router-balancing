@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
@@ -57,19 +56,10 @@ public class ProxyAssignmentIntegrationTests : IDisposable
         return (new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) }, pool);
     }
 
-    private static int ReserveClosedPort()
-    {
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port;
-    }
-
     [Fact]
     public async Task SendAsync_FallbackAssignment_FailsOverToLive()
     {
-        var deadPort = ReserveClosedPort();
+        var deadPort = TestNet.ClosedPort(0);
         var deadId = await AddRowAsync(deadPort);
         var live = new LocalHttpProxyStub();
         _stubs.Add(live);

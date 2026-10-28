@@ -56,6 +56,9 @@ public class RestartManagerTests
                 if (!process.HasExited)
                 {
                     process.Kill(entireProcessTree: true);
+                    // Đợi OS thu hồi handle exe trước khi xoá thư mục — Kill trả về trước
+                    // khi handle được nhả (CI 40711439161: Delete ném UnauthorizedAccessException).
+                    process.WaitForExit(5_000);
                 }
             }
             catch
@@ -64,13 +67,19 @@ public class RestartManagerTests
             }
 
             process.Dispose();
-            try
+            // Dọn best-effort: exe có thể còn bị giữ vài trăm ms sau khi process chết —
+            // Windows ném cả IOException lẫn UnauthorizedAccessException; retry ngắn rồi bỏ qua.
+            for (var attempt = 0; attempt < 10; attempt++)
             {
-                Directory.Delete(dir, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Dummy chưa release file exe kịp — dọn best-effort.
+                try
+                {
+                    Directory.Delete(dir, recursive: true);
+                    break;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Thread.Sleep(200);
+                }
             }
         }
     }

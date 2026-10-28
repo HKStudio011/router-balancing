@@ -420,15 +420,6 @@ public class ProxyHealthHandlerTests : IDisposable
 
     private Uri DestinationUrl() => new($"http://127.0.0.1:{_destination.Port}/v1/chat/completions");
 
-    private static int ReserveClosedPort()
-    {
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port; // port vừa đóng — connect failover nhanh (connection refused)
-    }
-
     private static Provider ProviderWithProxies(params long[] proxyIds) => new()
     {
         Id = 1, Name = "Test", Type = ProviderType.OpenAI, BaseUrl = "https://api.example.com",
@@ -440,7 +431,7 @@ public class ProxyHealthHandlerTests : IDisposable
     public async Task SendAsync_DirectTarget_SendsDirectNoProxy()
     {
         var provider = new Provider { Id = 1, Name = "Test", Type = ProviderType.OpenAI, BaseUrl = "https://a.com" };
-        await AddRowAsync(ReserveClosedPort()); // 1 proxy trong pool nhưng không assign
+        await AddRowAsync(TestNet.ClosedPort(0)); // 1 proxy trong pool nhưng không assign
         var (client, pool) = CreateClient();
         ProxyTarget.Current.Value = new ProxyTarget(provider, null); // Direct (không ProxyProxies)
         try
@@ -494,7 +485,7 @@ public class ProxyHealthHandlerTests : IDisposable
     [Fact]
     public async Task SendAsync_FallbackTarget_FailsOverInOrder()
     {
-        var deadPort = ReserveClosedPort();
+        var deadPort = TestNet.ClosedPort(0);
         var live = new LocalHttpProxyStub();
         _stubs.Add(live);
         var deadId = await AddRowAsync(deadPort);
@@ -520,8 +511,8 @@ public class ProxyHealthHandlerTests : IDisposable
     [Fact]
     public async Task SendAsync_FallbackTarget_AllDown_GoesDirect()
     {
-        await AddRowAsync(ReserveClosedPort());
-        await AddRowAsync(ReserveClosedPort());
+        await AddRowAsync(TestNet.ClosedPort(0));
+        await AddRowAsync(TestNet.ClosedPort(1));
         var provider = ProviderWithProxies(1, 2);
         provider.ProxyMode = ProxyMode.Fallback;
         var (client, pool) = CreateClient();
