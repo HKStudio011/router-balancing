@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using RouterBalancing.Updater;
 
 namespace router_balancing_test.Update;
@@ -64,28 +63,23 @@ public class AppDirProcessKillerTests
             return;
         }
 
-        var dir = Path.Combine(Path.GetTempPath(), $"rb-killer-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try
-        {
-            var dummy = StartDummyFrom(dir);
+        using var dummy = new DummyAppDirProcess();
 
-            var killed = AppDirProcessKiller.KillProcessesUnderDirectory(dir, Environment.ProcessId);
-
-            Assert.True(killed >= 1, "At least the dummy process should be killed.");
-            Assert.True(dummy.WaitForExit(5_000), "Dummy running from appDir should be killed.");
-        }
-        finally
+        // Process mới start có thể chưa lộ path cho scan MainModule dưới tải — poll tới khi
+        // killer thấy (kill idempotent nên gọi lại vô hại).
+        var killed = 0;
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (killed < 1 && DateTime.UtcNow < deadline)
         {
-            try
+            killed += AppDirProcessKiller.KillProcessesUnderDirectory(dummy.Dir, Environment.ProcessId);
+            if (killed < 1)
             {
-                Directory.Delete(dir, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Dummy có thể chưa release file exe kịp — dọn best-effort.
+                Thread.Sleep(100);
             }
         }
+
+        Assert.True(killed >= 1, "At least the dummy process should be killed.");
+        Assert.True(dummy.WaitForExit(5_000), "Dummy running from appDir should be killed.");
     }
 
     [Fact]
@@ -96,65 +90,11 @@ public class AppDirProcessKillerTests
             return;
         }
 
-        var dir = Path.Combine(Path.GetTempPath(), $"rb-killer-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try
-        {
-            var dummy = StartDummyFrom(dir);
-            try
-            {
-                var killed = AppDirProcessKiller.KillProcessesUnderDirectory(dir, dummy.Id);
+        using var dummy = new DummyAppDirProcess();
 
-                Assert.Equal(0, killed);
-                Assert.False(dummy.HasExited, "Process matching skipPid must survive.");
-            }
-            finally
-            {
-                KillQuietly(dummy);
-                dummy.Dispose();
-            }
-        }
-        finally
-        {
-            try
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort dọn temp.
-            }
-        }
-    }
+        var killed = AppDirProcessKiller.KillProcessesUnderDirectory(dummy.Dir, dummy.Id);
 
-    private static Process StartDummyFrom(string dir)
-    {
-        // Copy PING.EXE vào dir mô phỏng binary nằm trong appDir — kill test
-        // không đụng tới file hệ thống.
-        var exe = Path.Combine(dir, "dummy.exe");
-        File.Copy(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "PING.EXE"), exe);
-
-        var process = Process.Start(new ProcessStartInfo(exe, "-t 127.0.0.1")
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        });
-        Assert.NotNull(process);
-        return process;
-    }
-
-    private static void KillQuietly(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch
-        {
-            // Đã thoát hoặc không truy cập được — test không phụ thuộc.
-        }
+        Assert.Equal(0, killed);
+        Assert.False(dummy.HasExited, "Process matching skipPid must survive.");
     }
 }
