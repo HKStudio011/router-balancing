@@ -58,7 +58,8 @@ public sealed class ErrorNotifier : IDisposable
 
     /// <summary>
     /// Alert cần hiển thị bằng toast trong app — <c>MainLayout</c> subscribe và gọi
-    /// <c>Toast.Show</c> trong Blazor scope (spec §2.3).
+    /// <c>Toast.Show</c> trong Blazor scope (spec §2.3). Không có subscriber → alert rơi về
+    /// kênh desktop (xem <see cref="OnAlertRaised"/>).
     /// </summary>
     public event Action<ErrorAlert>? InAppAlertRequested;
 
@@ -80,7 +81,20 @@ public sealed class ErrorNotifier : IDisposable
             switch (NotificationChannelPolicy.Resolve(_desktop.IsInteractive, _settings.NotifyErrors))
             {
                 case NotificationChannel.InAppToast:
-                    InAppAlertRequested?.Invoke(alert);
+                    // Capture một lần: event có thể bị unsubscribe giữa phép thử và lời gọi.
+                    var toastHandlers = InAppAlertRequested;
+                    // Không có subscriber = circuit Blazor chưa render (lỗi ngay lúc khởi động) hoặc
+                    // đã dispose trong lúc cửa sổ vẫn focus → alert sẽ rơi im lặng, đúng kịch bản
+                    // motivating của tính năng. Rơi về kênh desktop (dùng lại đường dispatch sẵn có)
+                    // để không bao giờ mất thông báo (spec §2.3).
+                    if (toastHandlers is null)
+                    {
+                        ShowDesktopNotification(alert);
+                    }
+                    else
+                    {
+                        toastHandlers(alert);
+                    }
                     break;
 
                 case NotificationChannel.DesktopNotification:
@@ -98,7 +112,7 @@ public sealed class ErrorNotifier : IDisposable
             // Warn chứ không Error: xem giải thích ở XML doc của OnAlertRaised. ILogService.Warn
             // không có overload nhận Exception (chỉ Error mới có) nên đưa loại + thông điệp ngoại
             // lệ vào message — cùng pattern với ErrorAlertAggregator.SafeWarn (Task 7).
-            _log.Warn($"Không gửi được thông báo lỗi ra desktop: {ex.GetType().Name}: {ex.Message}");
+            _log.Warn($"Không gửi được thông báo lỗi: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

@@ -61,7 +61,9 @@ public sealed class ApiKeyMiddleware(RequestDelegate next, ClientKeyAuthCache ke
         }
         catch (Exception ex)
         {
-            log.Error("Không ghi được usage request cho client key.", ex, LogCategory.Request);
+            // Category=App: dòng này không có ProviderKey nên nếu để Category=Request thì bộ lọc
+            // nhiễu §2.2.1 luôn loại, trong khi spec §2.2.1 row 1 coi lỗi DB/middleware là alertable.
+            log.Error("Không ghi được usage request cho client key.", ex, LogCategory.App);
         }
 
         await next(context);

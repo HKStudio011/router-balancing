@@ -107,7 +107,7 @@ namespace router_balancing
             _tray.OpenRequested += ShowMainWindow;
             _tray.ExitRequested += ExitFromTray;
             // Bấm balloon tip lúc nó CÒN hiển thị → mở cửa sổ rồi tới Log panel đã lọc lỗi (§2.4).
-            // NotificationActivated bắn trên đúng UI thread đã tạo NotifyIcon nên không cần Dispatch.
+            // Phần navigation phải rời handler WinForms trước — xem remarks của OnNotificationActivated.
             _tray.NotificationActivated += OnNotificationActivated;
             _tray.Initialize();
 
@@ -217,20 +217,48 @@ namespace router_balancing
         /// rồi điều hướng tới Log panel đã lọc lỗi.
         /// </summary>
         /// <remarks>
-        /// Không bọc <c>Dispatcher.Dispatch</c>: <c>NotificationActivated</c> bắn trên đúng UI thread
-        /// đã tạo <c>NotifyIcon</c> (thread chạy App ctor), tức đã là thread của message pump MAUI.
-        /// try/catch vì navigation đi qua WebView (JS interop): exception ở đây sẽ thoát vào
-        /// message pump WinForms và làm crash app.
+        /// Phần navigation (<c>TryNavigateToErrorLog</c>) đi qua <c>Dispatcher.Dispatch</c> để rời
+        /// khỏi handler balloon tip của WinForms trước khi chạm <c>NavigationManager</c> của circuit
+        /// Blazor — navigation ở đây chạy qua WebView/JS interop, chạy thẳng trong callback balloon
+        /// sẽ đưa nó vào giữa message pump WinForms. Dispatch KHÔNG phải vì khác thread:
+        /// <c>NotificationActivated</c> vẫn bắn trên UI thread đã tạo <c>NotifyIcon</c>.
+        /// Delegate dispatch chạy ngoài try/catch của method này nên
+        /// <see cref="NavigateToErrorLogOrWarn"/> phải tự cách ly.
         /// </remarks>
         private void OnNotificationActivated()
         {
             try
             {
                 ShowMainWindow();
+                // Navigation nằm ngoài handler WinForms: Dispatch đưa nó về hàng đợi message pump
+                // của MAUI, tránh deadlock/crash khi WebView interop chạy giữa callback balloon tip.
+                var app = Application.Current;
+                if (app is null)
+                {
+                    NavigateToErrorLogOrWarn();
+                }
+                else
+                {
+                    app.Dispatcher.Dispatch(NavigateToErrorLogOrWarn);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Warn: dòng Error Category=App sẽ tự nuôi alert mới mỗi 30s (§2.2.1)
+                _log.Warn($"Không mở được Log panel từ notification: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Điều hướng tới Log panel đã lọc lỗi; báo Warn nếu circuit chưa render lần đầu (chưa
+        /// <c>Capture()</c>) — khi đó chỉ mở cửa sổ, không queue navigation (spec §2.4).
+        /// </summary>
+        private void NavigateToErrorLogOrWarn()
+        {
+            try
+            {
                 if (!_nav.TryNavigateToErrorLog())
                 {
-                    // Notification được bấm trước khi circuit render lần đầu (chưa Capture) —
-                    // chỉ mở cửa sổ, không queue navigation (spec §2.4).
                     _log.Warn("Notification được bấm trước khi UI sẵn sàng — chỉ mở cửa sổ.");
                 }
             }

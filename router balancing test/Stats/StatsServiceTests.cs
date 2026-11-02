@@ -7,9 +7,11 @@ namespace router_balancing_test.Stats;
 
 /// <summary>
 /// StatsService: đọc journal từ SQLite (2 query: dòng terminal + dòng usage) rồi aggregate
-/// LINQ-to-objects theo cửa sổ UTC — spec dashboard-stats §5 + bộ test §8.2.
+/// LINQ-to-objects — spec dashboard-stats §5 + bộ test §8.2. Fixture mặc định chạy với múi UTC;
+/// nhóm test dựng service qua <c>ServiceInZone</c> truyền vào múi +07 để kiểm chứng cửa sổ
+/// neo nửa đêm của múi giờ máy người dùng, không phải nửa đêm UTC.
 /// Fixture: TestDb đã migrate, seed LogEntry trực tiếp, <see cref="FixedTimeProvider"/>
-/// đóng băng "now" để test boundary nửa đêm UTC không phụ thuộc giờ hệ thống.
+/// đóng băng "now" để test boundary nửa đêm không phụ thuộc giờ hệ thống.
 /// </summary>
 public class StatsServiceTests : IDisposable
 {

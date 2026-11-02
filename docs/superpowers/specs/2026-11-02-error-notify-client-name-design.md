@@ -75,6 +75,7 @@ Quy tắc lọc (trước khi entry vào cụm 30s):
 | `notifyErrors=false` | Không gì cả | return sớm |
 
 - **Không** inject `ToastService` vào service singleton: `ToastService` là **scoped** (`router-balancing/MauiProgram.cs:86`, cùng lý do với `ThemeService`), singleton resolve từ root provider sẽ lấy sai instance (hoặc fail scope validation). Pattern của repo là service singleton bắn event, `MainLayout` trong Blazor scope tự gọi `Toast.Show` (xem `MainLayout.razor:102-119` của update-check).
+- Kênh `InAppToast` mà `InAppAlertRequested` **không có subscriber** (circuit Blazor chưa render lần đầu, hoặc circuit đã dispose khi cửa sổ vẫn focus) thì `ErrorNotifier` rơi về kênh desktop qua đúng đường `Dispatcher.Dispatch` sẵn có — quyết định chốt để không alert nào bị rơi im lặng, kể cả kịch bản app hỏng ngay từ khởi động.
 - `IDesktopState` do `router-balancing/App.xaml.cs` cài đặt, gồm 2 cờ app tự đặt (không P/Invoke `GetForegroundWindow`):
   - `_windowVisible`: `false` từ `HideMainWindow` (đường `closeToTray`), `true` từ `ShowMainWindow`.
   - `_windowActive`: WinUI `Microsoft.UI.Xaml.Window.Activated` / `Deactivated`, gắn trong cùng chỗ `AttachCloseToTray` đang lấy handler WinUI (`App.xaml.cs:222`) — nền tảng khác không có tray thật nên không cần cài.

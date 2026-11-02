@@ -78,5 +78,7 @@ internal static class MonitorFormat
     /// </summary>
     /// <param name="value">Giá trị cần định dạng — mặc định input không âm (token/request count).</param>
     /// <returns>Số nguyên hoặc chuỗi có hậu tố k/M/B.</returns>
+    // Giữ tên đầy đủ RouterBalancing.Core.Display.NumberFormat theo chốt của review whole-branch:
+    // bare "NumberFormat" không resolve từ namespace file này, và không rút thành using vì tên quá chung.
     public static string Compact(long value) => RouterBalancing.Core.Display.NumberFormat.Compact(value);
 }

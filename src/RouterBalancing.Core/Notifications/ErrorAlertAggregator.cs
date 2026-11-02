@@ -351,11 +351,12 @@ public sealed class ErrorAlertAggregator : IDisposable
             {
                 ((Action<ErrorAlert>)handler)(alert);
             }
-            catch
+            catch (Exception ex)
             {
-                // Nuốt im lặng, không log: mọi đường ghi log từ đây đều quay lại Observe và
-                // nuôi tiếp cụm lỗi (xem OnLogAdded). App layer mới là nơi có đường báo lỗi
-                // an toàn cho kênh thông báo.
+                // SafeWarn là loop-safe: dòng Warn không vượt qua IsAlertable (đòi Severity=Error),
+                // nên việc báo lỗi subscriber hỏng không tự nuôi thêm alert mỗi 30 giây. Không dùng
+                // Error: notifier hỏng vĩnh viễn sẽ thành alert mới vô hạn và nuốt hết trace.
+                SafeWarn("subscriber", ex);
             }
         }
     }

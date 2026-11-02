@@ -86,8 +86,9 @@
 
     /* Thẻ i mặc định display:inline nên width/height bị bỏ qua — border 1.5px của
        .trace-dot--white (RequestTrace) vẽ hai vạch dọc = dấu "|" trước số đếm.
-       inline-block + border-box để dot 10px (gồm border) bo tròn đúng; flex:none
-       chống dot bị co khi strip (.monitor-strip) chật. */
+       inline-block + border-box để dot 10px (gồm border) bo tròn đúng. flex:none ở
+       đây là CSS phòng thủ: dot không phải flex item trực tiếp của .monitor-strip
+       (nó nằm trong span), nên khai báo này không có tác dụng với markup hiện tại. */
     .monitor-dot {
         display: inline-block;
         box-sizing: border-box;
