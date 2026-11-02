@@ -51,6 +51,8 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public bool StartWithWindows => Get(SettingsKeys.StartWithWindows, false);
 
+    public bool NotifyErrors => Get(SettingsKeys.NotifyErrors, true);
+
     public int ProviderProbeTimeoutSec => Get(SettingsKeys.ProviderProbeTimeoutSec, 60);
 
     public int LogRetentionDays => Get(SettingsKeys.LogRetentionDays, 90);

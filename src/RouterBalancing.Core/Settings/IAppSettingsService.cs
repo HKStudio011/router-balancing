@@ -20,6 +20,9 @@ public interface IAppSettingsService
 
     bool StartWithWindows { get; }
 
+    /// <summary>Cho phép thông báo lỗi (toast/CNTA) khi app không ở foreground — mặc định bật.</summary>
+    bool NotifyErrors { get; }
+
     /// <summary>Timeout per-request của client provider-probe — đọc tại mỗi request (§3.8).</summary>
     int ProviderProbeTimeoutSec { get; }
 

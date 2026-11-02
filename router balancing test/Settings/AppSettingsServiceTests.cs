@@ -94,6 +94,27 @@ public class AppSettingsServiceTests : IDisposable
     }
 
     [Fact]
+    public void NotifyErrors_DefaultsTrue()
+    {
+        using var service = Create();
+
+        Assert.True(service.NotifyErrors);
+    }
+
+    [Fact]
+    public void NotifyErrors_RoundTripsThroughSet()
+    {
+        using (var service = Create())
+        {
+            service.Set(SettingsKeys.NotifyErrors, false);
+        }
+
+        using var reopened = Create();
+
+        Assert.False(reopened.NotifyErrors);
+    }
+
+    [Fact]
     public void OpenCodeConfigPath_WhenUnset_ReturnsDefault()
     {
         using var service = Create();
