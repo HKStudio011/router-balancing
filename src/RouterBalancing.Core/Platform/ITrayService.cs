@@ -27,8 +27,10 @@ public interface ITrayService : IDisposable
     void Notify(string title, string message);
 
     /// <summary>
-    /// User bấm/chuột đúp vào thông báo desktop — app mở cửa sổ và điều hướng tới Log panel (spec §2.4).
-    /// Windows: bắn từ <c>NotifyIcon.BalloonTipClicked</c> (cả double-click toast trong Action Center).
+    /// User bấm vào thông báo desktop — app mở cửa sổ và điều hướng tới Log panel (spec §2.4).
+    /// Windows: chỉ bắn từ <c>NotifyIcon.BalloonTipClicked</c> khi balloon tip CÒN hiển thị trên
+    /// màn hình (event tới từ NIN_BALLOONUSERCLICK); bấm mục đã nằm trong Action Center KHÔNG bắn
+    /// event này — khả năng click-to-open chỉ có trong thời gian balloon còn trên màn hình.
     /// </summary>
     event Action? NotificationActivated;
 }

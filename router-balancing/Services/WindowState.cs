@@ -10,11 +10,13 @@ namespace router_balancing.Services;
 /// </summary>
 public sealed class WindowState : IDesktopState
 {
-    private bool _visible = true;
+    // volatile: ghi trên UI thread (App.xaml.cs), đọc trên worker/flush thread
+    // (ErrorNotifier đọc IsInteractive) — không volatile thì worker có thể đọc giá trị cũ
+    private volatile bool _visible = true;
 
     // Mặc định focused=false: chưa nhận activation event nào thì coi như chưa interactive,
     // để burst lỗi lúc khởi động đi qua kênh desktop thay vì toast trong app mà không ai thấy.
-    private bool _focused;
+    private volatile bool _focused;
 
     /// <summary>Tích hai cờ: chỉ interactive khi cửa sổ đang hiện VÀ đang focus.</summary>
     public bool IsInteractive => _visible && _focused;

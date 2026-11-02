@@ -46,26 +46,33 @@ internal sealed class TrayService : ITrayService
             Visible = true,
         };
         _icon.DoubleClick += (_, _) => OpenRequested?.Invoke();
-        // Bấm balloon tip (kể cả double-click toast đã vào Action Center) → mở app tới Log panel (§2.4)
+        // Bấm balloon tip lúc nó CÒN hiển thị → mở app tới Log panel (§2.4). Event tới từ
+        // NIN_BALLOONUSERCLICK: mục đã vào Action Center không bắn event — click-to-open
+        // chỉ khả dụng trong thời gian balloon còn trên màn hình
         _icon.BalloonTipClicked += (_, _) => NotificationActivated?.Invoke();
 
         _localization.LanguageChanged += UpdateMenuTexts;
     }
 
     /// <summary>
-    /// Gửi balloon tip trên khay (6s, icon Error).
+    /// Gửi balloon tip trên khay (icon Error). Thời lượng xin 6s chỉ là yêu cầu — Shell cắt
+    /// timeout theo ý nó và chỉ hiển thị một balloon tại một thời điểm.
     /// </summary>
     /// <remarks>
     /// Dùng balloon tip thay toast WinUI (ToastNotificationManager): app unpackaged nên toast
     /// WinUI phải đăng ký AUMID + shortcut Start Menu mới hiện được; balloon tip của NotifyIcon
     /// hiện vào Action Center trên Win10/11 mà không thêm dependency nào (spec §2.3).
-    /// Must be called on the UI thread that created the NotifyIcon — caller (ErrorNotifier)
-    /// bọc trong Dispatcher.Dispatch vì AlertRaised tới từ worker/flush loop.
+    /// Phải gọi trên UI thread đã tạo NotifyIcon — caller (ErrorNotifier) bọc trong
+    /// Dispatcher.Dispatch vì AlertRaised tới từ worker/flush loop.
     /// </remarks>
     public void Notify(string title, string message)
     {
         // Tray chưa Initialize (hoặc đã Dispose sau Exit) — không có gì để bắn, return sớm
         if (_icon is null) return;
+        // ShowBalloonTip ném ArgumentException khi tipText rỗng — ErrorAlertMessage.Build (count==1)
+        // trả message của LogEntry rỗng nguyên văn, nên dòng Error có Message trống sẽ làm
+        // throw ngay trong đường alert và mất luôn thông báo → bỏ qua balloon, không ném
+        if (string.IsNullOrWhiteSpace(message)) return;
         _icon.ShowBalloonTip(6000, title, message, ToolTipIcon.Error);
     }
 
