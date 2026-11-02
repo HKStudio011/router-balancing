@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace RouterBalancing.Core.Notifications;
 
 /// <summary>
@@ -30,9 +32,11 @@ public static class ErrorAlertMessage
             return safeMessage;
         }
 
-        // Window là TimeSpan do cluster planner dựng (giây chẵn); TotalSeconds
-        // an toàn cho notification — không cần format culture ở đây.
-        return string.Format(t("notify.error.cluster"), count, (int)window.TotalSeconds, safeMessage);
+        // Window là TimeSpan do cluster planner dựng (giây chẵn). Số đếm format
+        // theo InvariantCulture: text template đến từ ngôn ngữ app chọn, chữ số
+        // không được theo CurrentCulture của OS (vd văn hóa fa-IR thay chữ số).
+        return string.Format(CultureInfo.InvariantCulture, t("notify.error.cluster"),
+            count, (int)window.TotalSeconds, safeMessage);
     }
 
     /// <summary>
