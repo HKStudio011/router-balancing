@@ -94,6 +94,10 @@ namespace router_balancing
             builder.Services.AddSingleton<ITrayService, NullTrayService>();
             builder.Services.AddSingleton<IStartupRegistration, NullStartupRegistration>();
 #endif
+            // WindowState là nguồn cờ cho ErrorNotifier chọn kênh toast/notification (spec §2.3) —
+            // App.xaml.cs đặt cờ; Core chỉ thấy qua IDesktopState
+            builder.Services.AddSingleton<WindowState>();
+            builder.Services.AddSingleton<IDesktopState>(sp => sp.GetRequiredService<WindowState>());
             // Outbound proxy pool (spec proxy-pool §4)
             builder.Services.AddSingleton(TimeProvider.System);           // ProxyPool tính cooldown down theo system clock
             // Múi giờ máy cho UI: StatsService (cửa sổ "Hôm nay" + bucket) và ApiMonitorStore

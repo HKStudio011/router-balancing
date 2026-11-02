@@ -4,6 +4,7 @@ using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Update;
+using router_balancing.Services;
 // Không import Microsoft.UI.Xaml: Application/Window trùng tên Microsoft.Maui.Controls (global using) → CS0104
 #if WINDOWS
 using Microsoft.UI.Windowing;
@@ -21,6 +22,7 @@ namespace router_balancing
         private readonly LogRetentionWorker _retention;
         private readonly FreeModelSyncWorker _freeSync;
         private readonly UpdateCheckService _updateCheck;
+        private readonly WindowState _window;
         private Window? _mainWindow;
 #if WINDOWS
         // Chỉ Windows dùng: phân biệt thoát từ tray với đóng cửa sổ về khay (AppWindow.Closing)
@@ -35,7 +37,8 @@ namespace router_balancing
             ITrayService tray,
             LogRetentionWorker retention,
             FreeModelSyncWorker freeSync,
-            UpdateCheckService updateCheck)
+            UpdateCheckService updateCheck,
+            WindowState window)
         {
             InitializeComponent();
             _log = log;
@@ -46,6 +49,7 @@ namespace router_balancing
             _retention = retention;
             _freeSync = freeSync;
             _updateCheck = updateCheck;
+            _window = window;
 
             _log.Info("router-balancing khởi động.");
 
@@ -140,6 +144,8 @@ namespace router_balancing
         {
             // Nền tảng khác Windows không có tray thật (NullTrayService) nên chỉ cần nhánh WINDOWS
             if (_mainWindow is null) return;
+            // Window đã hiện lại (đường tray OpenRequested/double-click) — cho phép toast trong app (spec §2.3)
+            _window.SetVisible(true);
 #if WINDOWS
             if (GetAppWindow(_mainWindow) is { } appWindow)
             {
@@ -219,6 +225,11 @@ namespace router_balancing
         // AppWindow đang gắn OnMainWindowClosing — lưu để gỡ trước khi gắn lại
         private AppWindow? _trayCloseAppWindow;
 
+        // WinUI window đang gắn Activated — lưu để gỡ trước khi gắn lại (cùng pattern
+        // _trayCloseAppWindow: HandlerChanged chạy lại khi MAUI tái tạo handler; subscribe
+        // 2 lần → SetFocused lặp mỗi event và rò rỉ handler cũ)
+        private Microsoft.UI.Xaml.Window? _activatedNativeWindow;
+
         private void AttachCloseToTray(Window window)
         {
             window.HandlerChanged += (_, _) =>
@@ -235,8 +246,20 @@ namespace router_balancing
                 }
                 _trayCloseAppWindow = appWindow;
                 appWindow.Closing += OnMainWindowClosing;
+                // Cờ focus cho IDesktopState: sự kiện activation của WinUI là nguồn duy nhất (spec §2.3).
+                // Lưu ý: WinUI 3 Window KHÔNG có event Deactivated như WPF — chỉ MỘT event Activated,
+                // args.WindowActivationState = Deactivated khi mất focus, CodeActivated/PointerActivated khi có focus.
+                if (_activatedNativeWindow is not null)
+                {
+                    _activatedNativeWindow.Activated -= OnWindowActivated;
+                }
+                _activatedNativeWindow = native;
+                native.Activated += OnWindowActivated;
             };
         }
+
+        private void OnWindowActivated(object sender, Microsoft.UI.Xaml.WindowActivatedEventArgs args) =>
+            _window.SetFocused(args.WindowActivationState != Microsoft.UI.Xaml.WindowActivationState.Deactivated);
 
         private void OnMainWindowClosing(AppWindow appWindow, AppWindowClosingEventArgs args)
         {
@@ -244,6 +267,8 @@ namespace router_balancing
             if (_reallyExiting || !_settings.CloseToTray) return;
             args.Cancel = true;
             appWindow.Hide();
+            // Cửa sổ ẩn về khay → mọi alert phải đi qua notification desktop, không phải toast trong app
+            _window.SetVisible(false);
             _log.Info("Đóng cửa sổ → thu về khay hệ thống.");
         }
 

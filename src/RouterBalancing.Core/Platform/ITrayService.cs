@@ -11,4 +11,24 @@ public interface ITrayService : IDisposable
 
     /// <summary>Tạo icon trên khay — gọi sau khi DI sẵn sàng; idempotent.</summary>
     void Initialize();
+
+    /// <summary>
+    /// Gửi một thông báo desktop (Windows: balloon tip của NotifyIcon).
+    /// </summary>
+    /// <remarks>
+    /// Dùng balloon tip thay toast WinUI (<c>ToastNotificationManager</c>): app chạy unpackaged
+    /// nên toast WinUI phải đăng ký AUMID + shortcut Start Menu mới hiện được, còn balloon tip
+    /// tự vào Action Center trên Win10/11 mà không thêm dependency nào.
+    /// Nền tảng không có khay thật (Android/iOS/mac) là no-op.
+    /// </remarks>
+    /// <param name="title">Tiêu đề thông báo.</param>
+    /// <param name="message">Nội dung — đã được cap độ dài ở tầng aggregator (spec §2.2)
+    /// vì Windows cắt text balloon tip quá dài.</param>
+    void Notify(string title, string message);
+
+    /// <summary>
+    /// User bấm/chuột đúp vào thông báo desktop — app mở cửa sổ và điều hướng tới Log panel (spec §2.4).
+    /// Windows: bắn từ <c>NotifyIcon.BalloonTipClicked</c> (cả double-click toast trong Action Center).
+    /// </summary>
+    event Action? NotificationActivated;
 }

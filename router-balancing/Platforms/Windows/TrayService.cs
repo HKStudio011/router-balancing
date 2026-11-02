@@ -20,6 +20,8 @@ internal sealed class TrayService : ITrayService
 
     public event Action? ExitRequested;
 
+    public event Action? NotificationActivated;
+
     public TrayService(LocalizationService localization) => _localization = localization;
 
     public void Initialize()
@@ -44,8 +46,27 @@ internal sealed class TrayService : ITrayService
             Visible = true,
         };
         _icon.DoubleClick += (_, _) => OpenRequested?.Invoke();
+        // Bấm balloon tip (kể cả double-click toast đã vào Action Center) → mở app tới Log panel (§2.4)
+        _icon.BalloonTipClicked += (_, _) => NotificationActivated?.Invoke();
 
         _localization.LanguageChanged += UpdateMenuTexts;
+    }
+
+    /// <summary>
+    /// Gửi balloon tip trên khay (6s, icon Error).
+    /// </summary>
+    /// <remarks>
+    /// Dùng balloon tip thay toast WinUI (ToastNotificationManager): app unpackaged nên toast
+    /// WinUI phải đăng ký AUMID + shortcut Start Menu mới hiện được; balloon tip của NotifyIcon
+    /// hiện vào Action Center trên Win10/11 mà không thêm dependency nào (spec §2.3).
+    /// Must be called on the UI thread that created the NotifyIcon — caller (ErrorNotifier)
+    /// bọc trong Dispatcher.Dispatch vì AlertRaised tới từ worker/flush loop.
+    /// </remarks>
+    public void Notify(string title, string message)
+    {
+        // Tray chưa Initialize (hoặc đã Dispose sau Exit) — không có gì để bắn, return sớm
+        if (_icon is null) return;
+        _icon.ShowBalloonTip(6000, title, message, ToolTipIcon.Error);
     }
 
     /// <summary>Đọc appicon.ico cạnh exe; null khi file thiếu/hỏng (caller fallback SystemIcons).</summary>
