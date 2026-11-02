@@ -134,7 +134,10 @@ public static class Translations
         ["settings.theme.dark"] = "Dark",
         ["settings.theme.system"] = "System",
         ["settings.field.closeToTray"] = "Close window to tray",
-        ["settings.notifyErrors"] = "Notify errors when the app is in the background",
+        ["settings.field.notifyErrors"] = "Notify errors when the app is in the background",
+        // Error alert (Task 6) — cluster template: {0}=số lỗi, {1}=giây, {2}=message cuối
+        ["notify.error.title"] = "router-balancing: error",
+        ["notify.error.cluster"] = "{0} errors in {1} seconds · last: {2}",
         ["settings.field.startWithWindows"] = "Start with Windows",
         ["settings.field.port"] = "Port",
         ["settings.field.lanAccess"] = "Allow access from LAN",
@@ -679,7 +682,10 @@ public static class Translations
         ["settings.theme.dark"] = "Tối",
         ["settings.theme.system"] = "Theo hệ thống",
         ["settings.field.closeToTray"] = "Đóng cửa sổ về khay",
-        ["settings.notifyErrors"] = "Thông báo lỗi khi app đang chạy nền",
+        ["settings.field.notifyErrors"] = "Thông báo lỗi khi app đang chạy nền",
+        // Error alert (Task 6) — mẫu cluster: {0}=số lỗi, {1}=giây, {2}=message cuối
+        ["notify.error.title"] = "router-balancing: lỗi",
+        ["notify.error.cluster"] = "{0} lỗi trong {1} giây · gần nhất: {2}",
         ["settings.field.startWithWindows"] = "Khởi động cùng Windows",
         ["settings.field.port"] = "Cổng",
         ["settings.field.lanAccess"] = "Cho phép truy cập từ LAN",
