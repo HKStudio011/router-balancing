@@ -84,7 +84,14 @@
         font-variant-numeric: tabular-nums;
     }
 
+    /* Thẻ i mặc định display:inline nên width/height bị bỏ qua — border 1.5px của
+       .trace-dot--white (RequestTrace) vẽ hai vạch dọc = dấu "|" trước số đếm.
+       inline-block + border-box để dot 10px (gồm border) bo tròn đúng; flex:none
+       chống dot bị co khi strip (.monitor-strip) chật. */
     .monitor-dot {
+        display: inline-block;
+        box-sizing: border-box;
+        flex: none;
         width: 10px;
         height: 10px;
         border-radius: 50%;
