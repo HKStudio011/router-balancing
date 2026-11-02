@@ -215,6 +215,78 @@ public class RequestJournalWriterTests : IDisposable
     }
 
     [Fact]
+    public void WriteTerminal_FiresEntryWrittenOnceWithCommittedRow()
+    {
+        var fired = new List<LogEntry>();
+        _writer.EntryWritten += entry => fired.Add(entry);
+
+        var t0 = Now;
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", t0.AddSeconds(1), status: 500, success: false));
+
+        var entry = Assert.Single(fired);
+        Assert.Equal(LogSeverity.Error, entry.Severity);
+        Assert.Equal(RequestOutcome.Error, entry.Outcome);
+        // Event phải bắn SAU commit: query lại DB thấy đúng dòng đó và Id đã được DB gán
+        // (identity sinh bởi SQLite khi SaveChanges — bắn trước commit thì Id còn 0)
+        var committed = Assert.Single(Rows(), r => r.RequestId == "r1");
+        Assert.Equal(committed.Id, entry.Id);
+    }
+
+    [Fact]
+    public void WriteTerminal_FailureToCommit_DoesNotFireEntryWritten()
+    {
+        // DB đóng: factory ném khi tạo DbContext (mirror DbFailure_LogsAndDoesNotInvalidate)
+        var log = new CapturingLog();
+        var feed = new TraceFeed(log);
+        var writer = new RequestJournalWriter(feed, new ThrowingFactory(), log,
+            new StatsInvalidationSource(), TimeProvider.System);
+        var fired = 0;
+        writer.EntryWritten += _ => fired++;
+
+        var ex = Record.Exception(() =>
+        {
+            feed.Publish(Ev("r1", TraceStage.Received, "m1", Now));
+            feed.Publish(Ev("r1", TraceStage.Finished, "m1", Now.AddSeconds(1), status: 500, success: false));
+        });
+
+        Assert.Null(ex);        // commit fail không được nổ ra caller
+        Assert.Equal(0, fired); // cũng không được bắn event
+    }
+
+    [Fact]
+    public void Received_Alone_DoesNotFireEntryWritten()
+    {
+        var fired = 0;
+        _writer.EntryWritten += _ => fired++;
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", Now));
+
+        Assert.Equal(0, fired); // chỉ dòng terminal mới bắn event
+    }
+
+    [Fact]
+    public void WriteTerminal_EntryWrittenSubscriberThrows_DoesNotBreakWriter()
+    {
+        // Subscriber nổ phải được cách ly từng handler (luật fail-open, mirror
+        // LogService.NotifySubscribers): multicast delegate dừng ở handler nổ đầu tiên
+        // → subscriber đăng ký sau mất event nếu không try/catch.
+        var fired = new List<LogEntry>();
+        _writer.EntryWritten += _ => throw new InvalidOperationException("subscriber boom");
+        _writer.EntryWritten += entry => fired.Add(entry);
+
+        var t0 = Now;
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", t0));
+        var ex = Record.Exception(() =>
+            _feed.Publish(Ev("r1", TraceStage.Finished, "m1", t0.AddSeconds(1), status: 500, success: false)));
+
+        Assert.Null(ex);
+        var entry = Assert.Single(fired); // subscriber sau vẫn nhận event
+        Assert.Equal(RequestOutcome.Error, entry.Outcome);
+        // Lỗi subscriber được ghi log (không nuốt) — cùng đường SafeLog của writer
+        Assert.Contains(_log.Errors, m => m.Contains("RequestJournalWriter"));
+    }
+
+    [Fact]
     public void PriorityUpdateBeforeReceived_MergesClientKeyIdKeepingStartedAt()
     {
         var t0 = Now;

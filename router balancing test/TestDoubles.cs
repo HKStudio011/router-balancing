@@ -22,6 +22,7 @@ internal sealed class NullLog : ILogService
 /// <summary>IRequestJournalWriter rỗng — ProxyHostTests chỉ cần pass qua ctor (eager marker).</summary>
 internal sealed class NullJournalWriter : IRequestJournalWriter
 {
+    public event Action<LogEntry>? EntryWritten { add { } remove { } }
 }
 
 /// <summary>IRequestUsageSink rỗng — unit test không cần DB/thật.</summary>
