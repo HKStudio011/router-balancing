@@ -118,7 +118,10 @@ Quy tắc lọc (trước khi entry vào cụm 30s):
    - Label trục giờ trong `StatsChart` in theo đúng offset của `StatsBucket.StartsAt` (không force về UTC).
    - Múi có DST: `Today` vẫn đúng 24 bucket × 1 giờ tính từ nửa đêm local → ngày 25 giờ có bucket cuối nằm ngoài cửa sổ, ngày 23 giờ có bucket rỗng. Chấp nhận, không viết logic DST (VN không có DST).
    - **Ngoại lệ có chủ ý:** `UsageDailyService.TodayUtc()` vẫn là ngày UTC. `UsageDaily.Date` là PK của ledger đã ghi; đổi sang ngày local phải migration lại dữ liệu cũ và làm lệch lịch sử đã hiển thị. Hệ quả đã chấp nhận: tile "Token hôm nay" và bảng "Hôm nay" trong Tools/Usage có thể lệch nhau ~7 tiếng ở múi UTC+7. Nếu user muốn thống nhất, đó là việc riêng, không nằm ở đây.
-3. `.monitor-dot` (`ApiMonitorPanel.razor:87`) thêm `display: inline-block` (+ `flex: none`) để `width/height: 10px` có hiệu lực → dot tròn đúng màu, hết dấu `|`. Rà `.detail-dot` trong `RequestDetailModal.razor:92` (dot cùng họ) và sửa tương tự nếu cũng thiếu.
+3. **Dấu `|` trước số đếm trong strip API Monitor** (user báo 2 lần, `|2 chờ` và `|0 chờ` — cùng **một** element, `<i class="monitor-dot trace-dot--white">` ở `ApiMonitorPanel.razor:117`, không phụ thuộc giá trị đếm). Nguyên nhân: `.monitor-dot` chỉ có `width/height/border-radius` (`ApiMonitorPanel.razor:87`) trong khi `<i>` là `display:inline` → 2 thuộc tính size bị bỏ qua, còn `border: 1.5px solid #9aa0aa` của `.trace-dot--white` (`RequestTrace.razor:132`) vẫn vẽ → hai vạch dọc cao bằng line-height, nhìn thành dấu `|`. Chỉ dot **trắng** (Queued) lộ lỗi; dot xanh/đỏ/xanh lá/vàng chỉ có `background` nên inline thì vô hình hoàn toàn.
+   - Sửa: `.monitor-dot { display: inline-block; box-sizing: border-box; }` (thêm `flex: none` để không bị flex strip co lại). Legend của Live Trace đã đúng sẵn (`.trace-ldot` có `display:inline-block` + `box-sizing:border-box`, `RequestTrace.razor:214`) nên không đụng tới.
+   - Rà `.detail-dot` trong `RequestDetailModal.razor:92` (dot cùng họ) và sửa tương tự nếu cũng thiếu.
+   - Strip vẫn hiển thị cả 5 mục kể cả khi đếm 0 (`● 0 chờ`), giữ đúng layout hiện tại.
 
 ## 3. Mục tiêu / ngoài mục tiêu / phản mục tiêu
 
@@ -198,4 +201,4 @@ Không có test tự động cho balloon tip thật và cho decision focus của
 | `router-balancing/Components/Pages/LogPanel.razor` | `[SupplyParameterFromQuery]` severity/category + re-apply khi parameters đổi |
 | `router-balancing/Components/Shared/RequestDetailModal.razor` | dòng "Client" trong header; soát dot |
 | `router-balancing/Components/Shared/MonitorFormat.cs` | delegate phần số sang `NumberFormat` |
-| `router-balancing/Components/Shared/ApiMonitorPanel.razor` | `display:inline-block` cho `.monitor-dot` |
+| `router-balancing/Components/Shared/ApiMonitorPanel.razor` | `display:inline-block` + `box-sizing:border-box` cho `.monitor-dot` (hết dấu `\|`) |
