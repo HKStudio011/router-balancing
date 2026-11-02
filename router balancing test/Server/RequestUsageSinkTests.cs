@@ -159,6 +159,8 @@ public class RequestUsageSinkTests : IDisposable
         public Task UpdateAsync(long id, ClientKeyDraft draft, CancellationToken ct = default)
             => throw new NotSupportedException();
         public Task DeleteAsync(long id, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<string?> GetNameAsync(long id, CancellationToken ct = default)
+            => throw new NotSupportedException();
         public Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default)
             => throw new NotSupportedException();
         public Task RecordRequestAsync(long id, CancellationToken ct = default)

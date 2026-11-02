@@ -23,8 +23,9 @@ public class ApiMonitorStoreTests
     private static byte[] Bytes(string json) => Encoding.UTF8.GetBytes(json);
 
     private static TraceEvent Ev(string id, TraceStage stage, string model, DateTimeOffset at,
-        TraceRoute? route = null, int? status = null, bool? success = null, string? mode = null) =>
-        new(id, stage, model, route, null, status, success, null, at, mode);
+        TraceRoute? route = null, int? status = null, bool? success = null, string? mode = null,
+        long? clientKeyId = null) =>
+        new(id, stage, model, route, null, status, success, null, at, mode, ClientKeyId: clientKeyId);
 
     [Fact]
     public void StartRequest_ThenRecordResponse_UpsertsSameRecord_KeepsFirstSeenOrder()
@@ -163,6 +164,44 @@ public class ApiMonitorStoreTests
         Assert.Equal(ApiCallState.Cancelled, r.State);
         Assert.Equal(canceledAt, r.CompletedAt);
         Assert.Equal(Prompt, r.PromptBody);   // prompt vẫn còn để xem trong popup
+    }
+
+    [Fact]
+    public void Published_ReceivedWithClientKeyId_StoresOnRecord()
+    {
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At, clientKeyId: 42));
+
+        Assert.Equal(42, _store.Find("r1")!.ClientKeyId);
+    }
+
+    [Fact]
+    public void Published_ClientKeyIdSurvivesTerminalUpdate()
+    {
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At, clientKeyId: 42));
+
+        // Priority-update (RequestQueue.PublishPriorityUpdate) cũng là stage Received nhưng
+        // ClientKeyId=null, và event terminal không mang id — cả hai không được wipe id đã có
+        // (cùng luật "không đè giá trị đã có" của RequestJournalWriter.MergeClientKeyId).
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At.AddMilliseconds(1)));
+        _feed.Publish(Ev("r1", TraceStage.DispatchStarted, "m1", At.AddMilliseconds(2), mode: "balancer"));
+        _feed.Publish(Ev("r1", TraceStage.Attempt, "m1", At.AddMilliseconds(3),
+            route: new TraceRoute("c1", "p1", "a1")));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", At.AddSeconds(1), status: 500, success: false));
+
+        var failed = _store.Find("r1")!;
+        Assert.Equal(ApiCallState.Error, failed.State);
+        Assert.Equal(42, failed.ClientKeyId);
+    }
+
+    [Fact]
+    public void Published_WithoutClientKeyId_NullOnRecord()
+    {
+        // App tắt API key inbound → Received không mang ClientKeyId → popup không hiện dòng client
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", At.AddSeconds(1), status: 200, success: true));
+
+        var r = _store.Find("r1")!;
+        Assert.Null(r.ClientKeyId);
     }
 
     [Fact]

@@ -212,8 +212,12 @@ public sealed class ApiMonitorStore : IApiMonitorStore
                 var current = _calls[index];
                 var updated = e.Stage switch
                 {
-                    // Received: skeleton vừa tạo ở trên đã đúng (Queued); record có sẵn giữ nguyên
-                    TraceStage.Received => current,
+                    // Received: skeleton vừa tạo ở trên đã đúng (Queued); record có sẵn chỉ merge
+                    // ClientKeyId — cùng luật "không đè giá trị đã có" của
+                    // RequestJournalWriter.MergeClientKeyId: priority-update (RequestQueue.
+                    // PublishPriorityUpdate) cũng phát stage Received với ClientKeyId=null, nên
+                    // null KHÔNG được xóa id đã lấy từ Received đầu tiên của ProxyApp.
+                    TraceStage.Received => current with { ClientKeyId = e.ClientKeyId ?? current.ClientKeyId },
                     TraceStage.DispatchStarted => current with
                     {
                         State = ApiCallState.Running,

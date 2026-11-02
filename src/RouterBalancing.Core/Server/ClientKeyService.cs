@@ -100,6 +100,17 @@ public sealed class ClientKeyService : IClientKeyService
         KeysChanged?.Invoke();
     }
 
+    public async Task<string?> GetNameAsync(long id, CancellationToken ct = default)
+    {
+        await using var db = await _db.CreateDbContextAsync(ct);
+        // Chỉ cần mỗi tên key, không ghi ngược ra DB → AsNoTracking + projection: tránh
+        // materialize cả entity vào change tracker cho một read chỉ để hiển thị popup.
+        return await db.ClientKeys.AsNoTracking()
+            .Where(k => k.Id == id)
+            .Select(k => k.Name)
+            .FirstOrDefaultAsync(ct);
+    }
+
     public async Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default)
     {
         await using (var db = await _db.CreateDbContextAsync(ct))

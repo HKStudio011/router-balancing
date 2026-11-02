@@ -41,13 +41,17 @@ public enum ApiCallState
 /// <param name="PromptBody">Prompt UTF-8, cap 64KB (truncate + marker) — giữ từ lúc nhận request.</param>
 /// <param name="ResponseBody">Response UTF-8, cap 64KB — chỉ ghi ở 2xx.</param>
 /// <param name="ErrorBody">Error body UTF-8, cap 64KB — xóa khi request retry thành công (2xx).</param>
+/// <param name="ClientKeyId">Client key inbound đã auth (id trong bảng ClientKeys) — chỉ event
+/// <c>Received</c> đầu mang giá trị, các update sau giữ nguyên; <see langword="null"/> khi app
+/// không bật API key hoặc request chưa có auth.</param>
 public sealed record ApiCallRecord(
     string RequestId, string Model, DateTimeOffset StartedAt, ApiCallState State,
     DateTimeOffset? FirstTokenAt, DateTimeOffset? CompletedAt,
     int? Status, bool? Success, string? FailureKind,
     int? PromptTokens, int? CompletionTokens,
     string? Combo, string? Provider, string? Account, string? Mode,
-    string? PromptBody, string? ResponseBody, string? ErrorBody);
+    string? PromptBody, string? ResponseBody, string? ErrorBody,
+    long? ClientKeyId = null);
 
 /// <summary>
 /// Store in-memory API Monitor: ring 50 record (mới nhất trước) + bộ đếm "Token hôm nay"

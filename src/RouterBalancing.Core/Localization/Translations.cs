@@ -48,6 +48,7 @@ public static class Translations
 
         // Drill-down modal timeline (Task 7)
         ["trace.detail.title"] = "Request detail",
+        ["trace.detail.client"] = "client",
         ["trace.detail.started"] = "Started",
         ["trace.detail.duration"] = "Duration",
         ["trace.detail.received"] = "Received",
@@ -596,6 +597,7 @@ public static class Translations
 
         // Drill-down modal timeline (Task 7)
         ["trace.detail.title"] = "Chi tiết request",
+        ["trace.detail.client"] = "client",
         ["trace.detail.started"] = "Bắt đầu",
         ["trace.detail.duration"] = "Thời lượng",
         ["trace.detail.received"] = "Đã nhận",
