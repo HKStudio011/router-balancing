@@ -96,6 +96,12 @@ namespace router_balancing
 #endif
             // Outbound proxy pool (spec proxy-pool §4)
             builder.Services.AddSingleton(TimeProvider.System);           // ProxyPool tính cooldown down theo system clock
+            // Múi giờ máy cho UI: StatsService (cửa sổ "Hôm nay" + bucket) và ApiMonitorStore
+            // ("Token hôm nay") resolve qua ctor tham số zone — TimeProvider.System luôn trả
+            // offset 0 nên không suy ra giờ máy từ đồng hồ được.
+            // UsageDailyService KHÔNG dùng múi này: ledger vẫn khóa theo NGÀY UTC (spec §2.7.2)
+            // — đổi sang múi máy phải migrate lại khóa UsageDaily, không làm trong bug fix này.
+            builder.Services.AddSingleton(TimeZoneInfo.Local);
             builder.Services.AddSingleton<IProxyPool, ProxyPool>();       // singleton: giữ down-state + RR cursor
             builder.Services.AddSingleton<IProxyEchoClient, ProxyEchoClient>();
             builder.Services.AddTransient<ProxyHealthHandler>();          // transient per HttpClient pipeline

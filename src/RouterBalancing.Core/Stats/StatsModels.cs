@@ -1,7 +1,10 @@
 namespace RouterBalancing.Core.Stats;
 
 /// <summary>Một bucket thời gian trên biểu đồ — đếm dòng terminal theo Timestamp (spec §5).</summary>
-/// <param name="BucketStart">Đầu bucket, luôn UTC (giờ 00h…23h cho Hôm nay; nửa đêm cho bucket ngày).</param>
+/// <param name="BucketStart">
+/// Đầu bucket, mang offset của múi giờ StatsService inject (mặc định UTC): giờ 00h…23h của múi
+/// cho Hôm nay; nửa đêm của múi cho bucket ngày.
+/// </param>
 /// <param name="Requests">Số dòng terminal trong bucket.</param>
 /// <param name="Errors">Số dòng terminal có <c>Outcome=Error</c> trong bucket.</param>
 /// <param name="PromptTokens">Tổng PromptTokens join từ dòng usage theo RequestId của các terminal trong bucket.</param>
@@ -17,7 +20,9 @@ public sealed record StatsBucket(DateTimeOffset BucketStart, int Requests, int E
 public sealed record StatsBreakdownRow(string Key, int Requests, int Errors, long Tokens);
 
 /// <summary>Snapshot thống kê một cửa sổ thời gian — spec dashboard-stats §3.4.</summary>
-/// <param name="From">Đầu cửa sổ (nửa đêm UTC hoặc UTC −6/−29 ngày).</param>
+/// <param name="From">
+/// Đầu cửa sổ: nửa đêm của múi giờ StatsService inject (mặc định UTC) hoặc nửa đêm đó −6/−29 ngày.
+/// </param>
 /// <param name="To">Cuối cửa sổ = "now" tại thời điểm query (không đóng cửa sổ cuối ngày).</param>
 /// <param name="Requests">Tổng dòng terminal trong cửa sổ.</param>
 /// <param name="Ok">Số dòng terminal có <c>Outcome=Ok</c>.</param>
@@ -31,7 +36,10 @@ public sealed record StatsBreakdownRow(string Key, int Requests, int Errors, lon
 /// <param name="P95LatencyMs">p95 nearest-rank của dòng Ok; null khi không có mẫu.</param>
 /// <param name="PromptTokens">Tổng PromptTokens của dòng usage trong cửa sổ.</param>
 /// <param name="CompletionTokens">Tổng CompletionTokens của dòng usage trong cửa sổ.</param>
-/// <param name="Buckets">24 bucket giờ UTC (Hôm nay) hoặc 7/30 bucket ngày UTC; bucket rỗng trả 0.</param>
+/// <param name="Buckets">
+/// 24 bucket giờ (Hôm nay) hoặc 7/30 bucket ngày, theo múi giờ StatsService inject (mặc định
+/// UTC); bucket rỗng trả 0.
+/// </param>
 /// <param name="ByProvider">Breakdown theo <c>ProviderKey ?? "—"</c>, sort Requests desc.</param>
 /// <param name="ByModel">Breakdown theo <c>ModelKey ?? "—"</c>, sort Requests desc.</param>
 /// <param name="ByClientKey">Breakdown theo tên client key (Name); "—" khi ClientKeyId NULL; id khi key đã bị xóa khỏi bảng — sort Requests desc.</param>

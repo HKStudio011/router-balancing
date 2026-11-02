@@ -17,6 +17,19 @@ public class StatsServiceTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 10, 11, 15, 30, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset MidnightUtc = new(2026, 10, 11, 0, 0, 0, TimeSpan.Zero);
 
+    // Múi giờ giả lập máy người dùng (UTC+7) — CỬA SỔ phải neo nửa đêm CỦA MÚI này.
+    // Đồng hồ trong các test này luôn offset 0, giống hệt TimeProvider.System trên production:
+    // mốc 2026-10-11 08:30Z là 15:30 giờ máy cùng ngày. Nửa đêm giờ máy = 2026-10-10 17:00Z,
+    // tức request buổi sáng giờ máy (01:30 máy = 10/10 18:30Z) bị cửa sổ nửa đêm UTC loại hẳn.
+    // .NET không có TimeZoneInfo.CreateFixedTimeZone — CreateCustomTimeZone không adjustment
+    // rule chính là múi cố định quanh năm (offset +07 cho mọi thời điểm trong năm).
+    private static readonly TimeZoneInfo ZonePlus7 =
+        TimeZoneInfo.CreateCustomTimeZone("UTC+07", TimeSpan.FromHours(7), "UTC+07", "+07");
+    private static readonly DateTimeOffset NowUtcInZoneDay =
+        new(2026, 10, 11, 8, 30, 0, TimeSpan.Zero);   // = 2026-10-11 15:30 +07
+    private static readonly DateTimeOffset MidnightZoneLocal =
+        new(2026, 10, 11, 0, 0, 0, TimeSpan.FromHours(7)); // = 2026-10-10 17:00Z
+
     private readonly TestDb _db = new();
     private readonly IDbContextFactory<RouterBalancingDbContext> _factory;
     private readonly StatsService _service;
@@ -210,6 +223,59 @@ public class StatsServiceTests : IDisposable
         Assert.Equal(0, snapshot.Buckets[0].Requests);
         Assert.Equal(0, snapshot.Buckets[23].Requests);
     }
+
+    [Fact]
+    public async Task GetRangeAsync_Today_WindowStartsAtMidnightOfInjectedZone()
+    {
+        var snapshot = await ServiceInZone(ZonePlus7).GetRangeAsync(StatsRange.Today);
+
+        // Neo theo nửa đêm của múi được inject (= 2026-10-10 17:00Z), không phải nửa đêm UTC
+        Assert.Equal(MidnightZoneLocal, snapshot.From);
+        Assert.Equal(TimeSpan.FromHours(7), snapshot.From.Offset);
+        Assert.Equal(NowUtcInZoneDay, snapshot.To);
+        Assert.Equal(24, snapshot.Buckets.Count);
+        // Bucket giờ cũng mang offset của múi — StatsChart format ":HH" ra đúng giờ máy
+        Assert.Equal(TimeSpan.FromHours(7), snapshot.Buckets[0].BucketStart.Offset);
+        Assert.Equal(MidnightZoneLocal.AddHours(23), snapshot.Buckets[23].BucketStart);
+    }
+
+    [Fact]
+    public async Task GetRangeAsync_Today_RequestAt01amZone_FallsInBucket1()
+    {
+        // 10/10 18:30Z = 01:30 ngày 11/10 giờ máy (+07). Cửa sổ nửa đêm UTC cũ loại hẳn dòng
+        // này (trước From), nên test fail đỏ đúng trên hành vi cũ.
+        Seed(Terminal(RequestOutcome.Ok, new DateTimeOffset(2026, 10, 10, 18, 30, 0, TimeSpan.Zero)));
+
+        var snapshot = await ServiceInZone(ZonePlus7).GetRangeAsync(StatsRange.Today);
+
+        Assert.Equal(1, snapshot.Requests);
+        Assert.Equal(1, snapshot.Buckets[1].Requests);
+        Assert.Equal(0, snapshot.Buckets[0].Requests);
+        // Bucket là giờ MÁY chứ không phải "giờ UTC": mốc 08:30Z (15:30 máy) không còn ở bucket 8
+        Assert.Equal(0, snapshot.Buckets[8].Requests);
+    }
+
+    [Fact]
+    public async Task GetRangeAsync_Last7Days_WindowStartsAtMidnightOfZoneMinus6Days()
+    {
+        var snapshot = await ServiceInZone(ZonePlus7).GetRangeAsync(StatsRange.Last7Days);
+
+        Assert.Equal(MidnightZoneLocal.AddDays(-6), snapshot.From);
+        Assert.Equal(TimeSpan.FromHours(7), snapshot.From.Offset);
+        Assert.Equal(7, snapshot.Buckets.Count);
+        Assert.Equal(MidnightZoneLocal.AddDays(-6), snapshot.Buckets[0].BucketStart);
+
+        var monthly = await ServiceInZone(ZonePlus7).GetRangeAsync(StatsRange.Last30Days);
+        Assert.Equal(MidnightZoneLocal.AddDays(-29), monthly.From);
+        Assert.Equal(30, monthly.Buckets.Count);
+    }
+
+    /// <summary>
+    /// StatsService cùng fixture DB nhưng inject múi giờ (service fixture ở trên dùng mặc định
+    /// TimeZoneInfo.Utc nên toàn bộ test kia vẫn giữ nghĩa UTC).
+    /// </summary>
+    private StatsService ServiceInZone(TimeZoneInfo zone) =>
+        new(_factory, new FixedTimeProvider(NowUtcInZoneDay), zone);
 
     private void Seed(params LogEntry[] entries)
     {

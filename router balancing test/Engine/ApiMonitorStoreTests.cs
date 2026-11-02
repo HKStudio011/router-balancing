@@ -304,6 +304,32 @@ public class ApiMonitorStoreTests
     }
 
     [Fact]
+    public void TodayTokens_RollsAtMidnightOfInjectedZone()
+    {
+        // Đồng hồ offset 0 giống TimeProvider.System: 11/10 16:30Z = 23:30 ngày 11/10 giờ máy
+        // (+07), 11/10 17:30Z = 00:30 ngày 12/10 giờ máy — HAI CÙNG NGÀY UTC nhưng đã qua nửa
+        // đêm giờ máy. Counter phải reset ở nửa đêm của múi (tile "Token hôm nay" là thứ
+        // người dùng nhìn thấy), không phải nửa đêm UTC.
+        var zone = TimeZoneInfo.CreateCustomTimeZone("UTC+07", TimeSpan.FromHours(7), "UTC+07", "+07");
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 10, 11, 16, 30, 0, TimeSpan.Zero));
+        var store = new ApiMonitorStore(new TraceFeed(_log), _log, time, zone);
+
+        store.StartRequest("r1", "m1", Bytes(Prompt));
+        store.RecordResponse("r1", 10, 20, null, null);
+        Assert.Equal(30, store.TodayTokens);
+
+        time.SetUtcNow(new DateTimeOffset(2026, 10, 11, 17, 30, 0, TimeSpan.Zero));
+
+        // Đã sang ngày máy mới → getter phải tự reset, kể cả khi ngày UTC chưa đổi
+        Assert.Equal(0, store.TodayTokens);
+
+        store.StartRequest("r2", "m1", Bytes(Prompt));
+        store.RecordResponse("r2", 1, 5, null, null);
+
+        Assert.Equal(6, store.TodayTokens);
+    }
+
+    [Fact]
     public async Task Snapshot_ConcurrentWriters_DoNotThrow()
     {
         var tasks = Enumerable.Range(0, 4).Select(t => Task.Run(() =>

@@ -23,15 +23,20 @@ public sealed class ApiMonitorStore : IApiMonitorStore
     private readonly List<ApiCallRecord> _calls = [];
     private readonly ILogService _log;
     private readonly TimeProvider _time;
+    private readonly TimeZoneInfo _zone;
 
     private long _todayTokens;
-    private DateTime _today;
+    private DateOnly _today;
 
     /// <summary>Tạo store và đăng ký ngay vào feed để nhận vòng đời request.</summary>
     /// <param name="feed">Feed trace — nguồn H1–H4 cho State/Status/Success/CompletedAt.</param>
     /// <param name="log">Log service — mọi lỗi (kể cả subscriber nổ) chỉ về đây, không ra caller.</param>
-    /// <param name="time">Chỉ quyết định "hôm nay" của <see cref="TodayTokens"/> (ngày UTC — không dùng DateTime.Now).</param>
-    public ApiMonitorStore(ITraceFeed feed, ILogService log, TimeProvider time)
+    /// <param name="time">Chỉ quyết định "hôm nay" của <see cref="TodayTokens"/> (không dùng DateTime.Now).</param>
+    /// <param name="zone">
+    /// Múi giờ quyết định "hôm nay" của <see cref="TodayTokens"/> — mặc định
+    /// <see cref="TimeZoneInfo.Utc"/> nên call site cũ giữ nguyên nghĩa.
+    /// </param>
+    public ApiMonitorStore(ITraceFeed feed, ILogService log, TimeProvider time, TimeZoneInfo? zone = null)
     {
         ArgumentNullException.ThrowIfNull(feed);
         ArgumentNullException.ThrowIfNull(log);
@@ -39,7 +44,8 @@ public sealed class ApiMonitorStore : IApiMonitorStore
 
         _log = log;
         _time = time;
-        _today = time.GetUtcNow().Date;
+        _zone = zone ?? TimeZoneInfo.Utc;
+        _today = LocalDate(time.GetUtcNow());
 
         // Why: Publish chạy trên thread endpoint/dispatcher — multicast delegate dừng ở
         // subscriber nổ, nên nếu handler này nổ thì publish sẽ nổ caller (H4 xung quanh).
@@ -57,8 +63,8 @@ public sealed class ApiMonitorStore : IApiMonitorStore
         {
             lock (_gate)
             {
-                // Reset Ở CẢ GETTER: tile "Token hôm nay" phải đọc đúng ngày UTC hiện tại
-                // ngay sau nửa đêm, kể cả khi chưa có RecordResponse nào của ngày mới.
+                // Reset Ở CẢ GETTER: tile "Token hôm nay" phải đọc đúng ngày hiện tại của múi
+                // ngay sau nửa đêm giờ máy, kể cả khi chưa có RecordResponse nào của ngày mới.
                 try
                 {
                     RollToday();
@@ -287,18 +293,28 @@ public sealed class ApiMonitorStore : IApiMonitorStore
     }
 
     /// <summary>
-    /// Reset bộ đếm nếu đã sang ngày UTC mới — nguồn sự thật duy nhất cho quy tắc
-    /// "Token hôm nay"; gọi từ cả <see cref="TodayTokens"/> và <see cref="RecordResponse"/>
-    /// (getter phải tự reset để tile không hiển thị tổng của hôm qua). Gọi khi đang giữ <see cref="_gate"/>.
+    /// Reset bộ đếm nếu đã sang ngày mới CỦA MÚI <c>_zone</c> (mặc định UTC) — nguồn sự thật duy
+    /// nhất cho quy tắc "Token hôm nay"; gọi từ cả <see cref="TodayTokens"/> và
+    /// <see cref="RecordResponse"/> (getter phải tự reset để tile không hiển thị tổng của hôm qua).
+    /// Gọi khi đang giữ <see cref="_gate"/>.
     /// </summary>
     private void RollToday()
     {
-        var today = _time.GetUtcNow().Date;
+        var today = LocalDate(_time.GetUtcNow());
         if (today != _today)
         {
             _today = today;
             _todayTokens = 0;
         }
+    }
+
+    /// <summary>Ngày lịch (wall-clock) của <paramref name="now"/> tại múi <c>_zone</c>.</summary>
+    private DateOnly LocalDate(DateTimeOffset now)
+    {
+        // Why không dùng now.Date: TimeProvider.System luôn trả offset 0 nên now.Date chỉ là
+        // ngày UTC — trên máy UTC+7 counter sẽ reset trễ 7 giờ (bug thực tế). Phải quy đổi
+        // sang múi được inject rồi mới lấy ngày.
+        return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(now.UtcDateTime, _zone));
     }
 
     /// <summary>Record mới ở trạng thái Queued — khung dùng chung cho StartRequest/feed/upsert.</summary>

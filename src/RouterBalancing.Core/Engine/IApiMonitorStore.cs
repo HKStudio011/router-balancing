@@ -51,7 +51,8 @@ public sealed record ApiCallRecord(
 
 /// <summary>
 /// Store in-memory API Monitor: ring 50 record (mới nhất trước) + bộ đếm "Token hôm nay"
-/// theo ngày UTC, tiêu thụ <see cref="ITraceFeed.Published"/> để lấy trạng thái vòng đời.
+/// theo ngày của múi giờ inject (mặc định UTC), tiêu thụ <see cref="ITraceFeed.Published"/>
+/// để lấy trạng thái vòng đời.
 /// </summary>
 public interface IApiMonitorStore
 {
@@ -62,7 +63,10 @@ public interface IApiMonitorStore
     /// </summary>
     event Action Changed;
 
-    /// <summary>Tổng prompt+completion của các response trong ngày UTC hiện tại — tile "Token hôm nay".</summary>
+    /// <summary>
+    /// Tổng prompt+completion của các response trong ngày hiện tại CỦA MÚI giờ store được inject
+    /// (mặc định UTC) — tile "Token hôm nay".
+    /// </summary>
     long TodayTokens { get; }
 
     /// <summary>Ảnh chụp tối đa 50 record, hoạt động mới nhất trước — record đổi trạng thái được đưa lên đầu, update không đổi trạng thái giữ vị trí.</summary>
@@ -84,7 +88,7 @@ public interface IApiMonitorStore
 
     /// <summary>
     /// Ghi kết quả 2xx: tokens, FirstTokenAt, ResponseBody; xóa ErrorBody (retry đã thắng)
-    /// và cộng vào <see cref="TodayTokens"/> (reset khi đổi ngày UTC).
+    /// và cộng vào <see cref="TodayTokens"/> (reset khi đổi ngày của múi giờ store).
     /// </summary>
     /// <param name="requestId">Id của request.</param>
     /// <param name="promptTokens">Token prompt — null nếu upstream không trả usage.</param>
