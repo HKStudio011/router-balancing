@@ -82,7 +82,7 @@ Quy tắc lọc (trước khi entry vào cụm 30s):
 - `ShowBalloonTip` phải gọi trên UI thread (thread tạo `NotifyIcon`) — `ErrorNotifier` bọc trong `Dispatcher.Dispatch` vì `AlertRaised` tới từ worker/flush loop.
 - Mở rộng `ITrayService` (`src/RouterBalancing.Core/Platform/ITrayService.cs`):
   - `void Notify(string title, string message)` — WinForms: `ShowBalloonTip(6000, title, text, ToolTipIcon.Error)`; `NullTrayService` no-op (Android/iOS/mac không có tray thật).
-  - `event Action? NotificationActivated` — từ `NotifyIcon.BalloonTipClicked` (double-click vào toast trong Action Center cũng kích hoạt cùng event này).
+  - `event Action? NotificationActivated` — từ `NotifyIcon.BalloonTipClicked` (chỉ bắn khi user bấm balloon tip **đang còn hiển thị** — event tới từ `NIN_BALLOONUSERCLICK`; mục đã vào Action Center không bắn event). Hệ quả: affordance "bấm thông báo để mở app" chỉ tồn tại trong ~6 giây balloon còn trên màn hình — chấp nhận, vì Log panel vẫn mở được từ menu khay.
 - Text balloon tip dài bị Windows cắt; message đã cap 200 ký tự ở §2.2 nên nằm trong ngưỡng an toàn.
 
 ### 2.4. Bấm notification → Log panel đã lọc lỗi
