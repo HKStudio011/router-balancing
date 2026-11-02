@@ -81,7 +81,8 @@ public sealed class ErrorNotifier : IDisposable
             switch (NotificationChannelPolicy.Resolve(_desktop.IsInteractive, _settings.NotifyErrors))
             {
                 case NotificationChannel.InAppToast:
-                    // Capture một lần: event có thể bị unsubscribe giữa phép thử và lời gọi.
+                    // Đọc delegate một lần: null-check và quyết định fallback dựa trên cùng một
+                    // snapshot cho dễ đọc (?-Invoke vốn chỉ đọc field một lần, không phải race fix).
                     var toastHandlers = InAppAlertRequested;
                     // Không có subscriber = circuit Blazor chưa render (lỗi ngay lúc khởi động) hoặc
                     // đã dispose trong lúc cửa sổ vẫn focus → alert sẽ rơi im lặng, đúng kịch bản

@@ -216,8 +216,10 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
             }
             catch (Exception ex)
             {
-                // Operation name riêng cho subscriber: phân biệt với lỗi ghi DB ở WriteTerminal
-                // — không nuốt, không nổ feed.
+                // Operation name riêng cho subscriber: phân biệt với lỗi ghi DB ở WriteTerminal —
+                // không nuốt. Không nổ feed chỉ đúng tới mức handler hiện tại của aggregator
+                // (ErrorAlertAggregator.OnEntryWritten) tự nuốt exception của nó; SafeLog ghi Error
+                // Category=App nên subscriber nào để lọt exception vẫn kích hoạt alert.
                 SafeLog(nameof(NotifyEntryWritten), ex);
             }
         }

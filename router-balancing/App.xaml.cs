@@ -217,12 +217,11 @@ namespace router_balancing
         /// rồi điều hướng tới Log panel đã lọc lỗi.
         /// </summary>
         /// <remarks>
-        /// Phần navigation (<c>TryNavigateToErrorLog</c>) đi qua <c>Dispatcher.Dispatch</c> để rời
-        /// khỏi handler balloon tip của WinForms trước khi chạm <c>NavigationManager</c> của circuit
-        /// Blazor — navigation ở đây chạy qua WebView/JS interop, chạy thẳng trong callback balloon
-        /// sẽ đưa nó vào giữa message pump WinForms. Dispatch KHÔNG phải vì khác thread:
-        /// <c>NotificationActivated</c> vẫn bắn trên UI thread đã tạo <c>NotifyIcon</c>.
-        /// Delegate dispatch chạy ngoài try/catch của method này nên
+        /// Phần navigation (<c>TryNavigateToErrorLog</c>) đi qua <c>Dispatcher.Dispatch</c> theo chủ
+        /// đích: đưa nó ra khỏi callback balloon tip của WinForms và đặt vào hàng đợi message-queue
+        /// của MAUI — chỗ an toàn để chạm <c>NavigationManager</c> của circuit Blazor. Dispatch
+        /// KHÔNG phải vì khác thread: <c>NotificationActivated</c> vẫn bắn trên UI thread đã tạo
+        /// <c>NotifyIcon</c>. Delegate dispatch chạy ngoài try/catch của method này nên
         /// <see cref="NavigateToErrorLogOrWarn"/> phải tự cách ly.
         /// </remarks>
         private void OnNotificationActivated()
@@ -230,8 +229,8 @@ namespace router_balancing
             try
             {
                 ShowMainWindow();
-                // Navigation nằm ngoài handler WinForms: Dispatch đưa nó về hàng đợi message pump
-                // của MAUI, tránh deadlock/crash khi WebView interop chạy giữa callback balloon tip.
+                // Dispatch đưa navigation ra khỏi callback balloon tip của WinForms, vào hàng đợi
+                // message-queue của MAUI — chỗ an toàn để chạm NavigationManager của circuit.
                 var app = Application.Current;
                 if (app is null)
                 {
@@ -245,7 +244,7 @@ namespace router_balancing
             catch (Exception ex)
             {
                 // Warn: dòng Error Category=App sẽ tự nuôi alert mới mỗi 30s (§2.2.1)
-                _log.Warn($"Không mở được Log panel từ notification: {ex.GetType().Name}: {ex.Message}");
+                WarnSafe($"Không mở được Log panel từ notification: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -265,8 +264,16 @@ namespace router_balancing
             catch (Exception ex)
             {
                 // Warn: dòng Error Category=App sẽ tự nuôi alert mới mỗi 30s (§2.2.1)
-                _log.Warn($"Không mở được Log panel từ notification: {ex.GetType().Name}: {ex.Message}");
+                WarnSafe($"Không mở được Log panel từ notification: {ex.GetType().Name}: {ex.Message}");
             }
+        }
+
+        // Warn an toàn lúc shutdown: LogService đã dispose sẽ ném ở đây, và catch mà ném thì
+        // lọt thẳng lên message loop MAUI (ngoài try/catch nào). Nuốt là cố ý.
+        private void WarnSafe(string message)
+        {
+            try { _log.Warn(message); }
+            catch { /* đã nuốt: không còn chỗ an toàn để báo lỗi */ }
         }
 
         private void StopProxyOnExit()
