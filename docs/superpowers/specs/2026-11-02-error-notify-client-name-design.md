@@ -103,7 +103,7 @@ Quy tắc lọc (trước khi entry vào cụm 30s):
 
 - `ApiCallRecord` (`src/RouterBalancing.Core/Engine/IApiMonitorStore.cs:44`) thêm `long? ClientKeyId`. `ApiMonitorStore.OnPublished` lấy từ `TraceEvent.ClientKeyId` (đã có, chỉ mang ở event `Received` đầu) và carry qua các lần update trạng thái — cùng luật "không đè giá trị đã có" mà `RequestJournalWriter.MergeClientKeyId` đang dùng.
 - `IClientKeyService` thêm `Task<string?> GetNameAsync(long id, CancellationToken ct = default)` (SQLite local, gọi 1 lần khi mở modal — không cần cache). Trả `null` khi key đã bị xóa.
-- `RequestDetailModal`: strip header thêm dòng "Client" với giá trị `ClientKey.Name`; `ClientKeyId is null` (app chạy không bật API key, hoặc request trước khi có auth) → `—`; key đã xóa → `#{id}`.
+- `RequestDetailModal`: strip header thêm dòng "client" với giá trị `ClientKey.Name`; `ClientKeyId is null` (app chạy không bật API key, hoặc request trước khi có auth) → **không render dòng nào** (controller ruling 2026-11-02, thay cho `—`: không có client key là trường hợp đơn người dùng phổ biến, một field luôn rỗng chỉ tổ nhiễu); key đã xóa → `#{id}`.
 - **Không** thêm cột Client vào bảng API Monitor trong đợt này (bảng 5 cột đã kín, cần quyết định layout riêng).
 
 ### 2.7. Ba sửa nhanh
