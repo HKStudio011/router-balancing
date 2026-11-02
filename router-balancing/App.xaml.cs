@@ -1,4 +1,5 @@
 ﻿using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Notifications;
 using RouterBalancing.Core.Platform;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Server;
@@ -23,6 +24,9 @@ namespace router_balancing
         private readonly FreeModelSyncWorker _freeSync;
         private readonly UpdateCheckService _updateCheck;
         private readonly WindowState _window;
+        private readonly ErrorAlertAggregator _alerts;
+        private readonly ErrorNotifier _notifier;
+        private readonly AppNavigation _nav;
         private Window? _mainWindow;
 #if WINDOWS
         // Chỉ Windows dùng: phân biệt thoát từ tray với đóng cửa sổ về khay (AppWindow.Closing)
@@ -38,7 +42,10 @@ namespace router_balancing
             LogRetentionWorker retention,
             FreeModelSyncWorker freeSync,
             UpdateCheckService updateCheck,
-            WindowState window)
+            WindowState window,
+            ErrorAlertAggregator alerts,
+            ErrorNotifier notifier,
+            AppNavigation nav)
         {
             InitializeComponent();
             _log = log;
@@ -50,6 +57,12 @@ namespace router_balancing
             _freeSync = freeSync;
             _updateCheck = updateCheck;
             _window = window;
+            _alerts = alerts;
+            // ctor của ErrorNotifier là nơi subscribe AlertRaised — resolve qua DI để nó gắn
+            // subscription trước khi circuit Blazor đầu tiên tồn tại; giữ field để Dispose ở
+            // StopProxyOnExit cắt subscription đó khi process thoát.
+            _notifier = notifier;
+            _nav = nav;
 
             _log.Info("router-balancing khởi động.");
 
@@ -87,8 +100,15 @@ namespace router_balancing
             // Check update nền: trễ 5s rồi lặp 24h — phát hiện bản mới thì MainLayout toast (spec §9.4)
             _updateCheck.Start();
 
+            // Gom cụm lỗi 30s (loop flush 1s) — đặt ngoài #if WINDOWS: mọi nền tảng đều gom, chỉ
+            // kênh thông báo là khác nhau (nền tảng không có tray thật thì im lặng, spec §2.3)
+            _alerts.Start();
+
             _tray.OpenRequested += ShowMainWindow;
             _tray.ExitRequested += ExitFromTray;
+            // Bấm balloon tip lúc nó CÒN hiển thị → mở cửa sổ rồi tới Log panel đã lọc lỗi (§2.4).
+            // NotificationActivated bắn trên đúng UI thread đã tạo NotifyIcon nên không cần Dispatch.
+            _tray.NotificationActivated += OnNotificationActivated;
             _tray.Initialize();
 
             SyncStartupRegistration();
@@ -191,6 +211,36 @@ namespace router_balancing
             Current?.Quit();
         }
 
+        /// <summary>
+        /// User bấm balloon tip (chỉ lúc nó còn trên màn hình ~6s — giới hạn của
+        /// <c>BalloonTipClicked</c>, spec §2.3): mở cửa sổ như đường <c>OpenRequested</c>,
+        /// rồi điều hướng tới Log panel đã lọc lỗi.
+        /// </summary>
+        /// <remarks>
+        /// Không bọc <c>Dispatcher.Dispatch</c>: <c>NotificationActivated</c> bắn trên đúng UI thread
+        /// đã tạo <c>NotifyIcon</c> (thread chạy App ctor), tức đã là thread của message pump MAUI.
+        /// try/catch vì navigation đi qua WebView (JS interop): exception ở đây sẽ thoát vào
+        /// message pump WinForms và làm crash app.
+        /// </remarks>
+        private void OnNotificationActivated()
+        {
+            try
+            {
+                ShowMainWindow();
+                if (!_nav.TryNavigateToErrorLog())
+                {
+                    // Notification được bấm trước khi circuit render lần đầu (chưa Capture) —
+                    // chỉ mở cửa sổ, không queue navigation (spec §2.4).
+                    _log.Warn("Notification được bấm trước khi UI sẵn sàng — chỉ mở cửa sổ.");
+                }
+            }
+            catch (Exception ex)
+            {
+                // Warn: dòng Error Category=App sẽ tự nuôi alert mới mỗi 30s (§2.2.1)
+                _log.Warn($"Không mở được Log panel từ notification: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
         private void StopProxyOnExit()
         {
             try
@@ -210,7 +260,11 @@ namespace router_balancing
                 // Dispose đặt trước retention: lỗi retention không được phép bỏ sót tray.
                 // TrayService.Dispose idempotent (_icon is null → return) nên trùng lặp với ExitFromTray vô hại.
                 _tray.Dispose();
-                // Dừng vòng lặp dọn log + sync model free + check update trước khi process chết
+                // Cắt subscription AlertRaised trước rồi mới dừng aggregator: thứ tự này để
+                // không còn subscriber nào nhận alert trong lúc aggregator đang đóng cụm cuối.
+                _notifier.Dispose();
+                // Dừng vòng lặp dọn log + sync model free + check update + gom lỗi trước khi process chết
+                _alerts.Dispose();
                 _retention.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
                 _freeSync.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
                 _updateCheck.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));

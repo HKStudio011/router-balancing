@@ -9,6 +9,7 @@ using RouterBalancing.Core.Combos;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Localization;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Notifications;
 using RouterBalancing.Core.Platform;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Proxies;
@@ -98,6 +99,25 @@ namespace router_balancing
             // App.xaml.cs đặt cờ; Core chỉ thấy qua IDesktopState
             builder.Services.AddSingleton<WindowState>();
             builder.Services.AddSingleton<IDesktopState>(sp => sp.GetRequiredService<WindowState>());
+            // Gom cụm lỗi 30s + kênh thông báo (spec error-notify-client-name §2.2/§2.3).
+            // Factory TƯỜNG MINH vì translator là Func<string,string> — DI mặc định không resolve
+            // được delegate. LocalizationService là singleton nên bắt một lần trong closure là
+            // an toàn; indexer của nó tự đọc language hiện hành nên đổi language có hiệu lực ngay.
+            builder.Services.AddSingleton<ErrorAlertAggregator>(sp =>
+            {
+                var localization = sp.GetRequiredService<LocalizationService>();
+                return new ErrorAlertAggregator(
+                    sp.GetRequiredService<ILogService>(),
+                    sp.GetRequiredService<IRequestJournalWriter>(),
+                    sp.GetRequiredService<TimeProvider>(),
+                    key => localization[key]);
+            });
+            // Singleton chỉ phụ thuộc singleton (aggregator/deskstate/tray/settings/log) — không
+            // captive dependency; ToastService scoped đi qua event InAppAlertRequested (spec §2.3)
+            builder.Services.AddSingleton<ErrorNotifier>();
+            // NavigationManager scoped theo circuit nên singleton không inject được nó — capture
+            // từ MainLayout (spec §2.4)
+            builder.Services.AddSingleton<AppNavigation>();
             // Outbound proxy pool (spec proxy-pool §4)
             builder.Services.AddSingleton(TimeProvider.System);           // ProxyPool tính cooldown down theo system clock
             // Múi giờ máy cho UI: StatsService (cửa sổ "Hôm nay" + bucket) và ApiMonitorStore
