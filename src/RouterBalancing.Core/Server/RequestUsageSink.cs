@@ -50,9 +50,12 @@ public sealed class RequestUsageSink(
         }
         catch (Exception ex)
         {
-            // Fail-open: usage là telemetry — DB lỗi không được phá request đã 2xx (spec §10)
+            // Fail-open: usage là telemetry — DB lỗi không được phá request đã 2xx (spec §10).
+            // Category=App (không phải Request): dòng này không có ProviderKey nên bộ lọc
+            // nhiễu §2.2.1 sẽ loại nếu để Request — trong khi spec §2.2.1 row 1 coi lỗi
+            // DB/usage là alertable.
             log.Error("Không ghi được usage counter cho client key/provider account.", ex,
-                LogCategory.Request);
+                LogCategory.App);
         }
     }
 }

@@ -59,6 +59,20 @@ public class RequestUsageSinkTests : IDisposable
     }
 
     [Fact]
+    public async Task Record_WhenKeysServiceThrows_LogsErrorAsAppCategory()
+    {
+        var log = new CapturingLog();
+        var sink = new RequestUsageSink(
+            new ThrowingKeys(new InvalidOperationException("db locked")), _usage, _limiter, log);
+
+        await sink.RecordAsync(1, providerAccountId: null, 5, 5);
+
+        // Dòng này không có ProviderKey: Category=Request sẽ bị bộ lọc nhiễu §2.2.1 loại,
+        // nên lỗi DB khi ghi usage phải là App để còn tới alert (spec §2.2.1 row 1).
+        Assert.Equal(LogCategory.App, Assert.Single(log.ErrorCategories));
+    }
+
+    [Fact]
     public async Task Record_WhenRequestTokenCancelled_SkipsWithoutErrorLog()
     {
         var log = new CapturingLog();
@@ -172,12 +186,16 @@ public class RequestUsageSinkTests : IDisposable
     private sealed class CapturingLog : ILogService
     {
         public List<string> Errors { get; } = [];
+        public List<LogCategory> ErrorCategories { get; } = [];
         public event Action<LogEntry>? LogAdded { add { } remove { } }
         public void Write(LogEntry entry) { }
         public void Info(string message, LogCategory category = LogCategory.App) { }
         public void Warn(string message, LogCategory category = LogCategory.App) { }
         public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App)
-            => Errors.Add(message);
+        {
+            Errors.Add(message);
+            ErrorCategories.Add(category);
+        }
         public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
         public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
         public int Count(LogQuery query) => 0;
