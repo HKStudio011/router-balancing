@@ -1,6 +1,10 @@
 ﻿@inherits LayoutComponentBase
 @implements IDisposable
+@using RouterBalancing.Core.Notifications
 @using RouterBalancing.Core.Update
+@inject NavigationManager Navigation
+@inject AppNavigation Nav
+@inject ErrorNotifier Notifier
 @inject IProxyHost ProxyHost
 @inject ThemeService Theme
 @inject ILogService Log
@@ -54,6 +58,14 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // NavigationManager scoped theo circuit nên không inject vào service singleton được —
+        // layout render lần đầu là điểm sớm nhất chắc chắn có nó: capture cho AppNavigation để
+        // App điều hướng khi user bấm notification (spec error-notify-client-name §2.4)
+        Nav.Capture(Navigation);
+        // ErrorNotifier là singleton (không có ToastService) — toast đi qua event, MainLayout
+        // trong Blazor scope mới gọi Toast.Show (spec §2.3)
+        Notifier.InAppAlertRequested += OnInAppAlert;
+
         ProxyHost.StateChanged += OnProxyStateChanged;
         Toast.ToastAdded += OnToastAdded;
         L.LanguageChanged += OnLanguageChanged;
@@ -78,6 +90,14 @@
     private void OnProxyStateChanged() => _ = InvokeAsync(() =>
     {
         UpdateBadge();
+        StateHasChanged();
+    });
+
+    // AlertRaised tới từ worker/flush thread của aggregator — InvokeAsync marshal về Blazor
+    // dispatcher trước khi chạm _toasts (spec error-notify-client-name §2.3)
+    private void OnInAppAlert(ErrorAlert alert) => _ = InvokeAsync(() =>
+    {
+        Toast.Show(alert.Message, ToastSeverity.Error);
         StateHasChanged();
     });
 
@@ -138,6 +158,7 @@
 
     public void Dispose()
     {
+        Notifier.InAppAlertRequested -= OnInAppAlert;
         ProxyHost.StateChanged -= OnProxyStateChanged;
         Toast.ToastAdded -= OnToastAdded;
         L.LanguageChanged -= OnLanguageChanged;

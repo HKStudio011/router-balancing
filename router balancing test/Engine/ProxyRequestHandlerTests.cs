@@ -110,6 +110,7 @@ public class ProxyRequestHandlerTests
         public bool LanAccess => false;
         public bool CloseToTray => true;
         public bool StartWithWindows => false;
+        public bool NotifyErrors => true;
         public int ProviderProbeTimeoutSec => 60;
         public int LogRetentionDays => 90;
         public int StatsErrorRateThreshold => 10;

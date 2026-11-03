@@ -124,6 +124,24 @@ public class ClientKeyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetNameAsync_ExistingKey_ReturnsName()
+    {
+        var (key, _) = await _service.CreateAsync(Draft("Claude Code"));
+
+        Assert.Equal("Claude Code", await _service.GetNameAsync(key.Id));
+    }
+
+    [Fact]
+    public async Task GetNameAsync_DeletedKey_ReturnsNull()
+    {
+        // Request trong API Monitor giữ ClientKeyId sau khi key bị xóa — UI fallback "#<id>"
+        var (key, _) = await _service.CreateAsync(Draft("Claude Code"));
+        await _service.DeleteAsync(key.Id);
+
+        Assert.Null(await _service.GetNameAsync(key.Id));
+    }
+
+    [Fact]
     public async Task RecordRequest_IncrementsTodayUsageAndLastUsed()
     {
         var (key, _) = await _service.CreateAsync(Draft());

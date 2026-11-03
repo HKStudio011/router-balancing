@@ -146,6 +146,28 @@
     private bool _filtersExpanded = true;
     private long? _expandedId;
 
+    /// <summary>
+    /// Bộ lọc severity từ query string (<c>/logs?severity=Error</c>) — deep-link khi user bấm
+    /// notification lỗi (spec error-notify-client-name §2.4). Giá trị không parse được
+    /// (vd <c>?severity=foo</c>) không được validate ở đây: <see cref="MinSeverity"/> đã trả
+    /// null cho chuỗi lạ nên query sai tự rơi về "không lọc", dùng chung một luật với UI.
+    /// </summary>
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "severity")]
+    public string? SeverityQuery { get; set; }
+
+    /// <summary>Bộ lọc category từ query string — cùng cơ chế với <see cref="SeverityQuery"/>.</summary>
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "category")]
+    public string? CategoryQuery { get; set; }
+
+    // Bản query đã thực sự nạp vào _severity/_category ở lần gán gần nhất. OnParametersSet chạy
+    // mỗi lần parameter đổi, nên guard phải so query với BẢN ĐÃ ÁP (không so với _severity):
+    // nếu so với _severity thì query cũ còn treo trên URL sẽ ghi đè filter user vừa tự đổi ở
+    // select, và mỗi lần re-render lại Load() gọi DB không cần thiết.
+    private string? _appliedSeverityQuery;
+    private string? _appliedCategoryQuery;
+
     private LogSeverity? MinSeverity =>
         Enum.TryParse<LogSeverity>(_severity, out var value) ? value : null;
 
@@ -154,15 +176,48 @@
 
     protected override void OnInitialized()
     {
+        // Nạp query TRƯỚC Load() đầu tiên: deep-link từ notification phải ra đúng bảng đã lọc
+        // ngay lần render đầu, không phải bảng unfiltered rồi mới lọc lại.
+        _severity = SeverityQuery ?? _severity;
+        _category = CategoryQuery ?? _category;
+        _appliedSeverityQuery = SeverityQuery;
+        _appliedCategoryQuery = CategoryQuery;
         Load();
         Log.LogAdded += OnLogAdded;
+    }
+
+    /// <summary>
+    /// Page đã mở sẵn mà user bấm notification (điều hướng cùng route): Blazor tái dùng instance
+    /// nên chỉ hook này chạy — phải re-apply filter và query lại bảng.
+    /// SupplyParameterFromQuery là cascading value nên giá trị cũng có thể xuất hiện ở đây lần
+    /// đầu (muộn hơn OnInitialized) — guard bên dưới bắt cả trường hợp đó.
+    /// Không gọi StateHasChanged: framework đã lên lịch render sau SetParametersAsync.
+    /// </summary>
+    protected override void OnParametersSet()
+    {
+        if (SeverityQuery == _appliedSeverityQuery && CategoryQuery == _appliedCategoryQuery)
+        {
+            return;
+        }
+
+        _severity = SeverityQuery ?? _severity;
+        _category = CategoryQuery ?? _category;
+        _appliedSeverityQuery = SeverityQuery;
+        _appliedCategoryQuery = CategoryQuery;
+        // Filter mới thì ở trang nào cũng phải về trang 1 (như ApplyFilters) — trang 3 của filter
+        // cũ có thể không còn dòng nào với filter mới.
+        _page = 1;
+        Load();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
         // rbPanel: trạng thái collapse filter bar nhớ qua localStorage rb.panel.log.filters
-        _filtersExpanded = await JS.InvokeAsync<bool>("rbPanel.get", "log.filters", true);
+        var restored = await JS.InvokeAsync<bool>("rbPanel.get", "log.filters", true);
+        // Deep-link từ notification: giữ filter bar MỞ khi URL mang filter, để user nhìn thấy
+        // bộ lọc đang áp thay vì bảng đã lọc không giải thích được (spec §2.4).
+        _filtersExpanded = restored || SeverityQuery is not null || CategoryQuery is not null;
         StateHasChanged();
     }
 

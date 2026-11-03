@@ -29,23 +29,38 @@ public sealed class LogService : ILogService, IDisposable
         db.SaveChanges();
     }
 
-    private void NotifySubscribers(LogEntry entry)
+    /// <summary>
+    /// Phát entry cho từng subscriber, cách ly lỗi và báo lỗi handler vào store.
+    /// </summary>
+    /// <param name="entry">Entry vừa persist, hoặc dòng lỗi handler đang được phát lại.</param>
+    /// <param name="skip">
+    /// Handler đã ném khi xử lý entry nguồn — bỏ qua khi phát lại dòng lỗi để không gọi lại
+    /// đúng handler vừa hỏng (tránh nhân đôi noise).
+    /// </param>
+    /// <param name="notifyFailure">
+    /// <see langword="false"/> khi đang phát lại dòng lỗi: lỗi phát sinh tiếp vẫn được persist
+    /// nhưng không phát lại nữa — chặn đệ quy.
+    /// </param>
+    private void NotifySubscribers(LogEntry entry, Delegate? skip = null, bool notifyFailure = true)
     {
         var handlers = LogAdded;
         if (handlers is null) return;
+
+        List<(LogEntry Failure, Delegate Handler)>? failures = null;
         // Cách ly từng handler: multicast delegate dừng ở handler ném lỗi đầu tiên,
         // và subscriber (VD Log panel gọi sai thread) có thể ném exception làm hỏng
-        // request đang gọi Write. Lỗi handler được ghi vào store (không nuốt) —
-        // gọi Persist (KHÔNG gọi Write) để tránh đệ quy: Write sẽ phát lại LogAdded.
+        // request đang gọi Write. Lỗi handler được ghi vào store (không nuốt) bằng
+        // Persist (KHÔNG gọi Write) để tránh đệ quy vô hạn.
         foreach (var handler in handlers.GetInvocationList())
         {
+            if (ReferenceEquals(handler, skip)) continue;
             try
             {
                 ((Action<LogEntry>)handler)(entry);
             }
             catch (Exception ex)
             {
-                Persist(new LogEntry
+                var failure = new LogEntry
                 {
                     Timestamp = DateTimeOffset.UtcNow,
                     Severity = LogSeverity.Error,
@@ -54,9 +69,27 @@ public sealed class LogService : ILogService, IDisposable
                     // Giữ stack trace để chẩn đoán từ Log panel — không nuốt exception
                     Details = ex.ToString(),
                     ErrorCode = ex.GetType().Name,
-                });
+                };
+                try
+                {
+                    Persist(failure);
+                }
+                catch
+                {
+                    // intentional swallow — dòng lỗi chỉ là chẩn đoán; DB hỏng đúng lúc này
+                    // không được phá caller của Write hoặc làm subscriber khác mất entry.
+                    // Dòng lỗi vẫn được phát lại bên dưới để alert không mất.
+                }
+                (failures ??= []).Add((failure, handler));
             }
         }
+
+        if (!notifyFailure || failures is null) return;
+        // Phát lại dòng lỗi cho các subscriber CÒN LẠI: ErrorAlertAggregator chỉ nghe LogAdded,
+        // nên nếu chỉ Persist thì lỗi App/Error của handler mất alert. Bỏ qua chính handler vừa
+        // ném và không phát lại lỗi tầng 2 (notifyFailure=false) — đệ quy tối đa 1 tầng.
+        foreach (var (failure, handler) in failures)
+            NotifySubscribers(failure, skip: handler, notifyFailure: false);
     }
 
     public void Info(string message, LogCategory category = LogCategory.App) =>

@@ -1,6 +1,7 @@
 @using RouterBalancing.Core.Engine
 @inject ITraceFeed Feed
 @inject IApiMonitorStore Store
+@inject IClientKeyService ClientKeys
 @inject LocalizationService L
 @inject IProxyHost Proxy
 @inject ToastService Toast
@@ -191,6 +192,10 @@
                 {
                     <span>@detail.Model</span>
                 }
+                @if (_clientLabel is { } client)
+                {
+                    <span>@L["trace.detail.client"] @client</span>
+                }
                 @if (detail.StartedAt is { } started)
                 {
                     <span>@L["trace.detail.started"] @started.ToLocalTime().ToString("HH:mm:ss.fff")</span>
@@ -355,6 +360,39 @@
     // Hộp xác nhận đổi ưu tiên — From = giá trị lúc bấm (đóng dialog = xóa From), To = giá trị mới
     private RequestPriority? _confirmPriorityFrom;
     private RequestPriority? _confirmPriorityTo;
+
+    // Nhãn client của request đang mở popup (tên key, hoặc "#" + id khi key đã bị xóa) —
+    // null = không có dòng client nào để render. _clientResolved = (request, id) ĐÃ tra tên,
+    // guard cho lookup bên dưới.
+    private string? _clientLabel;
+    private (string RequestId, long KeyId)? _clientResolved;
+
+    /// <summary>
+    /// Tra tên client key cho request đang xem (record monitor chỉ lưu id, popup hiển thị tên).
+    /// Blazor await method này TRƯỚC khi render batch kế tiếp nên không gọi StateHasChanged
+    /// sau await (và không có task bỏ ngỏ để rò rỉ khi component bị dispose giữa chừng).
+    /// Request không có client key (app tắt API key inbound) → nhãn null, markup không render
+    /// dòng nào; id không còn trong bảng ClientKeys (key đã xóa) → fallback gồm "#" + id.
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (RequestId is { } requestId && Store.Find(requestId)?.ClientKeyId is { } keyId)
+        {
+            // Panel (API Monitor / Live Trace) re-render theo MỖI trace event trong lúc popup
+            // mở, và SetParametersAsync chạy lại mỗi lần cha render → guard theo (request, id)
+            // giữ đúng 1 query SQLite cho mỗi request (spec §2.6: đọc 1 lần, không cache).
+            if (_clientResolved == (requestId, keyId))
+                return;
+
+            _clientLabel = await ClientKeys.GetNameAsync(keyId) ?? $"#{keyId}";
+            _clientResolved = (requestId, keyId);
+            return;
+        }
+
+        // Đóng popup / request chưa có record (hoặc đã ra ring 50) → xóa nhãn của request trước
+        _clientLabel = null;
+        _clientResolved = null;
+    }
 
     /// <summary>Mở hộp xác nhận đổi ưu tiên — From lấy từ TryGetQueued tại lúc bấm.</summary>
     private void RequestPriorityChange(RequestPriority to)

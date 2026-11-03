@@ -10,7 +10,9 @@ namespace RouterBalancing.Core.Stats;
 /// <summary>
 /// Journal writer: subscribe <see cref="ITraceFeed.Published"/> trong ctor (singleton,
 /// mirror <c>ApiMonitorStore</c> — không unsubscribe), ghi 1 dòng terminal/request vào
-/// LogEntries rồi fire <see cref="IStatsInvalidationSource.Invalidate"/> — spec dashboard-stats §4.
+/// LogEntries rồi fire <see cref="IStatsInvalidationSource.Invalidate"/> và
+/// <see cref="EntryWritten"/> (nguồn cho thông báo lỗi desktop — dòng request không đi qua
+/// ILogService nên <c>ILogService.LogAdded</c> không nổ cho chúng) — spec dashboard-stats §4.
 /// Fail-open: mọi lỗi chỉ được log, không bao giờ nổ ra feed — multicast delegate dừng ở
 /// subscriber nổ, handler này nổ sẽ chặn subscriber phía sau (bài học RequestTrace).
 /// </summary>
@@ -24,6 +26,9 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
     private readonly ILogService _log;
     private readonly IStatsInvalidationSource _invalidation;
     private readonly TimeProvider _clock;
+
+    /// <inheritdoc cref="IRequestJournalWriter.EntryWritten"/>
+    public event Action<LogEntry>? EntryWritten;
 
     /// <summary>Tạo writer và đăng ký ngay vào feed — singleton sống suốt app (ProxyHost eager-create).</summary>
     /// <param name="feed">Feed trace — nguồn event theo vòng đời request.</param>
@@ -151,7 +156,7 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
 
     /// <summary>
     /// Ghi 1 dòng terminal rồi xóa entry. Fail-open: lỗi DB chỉ được log — không invalidate,
-    /// không nổ feed.
+    /// không bắn <see cref="EntryWritten"/>, không nổ feed.
     /// </summary>
     /// <param name="e">Event terminal (Finished/Canceled).</param>
     /// <param name="outcome">Kết quả terminal của request.</param>
@@ -161,10 +166,12 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
             return; // entry đã sweep hoặc không thấy Received — thiếu StartedAt không tính được DurationMs
 
         var written = false;
+        LogEntry? entry = null;
         try
         {
             using var db = _db.CreateDbContext();
-            db.LogEntries.Add(BuildEntry(e, pending, outcome));
+            entry = BuildEntry(e, pending, outcome);
+            db.LogEntries.Add(entry);
             db.SaveChanges();
             written = true;
         }
@@ -179,7 +186,43 @@ public sealed class RequestJournalWriter : IRequestJournalWriter
         }
 
         if (written)
+        {
             _invalidation.Invalidate();
+            // Bắn SAU khi commit (entry.Id đã được DB gán) — subscriber phải query lại được
+            // dòng vừa ghi; commit fail ở try trên đã chặn nên nhánh này chỉ chạy khi thành công.
+            NotifyEntryWritten(entry!);
+        }
+    }
+
+    /// <summary>
+    /// Bắn <see cref="EntryWritten"/>, cách ly từng subscriber — mirror
+    /// <c>LogService.NotifySubscribers</c>: multicast delegate dừng ở handler ném lỗi đầu
+    /// tiên, và subscriber (vd. aggregator gọi UI sai thread) có thể ném exception làm chết
+    /// cả phần còn lại của <see cref="WriteTerminal"/>. Lỗi handler được ghi qua SafeLog —
+    /// không gọi thẳng ILogService.Write từ đây để không lặp lại vòng ghi request.
+    /// </summary>
+    /// <param name="entry">Dòng terminal vừa commit.</param>
+    private void NotifyEntryWritten(LogEntry entry)
+    {
+        var handlers = EntryWritten;
+        if (handlers is null)
+            return;
+
+        foreach (var handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<LogEntry>)handler)(entry);
+            }
+            catch (Exception ex)
+            {
+                // Operation name riêng cho subscriber: phân biệt với lỗi ghi DB ở WriteTerminal —
+                // không nuốt. Không nổ feed chỉ đúng tới mức handler hiện tại của aggregator
+                // (ErrorAlertAggregator.OnEntryWritten) tự nuốt exception của nó; SafeLog ghi Error
+                // Category=App nên subscriber nào để lọt exception vẫn kích hoạt alert.
+                SafeLog(nameof(NotifyEntryWritten), ex);
+            }
+        }
     }
 
     /// <summary>Xây dòng journal theo bảng spec §4 — Timestamp chuẩn hóa UTC (publish sites dùng offset local).</summary>

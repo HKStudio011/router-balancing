@@ -13,7 +13,7 @@ public class FreeModelSyncWorkerTests
 
         worker.Start();
 
-        await sync.FirstCall.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await sync.FirstCall.Task.WaitAsync(TestTimeouts.Rendezvous);
         Assert.Equal(1, sync.CallCount);
     }
 
@@ -26,7 +26,7 @@ public class FreeModelSyncWorkerTests
         worker.Start();
         worker.Start(); // no-op
 
-        await sync.FirstCall.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await sync.FirstCall.Task.WaitAsync(TestTimeouts.Rendezvous);
         await worker.DisposeAsync();
         var afterDispose = sync.CallCount;
         await Task.Delay(200);

@@ -18,6 +18,9 @@ public static class SettingsKeys
 
     public const string StartWithWindows = "startWithWindows";
 
+    /// <summary>Bật toast/CNTA thông báo lỗi khi app chạy nền — mặc định true (spec error-notify).</summary>
+    public const string NotifyErrors = "notifyErrors";
+
     /// <summary>Timeout per-request của client provider-probe (spec manual-retry §3.8) — 1..600 giây.</summary>
     public const string ProviderProbeTimeoutSec = "providerProbeTimeoutSec";
 

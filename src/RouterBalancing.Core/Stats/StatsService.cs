@@ -13,17 +13,24 @@ public sealed class StatsService : IStatsService
 {
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly TimeProvider _clock;
+    private readonly TimeZoneInfo _zone;
 
     /// <summary>Tạo service.</summary>
     /// <param name="db">Factory DB — nguồn journal (LogEntries).</param>
-    /// <param name="clock">Đồng hồ lấy "now" — cửa sổ UTC tính từ đây (test truyền FixedTimeProvider).</param>
-    /// <exception cref="ArgumentNullException">Khi một trong hai tham số là <see langword="null"/>.</exception>
-    public StatsService(IDbContextFactory<RouterBalancingDbContext> db, TimeProvider clock)
+    /// <param name="clock">Đồng hồ lấy "now" — test truyền FixedTimeProvider.</param>
+    /// <param name="zone">
+    /// Múi giờ neo cửa sổ thống kê (UI dashboard hiển thị giờ máy). Mặc định
+    /// <see cref="TimeZoneInfo.Utc"/> để call site cũ giữ nguyên nghĩa.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Khi <paramref name="db"/> hoặc <paramref name="clock"/> là <see langword="null"/>.</exception>
+    public StatsService(IDbContextFactory<RouterBalancingDbContext> db, TimeProvider clock,
+        TimeZoneInfo? zone = null)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(clock);
         _db = db;
         _clock = clock;
+        _zone = zone ?? TimeZoneInfo.Utc;
     }
 
     /// <inheritdoc cref="IStatsService.GetRangeAsync"/>
@@ -88,24 +95,42 @@ public sealed class StatsService : IStatsService
     }
 
     /// <summary>
-    /// Cửa sổ UTC theo spec §5: Hôm nay = [nửa đêm UTC, now]; 7/30 ngày = [nửa đêm UTC
-    /// −6/−29 ngày, now]. Bucket Hôm nay theo giờ, còn lại theo ngày — đều UTC.
+    /// Cửa sổ theo múi giờ inject (spec §5 + bug "biểu đồ lệch 7 giờ trên máy UTC+7"):
+    /// Hôm nay = [nửa đêm của múi, now]; 7/30 ngày = [nửa đêm múi −6/−29 ngày, now].
+    /// Bucket Hôm nay theo giờ, còn lại theo ngày — đầu bucket đều mang offset của múi.
+    /// Mặc định <see cref="TimeZoneInfo.Utc"/> ⇒ cùng nghĩa với hành vi cũ.
     /// </summary>
     /// <param name="range">Khoảng preset.</param>
-    /// <param name="now">Thời điểm hiện tại (UTC) — đầu cửa sổ tính từ ngày UTC của nó.</param>
+    /// <param name="now">Thời điểm hiện tại — đầu cửa sổ là nửa đêm của ngày THUỘC MÚI <c>_zone</c>.</param>
     /// <returns>(Đầu cửa sổ, số bucket, kích thước bucket).</returns>
     /// <exception cref="ArgumentOutOfRangeException">Khi <paramref name="range"/> không nằm trong enum.</exception>
-    private static (DateTimeOffset From, int BucketCount, TimeSpan BucketStep) ResolveWindow(
+    private (DateTimeOffset From, int BucketCount, TimeSpan BucketStep) ResolveWindow(
         StatsRange range, DateTimeOffset now)
     {
-        var midnightUtc = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        // Why không đọc now.Offset: TimeProvider.System trả DateTimeOffset offset 0 dù máy ở
+        // UTC+7 — phải quy đổi sang múi rồi mới lấy ngày, nếu không fix là no-op trên production.
+        // .Date trên wall-clock đã quy đổi = nửa đêm 00:00 của ngày địa phương.
+        var localDay = TimeZoneInfo.ConvertTimeFromUtc(now.UtcDateTime, _zone).Date;
         return range switch
         {
-            StatsRange.Today => (midnightUtc, 24, TimeSpan.FromHours(1)),
-            StatsRange.Last7Days => (midnightUtc.AddDays(-6), 7, TimeSpan.FromDays(1)),
-            StatsRange.Last30Days => (midnightUtc.AddDays(-29), 30, TimeSpan.FromDays(1)),
+            StatsRange.Today => (StartOfDay(localDay), 24, TimeSpan.FromHours(1)),
+            StatsRange.Last7Days => (StartOfDay(localDay.AddDays(-6)), 7, TimeSpan.FromDays(1)),
+            StatsRange.Last30Days => (StartOfDay(localDay.AddDays(-29)), 30, TimeSpan.FromDays(1)),
             _ => throw new ArgumentOutOfRangeException(nameof(range), range, "Unknown stats range"),
         };
+    }
+
+    /// <summary>
+    /// Nửa đêm của ngày địa phương <paramref name="localMidnight"/> (wall-clock 00:00 của múi
+    /// <c>_zone</c>) — offset do chính múi quyết định qua <c>GetUtcOffset</c> (Kind Unspecified =
+    /// giờ địa phương của múi; DST do framework xử lý, không tự chế quy tắc riêng).
+    /// </summary>
+    private DateTimeOffset StartOfDay(DateTime localMidnight)
+    {
+        // ConvertTimeFromUtc trả Kind=Utc dù giá trị là wall-clock địa phương → phải SpecifyKind
+        // để GetUtcOffset hiểu đây là giờ địa phương của múi, không phải một mốc UTC.
+        var local = DateTime.SpecifyKind(localMidnight, DateTimeKind.Unspecified);
+        return new DateTimeOffset(local, _zone.GetUtcOffset(local));
     }
 
     /// <summary>
@@ -129,7 +154,7 @@ public sealed class StatsService : IStatsService
     /// <param name="tokensByRequest">Index token theo RequestId (dùng chung với breakdown).</param>
     /// <param name="from">Đầu cửa sổ — cũng là BucketStart[0].</param>
     /// <param name="bucketCount">24 (giờ) hoặc 7/30 (ngày).</param>
-    /// <param name="bucketStep">Kích thước bucket (1 giờ hoặc 1 ngày UTC).</param>
+    /// <param name="bucketStep">Kích thước bucket (1 giờ hoặc 1 ngày — số nguyên tuyệt đối, không đổi theo múi).</param>
     /// <returns>Danh sách bucket đầy đủ, thứ tự tăng dần theo thời gian.</returns>
     private static IReadOnlyList<StatsBucket> BuildBuckets(IReadOnlyList<TerminalRow> terminals,
         IReadOnlyDictionary<string, (long Prompt, long Completion)> tokensByRequest,

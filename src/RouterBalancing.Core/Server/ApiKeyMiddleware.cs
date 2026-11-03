@@ -61,10 +61,30 @@ public sealed class ApiKeyMiddleware(RequestDelegate next, ClientKeyAuthCache ke
         }
         catch (Exception ex)
         {
-            log.Error("Không ghi được usage request cho client key.", ex, LogCategory.Request);
+            SafeLogError(ex);
         }
 
         await next(context);
+    }
+
+    /// <summary>
+    /// Ghi lỗi usage best-effort: chính log có thể đang hỏng vì cùng DB — để nó ném ra ngoài
+    /// sẽ phá fail-open (spec §10). Mirror <c>ApiMonitorStore.SafeLog</c>.
+    /// </summary>
+    /// <param name="ex">Lỗi ghi usage cần báo.</param>
+    private void SafeLogError(Exception ex)
+    {
+        try
+        {
+            // Category=App: dòng này không có ProviderKey nên nếu để Category=Request thì bộ lọc
+            // nhiễu §2.2.1 luôn loại, trong khi spec §2.2.1 row 1 coi lỗi DB/middleware là alertable.
+            log.Error("Không ghi được usage request cho client key.", ex, LogCategory.App);
+        }
+        catch
+        {
+            // intentional swallow — chính log nổ (DB hỏng) thì không còn chỗ báo an toàn hơn;
+            // request vẫn phải fail-open (mirror ApiMonitorStore.SafeLog).
+        }
     }
 
     private static string? ExtractKey(HttpRequest request)

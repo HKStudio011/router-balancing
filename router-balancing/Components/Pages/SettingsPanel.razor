@@ -57,6 +57,10 @@
         @L["settings.field.closeToTray"]
     </label>
     <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" @bind="_draft.NotifyErrors" />
+        @L["settings.field.notifyErrors"]
+    </label>
+    <label class="flex items-center gap-2 text-sm">
         <input type="checkbox" @bind="_draft.StartWithWindows" />
         @L["settings.field.startWithWindows"]
     </label>
@@ -385,6 +389,7 @@
         Port = Settings.Port,
         LanAccess = Settings.LanAccess,
         CloseToTray = Settings.CloseToTray,
+        NotifyErrors = Settings.NotifyErrors,
         StartWithWindows = Settings.StartWithWindows,
         ProviderProbeTimeoutSec = Settings.ProviderProbeTimeoutSec,
         TransientMaxRetries = Settings.TransientMaxRetries,
@@ -424,6 +429,7 @@
         Settings.Set(SettingsKeys.Language, _draft.Language);
         Settings.Set(SettingsKeys.Theme, _draft.Theme);
         Settings.Set(SettingsKeys.CloseToTray, _draft.CloseToTray);
+        Settings.Set(SettingsKeys.NotifyErrors, _draft.NotifyErrors);
         Settings.Set(SettingsKeys.OpenCodeConfigPath, _draft.OpenCodeConfigPath);
 
         // Registry có thể bị chính sách máy chặn ghi — lỗi không được chặn cả lượt lưu chung

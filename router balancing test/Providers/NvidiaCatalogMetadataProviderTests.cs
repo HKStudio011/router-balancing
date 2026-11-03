@@ -342,7 +342,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         try
         {
             // Không có global lock: cả hai request phải cùng bay trước khi được thả.
-            await handler.BothStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await handler.BothStarted.Task.WaitAsync(TestTimeouts.Rendezvous);
         }
         finally
         {

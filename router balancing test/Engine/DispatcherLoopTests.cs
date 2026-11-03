@@ -491,7 +491,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.False(_queue.Contains("req00001"));
@@ -519,7 +519,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
 
@@ -556,7 +556,7 @@ public class DispatcherLoopTests : IDisposable
         var r1 = Req("req00001");
         var r2 = Req("req00002");
         _queue.Enqueue(r1);
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // r1 giữ trọn slot
+        await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous); // r1 giữ trọn slot
         // BackgroundService.StartAsync chạy ExecuteAsync qua Task.Run — enqueue r2 ngay lập tức
         // race với lần drain r1 còn dang dở (token wake sót → thử chọn > 1 lần). Chờ loop thật sự
         // park (r1 đã xong, queue chờ event) rồi mới enqueue để đúng 1 lần thử chọn cho r2.
@@ -571,8 +571,8 @@ public class DispatcherLoopTests : IDisposable
 
         // r1 xong → Exit bắn Exited → wake → r2 được serve (park vô hạn, không 503)
         upstream.Release();
-        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
         Assert.Equal(0, _executions.GetInFlight(pid));
     }
 
@@ -598,7 +598,7 @@ public class DispatcherLoopTests : IDisposable
         var r2 = Req("req00002", "mB");     // pB trống — phải dispatch ngay
 
         _queue.Enqueue(filler);
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // filler giữ slot pA
+        await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous); // filler giữ slot pA
         _queue.Enqueue(r1);
         await WaitUntilAsync(() => _executions.GetInFlight(pidA) == 1 && !_executions.Contains("req00001")
             && !_queue.Contains("req00000")); // filler đã Take + serve; r1 vào queue
@@ -606,13 +606,13 @@ public class DispatcherLoopTests : IDisposable
 
         // r2 phải dispatch + serve xong (pB trống) trong khi r1 vẫn park chờ pA —
         // poll theo Completion vì r2 hoàn tất nhanh rồi rời execution list
-        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
         Assert.True(_queue.Contains("req00001"), "r1 vẫn nằm trong queue chờ slot pA");
 
         upstream.Release();
-        Assert.IsType<DispatchOutcome.Handled>(await filler.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await filler.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
     }
 
     [Fact]
@@ -639,7 +639,7 @@ public class DispatcherLoopTests : IDisposable
             }
         });
         _queue.Enqueue(r1);
-        await resolver.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // dispatcher kẹt trong resolve
+        await resolver.Entered.WaitAsync(TestTimeouts.Rendezvous); // dispatcher kẹt trong resolve
 
         // Client ngắt giữa chừng: TryRemove thắng trước Take — race một bên thắng, không item lơ lửng
         abort.Cancel();
@@ -647,7 +647,7 @@ public class DispatcherLoopTests : IDisposable
 
         var r2 = Req("req00002");
         _queue.Enqueue(r2);
-        var outcome2 = await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome2 = await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome2);
         Assert.IsType<DispatchOutcome.Cancelled>(await r1.Completion.Task);
@@ -668,7 +668,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
         Assert.Equal(404, error.Status);
@@ -692,7 +692,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
         Assert.Equal(503, error.Status);
@@ -729,8 +729,8 @@ public class DispatcherLoopTests : IDisposable
         var r2 = Req("req00002");
         _queue.Enqueue(r2);
 
-        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
         Assert.Equal(2, upstream.Calls);
         Assert.Single(log.Errors);
     }
@@ -749,7 +749,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, upstream.Calls);
@@ -778,7 +778,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Exhaustion contract: attempt cuối (p2) quyết định — passthrough nguyên response đó (§4)
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
@@ -810,7 +810,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Attempt cuối là mạng → 502 y như 3A, không passthrough body rỗng (§4)
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
@@ -838,7 +838,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Attempt cuối (mạng) quyết định — không lấy response 429 của attempt đầu (§4)
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
@@ -865,7 +865,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // 4xx non-retryable: passthrough NGAY — không advance, không cộng counter (spec exhaustive-failover §3.1)
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
@@ -896,7 +896,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Fatal 401 cấp Account → TK kế cùng provider (p1 chỉ 1 TK → NoAccountLeft) rồi mới
         // provider kế — client thấy 200 của p2 (spec exhaustive-failover §1.3 #2/§3.1)
@@ -926,7 +926,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // 404 thường = sai endpoint/provider — hết candidate
         // passthrough nguyên response cuối (§4), có log Error exhaustion (§5)
@@ -954,7 +954,7 @@ public class DispatcherLoopTests : IDisposable
         // r2 enqueue trước → cursor 0 → p1, call#1 giữ trọn slot (gated)
         var r2 = Req("req00002");
         _queue.Enqueue(r2);
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous);
 
         // r1 → p2 (p1 bận), call#2 → 429 → advance p1 nhưng p1 kẹt → re-enqueue (park)
         var r1 = Req("req00001");
@@ -966,8 +966,8 @@ public class DispatcherLoopTests : IDisposable
 
         // r2 xong → Exit p1 → Exited wake → r1 dispatch lại (chỉ còn p1 chưa thử) → call#3 OK
         upstream.Release();
-        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
         Assert.Equal(3, upstream.Calls);
         Assert.False(_queue.Contains("req00001"));
     }
@@ -985,7 +985,7 @@ public class DispatcherLoopTests : IDisposable
 
         var r2 = Req("req00002");
         _queue.Enqueue(r2);
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous);
 
         var r1 = Req("req00001");
         _queue.Enqueue(r1);
@@ -1001,8 +1001,8 @@ public class DispatcherLoopTests : IDisposable
 
         // Dọn đúng fixture gốc: release → cả 2 hoàn thành
         upstream.Release();
-        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
     }
 
     [Fact]
@@ -1033,7 +1033,7 @@ public class DispatcherLoopTests : IDisposable
         {
             var r2 = Req("req00002");
             _queue.Enqueue(r2);
-            await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous);
 
             var r1 = Req("req00001");
             r1.Context.RequestAborted = cts.Token;
@@ -1042,7 +1042,7 @@ public class DispatcherLoopTests : IDisposable
             // Cancel trong park-Enqueue → TryRemove + Cancelled chạy đồng bộ trong
             // ReenqueueForPark — completion là dấu hiệu đã qua nhánh cancel
             Assert.IsType<DispatchOutcome.Cancelled>(
-                await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+                await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
 
             // G1: bị cancel ngay tại đây → KHÔNG publish Parked (request rời queue,
             // endpoint sẽ publish Canceled — tránh node non-terminal sau terminal, spec §2.1)
@@ -1050,7 +1050,7 @@ public class DispatcherLoopTests : IDisposable
                 e => e.RequestId == "req00001" && e.Stage == TraceStage.Parked);
 
             upstream.Release();
-            Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
             Assert.Equal(2, upstream.Calls); // r1 đã hủy — không có call#3
         }
         finally
@@ -1075,7 +1075,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // 401 cấp Account: thử TK kế cùng provider TRƯỚC khi đổi provider
         Assert.IsType<DispatchOutcome.Handled>(outcome);
@@ -1103,7 +1103,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Retryable (429) dispatcher gán cấp Account — TK kế cùng provider trước provider kế
         Assert.IsType<DispatchOutcome.Handled>(outcome);
@@ -1134,7 +1134,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Hết TK của p1 (401 + 403) → mới rơi xuống p2, client thấy 200
         Assert.IsType<DispatchOutcome.Handled>(outcome);
@@ -1162,7 +1162,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var calls = upstream.Calls;
@@ -1192,7 +1192,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Lỗi mạng = provider-wide: bỏ CẢ provider, không quét model/TK khác cùng provider
         Assert.IsType<DispatchOutcome.Handled>(outcome);
@@ -1221,7 +1221,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // FreeUsageLimitError = cap toàn provider (không theo key) — xoay TK/model cùng provider
         // vô ích, phải nhảy thẳng provider kế
@@ -1252,7 +1252,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // 404 model_not_found = bỏ đúng cặp (provider, model) — model khác cùng provider vẫn thử
         Assert.IsType<DispatchOutcome.Handled>(outcome);
@@ -1278,7 +1278,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // 404 thường = sai endpoint/provider — bỏ nguyên provider (model khác cùng provider cũng không thử)
         Assert.IsType<DispatchOutcome.Handled>(outcome);
@@ -1305,7 +1305,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.True(request.Retry.IsTried(pidA, "m1")); // pair bị đánh dấu trước khi advance
@@ -1349,8 +1349,8 @@ public class DispatcherLoopTests : IDisposable
 
         // r0 xong → Exited wake → dispatch lại: exclude={a2} → chỉ thử a1 (TK chưa fail)
         release.SetResult();
-        Assert.IsType<DispatchOutcome.Handled>(await r0.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        var outcome = await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsType<DispatchOutcome.Handled>(await r0.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        var outcome = await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // a1 cũng 401 → NoAccountLeft → pair marked → exhaustion passthrough attempt cuối
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
@@ -1377,7 +1377,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Exhaustion contract: attempt cuối có HTTP → passthrough nguyên status + body + Retry-After (§4)
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
@@ -1407,7 +1407,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(3, upstream.Calls.Count);
@@ -1443,7 +1443,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Passthrough>(outcome);
         var exhaustion = Assert.Single(log.Entries, e =>
@@ -1488,7 +1488,7 @@ public class DispatcherLoopTests : IDisposable
         request.Context.RequestAborted = abort.Token;
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Aborted>(outcome);
         // Aborted: endpoint không ghi JSON — stream untouched
@@ -1517,7 +1517,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Fallback: exhaust mọi TK của Position 1 (p1) theo thứ tự mới rơi xuống Position 2 (p2)
         Assert.IsType<DispatchOutcome.Handled>(outcome);
@@ -1542,7 +1542,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // Chưa thử ai → 503 tạm thời (không phải exhaustion passthrough/502)
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
@@ -1596,7 +1596,7 @@ public class DispatcherLoopTests : IDisposable
         resolver.Release();
 
         // HasTried → exhaustion theo contract: attempt cuối là mạng → 502 (không phải 503)
-        var outcome = await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
         var error = Assert.IsType<DispatchOutcome.Error>(outcome);
         Assert.Equal(502, error.Status);
         Assert.Equal("Upstream provider request failed", error.Message);
@@ -1605,7 +1605,7 @@ public class DispatcherLoopTests : IDisposable
 
         // Dọn r0 cuối cùng: release để r0 thoát p1 (không tính vào Calls — cùng call đã gate)
         release.SetResult();
-        Assert.IsType<DispatchOutcome.Handled>(await r0.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r0.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
     }
 
     [Fact]
@@ -1625,7 +1625,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, request.Retry.Attempts);
@@ -1651,7 +1651,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, upstream.Calls.Count);
@@ -1676,7 +1676,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
         Assert.Equal(504, passthrough.Status);
@@ -1702,7 +1702,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(2, request.Retry.Attempts);
@@ -1725,7 +1725,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Equal(0, request.Retry.TransientRetries);        // 401 Fatal — không transient-retry
@@ -1745,7 +1745,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         // a1: attempt 1 + 2 retry = 3 call; hết budget → rotate a2: 1 call, không retry tiếp → exhaustion
         var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
@@ -1781,11 +1781,11 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         request.Context.RequestAborted = abort.Token;
         _queue.Enqueue(request);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));   // call#1 xong, dispatcher vào delay 2s
+        await entered.Task.WaitAsync(TestTimeouts.Rendezvous);   // call#1 xong, dispatcher vào delay 2s
         await Task.Delay(150);                                   // journal xong, đang trong Task.Delay
         abort.Cancel();
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
         Assert.IsType<DispatchOutcome.Aborted>(outcome);
         Assert.False(_executions.Contains("req00001"));          // slot đã trả — không rò
     }
@@ -1814,7 +1814,7 @@ public class DispatcherLoopTests : IDisposable
 
         var r1 = Req("req00001");
         _queue.Enqueue(r1);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));   // r1 fail 504, chuẩn bị delay
+        await entered.Task.WaitAsync(TestTimeouts.Rendezvous);   // r1 fail 504, chuẩn bị delay
         await Task.Delay(100);
         var r2 = Req("req00002");
         _queue.Enqueue(r2);
@@ -1823,8 +1823,8 @@ public class DispatcherLoopTests : IDisposable
         Assert.False(_executions.Contains("req00002"));
         Assert.False(r2.Completion.Task.IsCompleted);            // r2 park, không 503
 
-        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<DispatchOutcome.Handled>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+        Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
         Assert.Equal(0, _executions.GetInFlight(pid));
     }
 
@@ -1847,7 +1847,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
         Assert.IsType<DispatchOutcome.Handled>(
-            await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
 
         // DispatchStarted + 2 cặp (start, done) — retry là attempt thật, route lặp (§3.2)
         var attempts = events.Where(e => e.Stage == TraceStage.Attempt).ToList();
@@ -1901,7 +1901,7 @@ public class DispatcherLoopTests : IDisposable
         await WaitUntilAsync(() => _executions.Contains("req00001")); // dispatch lại thành công
         upstream.Release();
         Assert.IsType<DispatchOutcome.Handled>(
-            await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
         Assert.False(_queue.Contains("req00001"));
     }
 
@@ -1929,7 +1929,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var calls = upstream.Calls;
@@ -1959,7 +1959,7 @@ public class DispatcherLoopTests : IDisposable
         var request = Req("req00001");
         _queue.Enqueue(request);
 
-        var outcome = await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         var calls = upstream.Calls;
@@ -1983,7 +1983,7 @@ public class DispatcherLoopTests : IDisposable
 
         var request = Req("req00001");
         _queue.Enqueue(request);
-        await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
 
         var attempt = _trace.Snapshot().Single(e => e.Stage == TraceStage.Attempt);
         Assert.Equal("root", attempt.Route!.Combo);

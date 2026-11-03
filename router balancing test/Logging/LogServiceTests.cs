@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Storage;
@@ -46,7 +47,7 @@ public class LogServiceTests : IDisposable
     }
 
     [Fact]
-    public void Write_WhenOneSubscriberThrows_OthersStillNotifiedAndErrorLogged()
+    public void Write_WhenOneSubscriberThrows_OthersStillNotifiedAndFailureRowDispatched()
     {
         using var service = Create();
         var throwingCalls = 0;
@@ -62,19 +63,83 @@ public class LogServiceTests : IDisposable
 
         service.Info("user action");
 
+        // Handler ném không bị gọi lại cho dòng lỗi (tránh nhân đôi noise); handler còn lại
+        // nhận entry gốc rồi dòng lỗi.
         Assert.Equal(1, throwingCalls);
-        var notified = Assert.Single(recorded);
-        Assert.Equal("user action", notified.Message);
+        Assert.Equal(2, recorded.Count);
+        Assert.Equal("user action", recorded[0].Message);
 
-        // Lỗi handler phải nằm trong store, và KHÔNG được phát lại LogAdded
-        // (nếu phát lại thì recorded sẽ có 2 phần tử / đệ quy vô hạn).
+        // Dòng lỗi subscriber phải tới được các subscriber khác (vd ErrorAlertAggregator),
+        // nếu không lỗi App/Error này mất alert (chỉ nằm trong store).
+        var failure = recorded[1];
+        Assert.Equal(LogSeverity.Error, failure.Severity);
+        Assert.Equal(LogCategory.App, failure.Category);
+        Assert.Contains("LogAdded", failure.Message);
+        Assert.Contains("user action", failure.Message);
+        Assert.Contains("UI thread only", failure.Details);
+        Assert.Equal(nameof(InvalidOperationException), failure.ErrorCode);
+
         using var verify = Create();
         var error = Assert.Single(verify.Query(new LogQuery(MinSeverity: LogSeverity.Error)));
-        Assert.Contains("LogAdded", error.Message);
-        Assert.Contains("user action", error.Message);
-        Assert.Contains("UI thread only", error.Details);
-        Assert.Equal(nameof(InvalidOperationException), error.ErrorCode);
         Assert.Equal(LogCategory.App, error.Category);
+    }
+
+    [Fact]
+    public void Write_WhenSubscriberThrowsOnEveryEntry_PersistsOneFailureRowWithoutRecursion()
+    {
+        using var service = Create();
+        var calls = 0;
+        service.LogAdded += _ =>
+        {
+            calls++;
+            throw new InvalidOperationException("always throws");
+        };
+
+        service.Info("once");
+
+        // Chỉ entry gốc là handler bị gọi; dòng lỗi phát lại bỏ qua chính handler đã ném.
+        Assert.Equal(1, calls);
+        using var verify = Create();
+        var error = Assert.Single(verify.Query(new LogQuery(MinSeverity: LogSeverity.Error)));
+        Assert.Contains("always throws", error.Details);
+        Assert.Equal(2, verify.Count(new LogQuery())); // entry gốc + 1 dòng lỗi
+    }
+
+    [Fact]
+    public void Write_WhenFailureRowCannotPersist_StillNotifiesOtherSubscribers()
+    {
+        // Context #1 ghi entry gốc OK; context #2 (dòng lỗi subscriber) ném vì DB "hỏng".
+        using var service = new LogService(
+            new FailingPersistFactory(_db.CreateFactory(), failFromCall: 2));
+        var recorded = new List<LogEntry>();
+        service.LogAdded += _ => throw new InvalidOperationException("UI thread only");
+        service.LogAdded += recorded.Add;
+
+        service.Info("user action");
+
+        // Dòng lỗi là chẩn đoán: persist hỏng không được phá caller và không được làm
+        // subscriber khác mất alert.
+        Assert.Equal(2, recorded.Count);
+        Assert.Equal("user action", recorded[0].Message);
+        Assert.Contains("UI thread only", recorded[1].Details);
+    }
+
+    /// <summary>
+    /// Factory giả lập DB hỏng từ lần tạo context thứ <c>failFromCall</c> — dùng để pin
+    /// fail-open khi persist dòng lỗi subscriber thất bại.
+    /// </summary>
+    private sealed class FailingPersistFactory(
+        IDbContextFactory<RouterBalancingDbContext> inner, int failFromCall)
+        : IDbContextFactory<RouterBalancingDbContext>
+    {
+        private int _calls;
+
+        public RouterBalancingDbContext CreateDbContext()
+        {
+            if (Interlocked.Increment(ref _calls) >= failFromCall)
+                throw new InvalidOperationException("database is locked");
+            return inner.CreateDbContext();
+        }
     }
 
     [Fact]

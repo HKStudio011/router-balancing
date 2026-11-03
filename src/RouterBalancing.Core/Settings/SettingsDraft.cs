@@ -19,6 +19,8 @@ public sealed record SettingsDraft
 
     public bool StartWithWindows { get; set; }
 
+    public bool NotifyErrors { get; set; } = true;
+
     public int ProviderProbeTimeoutSec { get; set; } = 60;
 
     public int LogRetentionDays { get; set; } = 90;

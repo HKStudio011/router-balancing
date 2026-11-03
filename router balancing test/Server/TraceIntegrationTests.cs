@@ -282,7 +282,7 @@ public class TraceIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var serving = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // request 1 giữ trọn slot
+        await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous); // request 1 giữ trọn slot
         var queued = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
         var queuedId = await WaitForQueuedIdAsync("m1");
 
@@ -290,12 +290,12 @@ public class TraceIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
 
         // H4 (Canceled) publish TRƯỚC khi endpoint ghi 400 → response về = event đã có
-        var origin = await queued.WaitAsync(TimeSpan.FromSeconds(5));
+        var origin = await queued.WaitAsync(TestTimeouts.Rendezvous);
         Assert.Equal(HttpStatusCode.BadRequest, origin.StatusCode);
         Assert.Contains(EventsOf(queuedId), e => e.Stage == TraceStage.Canceled);
 
         upstream.Release();
-        var ok = await serving.WaitAsync(TimeSpan.FromSeconds(5));
+        var ok = await serving.WaitAsync(TestTimeouts.Rendezvous);
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
         var id1 = ok.Headers.GetValues("X-Request-Id").Single();
         await WaitUntilAsync(() => EventsOf(id1).Any(e => e.Stage == TraceStage.Finished),
@@ -381,7 +381,7 @@ public class TraceIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // giữ trọn slot → request 2 phải chờ
+        await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous); // giữ trọn slot → request 2 phải chờ
 
         var sendTask = SendHighestPriorityStreamAsync(client, "m1");
         try
@@ -412,11 +412,11 @@ public class TraceIntegrationTests : IDisposable
         finally
         {
             upstream.Release();
-            await holding.WaitAsync(TimeSpan.FromSeconds(5));
+            await holding.WaitAsync(TestTimeouts.Rendezvous);
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await (await sendTask.WaitAsync(TimeSpan.FromSeconds(5)))
+                await (await sendTask.WaitAsync(TestTimeouts.Rendezvous))
                     .Content.CopyToAsync(Stream.Null, cts.Token);
             }
             catch (Exception ex) when (ex is TimeoutException or OperationCanceledException

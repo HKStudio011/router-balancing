@@ -41,17 +41,22 @@ public enum ApiCallState
 /// <param name="PromptBody">Prompt UTF-8, cap 64KB (truncate + marker) — giữ từ lúc nhận request.</param>
 /// <param name="ResponseBody">Response UTF-8, cap 64KB — chỉ ghi ở 2xx.</param>
 /// <param name="ErrorBody">Error body UTF-8, cap 64KB — xóa khi request retry thành công (2xx).</param>
+/// <param name="ClientKeyId">Client key inbound đã auth (id trong bảng ClientKeys) — chỉ event
+/// <c>Received</c> đầu mang giá trị, các update sau giữ nguyên; <see langword="null"/> khi app
+/// không bật API key hoặc request chưa có auth.</param>
 public sealed record ApiCallRecord(
     string RequestId, string Model, DateTimeOffset StartedAt, ApiCallState State,
     DateTimeOffset? FirstTokenAt, DateTimeOffset? CompletedAt,
     int? Status, bool? Success, string? FailureKind,
     int? PromptTokens, int? CompletionTokens,
     string? Combo, string? Provider, string? Account, string? Mode,
-    string? PromptBody, string? ResponseBody, string? ErrorBody);
+    string? PromptBody, string? ResponseBody, string? ErrorBody,
+    long? ClientKeyId = null);
 
 /// <summary>
 /// Store in-memory API Monitor: ring 50 record (mới nhất trước) + bộ đếm "Token hôm nay"
-/// theo ngày UTC, tiêu thụ <see cref="ITraceFeed.Published"/> để lấy trạng thái vòng đời.
+/// theo ngày của múi giờ inject (mặc định UTC), tiêu thụ <see cref="ITraceFeed.Published"/>
+/// để lấy trạng thái vòng đời.
 /// </summary>
 public interface IApiMonitorStore
 {
@@ -62,7 +67,10 @@ public interface IApiMonitorStore
     /// </summary>
     event Action Changed;
 
-    /// <summary>Tổng prompt+completion của các response trong ngày UTC hiện tại — tile "Token hôm nay".</summary>
+    /// <summary>
+    /// Tổng prompt+completion của các response trong ngày hiện tại CỦA MÚI giờ store được inject
+    /// (mặc định UTC) — tile "Token hôm nay".
+    /// </summary>
     long TodayTokens { get; }
 
     /// <summary>Ảnh chụp tối đa 50 record, hoạt động mới nhất trước — record đổi trạng thái được đưa lên đầu, update không đổi trạng thái giữ vị trí.</summary>
@@ -84,7 +92,7 @@ public interface IApiMonitorStore
 
     /// <summary>
     /// Ghi kết quả 2xx: tokens, FirstTokenAt, ResponseBody; xóa ErrorBody (retry đã thắng)
-    /// và cộng vào <see cref="TodayTokens"/> (reset khi đổi ngày UTC).
+    /// và cộng vào <see cref="TodayTokens"/> (reset khi đổi ngày của múi giờ store).
     /// </summary>
     /// <param name="requestId">Id của request.</param>
     /// <param name="promptTokens">Token prompt — null nếu upstream không trả usage.</param>

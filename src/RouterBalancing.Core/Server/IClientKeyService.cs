@@ -22,6 +22,15 @@ public interface IClientKeyService
     /// <summary>Xóa key theo id; id không tồn tại → <see cref="KeyNotFoundException"/>.</summary>
     Task DeleteAsync(long id, CancellationToken ct = default);
 
+    /// <summary>
+    /// Tên key theo id để UI hiển thị (SQLite local, đọc 1 lần khi mở popup — không cache).
+    /// </summary>
+    /// <param name="id">Id key cần tra tên.</param>
+    /// <param name="ct">Hủy thao tác đọc.</param>
+    /// <returns>Tên key; <see langword="null"/> khi id không còn trong bảng <c>ClientKeys</c>
+    /// (key đã bị xóa sau khi request đi qua) — caller tự fallback lấy id.</returns>
+    Task<string?> GetNameAsync(long id, CancellationToken ct = default);
+
     /// <summary>Bật/tắt key theo id rồi phát <see cref="KeysChanged"/> để auth cache invalidate.</summary>
     Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default);
 

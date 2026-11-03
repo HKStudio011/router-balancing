@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Storage;
@@ -222,5 +223,64 @@ public class ApiKeyMiddlewareTests : IDisposable
 
         var saved = (await _keys.ListAsync()).Single();
         Assert.Equal(1, saved.RequestsUsed);
+    }
+
+    [Fact]
+    public async Task Invoke_WhenUsageWriteAndErrorLogBothThrow_StillPassesThrough()
+    {
+        // DB hỏng làm cả RecordRequestAsync lẫn log.Error (Persist) ném: middleware phải
+        // nuốt lỗi log để giữ fail-open (spec §10) — request không được fail vì telemetry.
+        var plaintext = await CreateKeyAsync();
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/v1/models";
+        context.Request.Headers["X-API-Key"] = plaintext;
+        context.Response.Body = new MemoryStream();
+
+        var nextCalled = false;
+        var middleware = new ApiKeyMiddleware(
+            _ =>
+            {
+                nextCalled = true;
+                return Task.CompletedTask;
+            },
+            _cache, _limiter, new ThrowingRecordRequestKeys(), new ThrowingLog());
+
+        await middleware.InvokeAsync(context);
+
+        Assert.True(nextCalled);
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    private sealed class ThrowingRecordRequestKeys : IClientKeyService
+    {
+        public event Action? KeysChanged { add { } remove { } }
+        public Task<IReadOnlyList<ClientKey>> ListAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<ClientKey>>([]);
+        public Task<(ClientKey Key, string Plaintext)> CreateAsync(ClientKeyDraft draft, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task UpdateAsync(long id, ClientKeyDraft draft, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task DeleteAsync(long id, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<string?> GetNameAsync(long id, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task RecordRequestAsync(long id, CancellationToken ct = default)
+            => throw new InvalidOperationException("database is locked");
+        public Task RecordTokensAsync(long id, int promptTokens, int completionTokens, CancellationToken ct = default)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class ThrowingLog : ILogService
+    {
+        public event Action<LogEntry>? LogAdded { add { } remove { } }
+        public void Write(LogEntry entry) { }
+        public void Info(string message, LogCategory category = LogCategory.App) { }
+        public void Warn(string message, LogCategory category = LogCategory.App) { }
+        public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App)
+            => throw new InvalidOperationException("log store is unavailable");
+        public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
+        public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
+        public int Count(LogQuery query) => 0;
     }
 }

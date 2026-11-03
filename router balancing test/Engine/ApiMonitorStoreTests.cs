@@ -23,8 +23,9 @@ public class ApiMonitorStoreTests
     private static byte[] Bytes(string json) => Encoding.UTF8.GetBytes(json);
 
     private static TraceEvent Ev(string id, TraceStage stage, string model, DateTimeOffset at,
-        TraceRoute? route = null, int? status = null, bool? success = null, string? mode = null) =>
-        new(id, stage, model, route, null, status, success, null, at, mode);
+        TraceRoute? route = null, int? status = null, bool? success = null, string? mode = null,
+        long? clientKeyId = null) =>
+        new(id, stage, model, route, null, status, success, null, at, mode, ClientKeyId: clientKeyId);
 
     [Fact]
     public void StartRequest_ThenRecordResponse_UpsertsSameRecord_KeepsFirstSeenOrder()
@@ -166,6 +167,44 @@ public class ApiMonitorStoreTests
     }
 
     [Fact]
+    public void Published_ReceivedWithClientKeyId_StoresOnRecord()
+    {
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At, clientKeyId: 42));
+
+        Assert.Equal(42, _store.Find("r1")!.ClientKeyId);
+    }
+
+    [Fact]
+    public void Published_ClientKeyIdSurvivesTerminalUpdate()
+    {
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At, clientKeyId: 42));
+
+        // Priority-update (RequestQueue.PublishPriorityUpdate) cũng là stage Received nhưng
+        // ClientKeyId=null, và event terminal không mang id — cả hai không được wipe id đã có
+        // (cùng luật "không đè giá trị đã có" của RequestJournalWriter.MergeClientKeyId).
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At.AddMilliseconds(1)));
+        _feed.Publish(Ev("r1", TraceStage.DispatchStarted, "m1", At.AddMilliseconds(2), mode: "balancer"));
+        _feed.Publish(Ev("r1", TraceStage.Attempt, "m1", At.AddMilliseconds(3),
+            route: new TraceRoute("c1", "p1", "a1")));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", At.AddSeconds(1), status: 500, success: false));
+
+        var failed = _store.Find("r1")!;
+        Assert.Equal(ApiCallState.Error, failed.State);
+        Assert.Equal(42, failed.ClientKeyId);
+    }
+
+    [Fact]
+    public void Published_WithoutClientKeyId_NullOnRecord()
+    {
+        // App tắt API key inbound → Received không mang ClientKeyId → popup không hiện dòng client
+        _feed.Publish(Ev("r1", TraceStage.Received, "m1", At));
+        _feed.Publish(Ev("r1", TraceStage.Finished, "m1", At.AddSeconds(1), status: 200, success: true));
+
+        var r = _store.Find("r1")!;
+        Assert.Null(r.ClientKeyId);
+    }
+
+    [Fact]
     public void ParkedEvent_KeepsCurrentState()
     {
         _store.StartRequest("r1", "m1", Bytes(Prompt));
@@ -301,6 +340,32 @@ public class ApiMonitorStoreTests
         _store.RecordResponse("r3", 1, 5, null, null);
 
         Assert.Equal(6, _store.TodayTokens);
+    }
+
+    [Fact]
+    public void TodayTokens_RollsAtMidnightOfInjectedZone()
+    {
+        // Đồng hồ offset 0 giống TimeProvider.System: 11/10 16:30Z = 23:30 ngày 11/10 giờ máy
+        // (+07), 11/10 17:30Z = 00:30 ngày 12/10 giờ máy — HAI CÙNG NGÀY UTC nhưng đã qua nửa
+        // đêm giờ máy. Counter phải reset ở nửa đêm của múi (tile "Token hôm nay" là thứ
+        // người dùng nhìn thấy), không phải nửa đêm UTC.
+        var zone = TimeZoneInfo.CreateCustomTimeZone("UTC+07", TimeSpan.FromHours(7), "UTC+07", "+07");
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 10, 11, 16, 30, 0, TimeSpan.Zero));
+        var store = new ApiMonitorStore(new TraceFeed(_log), _log, time, zone);
+
+        store.StartRequest("r1", "m1", Bytes(Prompt));
+        store.RecordResponse("r1", 10, 20, null, null);
+        Assert.Equal(30, store.TodayTokens);
+
+        time.SetUtcNow(new DateTimeOffset(2026, 10, 11, 17, 30, 0, TimeSpan.Zero));
+
+        // Đã sang ngày máy mới → getter phải tự reset, kể cả khi ngày UTC chưa đổi
+        Assert.Equal(0, store.TodayTokens);
+
+        store.StartRequest("r2", "m1", Bytes(Prompt));
+        store.RecordResponse("r2", 1, 5, null, null);
+
+        Assert.Equal(6, store.TodayTokens);
     }
 
     [Fact]
