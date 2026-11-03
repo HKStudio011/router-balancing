@@ -413,10 +413,22 @@ public class ProxyHealthHandlerTests : IDisposable
                 Proxy = new RoundRobinWebProxy(),
                 UseProxy = true,
                 ConnectTimeout = TimeSpan.FromSeconds(3),
+                ConnectCallback = ConnectOrRefuseAsync,
             },
         };
         return (new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) }, pool);
     }
+
+    /// <summary>
+    /// <see cref="TestNet.ClosedPort"/> là proxy chết: trả ConnectionRefused ngay thay vì để OS
+    /// quyết định — connect thật tới port đóng có thể chờ hết ConnectTimeout 3s/proxy dưới tải
+    /// song song (flake 9s ngày 2026-11-03). Proxy live/destination vẫn connect socket thật.
+    /// </summary>
+    private static ValueTask<Stream> ConnectOrRefuseAsync(
+        SocketsHttpConnectionContext context, CancellationToken ct) =>
+        TestNet.IsReservedClosedPort(context.DnsEndPoint.Port)
+            ? ValueTask.FromException<Stream>(new SocketException((int)SocketError.ConnectionRefused))
+            : TestNet.ConnectAsync(context, ct);
 
     private Uri DestinationUrl() => new($"http://127.0.0.1:{_destination.Port}/v1/chat/completions");
 
