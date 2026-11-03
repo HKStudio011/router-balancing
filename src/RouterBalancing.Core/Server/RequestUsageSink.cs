@@ -40,13 +40,13 @@ public sealed class RequestUsageSink(
             // Client ngắt đúng lúc ghi (race sau khi upstream đã trả xong): request không còn
             // người nhận, DB hủy theo token — không phải lỗi DB (spec §10 chỉ log Error cho
             // lỗi DB thật). Không nuốt im lặng: ghi Debug để còn dấu vết khi soi counter.
-            log.Write(new LogEntry
+            SafeLog(() => log.Write(new LogEntry
             {
                 Severity = LogSeverity.Debug,
                 Category = LogCategory.Request,
                 Message = "Request đã hủy — bỏ qua ghi usage counter.",
                 ClientKeyId = clientKeyId,
-            });
+            }));
         }
         catch (Exception ex)
         {
@@ -54,8 +54,25 @@ public sealed class RequestUsageSink(
             // Category=App (không phải Request): dòng này không có ProviderKey nên bộ lọc
             // nhiễu §2.2.1 sẽ loại nếu để Request — trong khi spec §2.2.1 row 1 coi lỗi
             // DB/usage là alertable.
-            log.Error("Không ghi được usage counter cho client key/provider account.", ex,
-                LogCategory.App);
+            SafeLog(() => log.Error("Không ghi được usage counter cho client key/provider account.",
+                ex, LogCategory.App));
+        }
+    }
+
+    /// <summary>
+    /// Ghi log best-effort: usage là telemetry, và log dùng chung DB nên có thể hỏng đúng lúc
+    /// này — để nó ném ra ngoài sẽ phá fail-open (spec §10). Mirror <c>ApiKeyMiddleware.SafeLogError</c>.
+    /// </summary>
+    /// <param name="write">Lệnh ghi log cần bọc.</param>
+    private static void SafeLog(Action write)
+    {
+        try
+        {
+            write();
+        }
+        catch
+        {
+            // intentional swallow — không còn chỗ báo an toàn hơn khi chính log đang hỏng.
         }
     }
 }

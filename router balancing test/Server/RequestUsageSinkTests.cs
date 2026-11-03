@@ -73,6 +73,30 @@ public class RequestUsageSinkTests : IDisposable
     }
 
     [Fact]
+    public async Task Record_WhenKeysAndErrorLogBothThrow_DoesNotPropagate()
+    {
+        var sink = new RequestUsageSink(
+            new ThrowingKeys(new InvalidOperationException("db locked")), _usage, _limiter,
+            new ThrowingLog());
+
+        // DB hỏng làm cả counter lẫn log Error ném — usage là telemetry, không được phá
+        // request đã 2xx (spec §10).
+        await sink.RecordAsync(1, providerAccountId: null, 5, 5);
+    }
+
+    [Fact]
+    public async Task Record_WhenRequestCancelledAndDebugLogThrows_DoesNotPropagate()
+    {
+        var sink = new RequestUsageSink(
+            new ThrowingKeys(new OperationCanceledException()), _usage, _limiter, new ThrowingLog());
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Token đã hủy nên nhánh Debug được chọn; log hỏng cũng không được phá dispatcher.
+        await sink.RecordAsync(1, providerAccountId: null, 5, 5, cts.Token);
+    }
+
+    [Fact]
     public async Task Record_WhenRequestTokenCancelled_SkipsWithoutErrorLog()
     {
         var log = new CapturingLog();
@@ -181,6 +205,21 @@ public class RequestUsageSinkTests : IDisposable
             => throw new NotSupportedException();
         public Task RecordTokensAsync(long id, int promptTokens, int completionTokens, CancellationToken ct = default)
             => throw error;
+    }
+
+    private sealed class ThrowingLog : ILogService
+    {
+        public event Action<LogEntry>? LogAdded { add { } remove { } }
+        public void Write(LogEntry entry) => throw new InvalidOperationException("log store is unavailable");
+        public void Info(string message, LogCategory category = LogCategory.App)
+            => throw new InvalidOperationException("log store is unavailable");
+        public void Warn(string message, LogCategory category = LogCategory.App)
+            => throw new InvalidOperationException("log store is unavailable");
+        public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App)
+            => throw new InvalidOperationException("log store is unavailable");
+        public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
+        public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
+        public int Count(LogQuery query) => 0;
     }
 
     private sealed class CapturingLog : ILogService
