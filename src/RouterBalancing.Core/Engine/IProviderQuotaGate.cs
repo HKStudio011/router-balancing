@@ -39,6 +39,13 @@ public interface IProviderQuotaGate
     void Clear(long providerId);
 
     /// <summary>
+    /// Bao nhiêu provider đang trong window chặn — phép thử RẺ cho UI phát hiện window
+    /// mở/đóng để bật/tắt badge mà không phải dựng snapshot mỗi frame.
+    /// </summary>
+    /// <returns>Số window còn hiệu lực tại thời điểm gọi (entry hết hạn được coi là đã đóng).</returns>
+    int BlockedCount();
+
+    /// <summary>
     /// Ảnh chụp window đang mở cho UI (badge cooldown trong Live Trace) — providerId → thời
     /// điểm hết window; entry đã hết hạn bị loại (UI tắt badge mà không cần refresh lại).
     /// </summary>

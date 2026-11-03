@@ -140,6 +140,27 @@ public class ProviderQuotaGateTests
     }
 
     [Fact]
+    public void BlockedCount_CountsOnlyWindowsStillOpen()
+    {
+        // Live Trace cần một phép thử rẻ để phát hiện window mở/đóng ngay (badge) thay vì
+        // dựng snapshot Dictionary mỗi tick 100ms của vòng render.
+        var time = new ManualTimeProvider(T0);
+        var gate = new ProviderQuotaGate(time);
+        Assert.Equal(0, gate.BlockedCount());
+
+        gate.Report(7, FreeLimit, TimeSpan.FromSeconds(30));
+        gate.Report(8, FreeLimit, TimeSpan.FromSeconds(300));
+        Assert.Equal(2, gate.BlockedCount());
+
+        time.SetUtcNow(T0.AddSeconds(31));
+        // Hết window phải được tính là đã đóng để UI tắt badge
+        Assert.Equal(1, gate.BlockedCount());
+
+        gate.Clear(8);
+        Assert.Equal(0, gate.BlockedCount());
+    }
+
+    [Fact]
     public void SnapshotBlocked_ReturnsOnlyProvidersStillInsideWindow()
     {
         var time = new ManualTimeProvider(T0);

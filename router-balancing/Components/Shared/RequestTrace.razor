@@ -9,6 +9,7 @@
 @inject IProviderService ProviderService
 @inject IProxyPool ProxyPool
 @inject IProxyService ProxyService
+@inject IProviderQuotaGate QuotaGate
 @inject LocalizationService L
 @inject IJSRuntime JS
 @implements IAsyncDisposable
@@ -602,6 +603,8 @@
                 {
                     // G4: account có proxy đang cooldown → TRANG TRÍ chip (spec §3.5): giữ nguyên
                     // tên/visual trạng thái, thêm viền đỏ đứt qua class + badge đếm ngược bên trong.
+                    // Cùng map này còn giữ cửa sổ quota cấp provider (QuotaCooldownBadge) → chip
+                    // của provider đang bị gate cũng có badge, không cần markup/CSS riêng.
                     var cooling = TryGetCooldown(chip.Name, out var remaining);
                     <div class="trace-chip @(chip.Running ? "trace-chip--act" : "") @(chip.HasError ? "trace-chip--err" : "") @(cooling ? "trace-chip--cooldown" : "")"
                          style="left:@(AccountLeft)px;top:@(chip.Top)px"
@@ -805,14 +808,20 @@
     private string? _expandedIdleProvider;
 
     // ===== G4: badge COOLDOWN trên chip account — map accountName → max(DownUntil) do
-    // CooldownTracker (Task 6) trả về. Contract: empty = authoritative clear, null = lỗi
-    // source (giữ map cũ), ResolveAsync không bao giờ ném. =====
+    // CooldownTracker (Task 6) trả về, CỘNG cửa sổ quota cấp provider của IProviderQuotaGate
+    // (QuotaCooldownBadge gộp theo tên account của provider bị gate). Contract: empty =
+    // authoritative clear, null = lỗi source (giữ map cũ), ResolveAsync không bao giờ ném. =====
     private CooldownTracker? _cooldown;
     private IReadOnlyDictionary<string, DateTimeOffset> _cooldownMap = new Dictionary<string, DateTimeOffset>();
     private long _lastDownSig;      // hash của tập down-id — đổi mới fetch
     private DateTimeOffset _cooldownFetchedAt = DateTimeOffset.MinValue;
     private bool _cooldownBusy;     // chống fire-and-forget chồng nhau
     private long _cooldownSig;      // hash giây countdown đang hiển thị — đổi thì re-render
+
+    // Số provider đang bị gate quota (IProviderQuotaGate) — đổi là fetch lại map cooldown.
+    // Window quota gắn badge vào CÙNG map với cooldown proxy (QuotaCooldownBadge), nên phải
+    // phát hiện window mở/đóng ngay: count rẻ hơn nhiều so với snapshot mỗi tick 100ms.
+    private int _lastQuotaCount;
 
     // Id request đang mở modal chi tiết timeline — null = đóng; circle click gán, CloseDetail xóa
     private string? _selectedId;
@@ -1018,6 +1027,10 @@
                 await InvokeAsync(() =>
                 {
                     _providers = providers;
+                    // Map quota cần tên account của provider bị gate — window mở TRƯỚC khi
+                    // cache provider nạp xong sẽ không gắn được badge, nên ép fetch lại
+                    // (-1 không bao giờ khớp BlockedCount() thật).
+                    _lastQuotaCount = -1;
                     StateHasChanged();
                 });
             }
@@ -1102,10 +1115,15 @@
                 downIds.Sort();
                 sig = downIds.Aggregate(17, (h, id) => h * 31 + id.GetHashCode());
             }
-            if (sig != _lastDownSig || DateTimeOffset.UtcNow - _cooldownFetchedAt >= TimeSpan.FromSeconds(30))
+            // Window quota cấp provider cũng gắn badge vào map này → count đổi (mở window,
+            // hoặc UI vừa clear vì user sửa provider/tài khoản/proxy) là fetch ngay.
+            var quotaCount = QuotaGate.BlockedCount();
+            if (sig != _lastDownSig || quotaCount != _lastQuotaCount
+                || now - _cooldownFetchedAt >= TimeSpan.FromSeconds(30))
             {
                 _lastDownSig = sig;
-                _cooldownFetchedAt = DateTimeOffset.UtcNow;
+                _lastQuotaCount = quotaCount;
+                _cooldownFetchedAt = now;
                 _ = RefreshCooldownAsync();
             }
         }
@@ -1176,7 +1194,9 @@
 
     /// <summary>
     /// Fetch map cooldown qua CooldownTracker — null (lỗi source) thì GIỮ map cũ
-    /// (spec §3.5, Review Focus #4); gán + render phải qua dispatcher thread.
+    /// (spec §3.5, Review Focus #4); gán + render phải qua dispatcher thread. Map quota
+    /// cửa provider được merge vào cùng map này (QuotaCooldownBadge) nên badge
+    /// <c>trace.cooldown</c> hiện cho cả proxy down lẫn provider đang bị gate quota.
     /// </summary>
     private async Task RefreshCooldownAsync()
     {
@@ -1188,7 +1208,11 @@
             // Guard _disposed như LoadProvidersAsync: fetch kết thúc sau khi component bị gỡ
             // thì InvokeAsync ném ObjectDisposedException (bị catch nuốt → log rác).
             if (map is not null && !_disposed)
-                await InvokeAsync(() => { _cooldownMap = map; StateHasChanged(); });
+            {
+                var merged = QuotaCooldownBadge.MergeByAccount(
+                    QuotaGate.SnapshotBlocked(), _providers, map);
+                await InvokeAsync(() => { _cooldownMap = merged; StateHasChanged(); });
+            }
         }
         catch (Exception ex)
         {

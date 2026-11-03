@@ -63,29 +63,46 @@ public sealed class ProviderQuotaGate(TimeProvider time) : IProviderQuotaGate
     }
 
     /// <inheritdoc/>
+    public int BlockedCount()
+    {
+        lock (_gate)
+        {
+            PruneExpired(time.GetUtcNow());
+            return _blocked.Count;
+        }
+    }
+
+    /// <inheritdoc/>
     public IReadOnlyDictionary<long, DateTimeOffset> SnapshotBlocked()
     {
         var now = time.GetUtcNow();
         lock (_gate)
         {
-            // Loại luôn entry hết hạn: UI đọc snapshot này để bật/tắt badge, không cần
-            // đường "expired" riêng trên Failure.
-            List<long>? expired = null;
-            foreach (var (providerId, entry) in _blocked)
-            {
-                if (entry.Until <= now)
-                    (expired ??= []).Add(providerId);
-            }
-            if (expired is not null)
-            {
-                foreach (var providerId in expired)
-                    _blocked.Remove(providerId);
-            }
+            PruneExpired(now);
 
             var snapshot = new Dictionary<long, DateTimeOffset>(_blocked.Count);
             foreach (var (providerId, entry) in _blocked)
                 snapshot[providerId] = entry.Until;
             return snapshot;
         }
+    }
+
+    /// <summary>
+    /// Gỡ entry đã hết window. UI dựa vào "hết hạn = đã đóng" để tắt badge nên gate không
+    /// được để entry chết sống lại trong count/snapshot. Gọi trong <see cref="_gate"/>.
+    /// </summary>
+    private void PruneExpired(DateTimeOffset now)
+    {
+        List<long>? expired = null;
+        foreach (var (providerId, entry) in _blocked)
+        {
+            if (entry.Until <= now)
+                (expired ??= []).Add(providerId);
+        }
+        if (expired is null)
+            return;
+
+        foreach (var providerId in expired)
+            _blocked.Remove(providerId);
     }
 }
