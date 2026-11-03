@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
@@ -13,16 +14,18 @@ public sealed class ProxyService : IProxyService
     private readonly ISecretProtector _protector;
     private readonly IProxyPool _pool;
     private readonly IProxyEchoClient _echo;
+    private readonly IProviderQuotaGate _quotaGate;
 
     /// <inheritdoc/>
     public ProxyService(
         IDbContextFactory<RouterBalancingDbContext> db, ISecretProtector protector, IProxyPool pool,
-        IProxyEchoClient echo)
+        IProxyEchoClient echo, IProviderQuotaGate quotaGate)
     {
         _db = db;
         _protector = protector;
         _pool = pool;
         _echo = echo;
+        _quotaGate = quotaGate;
     }
 
     /// <inheritdoc/>
@@ -215,6 +218,9 @@ public sealed class ProxyService : IProxyService
         provider.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         _pool.Invalidate();
+        // Gán proxy khác = đổi IP cửa outgoing. Với nhà cung cấp cap theo IP (OpenCode Zen),
+        // đây chính là bằng chứng người dùng đang thử điều kiện mới → mở lại window quota.
+        _quotaGate.Clear(providerId);
     }
 
     /// <summary>
@@ -304,6 +310,7 @@ public sealed class ProxyService : IProxyService
         account.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         _pool.Invalidate();
+        _quotaGate.Clear(account.ProviderId);
     }
 
     /// <inheritdoc/>

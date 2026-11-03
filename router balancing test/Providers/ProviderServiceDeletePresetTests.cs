@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
@@ -16,7 +17,8 @@ public class ProviderServiceDeletePresetTests : IDisposable
     {
         _db = _testDb.CreateFactory();
         DbInitializer.Initialize(_db);
-        _service = new ProviderService(_db, new DpapiSecretProtector(), new NeverHttpFactory(), new NullLog());
+        _service = new ProviderService(_db, new DpapiSecretProtector(), new NeverHttpFactory(), new NullLog(),
+            new ProviderQuotaGate(TimeProvider.System));
     }
 
     public void Dispose() => _testDb.Dispose();

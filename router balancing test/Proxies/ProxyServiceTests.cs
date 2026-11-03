@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
@@ -12,6 +13,7 @@ public class ProxyServiceTests : IDisposable
     private readonly IDbContextFactory<RouterBalancingDbContext> _factory;
     private readonly ISecretProtector _protector = new DpapiSecretProtector();
     private readonly FakePool _pool = new();
+    private readonly ProviderQuotaGate _quotaGate = new(TimeProvider.System);
 
     // Mutable: test TestAsync gán script echo mới trước khi CreateService() đọc field
     private StubEchoClient _echo = new(() => new ProxyTestResult(true, null, 200, TimeSpan.FromMilliseconds(12)));
@@ -27,7 +29,7 @@ public class ProxyServiceTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    private ProxyService CreateService() => new(_factory, _protector, _pool, _echo);
+    private ProxyService CreateService() => new(_factory, _protector, _pool, _echo, _quotaGate);
 
     private static ProxyDraft Draft(
         string scheme = "http", string host = "127.0.0.1", int port = 8080,
@@ -70,6 +72,38 @@ public class ProxyServiceTests : IDisposable
         db.ProviderAccounts.Add(account);
         await db.SaveChangesAsync();
         return account.Id;
+    }
+
+    /// <summary>Lỗi quota cap-provider (shape FreeUsageLimitError) để mở window trong test.</summary>
+    private static readonly RetryState.Failure QuotaFailure =
+        new(429, "application/json", """{"type":"error"}"""u8.ToArray(), null);
+
+    [Fact]
+    public async Task AssignProviderProxies_ClearsProviderQuotaWindow()
+    {
+        // Gán proxy = đổi IP cửa outgoing. Free-tier cap của OpenCode Zen là pool chung phía
+        // upstream (probe 2026-11-03), nên khi user đổi proxy phải được thử lại ngay.
+        var proxyId = await AddProxyAsync(8097);
+        var providerId = await AddProviderAsync();
+        _quotaGate.Report(providerId, QuotaFailure, TimeSpan.FromMinutes(5));
+        Assert.True(_quotaGate.TryGetBlock(providerId, out _), "window phải đang mở trước khi gán proxy");
+
+        await CreateService().AssignProviderProxiesAsync(providerId, [proxyId], ProxyMode.RoundRobin);
+
+        Assert.False(_quotaGate.TryGetBlock(providerId, out _));
+    }
+
+    [Fact]
+    public async Task SetAccountProxyOverride_ClearsProviderQuotaWindow()
+    {
+        var proxyId = await AddProxyAsync(8098);
+        var providerId = await AddProviderAsync();
+        var accountId = await AddAccountAsync(providerId);
+        _quotaGate.Report(providerId, QuotaFailure, TimeSpan.FromMinutes(5));
+
+        await CreateService().SetAccountProxyOverrideAsync(accountId, [proxyId], overrideEnabled: true);
+
+        Assert.False(_quotaGate.TryGetBlock(providerId, out _));
     }
 
     [Fact]

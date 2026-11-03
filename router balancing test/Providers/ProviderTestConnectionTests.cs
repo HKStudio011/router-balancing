@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
@@ -49,7 +50,7 @@ public class ProviderTestConnectionTests : IDisposable
     }
 
     private ProviderService ServiceWith(HttpMessageHandler handler) =>
-        new(_db, _protector, new StubFactory(handler), new NullLog());
+        new(_db, _protector, new StubFactory(handler), new NullLog(), new ProviderQuotaGate(TimeProvider.System));
 
     private async Task<Provider> SavedProviderAsync(ProviderType type = ProviderType.OpenAI)
     {

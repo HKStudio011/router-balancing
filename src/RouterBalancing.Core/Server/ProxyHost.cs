@@ -29,6 +29,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly ITraceFeed _trace;
     private readonly IApiMonitorStore _monitor;
     private readonly DrainGate _drain;
+    private readonly IProviderQuotaGate _quotaGate;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private WebApplication? _app;
     private bool _disposed;
@@ -41,7 +42,8 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool, ITraceFeed trace,
-        IApiMonitorStore monitor, IRequestJournalWriter journalWriter, DrainGate drainGate)
+        IApiMonitorStore monitor, IRequestJournalWriter journalWriter, DrainGate drainGate,
+        IProviderQuotaGate quotaGate)
     {
         _settings = settings;
         _log = log;
@@ -52,6 +54,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _trace = trace;
         _monitor = monitor;
         _drain = drainGate;
+        _quotaGate = quotaGate;
         // eager-create singleton (mirror ITraceFeed) — writer tự subscribe feed trong ctor,
         // không endpoint nào inject IRequestJournalWriter nên resolve tại đây
         _ = journalWriter;
@@ -91,6 +94,9 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             // Cùng instance với MAUI container — UpdateCoordinator BeginDrain/CancelDrain
             // phải pause/resume đúng DispatcherLoop đang chạy trong proxy container này
             builder.Services.AddSingleton(_drain);
+            // Cùng instance với UI container — UI xóa window quota khi user sửa provider/tài
+            // khoản/proxy gán cho provider; DispatcherLoop trong container này là bên mở window.
+            builder.Services.AddSingleton(_quotaGate);
             builder.WebHost.ConfigureKestrel(options =>
                 options.Listen(ResolveBindAddress(_settings.LanAccess), port));
 

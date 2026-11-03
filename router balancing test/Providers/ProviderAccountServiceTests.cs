@@ -2,6 +2,7 @@
 using System.Net;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
@@ -16,6 +17,7 @@ public class ProviderAccountServiceTests : IDisposable
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ISecretProtector _protector = new DpapiSecretProtector();
     private readonly IUsageDailyService _usage;
+    private readonly ProviderQuotaGate _gate = new(TimeProvider.System);
     private readonly ProviderAccountService _service;
     // Providers.Name có unique index (spec capability-model §6, B4) — mỗi seed một tên riêng;
     // test này nói về tên ACCOUNT trùng nhau giữa các provider, không phải tên provider.
@@ -27,7 +29,7 @@ public class ProviderAccountServiceTests : IDisposable
         DbInitializer.Initialize(_db);
         _usage = new UsageDailyService(_db, TimeProvider.System);
         // CRUD dùng factory ném — không được phép đụng network
-        _service = new ProviderAccountService(_db, _protector, new NeverHttpFactory(), new NullLog(), _usage);
+        _service = new ProviderAccountService(_db, _protector, new NeverHttpFactory(), new NullLog(), _usage, _gate);
     }
 
     /// <summary>Giải phóng TestDb (xóa file tạm).</summary>
@@ -42,7 +44,7 @@ public class ProviderAccountServiceTests : IDisposable
 
     /// <summary>Service với HTTP stub — test TestAll không đụng mạng.</summary>
     private ProviderAccountService ServiceWith(HttpMessageHandler handler) =>
-        new(_db, _protector, new StubFactory(handler), new NullLog(), _usage);
+        new(_db, _protector, new StubFactory(handler), new NullLog(), _usage, _gate);
 
     /// <summary>IHttpClientFactory trả HttpClient gắn handler test.</summary>
     private sealed class StubFactory(HttpMessageHandler handler) : IHttpClientFactory
@@ -499,5 +501,64 @@ public class ProviderAccountServiceTests : IDisposable
         var service = ServiceWith(new FixedHandler(HttpStatusCode.OK));
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() => service.TestAllAsync(999));
+    }
+
+    /// <summary>Lỗi quota cap-provider (shape FreeUsageLimitError) để mở window trong test.</summary>
+    private static readonly RetryState.Failure QuotaFailure =
+        new(429, "application/json", """{"type":"error"}"""u8.ToArray(), null);
+
+    private async Task<long> AccountIdOfAsync(long providerId, string name = "acct")
+    {
+        using var db = _db.CreateDbContext();
+        return (await db.ProviderAccounts.SingleAsync(a => a.ProviderId == providerId && a.Name == name)).Id;
+    }
+
+    [Fact]
+    public async Task Create_WhenProviderInQuotaCooldown_ClearsWindow()
+    {
+        // Thêm tài khoản = thêm key mới, cơ hội quota mới → phải thử lại ngay.
+        var providerId = await SeedProviderAsync(("acct", true));
+        _gate.Report(providerId, QuotaFailure, TimeSpan.FromMinutes(5));
+        Assert.True(_gate.TryGetBlock(providerId, out _), "window phải đang mở trước khi thêm TK");
+
+        await _service.CreateAsync(Draft(providerId, name: "acct-moi"));
+
+        Assert.False(_gate.TryGetBlock(providerId, out _));
+    }
+
+    [Fact]
+    public async Task Update_WhenKeyRotatedWhileQuotaCooling_ClearsWindow()
+    {
+        var providerId = await SeedProviderAsync(("acct", true));
+        var accountId = await AccountIdOfAsync(providerId);
+        _gate.Report(providerId, QuotaFailure, TimeSpan.FromMinutes(5));
+
+        await _service.UpdateAsync(accountId, Draft(providerId, key: "sk-moi"));
+
+        Assert.False(_gate.TryGetBlock(providerId, out _));
+    }
+
+    [Fact]
+    public async Task SetEnabled_WhenProviderInQuotaCooldown_ClearsWindow()
+    {
+        var providerId = await SeedProviderAsync(("acct", true));
+        var accountId = await AccountIdOfAsync(providerId);
+        _gate.Report(providerId, QuotaFailure, TimeSpan.FromMinutes(5));
+
+        await _service.SetEnabledAsync(accountId, false);
+
+        Assert.False(_gate.TryGetBlock(providerId, out _));
+    }
+
+    [Fact]
+    public async Task Delete_WhenProviderInQuotaCooldown_ClearsWindow()
+    {
+        var providerId = await SeedProviderAsync(("acct-a", true), ("acct-b", true));
+        var accountId = await AccountIdOfAsync(providerId, "acct-a");
+        _gate.Report(providerId, QuotaFailure, TimeSpan.FromMinutes(5));
+
+        await _service.DeleteAsync(accountId);
+
+        Assert.False(_gate.TryGetBlock(providerId, out _));
     }
 }

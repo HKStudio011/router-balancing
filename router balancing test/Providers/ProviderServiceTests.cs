@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
@@ -11,6 +12,7 @@ public class ProviderServiceTests : IDisposable
     private readonly TestDb _testDb = new();
     private readonly IDbContextFactory<RouterBalancingDbContext> _db;
     private readonly ISecretProtector _protector = new DpapiSecretProtector();
+    private readonly ProviderQuotaGate _gate = new(TimeProvider.System);
     private readonly ProviderService _service;
 
     public ProviderServiceTests()
@@ -19,7 +21,7 @@ public class ProviderServiceTests : IDisposable
         _db = _testDb.CreateFactory();
         DbInitializer.Initialize(_db);
         // Task 3 mở rộng ctor — test CRUD dùng StubFactory handler không bao giờ được gọi
-        _service = new ProviderService(_db, _protector, new NeverHttpFactory(), new NullLog());
+        _service = new ProviderService(_db, _protector, new NeverHttpFactory(), new NullLog(), _gate);
     }
 
     /// <summary>HttpClientFactory ném nếu bị gọi — CRUD không được đụng network.</summary>
@@ -269,8 +271,7 @@ public class ProviderServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task SetEnabled_WhenToggled_Persists()
-    {
+    public async Task SetEnabled_WhenToggled_Persists()    {
         var provider = await _service.CreateAsync(Draft());
 
         await _service.SetEnabledAsync(provider.Id, false);
@@ -354,6 +355,47 @@ public class ProviderServiceTests : IDisposable
 
         using var db = _db.CreateDbContext();
         Assert.False(await db.ProviderHeaders.AnyAsync(h => h.ProviderId == provider.Id));
+    }
+
+    /// <summary>Lỗi quota cap-provider (shape FreeUsageLimitError) để mở window trong test.</summary>
+    private static readonly RetryState.Failure QuotaFailure =
+        new(429, "application/json", """{"type":"error"}"""u8.ToArray(), null);
+
+    [Fact]
+    public async Task Update_WhenProviderInQuotaCooldown_ClearsWindow()
+    {
+        // Sửa provider (baseUrl/key/header/MaxConcurrent) = điều kiện gọi đã đổi → phải cho
+        // thử lại ngay, không bắt người dùng chờ hết window còn lại.
+        var provider = await _service.CreateAsync(Draft());
+        _gate.Report(provider.Id, QuotaFailure, TimeSpan.FromMinutes(5));
+        Assert.True(_gate.TryGetBlock(provider.Id, out _), "window phải đang mở trước khi sửa");
+
+        await _service.UpdateAsync(provider.Id, Draft(name: "OpenAI moi", identifier: "openai-new"));
+
+        Assert.False(_gate.TryGetBlock(provider.Id, out _));
+    }
+
+    [Fact]
+    public async Task SetEnabled_WhenProviderInQuotaCooldown_ClearsWindow()
+    {
+        var provider = await _service.CreateAsync(Draft());
+        _gate.Report(provider.Id, QuotaFailure, TimeSpan.FromMinutes(5));
+
+        await _service.SetEnabledAsync(provider.Id, false);
+
+        Assert.False(_gate.TryGetBlock(provider.Id, out _));
+    }
+
+    [Fact]
+    public async Task Delete_WhenProviderInQuotaCooldown_DoesNotLeaveWindowBehind()
+    {
+        // Window mồ côi theo id provider đã xóa không còn nguồn để clear → phải dọn tại delete.
+        var provider = await _service.CreateAsync(Draft());
+        _gate.Report(provider.Id, QuotaFailure, TimeSpan.FromMinutes(5));
+
+        await _service.DeleteAsync(provider.Id);
+
+        Assert.Empty(_gate.SnapshotBlocked());
     }
 
     [Fact]

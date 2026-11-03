@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
@@ -14,18 +15,21 @@ public sealed class ProviderService : IProviderService
     private readonly ISecretProtector _protector;
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
+    private readonly IProviderQuotaGate _quotaGate;
 
     /// <inheritdoc/>
     public ProviderService(
         IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector,
         IHttpClientFactory http,
-        ILogService log)
+        ILogService log,
+        IProviderQuotaGate quotaGate)
     {
         _db = db;
         _protector = protector;
         _http = http;
         _log = log;
+        _quotaGate = quotaGate;
     }
 
     /// <inheritdoc/>
@@ -116,6 +120,9 @@ public sealed class ProviderService : IProviderService
         provider.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
+        // Sửa cấu hình = điều kiện gọi upstream đã đổi (baseUrl, header, MaxConcurrent) →
+        // cho phép thử lại ngay, không bắt người dùng chờ hết window quota còn lại.
+        _quotaGate.Clear(id);
     }
 
     /// <summary>
@@ -181,6 +188,9 @@ public sealed class ProviderService : IProviderService
         // — xóa provider, DB tự xóa models con.
         db.Providers.Remove(provider);
         await db.SaveChangesAsync(ct);
+        // Không dọn thì window theo id đã xóa không còn đường clear (gate không biết provider
+        // đã biến mất) — id có thể được tái sử dụng ở provider mới.
+        _quotaGate.Clear(id);
     }
 
     /// <inheritdoc/>
@@ -193,6 +203,8 @@ public sealed class ProviderService : IProviderService
         provider.Enabled = enabled;
         provider.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+        // Bật/tắt provider là ý định mới của người dùng (vd vừa đổi key rồi bật lại) → clear window.
+        _quotaGate.Clear(id);
     }
 
     /// <inheritdoc/>

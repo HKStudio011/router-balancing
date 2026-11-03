@@ -155,7 +155,7 @@ public class ProxyAppChatIntegrationTests : IDisposable
             Encoding.UTF8, "text/event-stream"),
     };
 
-    private async Task<HttpClient> StartAsync(IUpstreamClient upstream)
+    private async Task<HttpClient> StartAsync(IUpstreamClient upstream, IProviderQuotaGate? quotaGate = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseTestServer();
@@ -164,6 +164,10 @@ public class ProxyAppChatIntegrationTests : IDisposable
         builder.Services.AddSingleton<ILogService>(_log);
         builder.Services.AddSingleton<IDbContextFactory<RouterBalancingDbContext>>(_db.CreateFactory());
         builder.Services.AddSingleton<IClientKeyService>(_clientKeys);
+        // App (MAUI) đăng ký gate TRƯỚC ConfigureServices — ProxyHost.StartAsync cũng vậy;
+        // test đi cùng đường để chứng minh engine dùng đúng instance của UI.
+        if (quotaGate is not null)
+            builder.Services.AddSingleton(quotaGate);
 
         ProxyApp.ConfigureServices(builder, _protector, new DirectProxyPool());
         // Đăng ký SAU ConfigureServices → wins (last registration), stub thay OpenAiUpstreamClient
@@ -383,6 +387,40 @@ public class ProxyAppChatIntegrationTests : IDisposable
         await client.PostAsync("/v1/chat/completions",
             Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
 
+        Assert.Equal(2, upstream.Calls);
+    }
+
+    [Fact]
+    public async Task Chat_WhenGateInstanceFromUiIsCleared_RequestReachesUpstreamAgain()
+    {
+        // Điều kiện tiên quyết cho "sửa provider là được thử lại ngay": gate trong container
+        // proxy phải là ĐÚNG instance UI đăng ký (MauiProgram + ProxyHost.StartAsync). Nếu
+        // ConfigureServices tạo instance riêng, Clear() từ ProviderService/ProxyService vô nghĩa.
+        var gate = new ProviderQuotaGate(TimeProvider.System);
+        SeedProvider("free-model");
+        long providerId;
+        using (var db = _db.CreateFactory().CreateDbContext())
+            providerId = db.Providers.Single(p => p.Name == "p-free-model").Id;
+
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent(
+                """{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = await StartAsync(upstream, gate);
+
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        Assert.Equal(1, upstream.Calls);
+
+        // UI vừa sửa provider / thêm tài khoản / gán proxy mới → xóa window
+        gate.Clear(providerId);
+
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
         Assert.Equal(2, upstream.Calls);
     }
 

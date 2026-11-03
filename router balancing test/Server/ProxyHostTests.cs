@@ -45,7 +45,7 @@ public class ProxyHostTests : IDisposable
     {
         var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate(), new ProviderQuotaGate(TimeProvider.System));
         await host.StartAsync();
         _client.BaseAddress = new Uri($"http://127.0.0.1:{host.Port}");
         return host;
@@ -172,7 +172,7 @@ public class ProxyHostTests : IDisposable
     {
         var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate(), new ProviderQuotaGate(TimeProvider.System));
         var raised = 0;
         host.StateChanged += () => raised++;
 
@@ -188,7 +188,7 @@ public class ProxyHostTests : IDisposable
     {
         var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate(), new ProviderQuotaGate(TimeProvider.System));
         var raised = 0;
         host.StateChanged += () => raised++;
 
@@ -229,7 +229,7 @@ public class ProxyHostTests : IDisposable
         // KHÔNG StartAsync — _app null: bridge phải trả NotRunning mà không chạm container DI (spec §5.1)
         var feed = new TraceFeed(_log);
         await using var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate(), new ProviderQuotaGate(TimeProvider.System));
 
         Assert.Equal(RequestCancelResult.NotRunning, host.CancelRequest("any"));
     }
@@ -250,7 +250,7 @@ public class ProxyHostTests : IDisposable
         // KHÔNG StartAsync — _app null: bridge phải trả 0 mà không chạm container DI
         var feed = new TraceFeed(_log);
         await using var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate(), new ProviderQuotaGate(TimeProvider.System));
 
         Assert.Equal(0, host.GetTotalInFlight());
     }
@@ -261,7 +261,7 @@ public class ProxyHostTests : IDisposable
         // KHÔNG StartAsync — _app null: không có queue để snapshot, phải false chứ không throw
         var feed = new TraceFeed(_log);
         await using var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate(), new ProviderQuotaGate(TimeProvider.System));
 
         Assert.False(await host.TryWriteQueueSnapshotAsync());
     }
@@ -304,7 +304,7 @@ public class ProxyHostTests : IDisposable
     {
         var feed = new TraceFeed(_log);
         var host = new ProxyHost(_settings, _log, _db.CreateFactory(), new DpapiSecretProtector(), _clientKeys,
-            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate());
+            new DirectProxyPool(), feed, new ApiMonitorStore(feed, _log, TimeProvider.System), new NullJournalWriter(), new DrainGate(), new ProviderQuotaGate(TimeProvider.System));
         feed.Publish(new TraceEvent("id1", TraceStage.Received, "m1", null, null, null, null, null,
             DateTimeOffset.Now));
         Assert.Single(feed.Snapshot());
