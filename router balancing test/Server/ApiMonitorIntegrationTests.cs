@@ -24,6 +24,12 @@ namespace router_balancing_test.Server;
 /// </summary>
 public class ApiMonitorIntegrationTests : IDisposable
 {
+    /// <summary>
+    /// Budget cho rendezvous với pipeline/feed. Full suite chạy song song có thể làm thread pool/IO
+    /// đói vài giây — budget 5s cũ từng flake; 30s vẫn fail nếu có deadlock thật.
+    /// </summary>
+    private static readonly TimeSpan RendezvousTimeout = TimeSpan.FromSeconds(30);
+
     private readonly TestDb _db = new();
     private readonly AppSettingsService _settings;
     private readonly LogService _log;
@@ -176,20 +182,23 @@ public class ApiMonitorIntegrationTests : IDisposable
     private async Task<string> WaitForQueuedIdAsync(string model)
     {
         var queue = _app!.Services.GetRequiredService<IRequestQueue>();
-        for (var i = 0; i < 100; i++)
+        var deadline = DateTime.UtcNow + RendezvousTimeout;
+        while (DateTime.UtcNow < deadline)
         {
             var hit = queue.Snapshot().FirstOrDefault(r => r.Model == model);
             if (hit is not null)
                 return hit.Id;
             await Task.Delay(50);
         }
-        throw new TimeoutException($"Request '{model}' không vào queue trong 5s.");
+        throw new TimeoutException(
+            $"Request '{model}' không vào queue trong {RendezvousTimeout.TotalSeconds:0}s.");
     }
 
-    /// <summary>Poll kiểu WaitUntilAsync có sẵn (100×50ms) — H4 chạy sau khi client nhận response.</summary>
+    /// <summary>Poll tới <see cref="RendezvousTimeout"/> — H4 chạy sau khi client nhận response.</summary>
     private static async Task WaitUntilAsync(Func<bool> condition, string because)
     {
-        for (var i = 0; i < 100 && !condition(); i++)
+        var deadline = DateTime.UtcNow + RendezvousTimeout;
+        while (!condition() && DateTime.UtcNow < deadline)
             await Task.Delay(50);
         Assert.True(condition(), because);
     }
@@ -274,20 +283,20 @@ public class ApiMonitorIntegrationTests : IDisposable
         var client = await StartAsync(upstream);
 
         var serving = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // request 1 giữ trọn slot
+        await upstream.Entered.WaitAsync(RendezvousTimeout); // request 1 giữ trọn slot
         var queued = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
         var queuedId = await WaitForQueuedIdAsync("m1");
 
         var cancel = await CancelAsync(client, queuedId);
         Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
 
-        var origin = await queued.WaitAsync(TimeSpan.FromSeconds(5));
+        var origin = await queued.WaitAsync(RendezvousTimeout);
         Assert.Equal(HttpStatusCode.BadRequest, origin.StatusCode);
         await WaitUntilAsync(() => _store.Find(queuedId) is { State: ApiCallState.Cancelled },
             "H4 Canceled phải chốt record sang Cancelled");
 
         upstream.Release();
-        var ok = await serving.WaitAsync(TimeSpan.FromSeconds(5));
+        var ok = await serving.WaitAsync(RendezvousTimeout);
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
     }
 

@@ -22,6 +22,13 @@ namespace router_balancing_test.Server;
 /// </summary>
 public class ProxyControlApiTests : IDisposable
 {
+    /// <summary>
+    /// Budget cho rendezvous với pipeline (queue/upstream). Full suite chạy song song có thể làm
+    /// thread pool/IO đói vài giây — budget 5s cũ từng flake (TimeoutException tại
+    /// <c>upstream.Entered.WaitAsync</c>); 30s vẫn fail nếu có deadlock thật.
+    /// </summary>
+    private static readonly TimeSpan RendezvousTimeout = TimeSpan.FromSeconds(30);
+
     private readonly TestDb _db = new();
     private readonly AppSettingsService _settings;
     private readonly LogService _log;
@@ -134,18 +141,20 @@ public class ProxyControlApiTests : IDisposable
     private Task<HttpResponseMessage> CancelAsync(string id) =>
         _client!.SendAsync(new HttpRequestMessage(HttpMethod.Post, $"/v1/requests/{id}/cancel"));
 
-    /// <summary>Chờ request thực sự vào queue (dispatcher có thể đang park) — poll tối đa 5s.</summary>
+    /// <summary>Chờ request thực sự vào queue (dispatcher có thể đang park) — poll tới <see cref="RendezvousTimeout"/>.</summary>
     private async Task<string> WaitForQueuedIdAsync(string model)
     {
         var queue = _app!.Services.GetRequiredService<IRequestQueue>();
-        for (var i = 0; i < 100; i++)
+        var deadline = DateTime.UtcNow + RendezvousTimeout;
+        while (DateTime.UtcNow < deadline)
         {
             var hit = queue.Snapshot().FirstOrDefault(r => r.Model == model);
             if (hit is not null)
                 return hit.Id;
             await Task.Delay(50);
         }
-        throw new TimeoutException($"Request '{model}' không vào queue trong 5s.");
+        throw new TimeoutException(
+            $"Request '{model}' không vào queue trong {RendezvousTimeout.TotalSeconds:0}s.");
     }
 
     private async Task<string> FindRequestIdAsync(string state)
@@ -177,7 +186,7 @@ public class ProxyControlApiTests : IDisposable
         var client = await StartAsync(upstream);
 
         var servingTask = client.PostAsync("/v1/chat/completions", ChatBody("m-served"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(RendezvousTimeout);
         var parkedTask = client.PostAsync("/v1/chat/completions", ChatBody("m-queued"));
         var queuedId = await WaitForQueuedIdAsync("m-queued");
 
@@ -227,7 +236,7 @@ public class ProxyControlApiTests : IDisposable
         var client = await StartAsync(upstream);
 
         var pending = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(RendezvousTimeout);
         var servingId = await FindRequestIdAsync("serving");
 
         var response = await CancelAsync(servingId);
@@ -249,7 +258,7 @@ public class ProxyControlApiTests : IDisposable
         var client = await StartAsync(upstream);
 
         var holding = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5)); // holder chiếm trọn slot
+        await upstream.Entered.WaitAsync(RendezvousTimeout); // holder chiếm trọn slot
         var pending = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
         var queuedId = await WaitForQueuedIdAsync("m1");
 
@@ -260,7 +269,7 @@ public class ProxyControlApiTests : IDisposable
         Assert.True(json.GetProperty("cancelled").GetBoolean());
 
         // Endpoint gốc đang await TCS → nhận Cancelled → ghi 400 request_cancelled (spec §3.4)
-        var origin = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        var origin = await pending.WaitAsync(RendezvousTimeout);
         Assert.Equal(HttpStatusCode.BadRequest, origin.StatusCode);
         var error = (await ReadJson(origin)).GetProperty("error");
         Assert.Equal("request_cancelled", error.GetProperty("code").GetString());

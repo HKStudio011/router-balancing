@@ -167,7 +167,7 @@ public class UpdateDrainFlowIntegrationTests : IDisposable
 
         // 2 request: A giữ trọn slot MaxConcurrent=1, B nằm trong queue
         var requestA = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
-        await upstream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await upstream.Entered.WaitAsync(TestTimeouts.Rendezvous);
         var requestB = client.PostAsync("/v1/chat/completions", ChatBody("m1"));
         var queuedId = await WaitForQueuedIdAsync("m1");
 
@@ -180,7 +180,7 @@ public class UpdateDrainFlowIntegrationTests : IDisposable
 
         // In-flight đang serve chạy hết về 0; dispatcher KHÔNG được Take B khi đang drain
         upstream.Release();
-        var okA = await requestA.WaitAsync(TimeSpan.FromSeconds(5));
+        var okA = await requestA.WaitAsync(TestTimeouts.Rendezvous);
         Assert.Equal(HttpStatusCode.OK, okA.StatusCode);
         await WaitUntilAsync(() => executions.TotalInFlight == 0, "in-flight phải drain về 0");
         Assert.True(queue.Contains(queuedId), "B phải còn trong queue khi drain xong — dispatcher không nhận request mới");
@@ -209,7 +209,7 @@ public class UpdateDrainFlowIntegrationTests : IDisposable
 
         // Dọn: mở lại gate để B được serve bình thường —Dispose không treo vì endpoint còn sống
         _drain.CancelDrain();
-        var okB = await requestB.WaitAsync(TimeSpan.FromSeconds(5));
+        var okB = await requestB.WaitAsync(TestTimeouts.Rendezvous);
         Assert.Equal(HttpStatusCode.OK, okB.StatusCode);
         Assert.Equal(2, upstream.Calls);
     }
