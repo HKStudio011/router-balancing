@@ -5,28 +5,25 @@ namespace RouterBalancing.Core.Engine;
 /// State in-memory theo tiến trình proxy (một instance desktop duy nhất — giống
 /// <c>ClientKeyRateLimiter</c>), không record lịch sử: chỉ cần “provider X còn bị chặn tới
 /// lúc nào + replay gì”. Đồng hồ inject qua <see cref="TimeProvider"/> để test ranh giới window.
+/// Cửa sổ dài bao lâu là quyết định của caller (setting + Retry-After của upstream) — gate
+/// chỉ giữ cơ chế window, không chứa chính sách.
 /// </remarks>
 public sealed class ProviderQuotaGate(TimeProvider time) : IProviderQuotaGate
 {
-    /// <summary>
-    /// Cửa sổ mở khi upstream KHÔNG gửi <c>Retry-After</c>. OpenCode Zen free tier không gửi
-    /// header này (probe 2026-11-03) nên đây là giá trị quyết định hành vi: 2 phút đủ để
-    /// hàng chục request trong một burst agent không gọi upstream vô ích, mà vẫn tự thử lại
-    /// khi pool free reset (theo ngày/giờ).
-    /// </summary>
-    public static readonly TimeSpan DefaultBlock = TimeSpan.FromSeconds(120);
-
     private readonly Dictionary<long, (DateTimeOffset Until, RetryState.Failure Failure)> _blocked = new();
     private readonly object _gate = new();
 
     /// <inheritdoc/>
-    public void Report(long providerId, RetryState.Failure failure)
+    public void Report(long providerId, RetryState.Failure failure, TimeSpan fallbackTtl)
     {
+        // RetryAfter đã được RetryAfterParser clamp [0, 3600]s ở đường parse header —
+        // upstream nói trước thì nghe theo; không nói thì dùng setting.
+        var ttl = failure.RetryAfter is { } after && after > TimeSpan.Zero ? after : fallbackTtl;
+        if (ttl <= TimeSpan.Zero)
+            return; // providerQuotaBlockSec = 0 → tắt cooldown, mọi request đi upstream thật
+
         lock (_gate)
         {
-            // RetryAfter đã được RetryAfterParser clamp [0, 3600]s ở đường parse header —
-            // Zero/null nghĩa là upstream không nói gì → dùng cửa sổ mặc định.
-            var ttl = failure.RetryAfter is { } after && after > TimeSpan.Zero ? after : DefaultBlock;
             var until = time.GetUtcNow() + ttl;
             // Attempt sau (account khác, cùng provider) không được rút ngắn window đang chạy.
             if (_blocked.TryGetValue(providerId, out var existing) && existing.Until > until)
@@ -54,5 +51,58 @@ public sealed class ProviderQuotaGate(TimeProvider time) : IProviderQuotaGate
             block = entry.Failure with { RetryAfter = remaining };
             return true;
         }
+    }
+
+    /// <inheritdoc/>
+    public void Clear(long providerId)
+    {
+        lock (_gate)
+        {
+            _blocked.Remove(providerId);
+        }
+    }
+
+    /// <inheritdoc/>
+    public int BlockedCount()
+    {
+        lock (_gate)
+        {
+            PruneExpired(time.GetUtcNow());
+            return _blocked.Count;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyDictionary<long, DateTimeOffset> SnapshotBlocked()
+    {
+        var now = time.GetUtcNow();
+        lock (_gate)
+        {
+            PruneExpired(now);
+
+            var snapshot = new Dictionary<long, DateTimeOffset>(_blocked.Count);
+            foreach (var (providerId, entry) in _blocked)
+                snapshot[providerId] = entry.Until;
+            return snapshot;
+        }
+    }
+
+    /// <summary>
+    /// Gỡ entry đã hết window. UI dựa vào "hết hạn = đã đóng" để tắt badge nên gate không
+    /// được để entry chết sống lại trong count/snapshot. Gọi trong <see cref="_gate"/>.
+    /// </summary>
+    private void PruneExpired(DateTimeOffset now)
+    {
+        List<long>? expired = null;
+        foreach (var (providerId, entry) in _blocked)
+        {
+            if (entry.Until <= now)
+                (expired ??= []).Add(providerId);
+        }
+        if (expired is null)
+            return;
+
+        foreach (var providerId in expired)
+            _blocked.Remove(providerId);
     }
 }

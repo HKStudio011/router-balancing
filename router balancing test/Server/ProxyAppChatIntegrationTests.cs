@@ -155,7 +155,7 @@ public class ProxyAppChatIntegrationTests : IDisposable
             Encoding.UTF8, "text/event-stream"),
     };
 
-    private async Task<HttpClient> StartAsync(IUpstreamClient upstream)
+    private async Task<HttpClient> StartAsync(IUpstreamClient upstream, IProviderQuotaGate? quotaGate = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseTestServer();
@@ -164,6 +164,10 @@ public class ProxyAppChatIntegrationTests : IDisposable
         builder.Services.AddSingleton<ILogService>(_log);
         builder.Services.AddSingleton<IDbContextFactory<RouterBalancingDbContext>>(_db.CreateFactory());
         builder.Services.AddSingleton<IClientKeyService>(_clientKeys);
+        // App (MAUI) đăng ký gate TRƯỚC ConfigureServices — ProxyHost.StartAsync cũng vậy;
+        // test đi cùng đường để chứng minh engine dùng đúng instance của UI.
+        if (quotaGate is not null)
+            builder.Services.AddSingleton(quotaGate);
 
         ProxyApp.ConfigureServices(builder, _protector, new DirectProxyPool());
         // Đăng ký SAU ConfigureServices → wins (last registration), stub thay OpenAiUpstreamClient
@@ -315,6 +319,25 @@ public class ProxyAppChatIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ChatNonStream_WhenUpstreamOmitsContentType_ResponseSendsApplicationJson()
+    {
+        // Nhiều upstream self-host (ollama, gateway cũ) trả 2xx mà không kèm Content-Type.
+        // Proxy copy nguyên → response gửi về client cũng không có media type, SDK OpenAI
+        // không parse được. Fallback application/json giữ contract OpenAI-compatible.
+        SeedProvider("gpt-4o-mini");
+        var client = await StartAsync(new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent("""{"id":"c1","object":"chat.completion","choices":[]}"""u8.ToArray()),
+        }));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+    }
+
+    [Fact]
     public async Task Chat_WhenUpstreamReportsFreeUsageLimit_SecondRequestReplaysWithoutCallingUpstream()
     {
         // FreeUsageLimitError = cap không theo key/session/IP (probe 2026-11-03) → attempt thứ
@@ -342,6 +365,63 @@ public class ProxyAppChatIntegrationTests : IDisposable
         // OpenCode không gửi header này.
         var retryAfter = int.Parse(second.Headers.GetValues("Retry-After").Single());
         Assert.InRange(retryAfter, 118, 120);
+    }
+
+    [Fact]
+    public async Task Chat_WhenQuotaBlockSecZero_SecondRequestAlsoCallsUpstream()
+    {
+        // providerQuotaBlockSec = 0 = tắt cooldown: mọi request phải đi upstream thật,
+        // kể cả khi vừa ăn FreeUsageLimitError (user muốn tự thử lại ngay).
+        _settings.Set(SettingsKeys.ProviderQuotaBlockSec, 0);
+        SeedProvider("free-model");
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent(
+                """{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = await StartAsync(upstream);
+
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(2, upstream.Calls);
+    }
+
+    [Fact]
+    public async Task Chat_WhenGateInstanceFromUiIsCleared_RequestReachesUpstreamAgain()
+    {
+        // Điều kiện tiên quyết cho "sửa provider là được thử lại ngay": gate trong container
+        // proxy phải là ĐÚNG instance UI đăng ký (MauiProgram + ProxyHost.StartAsync). Nếu
+        // ConfigureServices tạo instance riêng, Clear() từ ProviderService/ProxyService vô nghĩa.
+        var gate = new ProviderQuotaGate(TimeProvider.System);
+        SeedProvider("free-model");
+        long providerId;
+        using (var db = _db.CreateFactory().CreateDbContext())
+            providerId = db.Providers.Single(p => p.Name == "p-free-model").Id;
+
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent(
+                """{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = await StartAsync(upstream, gate);
+
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        Assert.Equal(1, upstream.Calls);
+
+        // UI vừa sửa provider / thêm tài khoản / gán proxy mới → xóa window
+        gate.Clear(providerId);
+
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        Assert.Equal(2, upstream.Calls);
     }
 
     [Fact]

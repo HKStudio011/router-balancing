@@ -50,6 +50,10 @@ public static class SettingsValidator
         if (draft.UpstreamIdleTimeoutSec is < 0 or > 3600)
             errors[nameof(SettingsDraft.UpstreamIdleTimeoutSec)] = "settings.error.upstreamIdleTimeout";
 
+        // 0 hợp lệ (tắt cooldown quota) — cùng khoảng với watchdog
+        if (draft.ProviderQuotaBlockSec is < 0 or > 3600)
+            errors[nameof(SettingsDraft.ProviderQuotaBlockSec)] = "settings.error.quotaBlock";
+
         // Rỗng = không có đường dẫn để ghi (service có thể fallback mặc định, nhưng UI Save phải chặn
         // để user thấy ngay field sai thay vì âm thầm quay về mặc định).
         if (string.IsNullOrWhiteSpace(draft.OpenCodeConfigPath)

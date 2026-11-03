@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
+using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
@@ -18,6 +19,7 @@ public sealed class ProviderAccountService : IProviderAccountService
     private readonly IHttpClientFactory _http;
     private readonly ILogService _log;
     private readonly IUsageDailyService _usage;
+    private readonly IProviderQuotaGate _quotaGate;
 
     /// <inheritdoc/>
     public ProviderAccountService(
@@ -25,13 +27,15 @@ public sealed class ProviderAccountService : IProviderAccountService
         ISecretProtector protector,
         IHttpClientFactory http,
         ILogService log,
-        IUsageDailyService usage)
+        IUsageDailyService usage,
+        IProviderQuotaGate quotaGate)
     {
         _db = db;
         _protector = protector;
         _http = http;
         _log = log;
         _usage = usage;
+        _quotaGate = quotaGate;
     }
 
     /// <inheritdoc/>
@@ -92,6 +96,8 @@ public sealed class ProviderAccountService : IProviderAccountService
 
         db.ProviderAccounts.Add(account);
         await db.SaveChangesAsync(ct);
+        // Thêm tài khoản (key mới) = cơ hội quota mới → window cũ của provider phải mở lại.
+        _quotaGate.Clear(draft.ProviderId);
         return account;
     }
 
@@ -131,6 +137,8 @@ public sealed class ProviderAccountService : IProviderAccountService
         account.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
+        // Đổi key/bật-tắt TK của provider → điều kiện gọi đã đổi, cho thử lại ngay.
+        _quotaGate.Clear(account.ProviderId);
         return account;
     }
 
@@ -151,6 +159,8 @@ public sealed class ProviderAccountService : IProviderAccountService
 
         db.ProviderAccounts.Remove(account);
         await db.SaveChangesAsync(ct);
+        // Xóa TK làm thay đổi tập key khả dụng của provider → clear window còn lại.
+        _quotaGate.Clear(account.ProviderId);
     }
 
     /// <inheritdoc/>
@@ -162,6 +172,8 @@ public sealed class ProviderAccountService : IProviderAccountService
         account.Enabled = enabled;
         account.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+        // Bật lại một TK đã tắt thường là vì vừa đổi key/proxy cho nó → window cũ không còn đúng.
+        _quotaGate.Clear(account.ProviderId);
     }
 
     /// <inheritdoc/>

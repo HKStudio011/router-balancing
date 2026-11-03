@@ -31,6 +31,7 @@ public class AppSettingsServiceTests : IDisposable
         Assert.Equal(5, service.TransientMaxRetries);
         Assert.Equal(1000, service.TransientBackoffBaseMs);
         Assert.Equal(300, service.UpstreamIdleTimeoutSec);
+        Assert.Equal(120, service.ProviderQuotaBlockSec);
     }
 
     [Fact]

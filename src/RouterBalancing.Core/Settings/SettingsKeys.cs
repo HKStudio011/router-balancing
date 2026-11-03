@@ -37,6 +37,13 @@ public static class SettingsKeys
     /// <summary>Ngưỡng idle-read watchdog upstream — 0..3600 giây, mặc định 300 (0 = tắt watchdog).</summary>
     public const string UpstreamIdleTimeoutSec = "upstreamIdleTimeoutSec";
 
+    /// <summary>
+    /// Độ dài cooldown quota cấp provider (giây) — 0..3600, mặc định 120 (0 = tắt cooldown,
+    /// mọi request đều đi upstream thật). Chỉ dùng khi upstream KHÔNG gửi Retry-After
+    /// (OpenCode Zen free tier không gửi); upstream có Retry-After thì giá trị đó thắng.
+    /// </summary>
+    public const string ProviderQuotaBlockSec = "providerQuotaBlockSec";
+
     /// <summary>Đường dẫn file config opencode app ghi block router-balancing (§9.8) — rỗng = dùng mặc định.</summary>
     public const string OpenCodeConfigPath = "openCodeConfigPath";
 

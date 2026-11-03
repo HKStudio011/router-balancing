@@ -215,6 +215,11 @@
             <input class="rounded border border-border bg-surface px-2 py-1.5"
                    type="number" @bind="_draft.UpstreamIdleTimeoutSec" />
         </label>
+        <label class="flex flex-col gap-1 text-sm">
+            @L["settings.field.quotaBlock"]
+            <input class="rounded border border-border bg-surface px-2 py-1.5"
+                   type="number" @bind="_draft.ProviderQuotaBlockSec" />
+        </label>
     </div>
 
     @if (Error(nameof(SettingsDraft.ProviderProbeTimeoutSec)) is { } probeTimeoutError)
@@ -232,6 +237,10 @@
     @if (Error(nameof(SettingsDraft.UpstreamIdleTimeoutSec)) is { } upstreamIdleTimeoutError)
     {
         <div class="mt-1 text-sm text-danger">@L[upstreamIdleTimeoutError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.ProviderQuotaBlockSec)) is { } quotaBlockError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[quotaBlockError]</div>
     }
 
     <button class="btn btn-primary mt-3" @onclick="SaveEngine">@L["settings.action.save"]</button>
@@ -348,6 +357,7 @@
         nameof(SettingsDraft.TransientMaxRetries),
         nameof(SettingsDraft.TransientBackoffBaseMs),
         nameof(SettingsDraft.UpstreamIdleTimeoutSec),
+        nameof(SettingsDraft.ProviderQuotaBlockSec),
     ];
     private static readonly string[] DataFields =
     [
@@ -395,6 +405,7 @@
         TransientMaxRetries = Settings.TransientMaxRetries,
         TransientBackoffBaseMs = Settings.TransientBackoffBaseMs,
         UpstreamIdleTimeoutSec = Settings.UpstreamIdleTimeoutSec,
+        ProviderQuotaBlockSec = Settings.ProviderQuotaBlockSec,
         LogRetentionDays = Settings.LogRetentionDays,
         StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
         OpenCodeConfigPath = Settings.OpenCodeConfigPath,

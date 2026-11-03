@@ -185,6 +185,11 @@ public sealed class ProxyRequestHandler(
                             ctx.Response.ContentType = "application/json";
                         else if (response.Content.Headers.ContentType is { } okType)
                             ctx.Response.ContentType = okType.ToString();
+                        else
+                            // Upstream 2xx KHÔNG gửi Content-Type (hay gặp ở gateway self-host / ollama):
+                            // copy nguyên làm response cũng thiếu media type → SDK OpenAI không parse.
+                            // Endpoint này là OpenAI-compatible nên JSON là hợp đồng mặc định.
+                            ctx.Response.ContentType = "application/json";
                     }
                     // Rethrow: KHÔNG đổi hành vi xử lý lỗi cho pipeline — dispatcher vẫn map
                     // HasStarted → Aborted như cũ (row vàng khớp circle, spec api-monitor §7).

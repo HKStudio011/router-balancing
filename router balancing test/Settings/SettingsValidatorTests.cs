@@ -16,6 +16,7 @@ public class SettingsValidatorTests
         TransientMaxRetries = 5,
         TransientBackoffBaseMs = 1000,
         UpstreamIdleTimeoutSec = 300,
+        ProviderQuotaBlockSec = 120,
         OpenCodeConfigPath = OpenCodeConfigPaths.DefaultPath,
     };
 
@@ -53,6 +54,25 @@ public class SettingsValidatorTests
 
         Assert.Equal("settings.error.port", low[nameof(SettingsDraft.Port)]);
         Assert.Equal("settings.error.port", high[nameof(SettingsDraft.Port)]);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(3601)]
+    public void Validate_WhenQuotaBlockSecOutOfRange_ReturnsQuotaBlockError(int sec)
+    {
+        var errors = SettingsValidator.Validate(ValidDraft() with { ProviderQuotaBlockSec = sec });
+
+        Assert.Equal("settings.error.quotaBlock", errors[nameof(SettingsDraft.ProviderQuotaBlockSec)]);
+    }
+
+    [Fact]
+    public void Validate_WhenQuotaBlockSecZero_ReturnsNoError()
+    {
+        // 0 = tắt cooldown (nhà vận hành muốn mỗi request đều đi upstream thật) — hợp lệ
+        var errors = SettingsValidator.Validate(ValidDraft() with { ProviderQuotaBlockSec = 0 });
+
+        Assert.False(errors.ContainsKey(nameof(SettingsDraft.ProviderQuotaBlockSec)));
     }
 
     [Theory]

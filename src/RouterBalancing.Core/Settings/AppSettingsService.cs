@@ -65,6 +65,10 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
 
     public int UpstreamIdleTimeoutSec => Get(SettingsKeys.UpstreamIdleTimeoutSec, 300);
 
+    // 120s = mặc định cooldown quota provider; chỉ là fallback vì OpenCode Zen free tier
+    // không gửi Retry-After (probe 2026-11-03). Data burst thực tế: median 56s, p90 315s.
+    public int ProviderQuotaBlockSec => Get(SettingsKeys.ProviderQuotaBlockSec, 120);
+
     public string OpenCodeConfigPath =>
         OpenCodeConfigPaths.Expand(Get<string?>(SettingsKeys.OpenCodeConfigPath, null));
 

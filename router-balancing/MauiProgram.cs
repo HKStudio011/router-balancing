@@ -74,6 +74,11 @@ namespace router_balancing
             // DispatcherLoop (proxy container) phải cùng 1 gate — ProxyHost.StartAsync
             // re-register instance này vào container proxy
             builder.Services.AddSingleton<DrainGate>();
+            // Quota gate singleton cùng pattern DrainGate: DispatcherLoop (proxy container) mở
+            // window, còn ProviderService/ProviderAccountService/ProxyService (UI container) xóa
+            // window khi user sửa cấu hình — bắt buộc cùng 1 instance, ProxyHost.StartAsync
+            // re-register đúng instance này vào container proxy.
+            builder.Services.AddSingleton<IProviderQuotaGate, ProviderQuotaGate>();
             // Stats: invalidation + journal writer — writer subscribe ITraceFeed trong ctor,
             // ProxyHost ctor eager-create để singleton gắn feed từ trước request đầu tiên
             builder.Services.AddSingleton<IStatsInvalidationSource, StatsInvalidationSource>();
