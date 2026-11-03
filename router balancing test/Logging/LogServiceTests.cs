@@ -46,7 +46,7 @@ public class LogServiceTests : IDisposable
     }
 
     [Fact]
-    public void Write_WhenOneSubscriberThrows_OthersStillNotifiedAndErrorLogged()
+    public void Write_WhenOneSubscriberThrows_OthersStillNotifiedAndFailureRowDispatched()
     {
         using var service = Create();
         var throwingCalls = 0;
@@ -62,19 +62,46 @@ public class LogServiceTests : IDisposable
 
         service.Info("user action");
 
+        // Handler ném không bị gọi lại cho dòng lỗi (tránh nhân đôi noise); handler còn lại
+        // nhận entry gốc rồi dòng lỗi.
         Assert.Equal(1, throwingCalls);
-        var notified = Assert.Single(recorded);
-        Assert.Equal("user action", notified.Message);
+        Assert.Equal(2, recorded.Count);
+        Assert.Equal("user action", recorded[0].Message);
 
-        // Lỗi handler phải nằm trong store, và KHÔNG được phát lại LogAdded
-        // (nếu phát lại thì recorded sẽ có 2 phần tử / đệ quy vô hạn).
+        // Dòng lỗi subscriber phải tới được các subscriber khác (vd ErrorAlertAggregator),
+        // nếu không lỗi App/Error này mất alert (chỉ nằm trong store).
+        var failure = recorded[1];
+        Assert.Equal(LogSeverity.Error, failure.Severity);
+        Assert.Equal(LogCategory.App, failure.Category);
+        Assert.Contains("LogAdded", failure.Message);
+        Assert.Contains("user action", failure.Message);
+        Assert.Contains("UI thread only", failure.Details);
+        Assert.Equal(nameof(InvalidOperationException), failure.ErrorCode);
+
         using var verify = Create();
         var error = Assert.Single(verify.Query(new LogQuery(MinSeverity: LogSeverity.Error)));
-        Assert.Contains("LogAdded", error.Message);
-        Assert.Contains("user action", error.Message);
-        Assert.Contains("UI thread only", error.Details);
-        Assert.Equal(nameof(InvalidOperationException), error.ErrorCode);
         Assert.Equal(LogCategory.App, error.Category);
+    }
+
+    [Fact]
+    public void Write_WhenSubscriberThrowsOnEveryEntry_PersistsOneFailureRowWithoutRecursion()
+    {
+        using var service = Create();
+        var calls = 0;
+        service.LogAdded += _ =>
+        {
+            calls++;
+            throw new InvalidOperationException("always throws");
+        };
+
+        service.Info("once");
+
+        // Chỉ entry gốc là handler bị gọi; dòng lỗi phát lại bỏ qua chính handler đã ném.
+        Assert.Equal(1, calls);
+        using var verify = Create();
+        var error = Assert.Single(verify.Query(new LogQuery(MinSeverity: LogSeverity.Error)));
+        Assert.Contains("always throws", error.Details);
+        Assert.Equal(2, verify.Count(new LogQuery())); // entry gốc + 1 dòng lỗi
     }
 
     [Fact]
