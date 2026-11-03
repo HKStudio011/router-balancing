@@ -128,7 +128,7 @@ public class DispatcherLoopTests : IDisposable
             new ApiMonitorStore(_trace, log, TimeProvider.System), _settings);
         _settings.Set(SettingsKeys.TransientMaxRetries, 0); // baseline opt-out — test transient riêng Set lại (đọc tại mỗi quyết định retry)
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
-            log, _trace, _settings, _drain);
+            log, _trace, _settings, new ProviderQuotaGate(TimeProvider.System), _drain);
         await _loop.StartAsync(CancellationToken.None);
     }
 

@@ -25,6 +25,7 @@ public sealed class DispatcherLoop(
     ILogService log,
     ITraceFeed trace,
     IAppSettingsService settings,
+    IProviderQuotaGate quotaGate,
     DrainGate drainGate) : BackgroundService
 {
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
@@ -142,6 +143,7 @@ public sealed class DispatcherLoop(
         }
 
         var success = (SelectionSuccess)selection;
+        ApplyQuotaBlocks(success.Candidates, request);
 
         // Walk exhaustive-failover §3.2: filter → select → TryEnter với exclude = TK đã thử
         // của provider đang xét. NoAccountLeft (snapshot stale — TK bị tắt giữa chừng) →
@@ -371,6 +373,10 @@ public sealed class DispatcherLoop(
                     FailoverLevel.Provider,
                 _ => FailoverLevel.Account,
             };
+            // Cùng lỗi này còn mở gate SỐNG QUA REQUEST (ProviderQuotaGate) — nếu chỉ MarkProviderFailed
+            // thì request kế trong cùng burst vẫn gọi upstream rồi ăn lại đúng 429 đó.
+            if (outcome is DispatchOutcome.Retryable quotaRetryable)
+                NoteGlobalQuota(candidate, quotaRetryable);
 
             if (level == FailoverLevel.Account)
             {
@@ -667,6 +673,87 @@ public sealed class DispatcherLoop(
     private static bool IsProviderWideQuotaFailure(DispatchOutcome.Retryable retryable) =>
         retryable.Status == 429
         && retryable.Body.AsSpan().IndexOf("FreeUsageLimitError"u8) >= 0;
+
+    /// <summary>
+    /// Attempt 429 cap-toàn-cục → mở gate cho provider (kèm log Warning CHỈ ở transition mở
+    /// window, burst hàng chục request không được dày đặc log). Không phải mọi 429: chỉ shape
+    /// <see cref="IsProviderWideQuotaFailure"/> — 429 thường vẫn xoay TK như cũ.
+    /// </summary>
+    /// <param name="candidate">Candidate vừa fail (nguồn tên provider, không phải id suông).</param>
+    /// <param name="failure">Outcome retryable — status/body/Retry-After để request sau replay.</param>
+    private void NoteGlobalQuota(ModelCandidate candidate, DispatchOutcome.Retryable failure)
+    {
+        if (!IsProviderWideQuotaFailure(failure))
+            return;
+
+        var providerId = candidate.Provider.Id;
+        var wasBlocked = quotaGate.TryGetBlock(providerId, out _);
+        quotaGate.Report(providerId, new RetryState.Failure(
+            failure.Status, failure.ContentType, failure.Body, failure.RetryAfter));
+        if (wasBlocked || !quotaGate.TryGetBlock(providerId, out var block))
+            return; // window đã mở trước đó — không log lại; TryGetBlock fail = gate vừa hết, bỏ log
+
+        try
+        {
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Warning,
+                Category = LogCategory.Request,
+                Message =
+                    $"Provider '{candidate.Provider.Name}' cạn quota toàn cục — bỏ qua mọi tài khoản " +
+                    $"{(int)Math.Ceiling(block!.RetryAfter!.Value.TotalSeconds)}s (không xoay tài khoản nữa)",
+                Details = ErrorSnippet(new RetryState.Failure(
+                    failure.Status, failure.ContentType, failure.Body, failure.RetryAfter)),
+                ProviderId = candidate.Provider.Id,
+            });
+        }
+        catch
+        {
+            // Nuốt chủ đích: log không được làm hỏng request path
+        }
+    }
+
+    /// <summary>
+    /// Request mới: provider đang trong window quota bị coi như đã fail cấp Provider TRƯỚC cả
+    /// khi chọn candidate — không gọi upstream, không xoay TK. Đánh dấu theo đúng convention
+    /// <see cref="RetryState"/> (MarkProviderFailed + MarkTried ⇒ HasTried = true) để walk rỗng
+    /// thành <see cref="CompleteExhaustion"/> (replay body 429 đã cache + Retry-After đếm ngược)
+    /// thay vì 503 "temporarily unavailable".
+    /// </summary>
+    /// <param name="candidates">Candidate resolve được cho model của request.</param>
+    /// <param name="request">Request sắp dispatch — RetryState bị đánh dấu theo gate.</param>
+    private void ApplyQuotaBlocks(IReadOnlyList<ModelCandidate> candidates, ProxyRequest request)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (!quotaGate.TryGetBlock(candidate.Provider.Id, out var block) || block is null)
+                continue;
+
+            // Failure đầu tiên thắng — ExhaustionOutcome chỉ replay một body cho client.
+            request.Retry.LastFailure ??= block;
+            request.Retry.MarkProviderFailed(candidate.Provider.Id);
+            request.Retry.MarkTried(candidate.Provider.Id, candidate.Model.ModelId);
+
+            try
+            {
+                log.Write(new LogEntry
+                {
+                    Severity = LogSeverity.Debug,
+                    Category = LogCategory.Request,
+                    Message =
+                        $"Request {request.Id} bỏ qua provider '{candidate.Provider.Name}' — " +
+                        $"window quota còn " +
+                        $"{(int)Math.Ceiling(block.RetryAfter!.Value.TotalSeconds)}s, không gọi upstream",
+                    RequestId = request.Id,
+                    ProviderId = candidate.Provider.Id,
+                });
+            }
+            catch
+            {
+                // Nuốt chủ đích: log không được làm hỏng request path
+            }
+        }
+    }
 
     /// <summary>
     /// Lỗi transient có thể retry backoff cùng TK (spec transient-retry §3.1):
