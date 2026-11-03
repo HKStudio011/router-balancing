@@ -286,7 +286,12 @@ public static class ProxyApp
             var pipe = ssePipe!; // đã publish vào Items TRƯỚC enqueue — xem comment trên
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "text/event-stream";
-            ctx.Response.Headers.CacheControl = "no-cache";
+            // no-transform: chặn gzip/CDN nén-gom chunk — SSE phải tới client theo từng event
+            // (giá trị "no-cache" đơn thuần không đủ: middleware nén vẫn buffer tới hết gzip window).
+            ctx.Response.Headers.CacheControl = "no-cache, no-transform";
+            // nginx/Caddy đọc header này để tắt proxy_buffering cho riêng response này — client
+            // LAN nối thẳng Kestrel thì vô hại, có reverse proxy trước app thì mới cứu được stream.
+            ctx.Response.Headers["X-Accel-Buffering"] = "no";
             try
             {
                 await ctx.Response.StartAsync(ctx.RequestAborted);

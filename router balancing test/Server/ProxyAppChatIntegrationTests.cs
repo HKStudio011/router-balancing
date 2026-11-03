@@ -209,6 +209,45 @@ public class ProxyAppChatIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ChatStream_ResponseHeadersCarryNoTransformAndNoBuffering()
+    {
+        // no-transform: chặn gzip/CDN gom chunk (SSE phải tới client theo từng event);
+        // X-Accel-Buffering: nginx/Caddy tắt proxy_buffering cho riêng response này.
+        SeedProvider("gpt-4o-mini");
+        var client = await StartAsync(new StubUpstream(() => Sse()));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"stream":true}"""));
+
+        // .NET parse Cache-Control thành directive và reorder khi re-serialize — assert theo
+        // tập directive, không so chuỗi (wire gửi đúng cả hai, thứ tự không phải contract).
+        var cacheControl = string.Join(", ", response.Headers.GetValues("Cache-Control"));
+        Assert.Contains("no-cache", cacheControl);
+        Assert.Contains("no-transform", cacheControl);
+        Assert.Equal("no", response.Headers.GetValues("X-Accel-Buffering").Single());
+    }
+
+    [Fact]
+    public async Task ChatNonStream_ResponseOmitsSseOnlyBufferingHeaders()
+    {
+        // Header anti-buffering chỉ áp dụng cho response SSE — response JSON không được
+        // mang X-Accel-Buffering/cache-control của stream (client thường cache lỗi này).
+        SeedProvider("gpt-4o-mini");
+        var client = await StartAsync(new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"id":"c1","object":"chat.completion","choices":[]}""",
+                Encoding.UTF8, "application/json"),
+        }));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+        Assert.False(response.Headers.TryGetValues("X-Accel-Buffering", out _));
+    }
+
+    [Fact]
     public async Task Chat_WhenInvalidJson_Returns400OpenAiShape()
     {
         var client = await StartAsync(new StubUpstream(() => Sse()));
