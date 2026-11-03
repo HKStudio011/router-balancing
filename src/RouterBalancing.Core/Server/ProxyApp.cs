@@ -128,6 +128,8 @@ public static class ProxyApp
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IUsageDailyService, UsageDailyService>();
         builder.Services.AddSingleton<IClientKeyRateLimiter, ClientKeyRateLimiter>();
+        // Gate quota cấp provider (FreeUsageLimitError) — singleton để window sống qua request.
+        builder.Services.AddSingleton<IProviderQuotaGate, ProviderQuotaGate>();
         // Singleton (không factory): cache phải sống 1 lần/proxy container để event KeysChanged
         // attach đúng 1 lần; Dispose của container unsubscribe khi proxy dừng.
         builder.Services.AddSingleton<ClientKeyAuthCache>();

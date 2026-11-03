@@ -137,10 +137,14 @@ public class ProxyAppChatIntegrationTests : IDisposable
     {
         public byte[]? LastBody { get; private set; }
 
+        /// <summary>Số lần thực sự gọi upstream — test gate phải chứng minh request bị chặn KHÔNG gọi.</summary>
+        public int Calls { get; private set; }
+
         public Task<HttpResponseMessage> PostAsync(
             Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
             LastBody = body;
+            Calls++;
             return Task.FromResult(factory());
         }
     }
@@ -308,6 +312,36 @@ public class ProxyAppChatIntegrationTests : IDisposable
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.Equal(upstreamBody, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Chat_WhenUpstreamReportsFreeUsageLimit_SecondRequestReplaysWithoutCallingUpstream()
+    {
+        // FreeUsageLimitError = cap không theo key/session/IP (probe 2026-11-03) → attempt thứ
+        // hai của CÙNG model phải không được gọi upstream nữa; client nhận lại đúng body 429
+        // + Retry-After đếm ngược từ window đang chạy.
+        SeedProvider("free-model");
+        var upstreamBody =
+            """{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}""";
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent(upstreamBody, Encoding.UTF8, "application/json"),
+        });
+        var client = await StartAsync(upstream);
+
+        var first = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        var second = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, second.StatusCode);
+        Assert.Equal(1, upstream.Calls);
+        Assert.Equal(upstreamBody, await second.Content.ReadAsStringAsync());
+        // Retry-After đến từ window còn lại (ceiling giây) — không phải giá trị upstream, vì
+        // OpenCode không gửi header này.
+        var retryAfter = int.Parse(second.Headers.GetValues("Retry-After").Single());
+        Assert.InRange(retryAfter, 118, 120);
     }
 
     [Fact]
