@@ -315,6 +315,25 @@ public class ProxyAppChatIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ChatNonStream_WhenUpstreamOmitsContentType_ResponseSendsApplicationJson()
+    {
+        // Nhiều upstream self-host (ollama, gateway cũ) trả 2xx mà không kèm Content-Type.
+        // Proxy copy nguyên → response gửi về client cũng không có media type, SDK OpenAI
+        // không parse được. Fallback application/json giữ contract OpenAI-compatible.
+        SeedProvider("gpt-4o-mini");
+        var client = await StartAsync(new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent("""{"id":"c1","object":"chat.completion","choices":[]}"""u8.ToArray()),
+        }));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+    }
+
+    [Fact]
     public async Task Chat_WhenUpstreamReportsFreeUsageLimit_SecondRequestReplaysWithoutCallingUpstream()
     {
         // FreeUsageLimitError = cap không theo key/session/IP (probe 2026-11-03) → attempt thứ
