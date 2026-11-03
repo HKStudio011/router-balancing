@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Storage;
@@ -102,6 +103,43 @@ public class LogServiceTests : IDisposable
         var error = Assert.Single(verify.Query(new LogQuery(MinSeverity: LogSeverity.Error)));
         Assert.Contains("always throws", error.Details);
         Assert.Equal(2, verify.Count(new LogQuery())); // entry gốc + 1 dòng lỗi
+    }
+
+    [Fact]
+    public void Write_WhenFailureRowCannotPersist_StillNotifiesOtherSubscribers()
+    {
+        // Context #1 ghi entry gốc OK; context #2 (dòng lỗi subscriber) ném vì DB "hỏng".
+        using var service = new LogService(
+            new FailingPersistFactory(_db.CreateFactory(), failFromCall: 2));
+        var recorded = new List<LogEntry>();
+        service.LogAdded += _ => throw new InvalidOperationException("UI thread only");
+        service.LogAdded += recorded.Add;
+
+        service.Info("user action");
+
+        // Dòng lỗi là chẩn đoán: persist hỏng không được phá caller và không được làm
+        // subscriber khác mất alert.
+        Assert.Equal(2, recorded.Count);
+        Assert.Equal("user action", recorded[0].Message);
+        Assert.Contains("UI thread only", recorded[1].Details);
+    }
+
+    /// <summary>
+    /// Factory giả lập DB hỏng từ lần tạo context thứ <c>failFromCall</c> — dùng để pin
+    /// fail-open khi persist dòng lỗi subscriber thất bại.
+    /// </summary>
+    private sealed class FailingPersistFactory(
+        IDbContextFactory<RouterBalancingDbContext> inner, int failFromCall)
+        : IDbContextFactory<RouterBalancingDbContext>
+    {
+        private int _calls;
+
+        public RouterBalancingDbContext CreateDbContext()
+        {
+            if (Interlocked.Increment(ref _calls) >= failFromCall)
+                throw new InvalidOperationException("database is locked");
+            return inner.CreateDbContext();
+        }
     }
 
     [Fact]

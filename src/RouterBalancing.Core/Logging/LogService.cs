@@ -70,7 +70,16 @@ public sealed class LogService : ILogService, IDisposable
                     Details = ex.ToString(),
                     ErrorCode = ex.GetType().Name,
                 };
-                Persist(failure);
+                try
+                {
+                    Persist(failure);
+                }
+                catch
+                {
+                    // intentional swallow — dòng lỗi chỉ là chẩn đoán; DB hỏng đúng lúc này
+                    // không được phá caller của Write hoặc làm subscriber khác mất entry.
+                    // Dòng lỗi vẫn được phát lại bên dưới để alert không mất.
+                }
                 (failures ??= []).Add((failure, handler));
             }
         }
