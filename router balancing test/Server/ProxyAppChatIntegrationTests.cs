@@ -364,6 +364,29 @@ public class ProxyAppChatIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Chat_WhenQuotaBlockSecZero_SecondRequestAlsoCallsUpstream()
+    {
+        // providerQuotaBlockSec = 0 = tắt cooldown: mọi request phải đi upstream thật,
+        // kể cả khi vừa ăn FreeUsageLimitError (user muốn tự thử lại ngay).
+        _settings.Set(SettingsKeys.ProviderQuotaBlockSec, 0);
+        SeedProvider("free-model");
+        var upstream = new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent(
+                """{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = await StartAsync(upstream);
+
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+        await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"free-model","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(2, upstream.Calls);
+    }
+
+    [Fact]
     public async Task Health_WhenApiKeyEnabled_StillOpen()
     {
         await _clientKeys.CreateAsync(new ClientKeyDraft("health", null, null));

@@ -39,6 +39,12 @@ public interface IAppSettingsService
     /// <summary>Ngưỡng idle-read watchdog upstream (giây) — 0 = tắt; đọc mỗi lần bắt đầu stream.</summary>
     int UpstreamIdleTimeoutSec { get; }
 
+    /// <summary>
+    /// Cooldown quota cấp provider (giây) — 0 = tắt cooldown; đọc tại thời điểm mở window
+    /// (spec quota-gate). Dùng làm fallback khi upstream không gửi Retry-After.
+    /// </summary>
+    int ProviderQuotaBlockSec { get; }
+
     /// <summary>Đường dẫn file config opencode đã expand (<c>~</c> → home); rỗng/chưa set → mặc định.</summary>
     string OpenCodeConfigPath { get; }
 

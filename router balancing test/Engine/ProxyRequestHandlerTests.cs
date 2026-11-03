@@ -117,6 +117,7 @@ public class ProxyRequestHandlerTests
         public int TransientMaxRetries => 5;
         public int TransientBackoffBaseMs => 1000;
         public int UpstreamIdleTimeoutSec { get; set; } = 300;
+        public int ProviderQuotaBlockSec { get; set; } = 120;
         public string OpenCodeConfigPath => OpenCodeConfigPaths.DefaultPath;
         public T Get<T>(string key, T defaultValue) => defaultValue;
         public void Set<T>(string key, T value) { }

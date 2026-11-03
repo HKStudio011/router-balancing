@@ -686,12 +686,15 @@ public sealed class DispatcherLoop(
         if (!IsProviderWideQuotaFailure(failure))
             return;
 
+        // TTL đọc tại thời điểm mở window (user có thể đổi setting giữa burst).
+        var fallback = TimeSpan.FromSeconds(Math.Clamp(settings.ProviderQuotaBlockSec, 0, 3600));
         var providerId = candidate.Provider.Id;
         var wasBlocked = quotaGate.TryGetBlock(providerId, out _);
-        quotaGate.Report(providerId, new RetryState.Failure(
-            failure.Status, failure.ContentType, failure.Body, failure.RetryAfter));
+        quotaGate.Report(providerId,
+            new RetryState.Failure(failure.Status, failure.ContentType, failure.Body, failure.RetryAfter),
+            fallback);
         if (wasBlocked || !quotaGate.TryGetBlock(providerId, out var block))
-            return; // window đã mở trước đó — không log lại; TryGetBlock fail = gate vừa hết, bỏ log
+            return; // window đã mở trước đó (hoặc vừa tắt bằng setting 0) — không log lại
 
         try
         {
