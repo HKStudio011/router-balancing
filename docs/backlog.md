@@ -1,4 +1,4 @@
-# Backlog — cập nhật 2026-10-21
+# Backlog - cập nhật 2026-11-07
 
 Nguồn: phiên brainstorm sau khi ship PR #30 (trang Tools + free sync catalog).
 Ký hiệu: `[ ]` chưa làm · **OPEN** = chưa chốt quyết định · *đo được* = có số liệu/chứng minh trong code, không phải cảm giác.
@@ -63,6 +63,34 @@ Ghi chú vật lý: DB **không** mảnh vụn (`integrity_check ok`, `freelist_
 7. `[ ]` Chặn input bằng CHECK (port, giới hạn token, độ dài tên) — hiện toàn schema **không có CHECK nào**, mọi ràng buộc数值 đều nằm trong code.
 
 Thứ tự gợi ý: C1 → (A4,A5,A6,A8 là UI rẻ, không phụ thuộc schema) → A3 → C2 + B4/B5 (rẻ, thêm ràng buộc) → A7 → C3 → C4/C5, B6. **Còn lại sau 2026-10-21: B6 → C7; C5 còn `AccountModelPattern` (độ lợi thấp); C3 còn enforce `DailyTokenLimit`/`DailyRequestLimit` (follow-up).**
+
+---
+
+## E. OpenCode v2 — fingerprint + phân loại lỗi free-tier (ghi 2026-11-07)
+
+Bối cảnh: đối chiếu với nguồn mở `anomalyco/opencode` khi thiết kế dataset export
+(`docs/superpowers/specs/2026-11-06-dataset-jsonl-export-design.md` §11). Chưa probe live nên
+mới chỉ là bằng chứng phía upstream, chưa phải kết luận cho code này.
+
+- `[ ]` **E1 Fingerprint OpenCode có còn qua gate với client v2 không.** `OpenCodeFreeFingerprint.Quartet`
+  = `bash/glob/grep/read` (dòng 38) và `sidecar/opencode-proxy/anonymous-tools.json`
+  = `shell/edit/glob/grep/read` là vocabulary v1. OpenCode 2.0.32/2.1.0 dùng tool namespace
+  `opencode.*` + tool code-mode `execute` (upstream issue #57346, mở, cập nhật 2026-11-03, than
+  `Read/Grep/Glob/Bash` vắng mặt khỏi catalog). Cần **spike probe live** opencode.ai:
+  (a) body có quartet + UA `opencode/1.18.31`, (b) body tool kiểu v2 + UA `opencode/2.x`,
+  (c) bỏ quartet — ghi lại status + `error.type` từng nhánh rồi mới quyết định cập nhật
+  `Quartet`/`anonymous-tools.json`. *do được*: comment probe 2026-10-04/2026-10-13 trong
+  `OpenCodeFreeFingerprint.cs` (gate 403 `FreeTierError` theo UA regex + header `x-opencode-*`
+  + quartet) — các probe đó cũ hơn các phát hành 2.x được ghi nhận.
+- `[ ]` **E2 Tách `FreeTierError` (refusal) khỏi quota thật.** `DispatcherLoop.IsGlobalQuota`
+  (dòng 669-675) chỉ nhận `429 + body chứa "FreeUsageLimitError"`; 401/403 → Fatal cấp Account
+  (`RetryClassifier.cs:17`). Upstream v2 khi hết quota báo
+  `AI_APICallError: Upstream request failed: Invalid credential` **không** kèm `Retry-After`
+  (upstream issue #54338, 2026-10-10), còn refusal vẫn là 403 `FreeTierError`
+  "OpenCode's free tier can only be used from within OpenCode" → hai điều kiện đang lẫn vào
+  nhau: refusal có thể bị tính là "key sai", quota thật có thể không mở window. User ghi nhận
+  hiện tượng gộp chung này. Cần đối chiếu log thật (bảng `LogEntries`, filter theo
+  `error.type`) trước khi đổi phân loại. Liên quan tới `ProviderQuotaGate` + `QuotaCooldownBadge`.
 
 ---
 
