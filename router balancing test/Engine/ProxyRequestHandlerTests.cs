@@ -119,6 +119,9 @@ public class ProxyRequestHandlerTests
         public int UpstreamIdleTimeoutSec { get; set; } = 300;
         public int ProviderQuotaBlockSec { get; set; } = 120;
         public string OpenCodeConfigPath => OpenCodeConfigPaths.DefaultPath;
+        public bool DatasetExportEnabled => false;
+        public string DatasetExportPath => "";
+        public int DatasetRetentionDays => 0;
         public T Get<T>(string key, T defaultValue) => defaultValue;
         public void Set<T>(string key, T value) { }
     }

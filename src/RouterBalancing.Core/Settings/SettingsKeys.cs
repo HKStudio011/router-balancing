@@ -47,6 +47,15 @@ public static class SettingsKeys
     /// <summary>Đường dẫn file config opencode app ghi block router-balancing (§9.8) — rỗng = dùng mặc định.</summary>
     public const string OpenCodeConfigPath = "openCodeConfigPath";
 
+    /// <summary>Bật ghi mỗi request LLM thành công ra dataset JSONL — mặc định false (spec dataset-export).</summary>
+    public const string DatasetExportEnabled = "datasetExportEnabled";
+
+    /// <summary>Thư mục chứa file <c>requests-YYYY-MM-DD.jsonl</c> — rỗng = mặc định trong AppData.</summary>
+    public const string DatasetExportPath = "datasetExportPath";
+
+    /// <summary>Số ngày giữ file dataset — 0..3650, mặc định 0 = giữ mãi (không purge).</summary>
+    public const string DatasetRetentionDays = "datasetRetentionDays";
+
     /// <summary>Lựa chọn tick đã nhớ của trang Tools (JSON <c>ToolsSelection</c>) — C-G.</summary>
     public const string ToolsSelection = "toolsSelection";
 
