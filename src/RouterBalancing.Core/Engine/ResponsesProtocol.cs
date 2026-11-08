@@ -104,7 +104,11 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         var payload = bytes.ToArray();
         await dest.WriteAsync(payload, ct);
         // DecodeCapped cắt BYTE trước khi decode + marker đúng 1 lần — semantics cap monitor dùng chung (spec §4.3)
-        return new UsageCapture.TeeResult(ParseRootUsage(payload), null, ApiMonitorStore.DecodeCapped(payload));
+        // Non-stream: body JSON chính là object response — không cần extract như đường SSE; mirror
+        // chat non-stream (UsageCapture.TeeAsync) giao nguyên thân không cắt. Thiếu dòng này thì
+        // request non-stream responses bật export trả CompletionJson null → sink bỏ record (Empty).
+        return new UsageCapture.TeeResult(ParseRootUsage(payload), null, ApiMonitorStore.DecodeCapped(payload),
+            CompletionJson: captureCompletion ? Encoding.UTF8.GetString(payload) : null);
     }
 
     /// <inheritdoc/>

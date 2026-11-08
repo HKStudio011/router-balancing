@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
@@ -25,7 +26,8 @@ public sealed class ProxyRequestHandler(
     ILogService log,
     IRequestUsageSink usageSink,
     IApiMonitorStore monitor,
-    IAppSettingsService settings)
+    IAppSettingsService settings,
+    IDatasetSink dataset)
 {
     /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
     /// <param name="ModelId">Model id đã validate (resolve alias tại dispatcher).</param>
@@ -95,6 +97,9 @@ public sealed class ProxyRequestHandler(
         // `!`: endpoint set ctx.Items[RequestId] TRƯỚC enqueue (ProxyApp) — ForwardAsync chỉ
         // chạy cho request đã qua endpoint nên id luôn có; hook monitor cần string không-null
         var requestId = ClientKeyItems.RequestIdOf(ctx)!;
+        // Gate dataset export đọc MỘT LẦN ở đầu (spec §7.2): truyền xuống tee qua captureCompletion;
+        // tắt → tee y hệt hôm nay, không tốn gì trên đường forward.
+        var datasetOn = settings.DatasetExportEnabled;
         // Đúng TK đã chọn bởi TryEnter — resolve "first enabled" tại đây sẽ lệch đếm (D-B6);
         // id không khớp (TK bị xóa giữa chừng) → 503 cùng contract với nhánh không có key
         var account = provider.Accounts.FirstOrDefault(a => a.Id == accountId);
@@ -209,9 +214,12 @@ public sealed class ProxyRequestHandler(
                         // Stream sau flush: dest là pipe endpoint đặt tại flush point — endpoint
                         // là tay duy nhất ghi Response.Body và completer duy nhất của pipe, nên
                         // handler KHÔNG dispose/Complete writer ở đây (spec early-headers §3.2).
+                        // captureCompletion chỉ cho đường tee: aggregate không nhận tham số (spec §7.3 —
+                        // completion của nó đã nằm trong ResponseBody, lấy ở khối capture bên dưới)
                         tee = aggregate
                             ? await protocol.AggregateSseAsync(teeContent, dest, upstreamCts.Token)
-                            : await protocol.TeeAsync(teeContent, dest, upstreamCts.Token);
+                            : await protocol.TeeAsync(teeContent, dest, upstreamCts.Token,
+                                captureCompletion: datasetOn);
                     }
                     catch (UpstreamDiedBeforeContentException ex) when (!ctx.RequestAborted.IsCancellationRequested)
                     {
@@ -296,6 +304,36 @@ public sealed class ProxyRequestHandler(
                     // log Error, không nổ sau khi đã stream (spec §10).
                     await usageSink.RecordAsync(ClientKeyItems.IdOf(ctx), account.Id,
                         tee.Usage?.PromptTokens ?? 0, tee.Usage?.CompletionTokens ?? 0, ct);
+
+                    // Dataset export (spec §7.2): một lần, chỉ 2xx thắng — retry/failover không
+                    // tạo bản ghi trùng. Fail-open tuyệt đối: Capture hợp đồng không ném, nhưng
+                    // bọc try/catch để KHÔNG helper nào (RewritesTools/Find/Capture) được phép
+                    // nổ đường forward — export hỏng thì request vẫn phục vụ bình thường.
+                    if (datasetOn)
+                    {
+                        try
+                        {
+                            // aggregate = client non-stream nhưng upstream bị ép stream: AggregateSseAsync đã trả
+                            // completion hoàn chỉnh trong ResponseBody, không có CompletionJson (nó không nhận
+                            // captureCompletion). Lấy ResponseBody ở nhánh đó — không thì mọi request kiểu này
+                            // bị sink bỏ vì CompletionJson null.
+                            var completion = aggregate ? tee.ResponseBody : tee.CompletionJson;
+                            var monitorRecord = monitor.Find(requestId);
+                            // body = body GỐC của client (tham số ForwardAsync), KHÔNG phải requestBody đã
+                            // rewrite: dữ liệu train phản ánh đúng thứ client gửi — rewrite mang stream:true
+                            // + include_usage do app tự thêm, đưa vào dataset là nhiễm rác (spec §7.1).
+                            dataset.Capture(new DatasetCapture(requestId, protocol.Endpoint, DateTimeOffset.UtcNow, body,
+                                completion, tee.CompletionComplete, provider.Name, account.Name, model.ModelId,
+                                monitorRecord?.Model, monitorRecord?.Mode, ClientKeyItems.IdOf(ctx),
+                                tee.Usage?.PromptTokens, tee.Usage?.CompletionTokens,
+                                LaneFor(provider, account), OpenCodeFreeFingerprint.RewritesTools(body)));
+                        }
+                        catch (Exception ex)
+                        {
+                            SafeDatasetLog(ex);
+                        }
+                    }
+
                     return new DispatchOutcome.Handled();
                 }
 
@@ -407,6 +445,32 @@ public sealed class ProxyRequestHandler(
                 RequestId = ClientKeyItems.RequestIdOf(ctx),
                 ClientKeyId = ClientKeyItems.IdOf(ctx),
             });
+        }
+    }
+
+    /// <summary>
+    /// Làn provenance của record dataset (spec §7.4): <see cref="DatasetLane.Plain"/> khi
+    /// fingerprint OpenCode không áp dụng cho provider; <see cref="DatasetLane.FreeFingerprint"/>
+    /// khi account key rỗng (free lane), còn lại <see cref="DatasetLane.KeyedFingerprint"/>.
+    /// </summary>
+    private static DatasetLane LaneFor(Provider provider, ProviderAccount account) =>
+        !OpenCodeFreeFingerprint.IsApplicable(provider)
+            ? DatasetLane.Plain
+            : string.IsNullOrEmpty(account.ApiKeyEncrypted)
+                ? DatasetLane.FreeFingerprint
+                : DatasetLane.KeyedFingerprint;
+
+    // Fail-open của export: ngay cả log lỗi cũng không được nổ ra khỏi ForwardAsync
+    // (pattern ApiMonitorStore.SafeLog — chính log nổ cũng phải nuốt).
+    private void SafeDatasetLog(Exception ex)
+    {
+        try
+        {
+            log.Error("ProxyRequestHandler: dataset capture failed", ex);
+        }
+        catch
+        {
+            // intentional swallow — không còn chỗ report nào an toàn hơn (mirror TraceFeed.Publish)
         }
     }
 

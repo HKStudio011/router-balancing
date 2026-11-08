@@ -325,6 +325,34 @@ public static class OpenCodeFreeFingerprint
     }
 
     /// <summary>
+    /// Fingerprint có THẬT SỰ đổi mảng <c>tools</c> của body không (rename casing, xoá trùng,
+    /// chèn decoy thiếu) — cờ <c>tools_rewritten</c> cho record dataset (spec §7.4): offline biết
+    /// <c>tools</c> trong record là góc nhìn client, không phải thứ model thấy. Các rewrite khác
+    /// của body (<c>tool_choice</c>, forced <c>stream</c>) cố tình KHÔNG tính — chúng không đổi
+    /// mảng tools. Body không phải JSON object hợp lệ → <see langword="false"/>: không bao giờ
+    /// ném (gọi trên đường request, fail-open).
+    /// </summary>
+    /// <param name="body">Body chat GỐC từ client.</param>
+    public static bool RewritesTools(byte[] body)
+    {
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(Encoding.UTF8.GetString(body));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        if (node is not JsonObject obj) return false;
+
+        // Gọi CHÍNH ApplyTools mà TransformBody dùng — không nhân bản logic so sánh: cờ "changed"
+        // tại đây đúng là phần rewrite tác động lên mảng tools. Parse từ body nên không có side
+        // effect nào ra ngoài (obj là copy).
+        return ApplyTools(obj, out _);
+    }
+
+    /// <summary>
     /// Map canonical quartet key → tên client gốc cho tool client khai báo với casing khác
     /// (vd. <c>Bash</c> → <c>bash</c>). First-wins: bản trùng bị <see cref="ApplyTools"/> loại
     /// nên chỉ bản đầu vào map; tool vốn đúng lowercase không có trong map (không cần rename).

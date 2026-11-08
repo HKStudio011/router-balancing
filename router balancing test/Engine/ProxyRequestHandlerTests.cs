@@ -2,6 +2,7 @@ using System.IO.Pipelines;
 using System.Net;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
@@ -171,14 +172,17 @@ public class ProxyRequestHandlerTests
 
     private ProxyRequestHandler Create(IUpstreamClient upstream, CapturingLog? log = null,
         IRequestUsageSink? sink = null, ApiMonitorStore? monitor = null,
-        StubSettings? settings = null)
+        StubSettings? settings = null, IDatasetSink? dataset = null)
     {
         var effectiveLog = log ?? new CapturingLog();
-        // Store/feed thật tham gia DI — hook monitor không được đổi hành vi outcome/log đang test
+        var effectiveSettings = settings ?? new StubSettings();
+        // Store/feed thật tham gia DI — hook monitor không được đổi hành vi outcome/log đang test;
+        // DatasetSink thật nhưng export tắt theo mặc định của StubSettings → không IO, không ghi file
         return new(upstream, _protector, effectiveLog, sink ?? new NullUsageSink(),
             monitor ?? new ApiMonitorStore(new TraceFeed(effectiveLog), effectiveLog,
                 TimeProvider.System),
-            settings ?? new StubSettings());
+            effectiveSettings,
+            dataset ?? new DatasetSink(effectiveSettings, effectiveLog, TimeProvider.System));
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
@@ -124,8 +125,11 @@ public class DispatcherLoopTests : IDisposable
         // Cùng log của test — TraceFeed ghi lỗi contract qua log này (Task 1);
         // feed tạo TRƯỚC để monitor store subscribe đúng instance dispatcher publish vào
         _trace = new TraceFeed(log);
+        // Sink thật nhưng export tắt tường minh — request trong test không ghi file dataset
+        _settings.Set(SettingsKeys.DatasetExportEnabled, false);
         var handler = new ProxyRequestHandler(upstream, _protector, log, new NullUsageSink(),
-            new ApiMonitorStore(_trace, log, TimeProvider.System), _settings);
+            new ApiMonitorStore(_trace, log, TimeProvider.System), _settings,
+            new DatasetSink(_settings, log, TimeProvider.System));
         _settings.Set(SettingsKeys.TransientMaxRetries, 0); // baseline opt-out — test transient riêng Set lại (đọc tại mỗi quyết định retry)
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
             log, _trace, _settings, new ProviderQuotaGate(TimeProvider.System), _drain);

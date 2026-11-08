@@ -377,6 +377,37 @@ public class ResponsesProtocolTests
         Assert.Equal(CompletedSse, Encoding.UTF8.GetString(dest.ToArray()));
     }
 
+    [Fact]
+    public async Task Tee_NonStreamJson_CaptureCompletion_True_ReturnsBodyAsCompletionJson()
+    {
+        // Non-stream: body JSON chính là object response — không cần extract như đường SSE.
+        // Không có completion thì request non-stream responses bật export bị sink bỏ (Empty)
+        // dù upstream trả 2xx hợp lệ (gap review Task 6).
+        const string json = """{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":11,"output_tokens":7}}""";
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.Equal(json, result.CompletionJson);   // nguyên thân body, không cắt (mirror chat non-stream)
+        Assert.True(result.CompletionComplete);      // non-stream 2xx = completion đầy đủ
+        Assert.Equal(json, Encoding.UTF8.GetString(dest.ToArray()));   // byte-forward giữ nguyên
+    }
+
+    [Fact]
+    public async Task Tee_NonStreamJson_CaptureCompletion_False_LeavesCompletionJsonNull()
+    {
+        // Export tắt (mặc định) → không completion, hành vi cũ giữ nguyên từng byte.
+        const string json = """{"id":"resp_1","status":"completed"}""";
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.Null(result.CompletionJson);
+        Assert.Equal(json, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
     // ─── AggregateSseAsync: forced-stream fingerprint → JSON non-stream (OpenCode gate) ───
 
     [Fact]
