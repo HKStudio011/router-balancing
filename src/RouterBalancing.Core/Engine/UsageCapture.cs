@@ -168,8 +168,9 @@ public static class UsageCapture
                     var line = combined.AsSpan(lineStart, i - lineStart);
                     usage = ScanSseLine(line, usage, ref terminal);
                     AppendSsePayload(line, body, ref bodyTruncated);
-                    // Gộp chung một lần/dòng cho dataset (fail-open: HandleLine không throw) —
-                    // chạy SAU khi chunk đã ghi dest nên không thể trễ/cắt byte client.
+                    // Gộp chung một lần/dòng cho dataset — chạy SAU khi chunk đã ghi dest nên
+                    // byte client luôn forward nguyên vẹn dù có lỗi parse; HandleLine chứa lại
+                    // lỗi parse (JsonException/lỗi chuyển đổi số) bằng cách bỏ chunk hỏng.
                     capture?.HandleLine(line);
                     lineStart = i + 1;
                 }
@@ -230,8 +231,10 @@ public static class UsageCapture
     }
 
     // Chỉ dòng "data: {...}" chứa usage hợp lệ; JSON hỏng → bỏ qua dòng đó, không nổ stream.
-    // Guard ValueKind Number trước GetInt32: field sai kiểu (string/bool) ném InvalidOperationException
-    // (KHÔNG phải JsonException) — spec §10 yêu cầu usage parse lỗi không được throw làm hỏng request.
+    // Guard ValueKind Number trước GetInt32: field sai kiểu (string/bool) ném InvalidOperationException;
+    // số hợp lệ nhưng vượt phạm vi Int32 (vd prompt_tokens: 1e15) ném FormatException — cả hai
+    // đều KHÔNG phải JsonException, nên catch mở rộng bắt đủ (spec §10: usage parse lỗi không
+    // được throw làm hỏng request).
     // Đồng thời đánh dấu `terminal` khi gặp [DONE] hoặc finish_reason khác null — thiếu cả hai
     // tại EOF sạch nghĩa là upstream cắt cụt (TeeSseAsync throw).
     private static Usage? ScanSseLine(ReadOnlySpan<byte> line, Usage? current, ref bool terminal)
@@ -267,8 +270,9 @@ public static class UsageCapture
             // last-wins: nhiều chunk usage → lấy cái cuối (spec §6.1)
             return new Usage(prompt.GetInt32(), completion.GetInt32());
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
         {
+            // Lỗi parse/chuyển đổi số → bỏ dòng, giữ usage cũ (fail-open)
             return current;
         }
     }

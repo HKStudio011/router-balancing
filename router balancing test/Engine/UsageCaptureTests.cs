@@ -486,4 +486,52 @@ public class UsageCaptureTests
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // client nhận đủ byte
         Assert.False(result.CompletionComplete);   // overflow → không có completion tin cậy
     }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_OutOfRangeNumber_ContainedAndForwardsClientBytes()
+    {
+        // "created": 1e30 là JSON Number hợp lệ nhưng vượt phạm vi Int64 — GetInt64 ném lỗi
+        // chuyển đổi (KHÔNG phải JsonException). Fail-open: lỗi không được thoát ra ngoài
+        // TeeAsync vì byte đã forward cho client TRƯỚC khi HandleLine chạy. Hành vi chứa lại
+        // đã assert bên dưới: chunk hỏng bị bỏ nguyên khối, các chunk sau vẫn tích lũy.
+        const string sse =
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"m\",\"created\":1e30,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"He\"}}]}\n\n" +
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"m\",\"created\":1700000000,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"}}]}\n\n" +
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"m\",\"created\":1700000000,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+            captureCompletion: true);
+
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // client nhận đủ byte nguyên vẹn
+        Assert.NotNull(result.CompletionJson);
+        using var doc = JsonDocument.Parse(result.CompletionJson!);
+        // Degrade đã chứa lại: chunk 1 (created vượt phạm vi) bị bỏ → content thiếu mảnh "He";
+        // created lấy từ chunk hợp lệ đầu tiên sau đó; stream vẫn kết thúc sạch.
+        Assert.Equal("llo", doc.RootElement.GetProperty("choices")[0]
+            .GetProperty("message").GetProperty("content").GetString());
+        Assert.Equal(1700000000L, doc.RootElement.GetProperty("created").GetInt64());
+        Assert.True(result.CompletionComplete);
+    }
+
+    [Fact]
+    public async Task Tee_Sse_UsageTokensOutOfRange_NoThrowAndKeepsClientBytes()
+    {
+        // prompt_tokens 1e15 là JSON Number hợp lệ nhưng vượt phạm vi Int32 → GetInt32 trong
+        // ScanSseLine ném lỗi chuyển đổi (KHÔNG phải JsonException). Fail-open: không throw,
+        // dòng usage bị bỏ (Usage null), byte client vẫn forward nguyên vẹn.
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+            "data: {\"usage\":{\"prompt_tokens\":1e15,\"completion_tokens\":3}}\n\n" +
+            "data: [DONE]\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.Null(result.Usage);   // dòng usage hỏng bị bỏ — không last-wins từ nó
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
 }

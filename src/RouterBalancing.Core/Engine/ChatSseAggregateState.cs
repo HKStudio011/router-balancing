@@ -90,9 +90,12 @@ internal sealed class ChatSseAggregateState(int? contentBudgetChars = null)
             AccumulateToolCalls(choice);
             _finishReason = ReadString(choice, "finish_reason") ?? _finishReason;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
         {
-            // Chunk hỏng — bỏ qua, không làm hỏng cả stream (fail-open)
+            // Chunk hỏng — bỏ qua, không làm hỏng cả stream (fail-open). GetInt64/GetInt32
+            // trên JSON Number vượt phạm vi (vd created: 1e30) ném FormatException, số sai
+            // kiểu ném InvalidOperationException — ĐỀU không phải JsonException; bắt thiếu
+            // là fail-open hole vì byte đã forward cho client trước khi HandleLine chạy.
         }
     }
 
