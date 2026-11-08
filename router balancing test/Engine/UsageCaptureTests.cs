@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 
@@ -409,5 +410,80 @@ public class UsageCaptureTests
         Assert.Null(result.Usage);
         Assert.False(result.EndedWithoutTerminal);   // finish_reason vẫn là dấu kết thúc hợp lệ
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    // ─── captureCompletion (dataset export): gộp SSE → object chat.completion đầy đủ ───
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_True_BuildsFullMessageFromDeltas()
+    {
+        // 3 chunk delta content + finish_reason ở chunk cuối + [DONE] — completion phải là
+        // NGUYÊN object chat.completion (không phải message) với content đã nối đủ.
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+            captureCompletion: true);
+
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // byte-forward không đổi
+        Assert.NotNull(result.CompletionJson);
+        using var doc = JsonDocument.Parse(result.CompletionJson!);
+        Assert.Equal("Hello", doc.RootElement.GetProperty("choices")[0]
+            .GetProperty("message").GetProperty("content").GetString());
+        Assert.True(result.CompletionComplete);
+    }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_Default_NullCompletionJson()
+    {
+        // Không bật captureCompletion → CompletionJson null, mọi thứ khác giữ nguyên hành vi cũ
+        using var content = new StringContent(SseFixture, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.Null(result.CompletionJson);
+        Assert.Equal(SseFixture, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_StreamCuts_SetsCompletionCompleteFalse()
+    {
+        // EOF sạch không [DONE]/finish_reason = stream cụt → CompletionComplete false để
+        // builder bỏ record (không train trên completion dở dang).
+        const string sse = "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+            captureCompletion: true);
+
+        Assert.True(result.EndedWithoutTerminal);
+        Assert.False(result.CompletionComplete);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_ContentOverBudget_SetsOverflowedAndKeepsClientBytes()
+    {
+        // Content vượt budget export (MaxFieldBytes) — cap chỉ chặn TÍCH LŨY cho dataset,
+        // KHÔNG được cắt/trễ byte của client: dest phải bằng đúng SSE input ban đầu.
+        var big = new string('a', DatasetRecordBuilder.MaxFieldBytes + 1024);
+        var sse = "data: {\"choices\":[{\"delta\":{\"content\":\"" + big + "\"}}]}\n\n" +
+                  "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+                  "data: [DONE]\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+            captureCompletion: true);
+
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // client nhận đủ byte
+        Assert.False(result.CompletionComplete);   // overflow → không có completion tin cậy
     }
 }

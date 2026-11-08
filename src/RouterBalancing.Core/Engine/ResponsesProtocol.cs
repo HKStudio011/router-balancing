@@ -14,6 +14,9 @@ namespace RouterBalancing.Core.Engine;
 internal sealed class ResponsesProtocol : IProxyProtocol
 {
     /// <inheritdoc/>
+    public ProxyEndpoint Endpoint => ProxyEndpoint.Responses;
+
+    /// <inheritdoc/>
     public string UpstreamPath => "/v1/responses";
 
     /// <summary>
@@ -78,8 +81,12 @@ internal sealed class ResponsesProtocol : IProxyProtocol
     }
 
     /// <inheritdoc/>
-    public async Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct)
+    public async Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct,
+        bool captureCompletion = false)
     {
+        // captureCompletion hiện bị bỏ qua (CompletionJson null, CompletionComplete true):
+        // capture completion cho /v1/responses implement ở task kế tiếp — giữ build xanh
+        // và hành vi responses không đổi trong lúc đó.
         // Dispatch theo content-type như chat: SSE → scan dòng event/data; còn lại coi là JSON non-stream
         // (spec §4.3/§4.4). Body không phải JSON ở nhánh sau → parse fail-open, byte vẫn forward đủ.
         var stream = await source.ReadAsStreamAsync(ct);
