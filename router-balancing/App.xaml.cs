@@ -22,7 +22,7 @@ namespace router_balancing
         private readonly IStartupRegistration _startup;
         private readonly ITrayService _tray;
         private readonly LogRetentionWorker _retention;
-        private readonly DatasetSink _dataset;
+        private readonly IDatasetSink _dataset;
         private readonly FreeModelSyncWorker _freeSync;
         private readonly UpdateCheckService _updateCheck;
         private readonly WindowState _window;
@@ -42,7 +42,7 @@ namespace router_balancing
             IStartupRegistration startup,
             ITrayService tray,
             LogRetentionWorker retention,
-            DatasetSink dataset,
+            IDatasetSink dataset,
             FreeModelSyncWorker freeSync,
             UpdateCheckService updateCheck,
             WindowState window,
@@ -307,7 +307,10 @@ namespace router_balancing
                 _retention.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
                 // Flush dòng dataset cuối trong queue rồi mới đóng file — không thì request 2xx
                 // gần sát lúc thoát mất record (spec dataset §7.6: DisposeAsync flush + đóng file)
-                _dataset.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+                // IDatasetSink không khai báo DisposeAsync: cast IAsyncDisposable — an toàn vì
+                // DatasetSink là implementation duy nhất và DisposeAsync idempotent (đỡ double-dispose
+                // với proxy container). Ctor nhận interface để MAUI DI resolve được (chỉ đăng ký IDatasetSink).
+                (_dataset as IAsyncDisposable)?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
                 _freeSync.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
                 _updateCheck.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
             }
