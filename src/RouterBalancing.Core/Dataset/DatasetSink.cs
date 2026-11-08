@@ -12,7 +12,9 @@ namespace RouterBalancing.Core.Dataset;
 /// <see cref="DatasetRecordBuilder"/> và append vào file theo ngày UTC
 /// <c>requests-YYYY-MM-DD.jsonl</c>, xoay ngày + purge theo retention.
 /// Mọi lỗi chỉ log (fail-open, pattern <c>ApiMonitorStore.SafeLog</c>) — không bao giờ ném ra
-/// caller, request đang phục vụ chạy bình thường dù đĩa hỏng.
+/// caller, request đang phục vụ chạy bình thường dù đĩa hỏng. Lỗi IO đặt sink vào chế độ tắt:
+/// <c>Capture</c> return ngay, không enqueue; lưu Settings (bất kỳ key nào) bật lại writer và
+/// reset giới hạn log-một-lần cho từng điều kiện lỗi (spec §7.6).
 /// </summary>
 public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
 {
@@ -57,7 +59,14 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private StreamWriter? _writer;
     private string? _currentFile;
 
+    // Chế độ tắt sau lỗi IO — spec §7.6: "tắt cho tới khi Settings được lưu lại". Capture chạy trên
+    // thread request nên hai cờ này truy cập qua Volatile. _disabled do writer đặt, do
+    // OnSettingsChanged (thread gọi Set) xoá; _disposed do DisposeAsync đặt và không bao giờ xoá.
+    private bool _disabled;
+    private bool _disposed;
+
     // Mỗi điều kiện lỗi một bộ đếm riêng, cùng cap MaxIoErrorLog (spec §7.6 "mỗi loại lỗi").
+    // OnSettingsChanged reset cả ba để điều kiện lỗi còn tồn tại được log lại đúng một lần mới.
     private int _openErrorLogs;
     private int _purgeErrorLogs;
     private int _recordErrorLogs;
@@ -85,6 +94,11 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         {
             FullMode = BoundedChannelFullMode.Wait,
         });
+
+        // Spec §7.6 bắt buộc: lỗi IO chỉ tắt sink "cho tới khi Settings được lưu lại" — mọi lần
+        // lưu settings (kể cả key khác) là lệnh chạy lại. Unsubscribe ở DisposeAsync, không rò
+        // handler qua AppSettingsService (tuổi thọ bằng app).
+        _settings.SettingsChanged += OnSettingsChanged;
     }
 
     /// <inheritdoc />
@@ -107,6 +121,15 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         try
         {
             ArgumentNullException.ThrowIfNull(capture);
+
+            // Sink đã tắt vì lỗi IO (chờ Settings được lưu lại) hoặc đã dispose: return NGAY —
+            // không enqueue và không đếm SkippedQueueFull. Hàng đợi "đầy" khi writer không rút là
+            // trạng thái không có thật, đếm vào sẽ cho UI số vô nghĩa (review ruling round 1);
+            // sau dispose channel complete, mọi counter phải đứng yên.
+            if (Volatile.Read(ref _disabled) || Volatile.Read(ref _disposed))
+            {
+                return;
+            }
 
             // Gate đọc ở MỖI request — bật/tắt trong Settings hiệu lực ngay, không cần restart (spec §7.6).
             if (!_settings.DatasetExportEnabled)
@@ -149,6 +172,11 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     {
         try
         {
+            // No-op hoá mọi Capture sau dispose (kể cả SkippedQueueFull) + cắt subscription để
+            // AppSettingsService (sống bằng app) không giữ handler của sink đã chết.
+            Volatile.Write(ref _disposed, true);
+            _settings.SettingsChanged -= OnSettingsChanged;
+
             _channel.Writer.TryComplete();
             if (_writerTask is not null)
             {
@@ -167,11 +195,20 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
     }
 
-    /// <summary>Khởi tạo writer task lười — đúng một lần, thread-safe qua lock.</summary>
+    /// <summary>
+    /// Khởi tạo writer task lười — thread-safe qua lock. Cho phép KHỞI ĐỘNG LẠI khi task trước đã
+    /// completed (fail IO + Settings được lưu lại): reset field dưới lock rồi tạo task mới. Nếu chỉ
+    /// early-return vì field khác null thì sink chết vĩnh viễn sau lỗi IO đầu tiên (review ruling).
+    /// </summary>
     private void EnsureStarted()
     {
         lock (_startGate)
         {
+            if (_writerTask is { IsCompleted: true })
+            {
+                _writerTask = null;
+            }
+
             if (_writerTask is not null)
             {
                 return;
@@ -182,18 +219,38 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     }
 
     /// <summary>
+    /// Settings được lưu lại (bất kể key nào) = lệnh "chạy lại" của spec §7.6: xoá cờ tắt và reset
+    /// giới hạn log-one-per-condition để điều kiện lỗi (nếu đĩa vẫn hỏng) được log lại đúng MỘT lần
+    /// mới. Writer khởi động lại lười ở Capture kế tiếp qua <see cref="EnsureStarted"/> — save không
+    /// tự làm IO trên thread gọi Set.
+    /// </summary>
+    private void OnSettingsChanged()
+    {
+        Volatile.Write(ref _disabled, false);
+        Volatile.Write(ref _openErrorLogs, 0);
+        Volatile.Write(ref _purgeErrorLogs, 0);
+        Volatile.Write(ref _recordErrorLogs, 0);
+    }
+
+    /// <summary>
     /// Vòng writer: mỗi record xử lý độc lập — kiểm tra ngày/mở file TRƯỚC khi đọc để lỗi đích
     /// không nuốt mất record nào (item chờ vẫn nằm trong channel, sink chỉ chuyển chế độ tắt).
     /// </summary>
     private async Task WriterLoopAsync()
     {
+        // Task mới = nỗ lực chạy lại (lần đầu hoặc sau recovery qua Settings): xoá cờ tắt cũ
+        // TRƯỚC khi vòng lặp bắt đầu để tiến trình fail mới sau đó set lại nhất quán.
+        Volatile.Write(ref _disabled, false);
+
         try
         {
             while (true)
             {
                 if (!EnsureFileForCurrentDay())
                 {
-                    break; // không mở được file — sink chuyển chế độ tắt (spec §7.6)
+                    // _disabled đã được đặt TRONG EnsureFileForCurrentDay (trước khi log) — sink
+                    // tắt cho tới khi Settings được lưu lại; Capture mới sẽ return ngay.
+                    break;
                 }
 
                 if (!_channel.Reader.TryRead(out var capture))
@@ -209,6 +266,13 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 }
 
                 Process(capture);
+
+                // Write failure LẶP lại đặt _disabled trong Process (đĩa hỏng dai dẳng) — dừng vòng
+                // ở đây; hàng đợi giữ nguyên record chưa xử lý cho nỗ lực sau khi Settings lưu.
+                if (Volatile.Read(ref _disabled))
+                {
+                    break;
+                }
             }
         }
         catch (Exception ex)
@@ -228,11 +292,15 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     /// </summary>
     private void Process(DatasetCapture capture)
     {
-        // Record đã rời queue — trừ byte đang chờ (cùng công thức với Capture để counter về 0).
-        Interlocked.Add(ref _pendingBytes, -RawSize(capture));
-
         try
         {
+            // Record đã rời queue — trừ byte đang chờ (cùng công thức với Capture để counter về 0).
+            // Nằm TRONG try: RawSize deref các field của capture, mà DatasetCapture là positional
+            // record không validate ctor (caller có thể đưa null! / refactor tuột) — mọi lỗi input
+            // bệnh hoạn phải đi đúng nhánh catch bên dưới, không được nổ lên writer loop
+            // (review Important #1: một NRE ngoài try giết writer và cả record đang chờ trong queue).
+            Interlocked.Add(ref _pendingBytes, -RawSize(capture));
+
             var result = DatasetRecordBuilder.Build(capture);
             if (result.Skip is DatasetSkipReason reason)
             {
@@ -257,8 +325,15 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         catch (Exception ex)
         {
             // Build có thể ném với input JSON bệnh hoạn ngoài phạm vi catch của nó (finding Task 3),
-            // Write ném khi đĩa lỗi (đầy/khoá). Cả hai: log tối đa một lần + drop record —
-            // không bao giờ để writer task chết, không chạm request path.
+            // Write ném khi đĩa lỗi (đầy/khoá). Lỗi ĐẦU TIÊN: log một lần + drop record, writer
+            // chạy tiếp. Cùng điều kiện LẶP lại (đã chạm cap log) = hỏng hóc dai dẳng: đặt _disabled
+            // — chờ Settings được lưu lại để chạy lại (review ruling round 1, spec §7.6).
+            // Volatile.Read: OnSettingsChanged (thread khác) có thể vừa reset bộ đếm về 0.
+            if (Volatile.Read(ref _recordErrorLogs) >= MaxIoErrorLog)
+            {
+                Volatile.Write(ref _disabled, true);
+            }
+
             LogOnce(ref _recordErrorLogs, "write record", ex);
         }
 
@@ -301,7 +376,10 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Đích chưa tồn tại và không tạo được / mất quyền ghi: log một lần, sink tắt.
+            // Đích chưa tồn tại và không tạo được / mất quyền ghi: đặt _disabled TRƯỚC khi log để
+            // ai quan sát thấy dòng log đều suy ra cờ tắt đã nhìn thấy được (test chờ log rồi
+            // mới save + capture — không race), rồi tắt cho tới khi Settings được lưu lại.
+            Volatile.Write(ref _disabled, true);
             LogOnce(ref _openErrorLogs, "open daily file", ex);
             return false;
         }
@@ -392,14 +470,20 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     /// <summary>
     /// Kích thước thô của record trong queue — Capture (thêm) và writer (trừ) phải dùng CÙNG công
     /// thức để counter pending về 0. char ≈ byte với JSON ASCII nên xấp xỉ là đủ cho guard RAM.
+    /// Null-guard cho ClientBody: positional record, ctor không kiểm tra — kích thước chỉ là con số
+    /// bảo vệ RAM nên coi record thiếu field như 0 byte (record hỏng sẽ bị skip/throw ở bước sau).
     /// </summary>
     private static long RawSize(DatasetCapture capture) =>
-        capture.ClientBody.LongLength + (capture.CompletionJson?.Length ?? 0);
+        (capture.ClientBody?.LongLength ?? 0L) + (capture.CompletionJson?.Length ?? 0);
 
-    /// <summary>Log tối đa <see cref="MaxIoErrorLog"/> lần cho MỖI điều kiện lỗi — không spam mỗi dòng.</summary>
+    /// <summary>
+    /// Log tối đa <see cref="MaxIoErrorLog"/> lần cho MỖI điều kiện lỗi — không spam mỗi dòng.
+    /// Check bằng Volatile.Read: OnSettingsChanged (thread gọi Set) reset bộ đếm về 0, và target
+    /// ARM (Android/iOS) là weak memory model — read thường có thể thấy giá trị cũ trước reset.
+    /// </summary>
     private void LogOnce(ref int counter, string operation, Exception ex)
     {
-        if (counter < MaxIoErrorLog)
+        if (Volatile.Read(ref counter) < MaxIoErrorLog)
         {
             counter++;
             SafeLog(operation, ex);

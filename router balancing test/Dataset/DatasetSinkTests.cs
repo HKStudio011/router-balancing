@@ -213,24 +213,109 @@ public class DatasetSinkTests : IDisposable
     [Fact]
     public async Task Capture_QueueFull_DropsAndIncrementsSkippedQueueFull()
     {
-        // Writer "bị chặn": đích là một FILE (không phải thư mục) → CreateDirectory ném ngay khi
-        // writer start, TRƯỚC khi consume record nào → channel không ai rút hàng.
-        var destFile = Path.Combine(_dir, "blocked");
-        Directory.CreateDirectory(_dir);
-        File.WriteAllText(destFile, "not a directory");
-        _settings.Set(SettingsKeys.DatasetExportPath, destFile);
-
+        // Guard byte của queue (spec §7.6 "chặn theo tổng byte 32MB"): raw size của MỘT capture đã
+        // vượt 32MB → Capture drop tại chỗ + đếm SkippedQueueFull, không enqueue — deterministic,
+        // không phụ thuộc tốc độ writer. Kịch bản cũ "đẩy 129 capture khi writer kẹt" không còn
+        // sau ruling recovery: writer chết vì IO đặt _disabled và Capture return ngay khi disabled,
+        // nên không còn hàng-đợi-đày quan sát được qua depth. Đường recovery có test riêng.
         await using var sink = CreateSink();
 
-        // 129 = QueueDepthLimit nội bộ của sink (128) + 1 — capture cuối phải bị drop + đếm.
-        const int captures = 129;
-        for (var i = 0; i < captures; i++)
+        var hugeBody = new byte[33 * 1024 * 1024]; // trên QueueByteLimit nội bộ (32MB) một chút
+        sink.Capture(new DatasetCapture(
+            RequestId: "req-huge",
+            Endpoint: ProxyEndpoint.Chat,
+            FinishedAt: DayOne.AddHours(1),
+            ClientBody: hugeBody,
+            CompletionJson: ValidCompletion,
+            CompletionComplete: true,
+            Provider: "openrouter",
+            Account: "acct-1",
+            ModelUpstream: "gpt-x-2026",
+            ModelRequested: null,
+            Mode: null,
+            ClientKeyId: null,
+            PromptTokens: null,
+            CompletionTokens: null,
+            Lane: DatasetLane.Plain,
+            ToolsRewritten: false));
+
+        Assert.Equal(1, sink.Stats.SkippedQueueFull); // đếm ĐỒNG BỘ trên thread gọi Capture
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+
+        // Fail-open: record quá khổ queue không giết sink — capture bình thường vẫn ghi.
+        sink.Capture(ChatCapture("req-normal"));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+    }
+
+    [Fact]
+    public async Task SettingsSaveAfterIoFailure_ResumesWriting()
+    {
+        // Spec §7.6 (binding): lỗi IO tắt sink "cho tới khi Settings được lưu lại" — save phải
+        // chạy lại writer và hàng đợi cũ (record chưa ghi) phải được drain.
+        var log = new CapturingLog();
+        Directory.CreateDirectory(_dir);
+        var blockedDir = Path.Combine(_dir, "dataset");
+        File.WriteAllText(blockedDir, "file nằm thay chỗ thư mục đích"); // CreateDirectory ném
+        _settings.Set(SettingsKeys.DatasetExportPath, blockedDir);
+
+        await using var sink = CreateSink(log);
+
+        // Capture đầu enqueue + mồi writer; writer fail ở open TRƯỚC khi consume → disabled.
+        sink.Capture(ChatCapture("req-first"));
+        WaitUntil(() => log.ErrorCount == 1); // EnsureFileForCurrentDay set _disabled trước khi log
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+        // Open fail trước khi tạo được thư mục đích → chưa có file nào tồn tại (ruling round 1).
+        Assert.False(File.Exists(Path.Combine(blockedDir, "requests-2026-11-06.jsonl")));
+
+        // Disabled: Capture phải là no-op — không enqueue, không đếm SkippedQueueFull,
+        // dù đẩy nhiều hơn depth limit của hàng đợi.
+        for (var i = 0; i < 130; i++)
         {
-            sink.Capture(ChatCapture($"req-{i}")); // không được ném bất kể channel đầy
+            sink.Capture(ChatCapture($"req-during-{i}"));
         }
 
-        WaitUntil(() => sink.Stats.SkippedQueueFull >= 1);
+        Assert.Equal(0, sink.Stats.SkippedQueueFull);
         Assert.Equal(0, sink.Stats.RecordsWritten);
+
+        // Fix đích + lưu settings qua service THẬT (Set luôn phát SettingsChanged, key khác cũng
+        // được — sink coi mọi save là lệnh chạy lại).
+        File.Delete(blockedDir);
+        _settings.Set(SettingsKeys.LogRetentionDays, 30);
+
+        // Restart là LƯỜI ở Capture kế tiếp: push 5 capture — nếu Capture đầu tình cờ vướng cửa sổ
+        // writer cũ chưa completed thì Capture thứ hai chắc chắn restart; mọi capture đều được
+        // enqueue và drain, không mất dòng nào.
+        for (var i = 0; i < 5; i++)
+        {
+            sink.Capture(ChatCapture("req-resume"));
+        }
+
+        WaitUntil(() => sink.Stats.RecordsWritten == 6); // req-first (chờ trong queue) + 5 req-resume
+        var lines = ReadAllLinesShared(Path.Combine(blockedDir, "requests-2026-11-06.jsonl"));
+        Assert.Equal(6, lines.Length);
+        Assert.Contains("req-first", lines[0]);
+        Assert.All(lines[1..], l => Assert.Contains("req-resume", l));
+        Assert.Equal(0, sink.Stats.SkippedQueueFull);
+        Assert.Equal(1, log.ErrorCount); // mở lại thành công — không log lỗi thêm
+    }
+
+    [Fact]
+    public async Task Capture_DisposedSink_CapturesAreNoOps()
+    {
+        var sink = CreateSink();
+        await using (sink)
+        {
+            sink.Capture(ChatCapture("req-1"));
+            WaitUntil(() => sink.Stats.RecordsWritten == 1);
+        }
+
+        // Sau dispose channel đã complete — Capture phải là no-op toàn phần: không ném, và đặc biệt
+        // KHÔNG đếm SkippedQueueFull (TryWrite false post-dispose không phải hàng đợi đầy thật).
+        sink.Capture(ChatCapture("req-late"));
+        sink.Capture(ChatCapture("req-later"));
+
+        Assert.Equal(0, sink.Stats.SkippedQueueFull);
+        Assert.Equal(1, sink.Stats.RecordsWritten);
     }
 
     [Fact]
@@ -255,6 +340,9 @@ public class DatasetSinkTests : IDisposable
         Assert.Equal(1, log.ErrorCount); // đúng một lần cho điều kiện lỗi — không spam mỗi dòng
         Assert.Contains("DatasetSink", log.FirstError); // lỗi là của sink, không phải thành phần khác
         Assert.Equal(0, sink.Stats.RecordsWritten);
+        // Các capture sau khi disabled return ngay (ruling) — không enqueue nên hàng đợi
+        // không bao giờ đầy: SkippedQueueFull phải giữ 0.
+        Assert.Equal(0, sink.Stats.SkippedQueueFull);
     }
 
     [Fact]

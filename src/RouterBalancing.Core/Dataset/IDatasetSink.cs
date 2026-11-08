@@ -13,8 +13,9 @@ public interface IDatasetSink
 
     /// <summary>
     /// Thu một record sau 2xx thành công — không ném, không IO (contract fail-open).
-    /// Export tắt → return ngay; queue đầy hoặc vượt guard byte → drop + đếm
-    /// <see cref="DatasetStats.SkippedQueueFull"/>.
+    /// Export tắt, sink đang ở chế độ tắt vì lỗi IO (chờ Settings được lưu lại), hoặc sink đã
+    /// dispose → return ngay, không enqueue, không đếm. Queue đầy hoặc vượt guard byte
+    /// (writer còn sống) → drop + đếm <see cref="DatasetStats.SkippedQueueFull"/>.
     /// </summary>
     /// <param name="capture">Body gốc của client + completion + route/usage (chỉ giữ tham chiếu).</param>
     void Capture(DatasetCapture capture);
