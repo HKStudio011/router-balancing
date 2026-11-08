@@ -291,9 +291,12 @@ public static class UsageCapture
                 && completion.ValueKind == JsonValueKind.Number)
                 return new Usage(prompt.GetInt32(), completion.GetInt32());
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
         {
-            // Body không parse được → không có usage, request vẫn thành công (spec §10)
+            // Lỗi parse/chuyển đổi số → không có usage, request vẫn thành công (spec §10).
+            // Filter mở rộng vì GetInt32 trên JSON Number vượt phạm vi Int32 (vd prompt_tokens: 1e15)
+            // ném FormatException, field sai kiểu ném InvalidOperationException — ĐỀU không phải
+            // JsonException; bắt thiếu là fail-open hole vì body đã ghi dest trước khi ParseUsage chạy.
         }
         return null;
     }

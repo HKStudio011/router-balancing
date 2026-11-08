@@ -534,4 +534,18 @@ public class UsageCaptureTests
         Assert.Null(result.Usage);   // dòng usage hỏng bị bỏ — không last-wins từ nó
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
     }
+
+    [Fact]
+    public async Task Tee_NonStream_UsageTokensOutOfRange_NoThrowAndKeepsClientBytes()
+    {
+        // prompt_tokens 1e15 là JSON Number hợp lệ nhưng vượt phạm vi Int32 → GetInt32 trong
+        // ParseUsage ném lỗi chuyển đổi (KHÔNG phải JsonException). Fail-open: branch non-stream
+        // ghi body vào dest TRƯỚC khi ParseUsage chạy nên lỗi không được thoát ra ngoài TeeAsync.
+        const string json = """{"id":"x","usage":{"prompt_tokens":1e15,"completion_tokens":3}}""";
+
+        var (dest, result) = await TeeJsonAsync(json);
+
+        Assert.Null(result.Usage);   // usage hỏng bị bỏ — degrade về null như body parse lỗi
+        Assert.Equal(json, Encoding.UTF8.GetString(dest));
+    }
 }
