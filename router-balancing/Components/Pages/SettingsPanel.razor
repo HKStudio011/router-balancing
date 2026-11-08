@@ -1,4 +1,6 @@
 @page "/settings"
+@using System.Diagnostics
+@using RouterBalancing.Core.Dataset
 @using RouterBalancing.Core.Domain
 @using RouterBalancing.Core.Platform
 @using RouterBalancing.Core.Server
@@ -20,6 +22,7 @@
 @inject IAppUpdateService Updates
 @inject UpdateCheckService Check
 @inject UpdateCoordinator Coordinator
+@inject IDatasetSink Dataset
 
 <h1 class="mb-4 text-xl font-semibold">@L["panel.settings.title"]</h1>
 
@@ -286,6 +289,54 @@
     </div>
 </section>
 
+@* Dataset export (spec dataset-export §7.7): mục riêng — toggle + thư mục + retention + stats live *@
+<section class="mb-4 rounded border border-border bg-surface p-4">
+    <h2 class="mb-3 text-base font-semibold">@L["settings.section.dataset"]</h2>
+
+    <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" @bind="_draft.DatasetExportEnabled" />
+        @L["settings.field.datasetEnabled"]
+    </label>
+    @* Cảnh báo plaintext LUÔN hiện (kể cả trước khi bật) — user tự đánh giá rủi ro (spec §7.7) *@
+    <div class="mt-1 text-xs opacity-70">@L["settings.hint.datasetPlaintext"]</div>
+
+    <div class="mt-3 flex flex-col gap-1 text-sm">
+        <span>@L["settings.field.datasetPath"]</span>
+        <div class="flex flex-wrap items-center gap-2">
+            <input class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1.5"
+                   spellcheck="false" @bind="_draft.DatasetExportPath" />
+            <button type="button" class="btn btn-outline-secondary" @onclick="ResetDatasetPath">
+                @L["settings.action.datasetDefaultPath"]
+            </button>
+        </div>
+    </div>
+
+    <label class="mt-3 flex flex-col gap-1 text-sm">
+        @L["settings.field.datasetRetention"]
+        <input class="rounded border border-border bg-surface px-2 py-1.5"
+               type="number" @bind="_draft.DatasetRetentionDays" />
+    </label>
+    <div class="mt-1 text-xs opacity-70">@L["settings.hint.datasetForever"]</div>
+
+    @if (Error(nameof(SettingsDraft.DatasetExportPath)) is { } datasetPathError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[datasetPathError]</div>
+    }
+    @if (Error(nameof(SettingsDraft.DatasetRetentionDays)) is { } datasetRetentionError)
+    {
+        <div class="mt-1 text-sm text-danger">@L[datasetRetentionError]</div>
+    }
+
+    <div class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span class="opacity-80">@DatasetStatsLine()</span>
+        <button type="button" class="btn btn-outline-secondary" @onclick="OpenDatasetFolder">
+            @L["settings.action.datasetOpenFolder"]
+        </button>
+    </div>
+
+    <button class="btn btn-primary mt-3" @onclick="SaveDataset">@L["settings.action.save"]</button>
+</section>
+
 @* Application update (spec §9.1): version + badge + check thủ công + cập nhật ngay *@
 <section class="mb-4 rounded border border-border bg-surface p-4">
     <h2 class="mb-3 text-base font-semibold">@L["update.title"]</h2>
@@ -363,6 +414,15 @@
     [
         nameof(SettingsDraft.LogRetentionDays),
         nameof(SettingsDraft.StatsErrorRateThreshold),
+        // Dataset được SaveData() ghi chung nhóm (brief Task 9) — validate cùng để nút "Save"
+        // của nhóm Data không ghi path/retention sai mà user sửa ở mục dataset.
+        nameof(SettingsDraft.DatasetExportPath),
+        nameof(SettingsDraft.DatasetRetentionDays),
+    ];
+    private static readonly string[] DatasetFields =
+    [
+        nameof(SettingsDraft.DatasetExportPath),
+        nameof(SettingsDraft.DatasetRetentionDays),
     ];
 
     private SettingsDraft _draft = new();
@@ -380,6 +440,8 @@
     private string? _newKeyPlaintext;
     private string _appVersion = string.Empty;
     private bool _checking;
+    // Chặn StateHasChanged khi callback InvokeAsync chạy muộn sau khi component đã gỡ (mirror ApiMonitorPanel)
+    private bool _disposed;
 
     protected override async Task OnInitializedAsync()
     {
@@ -388,6 +450,7 @@
         _draft = LoadDraft();
         L.LanguageChanged += OnLanguageChanged;
         Check.StateChanged += OnCheckStateChanged;
+        Dataset.Changed += OnDatasetChanged;
         _appVersion = AppVersionFormatter.Format(Updates.CurrentVersion);
         await ReloadKeysAsync();
     }
@@ -409,10 +472,77 @@
         LogRetentionDays = Settings.LogRetentionDays,
         StatsErrorRateThreshold = Settings.StatsErrorRateThreshold,
         OpenCodeConfigPath = Settings.OpenCodeConfigPath,
+        DatasetExportEnabled = Settings.DatasetExportEnabled,
+        DatasetExportPath = Settings.DatasetExportPath,
+        DatasetRetentionDays = Settings.DatasetRetentionDays,
     };
 
     /// <summary>Nút "mặc định" của field đường dẫn config opencode (§9.8).</summary>
     private void ResetOpenCodeConfigPath() => _draft.OpenCodeConfigPath = OpenCodeConfigPaths.DefaultPath;
+
+    /// <summary>
+    /// Nút "về mặc định" của field thư mục dataset — ghi giá trị ĐÃ RESOLVE (không phải rỗng)
+    /// để user thấy ngay đường dẫn sẽ dùng (spec §7.6).
+    /// </summary>
+    private void ResetDatasetPath() => _draft.DatasetExportPath = DatasetPaths.Resolve(null);
+
+    /// <summary>Dòng trạng thái export — đủ counter của DatasetStats (spec §7.7).</summary>
+    private string DatasetStatsLine()
+    {
+        var s = Dataset.Stats;
+        return string.Format(L["settings.status.datasetStats"],
+            s.RecordsWritten,
+            Math.Round(s.BytesWritten / 1024d / 1024d, 1),
+            s.SkippedTooLarge,
+            s.SkippedTruncated,
+            s.SkippedEmpty,
+            s.SkippedRefusal,
+            s.SkippedQueueFull);
+    }
+
+    /// <summary>Mở explorer vào thư mục dataset (chỉ Windows — spec §7.7); lỗi không được nổ circuit.</summary>
+    private void OpenDatasetFolder()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            var dir = DatasetPaths.Resolve(_draft.DatasetExportPath);
+            // Thư mục có thể chưa tồn tại nếu chưa record nào được ghi — tạo trước để explorer mở được
+            Directory.CreateDirectory(dir);
+            Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Mở thư mục dataset thất bại.", ex);
+            Toast.Show(L["dashboard.msg.failed"], ToastSeverity.Error);
+        }
+    }
+
+    /// <summary>
+    /// Nhận event từ <see cref="IDatasetSink.Changed"/> — chạy trên writer thread của sink.
+    /// </summary>
+    private void OnDatasetChanged()
+    {
+        // Handler tuyệt đối không được ném: Changed là multicast delegate của sink singleton —
+        // subscriber ném sẽ chặn các subscriber phía sau (mirror ApiMonitorPanel.OnChanged).
+        try
+        {
+            // Publish đến từ writer thread của sink — Blazor chỉ render an toàn trên dispatcher
+            // thread nên marshal bằng InvokeAsync; _disposed chặn StateHasChanged khi callback
+            // chạy muộn sau khi component đã gỡ.
+            _ = InvokeAsync(() =>
+            {
+                if (!_disposed)
+                {
+                    StateHasChanged();
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("SettingsPanel: làm mới stats dataset thất bại.", ex);
+        }
+    }
 
     private void OnLanguageChanged() => _ = InvokeAsync(StateHasChanged);
 
@@ -523,7 +653,22 @@
 
         Settings.Set(SettingsKeys.LogRetentionDays, _draft.LogRetentionDays);
         Settings.Set(SettingsKeys.StatsErrorRateThreshold, _draft.StatsErrorRateThreshold);
+        // Dataset chung nhóm save Data — engine đọc gate mỗi request nên áp dụng ngay (spec §7.2)
+        Settings.Set(SettingsKeys.DatasetExportEnabled, _draft.DatasetExportEnabled);
+        Settings.Set(SettingsKeys.DatasetExportPath, _draft.DatasetExportPath);
+        Settings.Set(SettingsKeys.DatasetRetentionDays, _draft.DatasetRetentionDays);
         Toast.Show(L["settings.msg.saved"], ToastSeverity.Success);
+    }
+
+    /// <summary>Lưu nhóm dataset export — engine đọc gate mỗi request nên không cần restart (spec §7.2).</summary>
+    private void SaveDataset()
+    {
+        if (!ValidateFor(DatasetFields)) return;
+
+        Settings.Set(SettingsKeys.DatasetExportEnabled, _draft.DatasetExportEnabled);
+        Settings.Set(SettingsKeys.DatasetExportPath, _draft.DatasetExportPath);
+        Settings.Set(SettingsKeys.DatasetRetentionDays, _draft.DatasetRetentionDays);
+        Toast.Show(L["settings.msg.datasetSaved"], ToastSeverity.Success);
     }
 
     private async Task ReloadKeysAsync() => _keys = (await ClientKeys.ListAsync()).ToList();
@@ -712,5 +857,9 @@
     {
         L.LanguageChanged -= OnLanguageChanged;
         Check.StateChanged -= OnCheckStateChanged;
+        // Bắt buộc unsubscribe: sink là singleton — giữ delegate trỏ vào component đã dispose
+        // là leak + handler chạy vô ích cho mỗi lần đổi (mirror ApiMonitorPanel.DisposeAsync).
+        Dataset.Changed -= OnDatasetChanged;
+        _disposed = true;
     }
 }
