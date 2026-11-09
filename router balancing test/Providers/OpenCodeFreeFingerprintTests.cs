@@ -274,6 +274,51 @@ public class OpenCodeFreeFingerprintTests
         Assert.Equal(bytes.Length, request.Content.Headers.ContentLength);
     }
 
+    // ─── RewritesTools: cờ cho dataset export (spec dataset §7.4 tools_rewritten) ───
+
+    [Fact]
+    public void RewritesTools_ClientDeclaresBashWithUpperCase_ReturnsTrue()
+    {
+        // "Bash" → canonicalize thành bash (upstream từ chối trùng casing) → mảng tools đổi
+        var body = ChatWith("""
+            "tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]
+            """);
+
+        Assert.True(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes(body)));
+    }
+
+    [Fact]
+    public void RewritesTools_BodyWithoutTools_ReturnsTrue()
+    {
+        // Hành vi kiểm chứng (2026-11-07, đọc ApplyTools + chạy test): client KHÔNG khai tool nào
+        // thì fingerprint chèn cả 4 decoy (gate yêu cầu quartet có mặt trong body) → mảng tools
+        // được tạo mới = "đổi". Plan hedge tên test là _ReturnsFalse — chốt theo hành vi thật.
+        Assert.True(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes(ChatBody)));
+    }
+
+    [Fact]
+    public void RewritesTools_ExactQuartetNames_ReturnsFalse()
+    {
+        // Quartet đúng lowercase: không rename, không trùng, không thiếu → mảng tools giữ nguyên
+        var body = ChatWith("""
+            "tools":[
+              {"type":"function","function":{"name":"bash","parameters":{"type":"object"}}},
+              {"type":"function","function":{"name":"glob","parameters":{"type":"object"}}},
+              {"type":"function","function":{"name":"grep","parameters":{"type":"object"}}},
+              {"type":"function","function":{"name":"read","parameters":{"type":"object"}}}
+            ]
+            """);
+
+        Assert.False(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes(body)));
+    }
+
+    [Fact]
+    public void RewritesTools_InvalidJson_ReturnsFalse()
+    {
+        // Fail-open: JSON hỏng → false, không bao giờ ném (gọi trên đường request)
+        Assert.False(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes("{broken")));
+    }
+
     [Fact]
     public void RestoreMapFor_CaseVariantQuartet_MapsCanonicalToClientName()
     {

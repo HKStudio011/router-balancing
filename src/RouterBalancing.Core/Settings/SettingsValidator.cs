@@ -60,6 +60,15 @@ public static class SettingsValidator
             || draft.OpenCodeConfigPath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
             errors[nameof(SettingsDraft.OpenCodeConfigPath)] = "settings.error.openCodeConfigPath";
 
+        // DatasetExportPath khác OpenCodeConfigPath: rỗng là hợp lệ (writer tự suy ra mặc định
+        // AppData), chỉ chặn độ dài vượt MAX_PATH Windows — writer sẽ fail khi ghi chứ không báo UI.
+        if (draft.DatasetExportPath.Length > 260)
+            errors[nameof(SettingsDraft.DatasetExportPath)] = "settings.error.datasetPath";
+
+        // 0 hợp lệ (giữ mãi, không purge) — range dưới bắt đầu tại 0, range trên như logRetentionDays
+        if (draft.DatasetRetentionDays is < 0 or > 3650)
+            errors[nameof(SettingsDraft.DatasetRetentionDays)] = "settings.error.datasetRetention";
+
         return errors;
     }
 }

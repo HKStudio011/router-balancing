@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Proxies;
@@ -28,6 +29,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
     private readonly IProxyPool _pool;
     private readonly ITraceFeed _trace;
     private readonly IApiMonitorStore _monitor;
+    private readonly IDatasetSink _dataset;
     private readonly DrainGate _drain;
     private readonly IProviderQuotaGate _quotaGate;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -42,7 +44,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
 
     public ProxyHost(IAppSettingsService settings, ILogService log, IDbContextFactory<RouterBalancingDbContext> db,
         ISecretProtector protector, IClientKeyService clientKeys, IProxyPool pool, ITraceFeed trace,
-        IApiMonitorStore monitor, IRequestJournalWriter journalWriter, DrainGate drainGate,
+        IApiMonitorStore monitor, IDatasetSink dataset, IRequestJournalWriter journalWriter, DrainGate drainGate,
         IProviderQuotaGate quotaGate)
     {
         _settings = settings;
@@ -53,6 +55,7 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
         _pool = pool;
         _trace = trace;
         _monitor = monitor;
+        _dataset = dataset;
         _drain = drainGate;
         _quotaGate = quotaGate;
         // eager-create singleton (mirror ITraceFeed) — writer tự subscribe feed trong ctor,
@@ -91,6 +94,10 @@ public sealed class ProxyHost : IProxyHost, IAsyncDisposable
             builder.Services.AddSingleton(_trace);
             // Cùng instance với MAUI container — panel API Monitor đọc đúng store hooks ghi vào
             builder.Services.AddSingleton(_monitor);
+            // Cùng instance với MAUI container — UI Settings đọc Stats/Changed của ĐÚNG sink mà
+            // ProxyRequestHandler Capture vào (spec dataset §7.6/§7.7); App dispose cùng instance này
+            // khi process thoát để flush dòng cuối
+            builder.Services.AddSingleton(_dataset);
             // Cùng instance với MAUI container — UpdateCoordinator BeginDrain/CancelDrain
             // phải pause/resume đúng DispatcherLoop đang chạy trong proxy container này
             builder.Services.AddSingleton(_drain);

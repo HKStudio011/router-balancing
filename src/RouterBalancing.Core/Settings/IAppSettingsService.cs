@@ -48,6 +48,18 @@ public interface IAppSettingsService
     /// <summary>Đường dẫn file config opencode đã expand (<c>~</c> → home); rỗng/chưa set → mặc định.</summary>
     string OpenCodeConfigPath { get; }
 
+    /// <summary>
+    /// Bật ống export dataset JSONL — mặc định tắt; consumer đọc tại thời điểm bắt đầu mỗi
+    /// request nên bật/tắt có hiệu lực ngay mà không cần khởi động lại (spec dataset-export).
+    /// </summary>
+    bool DatasetExportEnabled { get; }
+
+    /// <summary>Thư mục dataset nguyên văn (chưa expand <c>~</c>); rỗng/chưa set → mặc định trong AppData.</summary>
+    string DatasetExportPath { get; }
+
+    /// <summary>Số ngày giữ file dataset trước khi purge; 0 = giữ mãi (mặc định).</summary>
+    int DatasetRetentionDays { get; }
+
     /// <summary>Đọc setting bất kỳ với mặc định khi chưa có trong DB.</summary>
     T Get<T>(string key, T defaultValue);
 

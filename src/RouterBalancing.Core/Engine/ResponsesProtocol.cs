@@ -14,6 +14,9 @@ namespace RouterBalancing.Core.Engine;
 internal sealed class ResponsesProtocol : IProxyProtocol
 {
     /// <inheritdoc/>
+    public ProxyEndpoint Endpoint => ProxyEndpoint.Responses;
+
+    /// <inheritdoc/>
     public string UpstreamPath => "/v1/responses";
 
     /// <summary>
@@ -78,14 +81,15 @@ internal sealed class ResponsesProtocol : IProxyProtocol
     }
 
     /// <inheritdoc/>
-    public async Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct)
+    public async Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct,
+        bool captureCompletion = false)
     {
         // Dispatch theo content-type như chat: SSE → scan dòng event/data; còn lại coi là JSON non-stream
         // (spec §4.3/§4.4). Body không phải JSON ở nhánh sau → parse fail-open, byte vẫn forward đủ.
         var stream = await source.ReadAsStreamAsync(ct);
         var mediaType = source.Headers.ContentType?.MediaType;
         if (string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
-            return await TeeSseAsync(stream, dest, ct);
+            return await TeeSseAsync(stream, dest, ct, captureCompletion);
 
         var bytes = new MemoryStream();
         try
@@ -100,7 +104,11 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         var payload = bytes.ToArray();
         await dest.WriteAsync(payload, ct);
         // DecodeCapped cắt BYTE trước khi decode + marker đúng 1 lần — semantics cap monitor dùng chung (spec §4.3)
-        return new UsageCapture.TeeResult(ParseRootUsage(payload), null, ApiMonitorStore.DecodeCapped(payload));
+        // Non-stream: body JSON chính là object response — không cần extract như đường SSE; mirror
+        // chat non-stream (UsageCapture.TeeAsync) giao nguyên thân không cắt. Thiếu dòng này thì
+        // request non-stream responses bật export trả CompletionJson null → sink bỏ record (Empty).
+        return new UsageCapture.TeeResult(ParseRootUsage(payload), null, ApiMonitorStore.DecodeCapped(payload),
+            CompletionJson: captureCompletion ? Encoding.UTF8.GetString(payload) : null);
     }
 
     /// <inheritdoc/>
@@ -151,7 +159,10 @@ internal sealed class ResponsesProtocol : IProxyProtocol
     // Cap ResponseBody monitor — phải khớp ApiMonitorStore.BodyCap (DecodeCapped cắt tại đây)
     private const int BodyCapBytes = 64 * 1024;
 
-    private static async Task<UsageCapture.TeeResult> TeeSseAsync(Stream source, Stream dest, CancellationToken ct)
+    // captureCompletion chỉ đọc lại state đã có sẵn (TerminalResponseJson/CompletedOk) — không thêm
+    // parse hay bộ nhớ mới khi tắt, nên byte-forward và chi phí per-event giữ nguyên (spec dataset §7.3).
+    private static async Task<UsageCapture.TeeResult> TeeSseAsync(Stream source, Stream dest, CancellationToken ct,
+        bool captureCompletion = false)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
         byte[] carry = [];   // dòng chưa kết thúc bằng \n — dòng SSE có thể cắt giữa 2 chunk (như chat)
@@ -196,8 +207,12 @@ internal sealed class ResponsesProtocol : IProxyProtocol
             // Dòng cuối không có \n (SSE chuẩn luôn có nhưng không assume) — xử lý nốt
             if (carry.Length > 0)
                 state.HandleLine(carry);
+            // CompletionJson = object `response` lồng trong event terminal (KHÔNG phải envelope) —
+            // stream cụt không có terminal thì TerminalResponseJson đã null → builder bỏ record.
             return new UsageCapture.TeeResult(state.Usage, state.FirstTokenAt,
-                ApiMonitorStore.DecodeCapped(capture.ToArray()));
+                ApiMonitorStore.DecodeCapped(capture.ToArray()),
+                CompletionJson: captureCompletion ? state.TerminalResponseJson : null,
+                CompletionComplete: state.CompletedOk);
         }
         finally
         {
@@ -230,6 +245,12 @@ internal sealed class ResponsesProtocol : IProxyProtocol
         /// <summary>JSON của object <c>response</c> trong event terminal — input aggregate non-stream.</summary>
         public string? TerminalResponseJson { get; private set; }
 
+        /// <summary>
+        /// Event terminal là <c>response.completed</c> (không chỉ incomplete/failed) — nguồn của
+        /// <see cref="UsageCapture.TeeResult.CompletionComplete"/> cho dataset export.
+        /// </summary>
+        public bool CompletedOk { get; private set; }
+
         public void HandleLine(ReadOnlySpan<byte> line)
         {
             // SSE CRLF: dòng trống tới đây là "\r" (đã tách theo \n) — IsEmpty không bao giờ
@@ -259,6 +280,9 @@ internal sealed class ResponsesProtocol : IProxyProtocol
             {
                 Usage = ParseTerminalUsage(payload) ?? Usage;
                 TerminalResponseJson = ExtractResponseObject(payload) ?? TerminalResponseJson;
+                // Sticky true — khớp first-wins của Usage/TerminalResponseJson phía trên: chỉ event
+                // response.completed là completion đáng tin cho dataset (incomplete/failed = cụt).
+                if (_eventName == "response.completed") CompletedOk = true;
             }
         }
     }

@@ -1,4 +1,5 @@
-﻿using RouterBalancing.Core.Logging;
+﻿using RouterBalancing.Core.Dataset;
+using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Notifications;
 using RouterBalancing.Core.Platform;
 using RouterBalancing.Core.Providers;
@@ -21,6 +22,7 @@ namespace router_balancing
         private readonly IStartupRegistration _startup;
         private readonly ITrayService _tray;
         private readonly LogRetentionWorker _retention;
+        private readonly IDatasetSink _dataset;
         private readonly FreeModelSyncWorker _freeSync;
         private readonly UpdateCheckService _updateCheck;
         private readonly WindowState _window;
@@ -40,6 +42,7 @@ namespace router_balancing
             IStartupRegistration startup,
             ITrayService tray,
             LogRetentionWorker retention,
+            IDatasetSink dataset,
             FreeModelSyncWorker freeSync,
             UpdateCheckService updateCheck,
             WindowState window,
@@ -54,6 +57,7 @@ namespace router_balancing
             _startup = startup;
             _tray = tray;
             _retention = retention;
+            _dataset = dataset;
             _freeSync = freeSync;
             _updateCheck = updateCheck;
             _window = window;
@@ -301,6 +305,12 @@ namespace router_balancing
                 // Dừng vòng lặp dọn log + sync model free + check update + gom lỗi trước khi process chết
                 _alerts.Dispose();
                 _retention.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+                // Flush dòng dataset cuối trong queue rồi mới đóng file — không thì request 2xx
+                // gần sát lúc thoát mất record (spec dataset §7.6: DisposeAsync flush + đóng file)
+                // IDatasetSink không khai báo DisposeAsync: cast IAsyncDisposable — an toàn vì
+                // DatasetSink là implementation duy nhất và DisposeAsync idempotent (đỡ double-dispose
+                // với proxy container). Ctor nhận interface để MAUI DI resolve được (chỉ đăng ký IDatasetSink).
+                (_dataset as IAsyncDisposable)?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
                 _freeSync.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
                 _updateCheck.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
             }

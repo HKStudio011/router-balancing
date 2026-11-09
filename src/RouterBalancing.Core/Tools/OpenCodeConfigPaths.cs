@@ -11,11 +11,26 @@ public static class OpenCodeConfigPaths
 
     /// <summary>
     /// Expand đường dẫn người dùng nhập: rỗng/whitespace → <see cref="DefaultPath"/>;
-    /// <c>~</c> / <c>~/</c> / <c>~\</c> → home; đường dẫn khác giữ nguyên.
+    /// <c>~</c> / <c>~/</c> / <c>~\</c> → home; đường dẫn khác được trim whitespace đầu/cuối rồi trả về.
     /// </summary>
     public static string Expand(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return DefaultPath;
+        return ExpandHome(path);
+    }
+
+    /// <summary>
+    /// Expand phần đầu <c>~</c> / <c>~/</c> / <c>~\</c> về
+    /// <see cref="Environment.SpecialFolder.UserProfile"/>; đường dẫn khác trả về nguyên (đã trim).
+    /// Tách khỏi <see cref="Expand"/> để config opencode và dataset export
+    /// (<c>DatasetPaths.Resolve</c>) dùng chung một định nghĩa expansion — không default-path
+    /// semantics: caller tự quyết định giá trị cho input rỗng.
+    /// </summary>
+    /// <exception cref="ArgumentException">Khi <paramref name="path"/> null/whitespace.</exception>
+    internal static string ExpandHome(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("Đường dẫn không được rỗng — caller phải xử lý default trước.", nameof(path));
 
         var trimmed = path.Trim();
         if (trimmed == "~") return UserProfile;

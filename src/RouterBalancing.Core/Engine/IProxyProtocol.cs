@@ -19,6 +19,9 @@ public enum ProxyEndpoint
 /// </summary>
 public interface IProxyProtocol
 {
+    /// <summary>Endpoint protocol này phục vụ — caller dùng để gắn metadata (vd. dataset export).</summary>
+    ProxyEndpoint Endpoint { get; }
+
     /// <summary>Path upstream, nối vào BaseUrl đã canonicalize.</summary>
     string UpstreamPath { get; }
 
@@ -36,8 +39,14 @@ public interface IProxyProtocol
     (byte[] Body, bool ExpectsUsage) PrepareUpstreamBody(byte[] body, string realModelId,
         ProviderType providerType);
 
-    /// <summary>Tee stream/JSON upstream vào dest, trích usage + first-token + body (cap 64KB).</summary>
-    Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct);
+    /// <summary>
+    /// Tee stream/JSON upstream vào dest, trích usage + first-token + body (cap 64KB).
+    /// </summary>
+    /// <param name="captureCompletion">Bật để kèm completion đầy đủ trong
+    /// <see cref="UsageCapture.TeeResult.CompletionJson"/> cho dataset export; byte client không đổi.
+    /// Protocol chưa hỗ trợ capture thì flag bị bỏ qua (CompletionJson null).</param>
+    Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct,
+        bool captureCompletion = false);
 
     /// <summary>
     /// Gộp SSE upstream về JSON non-stream rồi ghi một lần vào <paramref name="dest"/> —

@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 
 namespace RouterBalancing.Core.Engine;
@@ -34,8 +35,15 @@ public static class UsageCapture
     /// <param name="EndedWithoutTerminal">SSE kết thúc SẠCH (EOF) mà không gặp <c>[DONE]</c>/
     /// <c>finish_reason</c> — upstream tự đóng stream giữa chừng (server-side cancel/swap...),
     /// không phải lỗi mạng; caller chỉ dùng để log dấu vết chẩn đoán.</param>
+    /// <param name="CompletionJson">Chỉ khi tee với <c>captureCompletion: true</c> (dataset export):
+    /// NGUYÊN object <c>chat.completion</c> gộp từ stream SSE (hoặc thân JSON non-stream) —
+    /// không cap 64KB như <paramref name="ResponseBody"/>; <see langword="null"/> khi không bật
+    /// capture, khi stream overflow budget, hoặc protocol chưa hỗ trợ.</param>
+    /// <param name="CompletionComplete"><c>false</c> khi completion không tin cậy: stream cụt
+    /// (thiếu <c>[DONE]</c>/<c>finish_reason</c>) hoặc chạm budget tích lũy — caller phải bỏ
+    /// record thay vì dùng completion dở dang.</param>
     public sealed record TeeResult(Usage? Usage, DateTimeOffset? FirstTokenAt, string? ResponseBody,
-        bool EndedWithoutTerminal = false);
+        bool EndedWithoutTerminal = false, string? CompletionJson = null, bool CompletionComplete = true);
 
     /// <summary>
     /// Trả body upstream (inject <c>stream_options.include_usage</c> nếu đủ điều kiện) + cờ
@@ -81,12 +89,15 @@ public static class UsageCapture
     /// SSE → ghi từng chunk ngay, scan dòng theo byte (dòng có thể cắt giữa 2 chunk);
     /// loại khác (JSON non-stream) → buffer, parse, rồi ghi tiếp — spec §6.1.
     /// </summary>
-    public static async Task<TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct)
+    /// <param name="captureCompletion">Bật để gộp thêm completion đầy đủ cho dataset export
+    /// (<see cref="TeeResult.CompletionJson"/>); không đổi gì ở byte client nhận.</param>
+    public static async Task<TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct,
+        bool captureCompletion = false)
     {
         var stream = await source.ReadAsStreamAsync(ct);
         var mediaType = source.Headers.ContentType?.MediaType;
         if (string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
-            return await TeeSseAsync(stream, dest, ct);
+            return await TeeSseAsync(stream, dest, ct, captureCompletion);
 
         var bytes = new MemoryStream();
         try
@@ -102,12 +113,15 @@ public static class UsageCapture
         var payload = bytes.ToArray();
         await dest.WriteAsync(payload, ct);
         var body = Encoding.UTF8.GetString(payload);
-        if (body.Length > BodyCapChars)
-            body = body[..BodyCapChars] + TruncatedMarker;
-        return new TeeResult(ParseUsage(payload), null, body);
+        // ResponseBody monitor vẫn cap 64KB như cũ; CompletionJson (dataset) giữ NGUYÊN THÂN
+        // không cắt — record quá lớn do builder bỏ theo rule MaxFieldBytes, không phải ở đây.
+        return new TeeResult(ParseUsage(payload), null,
+            body.Length > BodyCapChars ? body[..BodyCapChars] + TruncatedMarker : body,
+            CompletionJson: captureCompletion ? body : null);
     }
 
-    internal static async Task<TeeResult> TeeSseAsync(Stream source, Stream dest, CancellationToken ct)
+    internal static async Task<TeeResult> TeeSseAsync(Stream source, Stream dest, CancellationToken ct,
+        bool captureCompletion = false)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
         byte[] carry = [];
@@ -116,6 +130,9 @@ public static class UsageCapture
         var bodyTruncated = false;
         DateTimeOffset? firstTokenAt = null;
         var terminal = false;
+        // Budget = MaxFieldBytes của dataset: chạm budget thì ngừng tích lũy (Overflowed) —
+        // completion bị bỏ, nhưng byte client vẫn forward nguyên vẹn (không cắt ở đây).
+        var capture = captureCompletion ? new ChatSseAggregateState(DatasetRecordBuilder.MaxFieldBytes) : null;
         try
         {
             var wroteAny = false;
@@ -151,6 +168,10 @@ public static class UsageCapture
                     var line = combined.AsSpan(lineStart, i - lineStart);
                     usage = ScanSseLine(line, usage, ref terminal);
                     AppendSsePayload(line, body, ref bodyTruncated);
+                    // Gộp chung một lần/dòng cho dataset — chạy SAU khi chunk đã ghi dest nên
+                    // byte client luôn forward nguyên vẹn dù có lỗi parse; HandleLine chứa lại
+                    // lỗi parse (JsonException/lỗi chuyển đổi số) bằng cách bỏ chunk hỏng.
+                    capture?.HandleLine(line);
                     lineStart = i + 1;
                 }
                 carry = combined[lineStart..];
@@ -160,6 +181,7 @@ public static class UsageCapture
             {
                 usage = ScanSseLine(carry, usage, ref terminal);
                 AppendSsePayload(carry, body, ref bodyTruncated);
+                capture?.HandleLine(carry);
             }
             // EOF sạch (không RST/exception) nhưng thiếu dấu kết thúc hợp lệ ([DONE] hoặc
             // finish_reason) = upstream tự đóng stream giữa chừng (vd Unsloth cancel/swap khi
@@ -168,15 +190,21 @@ public static class UsageCapture
             // EndedWithoutTerminal cho caller log; KHÔNG dựng lỗi mạng/in-band
             // upstream_disconnected (bug 2026-10-24: server-side cancel bị hiển thị
             // "cancel · network"). Lỗi đọc thật (RST) vẫn propagate IOException như cũ.
+            // Completion chỉ tin cậy khi stream kết thúc hợp lệ VÀ không chạm budget —
+            // cụt hoặc overflow đều để builder bỏ record (không train trên completion dở dang).
+            var completionJson = capture is { Overflowed: false } ? capture.BuildCompletionJson() : null;
+            var completionComplete = capture is null || (capture.CompletedCleanly && !capture.Overflowed);
             if (!terminal)
             {
                 if (!wroteAny)
                     throw new UpstreamDiedBeforeContentException(new UpstreamTruncatedException());
 
                 return new TeeResult(usage, firstTokenAt, body.ToString(),
-                    EndedWithoutTerminal: true);
+                    EndedWithoutTerminal: true, CompletionJson: completionJson,
+                    CompletionComplete: completionComplete);
             }
-            return new TeeResult(usage, firstTokenAt, body.ToString());
+            return new TeeResult(usage, firstTokenAt, body.ToString(),
+                CompletionJson: completionJson, CompletionComplete: completionComplete);
         }
         finally
         {
@@ -203,8 +231,10 @@ public static class UsageCapture
     }
 
     // Chỉ dòng "data: {...}" chứa usage hợp lệ; JSON hỏng → bỏ qua dòng đó, không nổ stream.
-    // Guard ValueKind Number trước GetInt32: field sai kiểu (string/bool) ném InvalidOperationException
-    // (KHÔNG phải JsonException) — spec §10 yêu cầu usage parse lỗi không được throw làm hỏng request.
+    // Guard ValueKind Number trước GetInt32: field sai kiểu (string/bool) ném InvalidOperationException;
+    // số hợp lệ nhưng vượt phạm vi Int32 (vd prompt_tokens: 1e15) ném FormatException — cả hai
+    // đều KHÔNG phải JsonException, nên catch mở rộng bắt đủ (spec §10: usage parse lỗi không
+    // được throw làm hỏng request).
     // Đồng thời đánh dấu `terminal` khi gặp [DONE] hoặc finish_reason khác null — thiếu cả hai
     // tại EOF sạch nghĩa là upstream cắt cụt (TeeSseAsync throw).
     private static Usage? ScanSseLine(ReadOnlySpan<byte> line, Usage? current, ref bool terminal)
@@ -240,8 +270,9 @@ public static class UsageCapture
             // last-wins: nhiều chunk usage → lấy cái cuối (spec §6.1)
             return new Usage(prompt.GetInt32(), completion.GetInt32());
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
         {
+            // Lỗi parse/chuyển đổi số → bỏ dòng, giữ usage cũ (fail-open)
             return current;
         }
     }
@@ -260,9 +291,12 @@ public static class UsageCapture
                 && completion.ValueKind == JsonValueKind.Number)
                 return new Usage(prompt.GetInt32(), completion.GetInt32());
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
         {
-            // Body không parse được → không có usage, request vẫn thành công (spec §10)
+            // Lỗi parse/chuyển đổi số → không có usage, request vẫn thành công (spec §10).
+            // Filter mở rộng vì GetInt32 trên JSON Number vượt phạm vi Int32 (vd prompt_tokens: 1e15)
+            // ném FormatException, field sai kiểu ném InvalidOperationException — ĐỀU không phải
+            // JsonException; bắt thiếu là fail-open hole vì body đã ghi dest trước khi ParseUsage chạy.
         }
         return null;
     }

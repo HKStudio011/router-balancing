@@ -32,6 +32,9 @@ public class AppSettingsServiceTests : IDisposable
         Assert.Equal(1000, service.TransientBackoffBaseMs);
         Assert.Equal(300, service.UpstreamIdleTimeoutSec);
         Assert.Equal(120, service.ProviderQuotaBlockSec);
+        Assert.False(service.DatasetExportEnabled);
+        Assert.Equal("", service.DatasetExportPath);
+        Assert.Equal(0, service.DatasetRetentionDays);
     }
 
     [Fact]
@@ -136,5 +139,23 @@ public class AppSettingsServiceTests : IDisposable
         Assert.Equal(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             reopened.OpenCodeConfigPath);
+    }
+
+    [Fact]
+    public void DatasetExportSettings_RoundTripsThroughSet()
+    {
+        using (var service = Create())
+        {
+            service.Set(SettingsKeys.DatasetExportEnabled, true);
+            service.Set(SettingsKeys.DatasetExportPath, @"D:\dataset\rb");
+            service.Set(SettingsKeys.DatasetRetentionDays, 30);
+        }
+
+        // Service mới nạp lại từ DB → setting dataset phải survive restart app
+        using var reopened = Create();
+
+        Assert.True(reopened.DatasetExportEnabled);
+        Assert.Equal(@"D:\dataset\rb", reopened.DatasetExportPath);
+        Assert.Equal(30, reopened.DatasetRetentionDays);
     }
 }

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Combos;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Localization;
 using RouterBalancing.Core.Logging;
@@ -70,6 +71,10 @@ namespace router_balancing
             // ApiMonitorStore singleton cùng pattern: ProxyHost.StartAsync re-register cùng
             // instance vào container proxy — panel và hooks ghi/đọc 1 store
             builder.Services.AddSingleton<IApiMonitorStore, ApiMonitorStore>();
+            // DatasetSink singleton: ProxyRequestHandler (proxy container) Capture sau tee 2xx,
+            // UI Settings đọc Stats/Changed — cùng pattern IApiMonitorStore; App ctor dispose
+            // khi process thoát để flush dòng cuối (spec dataset §7.6).
+            builder.Services.AddSingleton<IDatasetSink, DatasetSink>();
             // DrainGate singleton: UpdateCoordinator (UI) BeginDrain/CancelDrain và
             // DispatcherLoop (proxy container) phải cùng 1 gate — ProxyHost.StartAsync
             // re-register instance này vào container proxy

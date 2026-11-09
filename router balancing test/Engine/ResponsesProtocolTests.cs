@@ -318,6 +318,96 @@ public class ResponsesProtocolTests
         Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // client vẫn nhận đủ byte
     }
 
+    // ─── TeeAsync: captureCompletion cho dataset export (spec dataset §7.3/§7.5) ───
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_CompletionJsonIsTerminalResponseObject()
+    {
+        // CompletionJson phải là object `response` lồng trong data terminal (có output + usage),
+        // KHÔNG phải envelope event — builder (§7.5) map thẳng từ `output`, nhận envelope là hỏng shape.
+        const string sse =
+            "event: response.output_text.delta\n" +
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello\"}\n\n" +
+            "event: response.completed\n" +
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world\"}]}],\"usage\":{\"input_tokens\":11,\"output_tokens\":7}}}\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // bật capture vẫn byte-forward nguyên vẹn
+        Assert.NotNull(result.CompletionJson);
+        using var doc = JsonDocument.Parse(result.CompletionJson!);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+        Assert.True(doc.RootElement.TryGetProperty("output", out var output));
+        Assert.Equal(JsonValueKind.Array, output.ValueKind);
+        Assert.True(doc.RootElement.TryGetProperty("usage", out _));
+        Assert.False(doc.RootElement.TryGetProperty("response", out _));   // không phải envelope event
+        Assert.True(result.CompletionComplete);
+    }
+
+    [Fact]
+    public async Task Tee_Sse_CompletedFalseWhenTerminalIncomplete()
+    {
+        // Terminal response.incomplete (vd. cutoff max_output_tokens) → completion dở dang,
+        // builder phải bỏ record qua CompletionComplete=false chứ không train trên output cụt.
+        const string sse =
+            "event: response.output_text.delta\n" +
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
+            "event: response.incomplete\n" +
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.False(result.CompletionComplete);
+    }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_False_LeavesCompletionJsonNull()
+    {
+        // Export tắt (mặc định) → không completion, hành vi cũ giữ nguyên từng byte.
+        using var content = new StringContent(CompletedSse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.Null(result.CompletionJson);
+        Assert.Equal(CompletedSse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task Tee_NonStreamJson_CaptureCompletion_True_ReturnsBodyAsCompletionJson()
+    {
+        // Non-stream: body JSON chính là object response — không cần extract như đường SSE.
+        // Không có completion thì request non-stream responses bật export bị sink bỏ (Empty)
+        // dù upstream trả 2xx hợp lệ (gap review Task 6).
+        const string json = """{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":11,"output_tokens":7}}""";
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.Equal(json, result.CompletionJson);   // nguyên thân body, không cắt (mirror chat non-stream)
+        Assert.True(result.CompletionComplete);      // non-stream 2xx = completion đầy đủ
+        Assert.Equal(json, Encoding.UTF8.GetString(dest.ToArray()));   // byte-forward giữ nguyên
+    }
+
+    [Fact]
+    public async Task Tee_NonStreamJson_CaptureCompletion_False_LeavesCompletionJsonNull()
+    {
+        // Export tắt (mặc định) → không completion, hành vi cũ giữ nguyên từng byte.
+        const string json = """{"id":"resp_1","status":"completed"}""";
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.TeeAsync(content, dest, CancellationToken.None);
+
+        Assert.Null(result.CompletionJson);
+        Assert.Equal(json, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
     // ─── AggregateSseAsync: forced-stream fingerprint → JSON non-stream (OpenCode gate) ───
 
     [Fact]

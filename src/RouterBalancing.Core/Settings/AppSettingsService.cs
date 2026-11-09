@@ -72,6 +72,14 @@ public sealed class AppSettingsService : IAppSettingsService, IDisposable
     public string OpenCodeConfigPath =>
         OpenCodeConfigPaths.Expand(Get<string?>(SettingsKeys.OpenCodeConfigPath, null));
 
+    public bool DatasetExportEnabled => Get(SettingsKeys.DatasetExportEnabled, false);
+
+    // Đường dẫn dataset giữ nguyên văn (không Expand như OpenCodeConfigPath): việc mở rộng `~`
+    // và suy ra thư mục mặc định trong AppData thuộc về tầng Dataset, để UI và writer dùng chung một logic.
+    public string DatasetExportPath => Get(SettingsKeys.DatasetExportPath, "");
+
+    public int DatasetRetentionDays => Get(SettingsKeys.DatasetRetentionDays, 0);
+
     public T Get<T>(string key, T defaultValue = default!)
     {
         bool found;

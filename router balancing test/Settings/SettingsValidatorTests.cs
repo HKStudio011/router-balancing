@@ -167,4 +167,32 @@ public class SettingsValidatorTests
         Assert.Equal("settings.error.upstreamIdleTimeout", low[nameof(SettingsDraft.UpstreamIdleTimeoutSec)]);
         Assert.Equal("settings.error.upstreamIdleTimeout", high[nameof(SettingsDraft.UpstreamIdleTimeoutSec)]);
     }
+
+    [Fact]
+    public void Validate_DatasetRetentionDaysZero_AcceptsZeroAsKeepForever()
+    {
+        // 0 = giữ mãi mọi file dataset (mặc định) — range bắt đầu tại 0 như các setting "0 = tắt" khác
+        var errors = SettingsValidator.Validate(ValidDraft() with { DatasetRetentionDays = 0 });
+
+        Assert.False(errors.ContainsKey(nameof(SettingsDraft.DatasetRetentionDays)));
+    }
+
+    [Fact]
+    public void Validate_DatasetRetentionDaysAbove3650_ReturnsError()
+    {
+        var low = SettingsValidator.Validate(ValidDraft() with { DatasetRetentionDays = -1 });
+        var high = SettingsValidator.Validate(ValidDraft() with { DatasetRetentionDays = 3651 });
+
+        Assert.Equal("settings.error.datasetRetention", low[nameof(SettingsDraft.DatasetRetentionDays)]);
+        Assert.Equal("settings.error.datasetRetention", high[nameof(SettingsDraft.DatasetRetentionDays)]);
+    }
+
+    [Fact]
+    public void Validate_DatasetExportPathTooLong_ReturnsError()
+    {
+        // 260 = ngưỡng MAX_PATH Windows → 261 ký tự là vượt ngưỡng
+        var errors = SettingsValidator.Validate(ValidDraft() with { DatasetExportPath = new string('d', 261) });
+
+        Assert.Equal("settings.error.datasetPath", errors[nameof(SettingsDraft.DatasetExportPath)]);
+    }
 }

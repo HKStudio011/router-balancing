@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Combos;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
@@ -47,6 +48,13 @@ public static class ProxyApp
 
         if (!builder.Services.Any(d => d.ServiceType == typeof(IApiMonitorStore)))
             builder.Services.AddSingleton<IApiMonitorStore, ApiMonitorStore>(); // fallback test harness; app đã đăng ký instance ở StartAsync
+
+        // ProxyRequestHandler resolve IDatasetSink từ container này — thiếu dòng thì request đầu
+        // nổ DI. Fallback cho test harness dựng container qua ConfigureServices mà không qua
+        // ProxyHost.StartAsync; app (MAUI) đăng ký singleton + StartAsync forward instance
+        // thật TRƯỚC khi gọi method này → only-if-absent nhường chỗ
+        if (!builder.Services.Any(d => d.ServiceType == typeof(IDatasetSink)))
+            builder.Services.AddSingleton<IDatasetSink, DatasetSink>();
 
         // Fallback cho test harness dựng container qua ConfigureServices mà không qua
         // ProxyHost.StartAsync; app (MAUI) đăng ký singleton + StartAsync forward instance

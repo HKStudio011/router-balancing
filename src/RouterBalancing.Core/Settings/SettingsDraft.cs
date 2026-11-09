@@ -38,4 +38,13 @@ public sealed record SettingsDraft
 
     /// <summary>Đường dẫn file config opencode (§9.8); hiển thị dạng đã expand, có nút "mặc định".</summary>
     public string OpenCodeConfigPath { get; set; } = "";
+
+    /// <summary>Bật ghi dataset JSONL cho mỗi request thành công (spec dataset-export); mặc định tắt.</summary>
+    public bool DatasetExportEnabled { get; set; }
+
+    /// <summary>Thư mục dataset; rỗng = dùng mặc định trong AppData.</summary>
+    public string DatasetExportPath { get; set; } = "";
+
+    /// <summary>Số ngày giữ file dataset — 0 = giữ mãi, không purge.</summary>
+    public int DatasetRetentionDays { get; set; }
 }

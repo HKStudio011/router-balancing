@@ -1,4 +1,4 @@
-# Backlog — cập nhật 2026-10-21
+# Backlog - cập nhật 2026-11-07
 
 Nguồn: phiên brainstorm sau khi ship PR #30 (trang Tools + free sync catalog).
 Ký hiệu: `[ ]` chưa làm · **OPEN** = chưa chốt quyết định · *đo được* = có số liệu/chứng minh trong code, không phải cảm giác.
@@ -66,6 +66,50 @@ Thứ tự gợi ý: C1 → (A4,A5,A6,A8 là UI rẻ, không phụ thuộc schem
 
 ---
 
+## E. OpenCode v2 — fingerprint + phân loại lỗi free-tier (ghi 2026-11-07)
+
+Bối cảnh: đối chiếu với nguồn mở `anomalyco/opencode` khi thiết kế dataset export
+(`docs/superpowers/specs/2026-11-06-dataset-jsonl-export-design.md` §11). Chưa probe live nên
+mới chỉ là bằng chứng phía upstream, chưa phải kết luận cho code này.
+
+- `[ ]` **E1 Fingerprint OpenCode có còn qua gate với client v2 không.** `OpenCodeFreeFingerprint.Quartet`
+  = `bash/glob/grep/read` (dòng 38) và `sidecar/opencode-proxy/anonymous-tools.json`
+  = `shell/edit/glob/grep/read` là vocabulary v1. OpenCode 2.0.32/2.1.0 dùng tool namespace
+  `opencode.*` + tool code-mode `execute` (upstream issue #57346, mở, cập nhật 2026-11-03, than
+  `Read/Grep/Glob/Bash` vắng mặt khỏi catalog). Cần **spike probe live** opencode.ai:
+  (a) body có quartet + UA `opencode/1.18.31`, (b) body tool kiểu v2 + UA `opencode/2.x`,
+  (c) bỏ quartet — ghi lại status + `error.type` từng nhánh rồi mới quyết định cập nhật
+  `Quartet`/`anonymous-tools.json`. *do được*: comment probe 2026-10-04/2026-10-13 trong
+  `OpenCodeFreeFingerprint.cs` (gate 403 `FreeTierError` theo UA regex + header `x-opencode-*`
+  + quartet) — các probe đó cũ hơn các phát hành 2.x được ghi nhận.
+- `[ ]` **E2 Tách `FreeTierError` (refusal) khỏi quota thật.** `DispatcherLoop.IsGlobalQuota`
+  (dòng 669-675) chỉ nhận `429 + body chứa "FreeUsageLimitError"`; 401/403 → Fatal cấp Account
+  (`RetryClassifier.cs:17`). Upstream v2 khi hết quota báo
+  `AI_APICallError: Upstream request failed: Invalid credential` **không** kèm `Retry-After`
+  (upstream issue #54338, 2026-10-10), còn refusal vẫn là 403 `FreeTierError`
+  "OpenCode's free tier can only be used from within OpenCode" → hai điều kiện đang lẫn vào
+  nhau: refusal có thể bị tính là "key sai", quota thật có thể không mở window. User ghi nhận
+  hiện tượng gộp chung này. Cần đối chiếu log thật (bảng `LogEntries`, filter theo
+  `error.type`) trước khi đổi phân loại. Liên quan tới `ProviderQuotaGate` + `QuotaCooldownBadge`.
+
+---
+
 ## D. Deferred minors từ review PR #30 (ledger SDD bị git-ignore, nên ghi lại đây)
 
 `[ ]` D1 `FreeModelDetector.LimitOf` dùng `GetInt32()` → nên `TryGetInt32` (skip entry hỏng, không sập cả lần sync). `[ ]` D2 `ThinkEffortsOf` match `reasoning_options.type` bằng `OrdinalIgnoreCase` (spec literal lowercase → `Ordinal` chặt hơn). `[ ]` D3 thiếu test nhánh `["toggle", ...values]` và modalities thiếu hẳn. `[ ]` D4 doc enum `FreeSuffix` còn nhắc "OpenCode Zen". `[ ]` D5 làm ổn định `ProxyQueueIntegrationTests` (flake timeout dưới song song, tiền tồn tại). `[ ]` D6 test guard "0 free models" không phân biệt được với parse failure (assert message). `[ ]` D7 test catalog không assert `Method == GET` / không có `Authorization`. `[ ]` D8 nhánh update capabilities trên model non-manual (catalog) chưa test trực tiếp. `[x]` D10 thiếu test `SupportsTools=false` → emit `"tools": false` (đã có `Generate_NegativeCapabilityFromKnownAbsent_EmitsFalse`, Task 4). `[ ]` D11 service: thiếu test "preset free tắt + model Enabled → DefaultSelectedIds rỗng". `[ ]` D12 test dedupe không phân biệt "free thắng" với "Id nhỏ thắng"; thiếu test Ordinal case-sensitive. `[ ]` D13 `SkippedDuplicateModelIds` lặp entry khi ≥3 model cùng ModelId. `[x]` D14 `Tools.razor`: `RegenerateAsync` catch không xóa `_json`/`_skipped` → preview cũ không khớp tick hiện tại (đã fix trong Plan 2 — catch xoá preview trước khi toast). `[ ]` D15 `Tools.razor`: `DownloadAsync` không bắt `JSException` khi `rb-tools.js` chưa load. `[ ]` D16 `Tools.razor`: `StateHasChanged` sau `await` khi component đã dispose. `[ ]` D17 `Tools.razor`: `CreateKeyAsync` không busy-guard → double-click tạo 2 client key thật. `[ ]` D18 parser: root JSON không phải object → `InvalidOperationException` thay vì `FreeModelSyncException` (latent, giống `Parse` cũ — sửa thì làm đối xứng cả hai). `[ ]` D19 các call site `ResolveFirstEnabledKey` khác (`ProviderEndpointMetadataProvider`, `ModelService`) vẫn resolve vô điều kiện → cùng lỗi DPAPI khi DB sang máy khác. `[ ]` D20 doc `FreeSuffix`/`ProviderId` đã sửa một phần — rà còn mô tả cũ nào nữa không. `[x]` D21 (Plan 2 review) tên combo chứa `/` sẽ trùng namespace `<Identifier>/<ModelId>` khi Engine resolve (`ComboResolver` ưu tiên provider-scoped trước khi fallback combo-name) — đã chặn ở `ComboService.ValidateAsync` (create + update) với `ComboValidationError.NameContainsSlash`; không đổi thứ tự resolve, combo cũ không tự đổi tên (2026-10-21).
+---
+
+## F. Dataset JSONL export — deferred minors (final whole-branch review, 2026-11-09)
+
+Nhánh `feat/dataset-jsonl-export` (spec `docs/superpowers/specs/2026-11-06-dataset-jsonl-export-design.md`, plan `docs/superpowers/plans/2026-11-07-dataset-jsonl-export.md`). Ledger SDD bị git-ignore → ghi lại đây. Final review verdict: BRANCH READY; 3 item FIX-BEFORE-MERGE đã fix ở commit cuối (`ebc91d3`), phần còn lại triage defer/no-action như dưới.
+
+1. `[ ]` **F1 (spec — cần user chốt khi duyệt spec)** `thread_hint` hash trên `messages[0]` → suy biến thành hằng số khi mọi record cùng chung system prompt/instructions đầu (đúng trường hợp chính của client OpenCode) → mất tác dụng nhóm/dedup theo phiên (§7.4/§8.5). Đề xuất final review: hash **message không-phải-system đầu tiên**, bỏ `thread_hint` nếu toàn system. Code hiện đúng spec text — đây là sửa spec + ~5 dòng code + test.
+2. `[ ]` **F2 (spec cleanup, gộp với F1)** Spec tự mâu thuẫn ở dòng trạng thái UI: §2 liệt kê "thư mục hiện tại" nhưng format cụ thể §7.7 không có; ví dụ §7.7 "Đã ghi N dòng **hôm nay**" không satisfiable bởi `DatasetStats` (chỉ có counter từ lúc sink start, không có per-day). UI đã theo §7.7 và không nói "hôm nay". Follow-up rẻ: append `Path.GetDirectoryName(Stats.CurrentFile)` vào dòng trạng thái khi non-null.
+3. `[ ]` **F3** `DatasetRecordBuilder.Build` ném `InvalidOperationException` với body root JSON hợp lệ nhưng không phải object (`[1]`, `"x"`, `42`) — đã xác minh trên .NET 10; thực tế unreachable qua pipeline (validator 400 trước) và được chứa bởi catch của writer sink (bỏ record + 1 dòng log, không bao giờ ghi byte sai). Sửa: 1 dòng guard `ValueKind` để đúng contract never-throw đã document.
+4. `[ ]` **F4** Thiếu test các nhánh mapping chưa chạm: 3 giá trị `lane`, `extra.items` type lạ, input-side reasoning → `extra.reasoning` — đúng chỗ một regression tương lai có thể làm hỏng record mà không báo.
+5. `[ ]` **F5** Không có counter trong `DatasetStats` cho record bị bỏ do lỗi ghi đĩa (chỉ có log) → UI mù điểm này; spec tự liệt kê các counter nên implementation đang conform — thêm field = đổi shape record + i18n template, làm một gói riêng.
+6. `[ ]` **F6** `SafeDatasetLog` (`ProxyRequestHandler.cs`) không kèm `requestId` (có sẵn trong scope tại call site) → khó tương quan với monitor ring khi export lỗi. 1 dòng.
+7. `[ ]` **F7** Boundary validator chưa assert hợp lệ: path đúng 260 ký tự và retention đúng 3650 ngày (rule `> 260` / `is < 0 or > 3650` đã đúng bằng kiểm tra mắt; thêm 2 assert khi chạm file test này).
+8. `[ ]` **F8** Record vượt budget SSE (`MaxFieldBytes`) bị đếm `SkippedTruncated` ("cụt") thay vì `SkippedTooLarge` ("quá cỡ") theo §7.6 — chỉ sai nhãn counter (overflow null hoá `CompletionJson` nên size check của builder không bao giờ chạy); sửa đúng cần thêm flag trên `TeeResult`/`DatasetCapture`.
+9. `[ ]` **F9** Nhãn counter góc cạnh: record vừa `status != "completed"` (non-stream responses) vừa chứa refusal phrase bị đếm `Refusal` thay vì `Truncated` (check status ở `DatasetRecordBuilder.cs:134` chạy sau check Refusal toàn cục :72, ngược thứ tự ưu tiên §7.6) — cả hai đều skip, không mất data.
+10. `[ ]` **F10** Flake mới quan sát (chỉ khi chạy full suite, pass isolated): `UpdateCoordinatorTests.StartUpdateAsync_WhenProxyInFlightPositive_WaitsBeforeSnapshot` — timing dưới song song, không liên quan dataset; gộp với D5 nếu làm chung đợt ổn định test.
