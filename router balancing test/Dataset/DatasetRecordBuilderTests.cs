@@ -183,6 +183,51 @@ public class DatasetRecordBuilderTests
     }
 
     [Fact]
+    public void Build_ResponsesStatusIncomplete_SkipsTruncated()
+    {
+        // Non-stream /v1/responses không có terminal event để soi (CompletionComplete mặc định
+        // true) — object response tự khai `status`: incomplete/failed là truncation indicator
+        // (spec §7.6, vd. max_output_tokens cắt giữa chừng) → phải skip Truncated, không ghi record cụt.
+        const string body = """{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}""";
+        const string incomplete = """{"id":"r1","object":"response","status":"incomplete","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"half"}]}],"incomplete_details":{"reason":"max_output_tokens"}}""";
+
+        var result = DatasetRecordBuilder.Build(Capture(body, incomplete, endpoint: ProxyEndpoint.Responses));
+
+        Assert.Equal(DatasetSkipReason.Truncated, result.Skip);
+        Assert.Null(result.JsonLine);
+
+        // "failed" cùng là indicator (spec §7.6) — kể cả khi output rỗng, Truncated vẫn ưu tiên Empty.
+        const string failed = """{"id":"r1","object":"response","status":"failed","output":[]}""";
+        Assert.Equal(DatasetSkipReason.Truncated,
+            DatasetRecordBuilder.Build(Capture(body, failed, endpoint: ProxyEndpoint.Responses)).Skip);
+    }
+
+    [Fact]
+    public void Build_ResponsesStatusCompleted_WritesNormally()
+    {
+        const string body = """{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}""";
+        const string completion = """{"id":"r1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}""";
+
+        var result = DatasetRecordBuilder.Build(Capture(body, completion, endpoint: ProxyEndpoint.Responses));
+
+        Assert.Null(result.Skip);
+        Assert.Equal("ok", Text(Line(result)["completion"]!["content"]!));
+    }
+
+    [Fact]
+    public void Build_ResponsesNoStatus_WritesNormally()
+    {
+        // Upstream không gửi property `status` → không đoán, record vẫn ghi (chỉ xét khi có mặt).
+        const string body = """{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}""";
+        const string completion = """{"id":"r1","object":"response","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}""";
+
+        var result = DatasetRecordBuilder.Build(Capture(body, completion, endpoint: ProxyEndpoint.Responses));
+
+        Assert.Null(result.Skip);
+        Assert.Equal("ok", Text(Line(result)["completion"]!["content"]!));
+    }
+
+    [Fact]
     public void Build_EmptyCompletionJson_SkipsEmpty()
     {
         const string body = """{"model":"m","messages":[{"role":"user","content":"hi"}]}""";

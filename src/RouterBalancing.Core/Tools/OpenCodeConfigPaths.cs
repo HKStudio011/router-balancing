@@ -11,7 +11,7 @@ public static class OpenCodeConfigPaths
 
     /// <summary>
     /// Expand đường dẫn người dùng nhập: rỗng/whitespace → <see cref="DefaultPath"/>;
-    /// <c>~</c> / <c>~/</c> / <c>~\</c> → home; đường dẫn khác giữ nguyên.
+    /// <c>~</c> / <c>~/</c> / <c>~\</c> → home; đường dẫn khác được trim whitespace đầu/cuối rồi trả về.
     /// </summary>
     public static string Expand(string? path)
     {

@@ -127,6 +127,18 @@ public static class DatasetRecordBuilder
         }
         else
         {
+            // Non-stream /v1/responses không có terminal event để soi (CompletionComplete mặc định
+            // true) nên object response tự khai `status`: giá trị khác "completed" (incomplete/failed,
+            // vd. max_output_tokens cắt giữa chừng) là truncation indicator — spec §7.6 liệt cả hai.
+            // Chỉ xét khi property CÓ MẶT: upstream không gửi status → không đoán, record vẫn ghi.
+            if (completionDoc is JsonObject responseRoot
+                && responseRoot["status"] is JsonValue statusNode
+                && statusNode.TryGetValue<string>(out var status)
+                && !string.Equals(status, "completed", StringComparison.Ordinal))
+            {
+                return new DatasetBuildResult(null, DatasetSkipReason.Truncated);
+            }
+
             // Response không có field tương đương finish_reason (mọi record ghi được đều completed)
             // nên key này vắng mặt với endpoint responses.
             // input cũng lấy qua GetRawText + parse lại — cùng nguyên tắc byte-for-byte với chat.

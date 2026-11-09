@@ -319,6 +319,14 @@ public sealed class ProxyRequestHandler(
                             // bị sink bỏ vì CompletionJson null.
                             var completion = aggregate ? tee.ResponseBody : tee.CompletionJson;
                             var monitorRecord = monitor.Find(requestId);
+                            var lane = LaneFor(provider, account);
+                            // tools_rewritten chỉ đúng khi fingerprint THỰC SỰ áp dụng cho provider
+                            // (spec §7.4 — "true khi fingerprint thực sự đổi mảng tools"): plain lane
+                            // không bao giờ bị rewrite body, gọi RewritesTools vô điều kiện sẽ báo true
+                            // sai cho mọi body thiếu tools/case-variant — đảo ngược ý nghĩa cờ cho toàn
+                            // bộ traffic non-OpenCode (trường hợp phổ biến nhất). Tái dùng lane đã tính:
+                            // IsApplicable chỉ kiểm một lần.
+                            var toolsRewritten = lane != DatasetLane.Plain && OpenCodeFreeFingerprint.RewritesTools(body);
                             // body = body GỐC của client (tham số ForwardAsync), KHÔNG phải requestBody đã
                             // rewrite: dữ liệu train phản ánh đúng thứ client gửi — rewrite mang stream:true
                             // + include_usage do app tự thêm, đưa vào dataset là nhiễm rác (spec §7.1).
@@ -326,7 +334,7 @@ public sealed class ProxyRequestHandler(
                                 completion, tee.CompletionComplete, provider.Name, account.Name, model.ModelId,
                                 monitorRecord?.Model, monitorRecord?.Mode, ClientKeyItems.IdOf(ctx),
                                 tee.Usage?.PromptTokens, tee.Usage?.CompletionTokens,
-                                LaneFor(provider, account), OpenCodeFreeFingerprint.RewritesTools(body)));
+                                lane, toolsRewritten));
                         }
                         catch (Exception ex)
                         {

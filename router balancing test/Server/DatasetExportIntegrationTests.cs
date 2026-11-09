@@ -83,13 +83,16 @@ public class DatasetExportIntegrationTests : IDisposable
     private void SeedProvider(int maxConcurrent, params string[] modelIds) =>
         SeedProvider("p-main", maxConcurrent, modelIds);
 
-    private void SeedProvider(string name, int maxConcurrent, params string[] modelIds)
+    private void SeedProvider(string name, int maxConcurrent, params string[] modelIds) =>
+        SeedProvider(name, "https://api.openai.com", maxConcurrent, modelIds);
+
+    private void SeedProvider(string name, string baseUrl, int maxConcurrent, params string[] modelIds)
     {
         using var db = _db.CreateFactory().CreateDbContext();
         var provider = new Provider
         {
             Name = name,
-            BaseUrl = "https://api.openai.com",
+            BaseUrl = baseUrl,
             // ComboResolver Finalize lọc OpenAI — thiếu là resolve trả rỗng
             Type = ProviderType.OpenAI,
             MaxConcurrent = maxConcurrent,
@@ -396,6 +399,45 @@ public class DatasetExportIntegrationTests : IDisposable
         Assert.Equal("user", messages[0]!["role"]!.GetValue<string>());
         Assert.Equal("hi", messages[0]!["content"]!.GetValue<string>());
         Assert.Equal("hi there", line["completion"]!["content"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task PlainLaneNoToolsBody_ToolsRewrittenFalse()
+    {
+        // Provider thường (không opencode.ai) → lane plain: fingerprint KHÔNG BAO GIỜ rewrite body,
+        // nên tools_rewritten phải false dù body thiếu tools (spec §7.4 — cờ chỉ đúng khi fingerprint
+        // thực sự áp dụng; body no-tools là trường hợp phổ biến nhất của traffic non-OpenCode).
+        SeedProvider(maxConcurrent: 4, "m1");
+        var client = await StartAsync(new ScriptedUpstream(_ => SseChatOk()));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"m1","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var lines = await WaitDatasetLinesAsync(1);
+        Assert.Single(lines);
+        Assert.Equal("plain", lines[0]!["lane"]!.GetValue<string>());
+        Assert.False(lines[0]!["tools_rewritten"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task OpenCodeProviderNoToolsBody_ToolsRewrittenTrue()
+    {
+        // Provider opencode.ai → fingerprint áp dụng (key thật → keyed lane): body thiếu tools bị
+        // chèn decoy quartet upstream, nên cờ phải true trên đĩa — record là góc nhìn client (spec §7.4).
+        SeedProvider("p-oc", "https://opencode.ai/v1", maxConcurrent: 4, ["m1"]);
+        var client = await StartAsync(new ScriptedUpstream(_ => SseChatOk()));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"m1","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var lines = await WaitDatasetLinesAsync(1);
+        Assert.Single(lines);
+        Assert.Equal("keyed_fingerprint", lines[0]!["lane"]!.GetValue<string>());
+        Assert.True(lines[0]!["tools_rewritten"]!.GetValue<bool>());
     }
 
     [Fact]
