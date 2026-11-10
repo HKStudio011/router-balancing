@@ -35,19 +35,15 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -140,7 +136,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	upReq.ContentLength = int64(len(body))
 
-	session := canonicalSessionID(sessionSignal(r, body))
+	session := sessionID(sessionSignal(r, body))
 	upReq.Header.Set("User-Agent", "opencode/latest/"+clientVersion+"/cli")
 	upReq.Header.Set("Accept", "application/json, text/event-stream")
 	upReq.Header.Set("x-opencode-client", "cli")
@@ -148,7 +144,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	upReq.Header.Set("x-opencode-session-id", session)
 	upReq.Header.Set("x-session-affinity", session)
 	upReq.Header.Set("X-Session-Id", session)
-	upReq.Header.Set("x-opencode-project", clientProjectID())
+	// x-opencode-project: giá trị của client sẽ được nối vào sau; hiện truyền ""
+	// → random 40-hex mỗi request (quota free sổ theo (project id, egress)).
+	upReq.Header.Set("x-opencode-project", projectID(""))
 	if upReq.Header.Get("Authorization") == "" {
 		// Anonymous credential — case-sensitive, keyless bị 403.
 		upReq.Header.Set("Authorization", "Bearer public")
@@ -180,13 +178,6 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		// Client đã disconnect giữa stream — bình thường, không log ồn.
 		return
 	}
-}
-
-// clientProjectID render project header theo official client: 40-hex lowercase.
-// Giá trị không được upstream check (chỉ shape) — hash cố định làm correlation.
-func clientProjectID() string {
-	sum := sha256.Sum256([]byte("opencode-project\x00router-balancing"))
-	return hex.EncodeToString(sum[:20])
 }
 
 // titlePromptSignatureParts là các cụm chữ ký của prompt title-gen chính chủ
@@ -281,67 +272,6 @@ func normalizeBody(body []byte) []byte {
 		return body
 	}
 	return encoded
-}
-
-// canonicalSessionPattern matches OpenCode session chính thức:
-// "ses_" + 12 lowercase hex + 14 Base62.
-var canonicalSessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
-
-// descendingTimePartPattern matches time part do Identifier.descending() mint:
-// ~(ts_ms<<12|counter) trong 48-bit — low 12 bits = 0xFFF-counter, gate chấp
-// nhận counter 1-63 (0xFC0-0xFFF) và 403 phần còn lại.
-var descendingTimePartPattern = regexp.MustCompile(`^[0-9a-f]{9}f[c-f][0-9a-f]$`)
-
-const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-
-// canonicalSessionID trả về signal nguyên trạng nếu đã đúng session chính thức
-// (giữ prompt-cache affinity); ngược lại re-encode deterministic cùng layout.
-func canonicalSessionID(signal string) string {
-	if canonicalSessionPattern.MatchString(signal) && descendingTimePartPattern.MatchString(signal[4:16]) {
-		return signal
-	}
-	sum := sha256.Sum256([]byte("ses\x00" + signal))
-	timePart := descendingTimePart(sum[:6])
-	randomPart := base62Fixed(new(big.Int).SetBytes(sum[6:16]), 14)
-	return "ses_" + timePart + randomPart
-}
-
-// descendingTimePart render 6 hash byte theo đúng layout Identifier.descending():
-// 36-bit dịch lên cao trong 48-bit word, OR counter 1, bitwise-NOT — low 12 hex
-// digits luôn đọc "ffe".
-func descendingTimePart(hash []byte) string {
-	current := (uint64(hash[0])<<28 | uint64(hash[1])<<20 | uint64(hash[2])<<12 |
-		uint64(hash[3])<<4 | uint64(hash[4])>>4) << 12
-	current |= 1
-	inverted := ^current & 0xFFFFFFFFFFFF
-	return hex.EncodeToString([]byte{
-		byte(inverted >> 40), byte(inverted >> 32), byte(inverted >> 24),
-		byte(inverted >> 16), byte(inverted >> 8), byte(inverted),
-	})
-}
-
-func base62Fixed(n *big.Int, width int) string {
-	base := big.NewInt(62)
-	out := make([]byte, width)
-	remainder := new(big.Int)
-	for i := width - 1; i >= 0; i-- {
-		n.DivMod(n, base, remainder)
-		out[i] = base62Alphabet[remainder.Int64()]
-	}
-	return string(out)
-}
-
-// sessionSignal lấy tín hiệu session từ client headers (nếu có) — mỗi cuộc hội
-// thoại cùng session giữ affinity; thiếu thì derive từ body.
-func sessionSignal(r *http.Request, body []byte) string {
-	for _, h := range []string{"x-opencode-session", "x-opencode-session-id", "x-session-affinity", "X-Session-Id"} {
-		if v := r.Header.Get(h); v != "" {
-			return v
-		}
-	}
-	// Fallback: hash nguyên body — cùng request body → cùng session.
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:16])
 }
 
 // buildTransport trả về transport outbound: direct (proxyURL rỗng), SOCKS5
