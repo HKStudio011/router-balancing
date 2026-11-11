@@ -180,8 +180,9 @@ public sealed class ProxyRequestHandler(
                     Stream dest = hasPipe
                         ? ((Pipe)pipeObj!).Writer.AsStream()
                         : ctx.Response.Body;
-                    // Client non-stream nhưng upstream trả SSE (fingerprint force stream —
-                    // OpenCode gate 403 stream:false) → aggregate về JSON giữ contract non-stream
+                    // Client non-stream nhưng upstream trả SSE (ChatBody ép stream:true; sidecar
+                    // OpenCode cũng ép vì gate 403 stream:false) → aggregate về JSON cho client,
+                    // giữ đúng contract non-stream
                     var aggregate = upstreamSse && !hasPipe;
                     if (!ctx.Response.HasStarted)
                     {
@@ -276,7 +277,7 @@ public sealed class ProxyRequestHandler(
                         });
                     }
                     LogForwarded(ctx, provider, model, response, stopwatch);
-                    WarnOnDecoyToolCalls(ctx, provider, body, tee.ResponseBody);
+                    WarnOnUnknownToolCalls(ctx, provider, body, tee.ResponseBody);
 
                     if (tee.Usage is not null)
                     {
@@ -443,14 +444,14 @@ public sealed class ProxyRequestHandler(
 
         if (OpencodeGateClassifier.IsShapeRefusal(errorBody))
         {
-            // Error (không phải Warn): gate đổi contract = fingerprint sidecar cần cập nhật,
+            // Error (không phải Warn): gate đổi contract = shaping của sidecar cần cập nhật,
             // không phải lỗi tạm thời; RequestId để correlate ngay trong log người dùng.
             log.Write(new LogEntry
             {
                 Severity = LogSeverity.Error,
                 Category = LogCategory.Request,
                 Message = "OpenCode từ chối shape request (403 within OpenCode) — gate đã đổi "
-                    + "contract; kiểm tra/cập nhật fingerprint sidecar.",
+                    + "contract; kiểm tra/cập nhật shaping của sidecar.",
                 Details = ErrorBodySnippet(errorBody),
                 RequestId = ClientKeyItems.RequestIdOf(ctx),
                 ClientKeyId = ClientKeyItems.IdOf(ctx),
@@ -517,31 +518,144 @@ public sealed class ProxyRequestHandler(
             ClientKeyId = ClientKeyItems.IdOf(ctx),
         });
 
-    // Tín hiệu CHẨN ĐOÁN (không đổi response/outcome): fingerprint opencode.ai chèn 4 tool
-    // decoy để qua gate, model có thể gọi một tên client KHÔNG đăng ký → client báo "invalid
-    // tool" rất khó hiểu khi debug. Ghi Warning kèm RequestId để correlate ngay trong log.
-    private void WarnOnDecoyToolCalls(HttpContext ctx, Provider provider, byte[] body,
+    // Tín hiệu CHẨN ĐOÁN (không đổi response/outcome): model gọi tên tool client KHÔNG khai báo
+    // trong body gốc. Lane OpenCode free: sidecar (Go) đã alias-restore tên tool trong response,
+    // nên tên không khớp danh sách client = model dùng official tool không có bản tương ứng phía
+    // client → client báo "invalid tool" rất khó hiểu khi debug. Ghi Warning kèm RequestId để
+    // correlate ngay trong log; mỗi tên chỉ cảnh báo MỘT lần (không spam theo chunk/occurrence).
+    private void WarnOnUnknownToolCalls(HttpContext ctx, Provider provider, byte[] body,
         string? responseBody)
     {
-        foreach (var name in OpenCodeFreeFingerprint.FindDecoyCalls(provider, body, responseBody))
+        if (string.IsNullOrEmpty(responseBody)) return;
+
+        foreach (var name in UnknownToolCalls(responseBody, DeclaredToolNames(body)))
         {
             log.Write(new LogEntry
             {
                 Severity = LogSeverity.Warning,
                 Category = LogCategory.Request,
-                Message = $"Model gọi tool fingerprint '{name}' (decoy để qua gate) nhưng client "
-                          + "không đăng ký tên này — opencode sẽ báo invalid tool; "
-                          + "kiểm tra tool list client gửi lên.",
+                Message = $"Model gọi tool '{name}' không có trong danh sách tools client khai báo "
+                          + $"(provider '{provider.Name}') — lane OpenCode free: sidecar đã "
+                          + "alias-restore tên tool trong response, nên đây là official tool "
+                          + "không có bản tương ứng phía client; client sẽ báo invalid tool.",
                 RequestId = ClientKeyItems.RequestIdOf(ctx),
                 ClientKeyId = ClientKeyItems.IdOf(ctx),
             });
         }
     }
 
+    /// <summary>Tên tool chứa <c>tool_calls</c> trong chat choice: stream (<c>delta</c>) và non-stream (<c>message</c>).</summary>
+    private static readonly string[] ToolCallHolderKeys = ["delta", "message"];
+
     /// <summary>
-    /// Làn provenance của record dataset (spec §7.4): <see cref="DatasetLane.Plain"/> khi
-    /// fingerprint OpenCode không áp dụng cho provider; <see cref="DatasetLane.FreeFingerprint"/>
-    /// khi account key rỗng (free lane), còn lại <see cref="DatasetLane.KeyedFingerprint"/>.
+    /// Tên tool client khai báo trong body chat GỐC (<c>tools[].function.name</c>) — body
+    /// hỏng/không phải JSON object → tập rỗng (chẩn đoán fail-open, không ném trên đường forward).
+    /// </summary>
+    private static HashSet<string> DeclaredToolNames(byte[] body)
+    {
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("tools", out var tools)
+                || tools.ValueKind != JsonValueKind.Array)
+            {
+                return declared;
+            }
+
+            foreach (var tool in tools.EnumerateArray())
+            {
+                if (tool.ValueKind == JsonValueKind.Object
+                    && tool.TryGetProperty("function", out var function)
+                    && function.ValueKind == JsonValueKind.Object
+                    && function.TryGetProperty("name", out var name)
+                    && name.ValueKind == JsonValueKind.String
+                    && name.GetString() is { } value)
+                {
+                    declared.Add(value);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // body hỏng: coi như client không khai báo tool nào — chỉ là tín hiệu chẩn đoán
+        }
+        return declared;
+    }
+
+    /// <summary>
+    /// Tên tool model ĐÃ gọi trong <paramref name="responseBody"/> nhưng client không khai báo —
+    /// walk <c>choices[].{delta,message}.tool_calls[].function.name</c> của mọi dòng JSON
+    /// (<paramref name="responseBody"/> là payload SSE ghép dòng hoặc JSON gộp của client
+    /// non-stream); mỗi tên trả về tối đa MỘT lần. Dòng hỏng/chunk cắt bị bỏ qua — chỉ là tín
+    /// hiệu chẩn đoán, không bao giờ ném.
+    /// </summary>
+    private static List<string> UnknownToolCalls(string responseBody, HashSet<string> declared)
+    {
+        var unknown = new List<string>();
+        foreach (var rawLine in responseBody.Split('\n'))
+        {
+            var text = rawLine.Trim();
+            if (text.Length == 0) continue;
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(text);
+            }
+            catch (JsonException)
+            {
+                continue; // dòng hỏng (chunk cắt giữa JSON) — bỏ qua
+            }
+
+            using (doc)
+            {
+                if (doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("choices", out var choices)
+                    || choices.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var choice in choices.EnumerateArray())
+                {
+                    if (choice.ValueKind != JsonValueKind.Object) continue;
+                    foreach (var holderKey in ToolCallHolderKeys)
+                    {
+                        if (!choice.TryGetProperty(holderKey, out var holder)
+                            || holder.ValueKind != JsonValueKind.Object
+                            || !holder.TryGetProperty("tool_calls", out var calls)
+                            || calls.ValueKind != JsonValueKind.Array)
+                        {
+                            continue;
+                        }
+
+                        foreach (var call in calls.EnumerateArray())
+                        {
+                            if (call.ValueKind == JsonValueKind.Object
+                                && call.TryGetProperty("function", out var function)
+                                && function.ValueKind == JsonValueKind.Object
+                                && function.TryGetProperty("name", out var name)
+                                && name.ValueKind == JsonValueKind.String
+                                && name.GetString() is { } value
+                                && !declared.Contains(value)
+                                && !unknown.Contains(value))
+                            {
+                                unknown.Add(value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return unknown;
+    }
+
+    /// <summary>
+    /// Làn provenance của record dataset (spec §7.4): <see cref="DatasetLane.Plain"/> khi provider
+    /// không thuộc lane OpenCode (không qua sidecar); <see cref="DatasetLane.FreeFingerprint"/>
+    /// khi account key rỗng (free lane — sidecar shaping), còn lại là
+    /// <see cref="DatasetLane.KeyedFingerprint"/> (lane keyed passthrough).
     /// </summary>
     private static DatasetLane LaneFor(Provider provider, ProviderAccount account) =>
         !OpenCodeFreeFingerprint.IsApplicable(provider)

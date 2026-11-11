@@ -116,7 +116,9 @@ public class OpenAiUpstreamClientTests
         Assert.False(tracking.WasRead);
     }
 
-    private const string RenamedBody =
+    // Tool casing khác nhau giữa request ("Bash") và response ("bash") — v1 host canonicalize
+    // rồi map ngược tên tool; v2 sidecar sở hữu rename/restore nên host phải forward nguyên byte.
+    private const string CaseVariantToolBody =
         """{"model":"m","tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]}""";
 
     private const string BashCallSse =
@@ -125,10 +127,10 @@ public class OpenAiUpstreamClientTests
         "data: [DONE]\n\n";
 
     [Fact]
-    public async Task PostAsync_OpenCodeRenamedQuartet_RestoresClientToolNamesInStream()
+    public async Task PostAsync_KeepsUpstreamStreamUntouched()
     {
-        // Client khai "Bash" → request bị fingerprint đổi thành "bash"; response trả "bash"
-        // PHẢI map ngược về "Bash" trước khi tới client, nếu không opencode báo invalid tool.
+        // Host không còn bọc/map lại response (sidecar Go là nơi alias-restore tên tool)
+        // → byte-forward nguyên vẹn, content giữ nguyên object của handler
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(BashCallSse, Encoding.UTF8, "text/event-stream"),
@@ -137,27 +139,8 @@ public class OpenAiUpstreamClientTests
             new FixedFactory(new HttpClient(new FixedHandler(response, _ => { }))));
 
         var result = await sut.PostAsync(P("https://opencode.ai/zen"), "k",
-            "/v1/chat/completions", Encoding.UTF8.GetBytes(RenamedBody), "req-4",
+            "/v1/chat/completions", Encoding.UTF8.GetBytes(CaseVariantToolBody), "req-4",
             CancellationToken.None);
-
-        var text = await result.Content.ReadAsStringAsync();
-        Assert.Contains("\"name\":\"Bash\"", text);
-        Assert.DoesNotContain("\"name\":\"bash\"", text);
-    }
-
-    [Fact]
-    public async Task PostAsync_NonOpenCodeProvider_KeepsStreamUntouched()
-    {
-        // Không phải opencode.ai → không bọc response (byte-forward nguyên vẹn)
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(BashCallSse, Encoding.UTF8, "text/event-stream"),
-        };
-        var sut = new OpenAiUpstreamClient(
-            new FixedFactory(new HttpClient(new FixedHandler(response, _ => { }))));
-
-        var result = await sut.PostAsync(P(), "k", "/v1/chat/completions",
-            Encoding.UTF8.GetBytes(RenamedBody), "req-5", CancellationToken.None);
 
         Assert.IsType<StringContent>(result.Content);
         Assert.Equal(BashCallSse, await result.Content.ReadAsStringAsync());

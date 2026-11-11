@@ -41,9 +41,9 @@ public class ProxyRequestHandlerTests
 
     private Provider SeedOpenCodeProvider()
     {
-        // Host opencode.ai → OpenCodeFreeFingerprint áp dụng; dùng để kiểm tín hiệu chẩn đoán
-        // decoy-call (response vẫn đi qua StubUpstream nên request KHÔNG bị rewrite — chỉ nhánh
-        // tính decoy/tool list từ body gốc được test)
+        // Host opencode.ai → thuộc lane OpenCode (OpenCodeFreeFingerprint.IsApplicable); dùng để
+        // kiểm lane provenance của dataset + tín hiệu chẩn đoán tool lạ (response vẫn đi qua
+        // StubUpstream nên request KHÔNG qua sidecar — chỉ nhánh diff tool list từ body gốc)
         var provider = new Provider
         {
             Name = "opencode-free",
@@ -516,8 +516,8 @@ public class ProxyRequestHandlerTests
     [Fact]
     public async Task ForwardAsync_WhenUpstreamSse_NonStreamClient_AggregatesToChatCompletionJson()
     {
-        // Non-stream client + upstream SSE (fingerprint force stream) → aggregate
-        // về JSON chat.completion, content-type application/json (OpenCode gate contract)
+        // Non-stream client + upstream SSE (ChatBody ép stream:true) → aggregate
+        // về JSON chat.completion, content-type application/json
         var provider = SeedProvider();
         var sut = Create(new StubUpstream(() => Upstream(200,
             "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
@@ -1041,20 +1041,21 @@ public class ProxyRequestHandlerTests
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenOpenCodeModelCallsDecoyTool_LogsCorrelatedWarning()
+    public async Task ForwardAsync_NonStreamClient_ModelCallsUndeclaredTool_LogsCorrelatedWarning()
     {
-        // Client không khai tools → fingerprint chèn 4 decoy qua gate; model gọi "read" là
-        // TOOL MA client không đăng ký (opencode sẽ báo "invalid tool" khó hiểu). Response
-        // giữ nguyên (hướng B) — chỉ thêm Warning chẩn đoán gắn RequestId.
+        // Client non-stream (không pipe) → response SSE được aggregate thành MỘT dòng JSON
+        // chat.completion; model gọi "execute" (official tool sidecar không alias-restore vì
+        // client không có bản tương ứng) → TOOL MA client không khai báo (opencode sẽ báo
+        // "invalid tool" khó hiểu). Response giữ nguyên — chỉ thêm Warning chẩn đoán + RequestId.
         const string sse =
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
-            "\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}," +
+            "\"function\":{\"name\":\"execute\",\"arguments\":\"{}\"}}]}," +
             "\"finish_reason\":\"tool_calls\"}]}\n\n" +
             "data: [DONE]\n\n";
         var log = new CapturingLog();
         var sut = Create(new StubUpstream(() => Upstream(200, sse, "text/event-stream")), log);
         var ctx = Ctx();
-        ctx.Items[ClientKeyItems.RequestId] = "req-decoy";
+        ctx.Items[ClientKeyItems.RequestId] = "req-official-tool";
         var provider = SeedOpenCodeProvider();
 
         var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
@@ -1062,14 +1063,15 @@ public class ProxyRequestHandlerTests
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Contains(log.Entries, e =>
-            e.Severity == LogSeverity.Warning && e.RequestId == "req-decoy"
-            && e.Message.Contains("read"));
+            e.Severity == LogSeverity.Warning && e.RequestId == "req-official-tool"
+            && e.Message.Contains("execute"));
     }
 
     [Fact]
     public async Task ForwardAsync_WhenOpenCodeModelCallsClientTool_LogsNoWarning()
     {
-        // Client tự khai "bash" (không phải decoy) → model gọi bình thường, không cảnh báo
+        // Control case: model gọi đúng tên tool client đã khai báo → không có cảnh báo nào
+        // (chẩn đoán chỉ soi hiệu hai tập tên, không soi danh sách official)
         const string body =
             """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"bash","description":"d","parameters":{"type":"object","properties":{}}}}]}""";
         const string sse =
@@ -1088,6 +1090,46 @@ public class ProxyRequestHandlerTests
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Empty(log.Warns);
+    }
+
+    [Fact]
+    public async Task TestForwardAsync_ModelCallsUndeclaredTool_WarnsOncePerName()
+    {
+        // V2: shaping + alias-restore tên tool trong response là việc của sidecar (Go); host chỉ
+        // còn chẩn đoán — model gọi tên KHÔNG có trong tools client khai báo = official tool
+        // không có bản tương ứng phía client (client sẽ báo "invalid tool" khó hiểu). Mỗi tên
+        // cảnh báo ĐÚNG MỘT lần dù model gọi lặp/nhiều chunk; tên client có khai báo thì im lặng.
+        const string body =
+            """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"web_search","description":"d","parameters":{"type":"object","properties":{}}}}]}""";
+        // "execute" (bộ official v2, không phải tool client) xuất hiện ở 2 chunk và cả 2 chunk
+        // đều mang function.name (một số gateway lặp name mỗi delta) → vẫn chỉ 1 cảnh báo;
+        // "web_search" là tool client khai báo → không được cảnh báo
+        const string sse =
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+            "\"function\":{\"name\":\"execute\",\"arguments\":\"\"}}]}}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
+            "\"function\":{\"name\":\"execute\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\"," +
+            "\"function\":{\"name\":\"web_search\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+            "data: [DONE]\n\n";
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => Upstream(200, sse, "text/event-stream")), log);
+        var ctx = Ctx();
+        // Có pipe = client stream → ResponseBody là từng dòng payload SSE (nhánh line-scan,
+        // không phải JSON gộp của aggregate)
+        ctx.Items[SsePipeItems.Key] = new Pipe();
+        ctx.Items[ClientKeyItems.RequestId] = "req-unknown";
+        var provider = SeedOpenCodeProvider();
+
+        var outcome = await sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(body),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        var warn = Assert.Single(log.Entries, e =>
+            e.Severity == LogSeverity.Warning && e.RequestId == "req-unknown");
+        Assert.Contains("'execute'", warn.Message);
+        Assert.DoesNotContain("web_search", warn.Message);
     }
 
     /// <summary>Sink chỉ ghi lại capture để assert — không chạm đĩa, không writer thread.</summary>

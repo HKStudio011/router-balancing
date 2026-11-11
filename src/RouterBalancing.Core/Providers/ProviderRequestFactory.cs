@@ -69,14 +69,8 @@ public static class ProviderRequestFactory
                 throw new ArgumentOutOfRangeException(nameof(provider.Type), provider.Type, "Unsupported provider type.");
         }
 
-        // OpenCode: gắn fingerprint (UA/x-opencode-*/Accept + transform body quartet tools)
-        // — thiếu → 403 FreeTierError "within OpenCode", áp cho cả free và keyed lane.
-        // Chỉ POST có content (chat); GET probe đang chạy tốt nên không đụng tới.
-        if (content is not null && OpenCodeFreeFingerprint.IsApplicable(provider))
-        {
-            OpenCodeFreeFingerprint.Apply(request, provider, apiKey, content);
-        }
-
+        // OpenCode: KHÔNG shaping ở host nữa — request chat tới opencode.ai được reroute sang
+        // Go sidecar (OpenCodeSidecarHandler), sidecar là nơi duy nhất shaping body/header/SSE.
         // Attribution headers (HTTP-Referer/X-Title cho NIM + OpenRouter; billing origin
         // chỉ NIM) — gắn theo provider kể cả GET probe, như opencode/hermes
         if (ProviderAttribution.IsApplicable(provider))
@@ -91,7 +85,7 @@ public static class ProviderRequestFactory
         }
 
         // Header tùy chỉnh người dùng (options.headers kiểu opencode.json) — áp cho mọi
-        // request kể cả GET probe. Fingerprint/attributions đã set ở trên thắng:
+        // request kể cả GET probe. Header auth/attribution built-in đã set ở trên thắng:
         // chỉ bổ sung key chưa tồn tại, không đè Authorization/x-api-key/UA.
         ApplyExtraHeaders(request, provider);
 
@@ -100,7 +94,7 @@ public static class ProviderRequestFactory
 
     /// <summary>
     /// Gắn header tùy chỉnh (TryAddWithoutValidation) khi header tương ứng chưa có.
-    /// Fingerprint/attributions/Authorization built-in đã set trước nên thắng.
+    /// Header attributions/Authorization built-in đã set trước nên thắng.
     /// </summary>
     private static void ApplyExtraHeaders(HttpRequestMessage request, Provider provider)
     {
