@@ -49,6 +49,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private int _skippedEmpty;
     private int _skippedRefusal;
     private int _skippedQueueFull;
+    private int _skippedSynthetic;
     private long _bytesWritten;
 
     /// <summary>Tổng byte đang nằm chờ trong queue — thêm ở Capture, trừ khi writer đọc.</summary>
@@ -112,6 +113,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         Volatile.Read(ref _skippedEmpty),
         Volatile.Read(ref _skippedRefusal),
         Volatile.Read(ref _skippedQueueFull),
+        Volatile.Read(ref _skippedSynthetic),
         Interlocked.Read(ref _bytesWritten),
         _currentFile);
 
@@ -455,8 +457,12 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
     }
 
-    /// <summary>Đếm record bị bỏ theo lý do từ builder (spec §7.6).</summary>
-    private void CountSkip(DatasetSkipReason reason)
+    /// <summary>
+    /// Đếm record bị bỏ theo lý do: builder quyết định (spec §7.6), hoặc host quyết định
+    /// (<see cref="DatasetSkipReason.Synthetic"/> — response synthesized không đi qua
+    /// <see cref="Capture"/> nên <c>ProxyRequestHandler</c> gọi thẳng, spec v2 §7.2).
+    /// </summary>
+    internal void CountSkip(DatasetSkipReason reason)
     {
         switch (reason)
         {
@@ -464,6 +470,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             case DatasetSkipReason.Truncated: Interlocked.Increment(ref _skippedTruncated); break;
             case DatasetSkipReason.Empty: Interlocked.Increment(ref _skippedEmpty); break;
             case DatasetSkipReason.Refusal: Interlocked.Increment(ref _skippedRefusal); break;
+            case DatasetSkipReason.Synthetic: Interlocked.Increment(ref _skippedSynthetic); break;
         }
     }
 

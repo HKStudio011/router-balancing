@@ -72,7 +72,7 @@ Bối cảnh: đối chiếu với nguồn mở `anomalyco/opencode` khi thiết
 (`docs/superpowers/specs/2026-11-06-dataset-jsonl-export-design.md` §11). Chưa probe live nên
 mới chỉ là bằng chứng phía upstream, chưa phải kết luận cho code này.
 
-- `[ ]` **E1 Fingerprint OpenCode có còn qua gate với client v2 không.** `OpenCodeFreeFingerprint.Quartet`
+- `[x]` **E1 Fingerprint OpenCode có còn qua gate với client v2 không.** `OpenCodeFreeFingerprint.Quartet`
   = `bash/glob/grep/read` (dòng 38) và `sidecar/opencode-proxy/anonymous-tools.json`
   = `shell/edit/glob/grep/read` là vocabulary v1. OpenCode 2.0.32/2.1.0 dùng tool namespace
   `opencode.*` + tool code-mode `execute` (upstream issue #57346, mở, cập nhật 2026-11-03, than
@@ -82,7 +82,12 @@ mới chỉ là bằng chứng phía upstream, chưa phải kết luận cho cod
   `Quartet`/`anonymous-tools.json`. *do được*: comment probe 2026-10-04/2026-10-13 trong
   `OpenCodeFreeFingerprint.cs` (gate 403 `FreeTierError` theo UA regex + header `x-opencode-*`
   + quartet) — các probe đó cũ hơn các phát hành 2.x được ghi nhận.
-- `[ ]` **E2 Tách `FreeTierError` (refusal) khỏi quota thật.** `DispatcherLoop.IsGlobalQuota`
+  → **Xong trên nhánh `fix/opencode-free-gate` (2026-11-12):** quartet v1 bị xoá khỏi cả C# lẫn
+  sidecar; shape hợp lệ v2 = prompt chính chủ + bộ tool official (12 tên capture từ `@opencode/cli@2.1.1`,
+  `strict:false`) do sidecar Go dựng (spec `2026-11-10-opencode-free-gate-v2-design.md` §5.5–5.6).
+  Probe live 2026-11-10 trả 429 quota (inconclusive theo §8) → **chưa xác nhận gate nhận shape**;
+  re-run probe / stage-2 uTLS (§5.10) là việc còn lại.
+- `[x]` **E2 Tách `FreeTierError` (refusal) khỏi quota thật.** `DispatcherLoop.IsGlobalQuota`
   (dòng 669-675) chỉ nhận `429 + body chứa "FreeUsageLimitError"`; 401/403 → Fatal cấp Account
   (`RetryClassifier.cs:17`). Upstream v2 khi hết quota báo
   `AI_APICallError: Upstream request failed: Invalid credential` **không** kèm `Retry-After`
@@ -91,6 +96,10 @@ mới chỉ là bằng chứng phía upstream, chưa phải kết luận cho cod
   nhau: refusal có thể bị tính là "key sai", quota thật có thể không mở window. User ghi nhận
   hiện tượng gộp chung này. Cần đối chiếu log thật (bảng `LogEntries`, filter theo
   `error.type`) trước khi đổi phân loại. Liên quan tới `ProviderQuotaGate` + `QuotaCooldownBadge`.
+  → **Xong trên nhánh `fix/opencode-free-gate` (commit `409b47f`):** `DispatcherLoop.IsProviderWideQuotaFailure`
+  nhận cả shape E2 (`AI_APICallError` + `Invalid credential`, không bắt buộc kèm `Retry-After`) lẫn
+  `FreeUsageLimitError` cũ → cùng provider-wide gate + `QuotaCooldownBadge` (spec v2 §7.3); đối chiếu
+  `LogEntries` theo `error.type` không còn là điều kiện chặn.
 
 ---
 

@@ -307,8 +307,8 @@ public sealed class ProxyRequestHandler(
 
                     // Dataset export (spec §7.2): một lần, chỉ 2xx thắng — retry/failover không
                     // tạo bản ghi trùng. Fail-open tuyệt đối: Capture hợp đồng không ném, nhưng
-                    // bọc try/catch để KHÔNG helper nào (RewritesTools/Find/Capture) được phép
-                    // nổ đường forward — export hỏng thì request vẫn phục vụ bình thường.
+                    // bọc try/catch để KHÔNG helper nào (đọc header/Find/Capture/CountSkip) được
+                    // phép nổ đường forward — export hỏng thì request vẫn phục vụ bình thường.
                     if (datasetOn)
                     {
                         try
@@ -320,21 +320,39 @@ public sealed class ProxyRequestHandler(
                             var completion = aggregate ? tee.ResponseBody : tee.CompletionJson;
                             var monitorRecord = monitor.Find(requestId);
                             var lane = LaneFor(provider, account);
-                            // tools_rewritten chỉ đúng khi fingerprint THỰC SỰ áp dụng cho provider
-                            // (spec §7.4 — "true khi fingerprint thực sự đổi mảng tools"): plain lane
-                            // không bao giờ bị rewrite body, gọi RewritesTools vô điều kiện sẽ báo true
-                            // sai cho mọi body thiếu tools/case-variant — đảo ngược ý nghĩa cờ cho toàn
-                            // bộ traffic non-OpenCode (trường hợp phổ biến nhất). Tái dùng lane đã tính:
-                            // IsApplicable chỉ kiểm một lần.
-                            var toolsRewritten = lane != DatasetLane.Plain && OpenCodeFreeFingerprint.RewritesTools(body);
-                            // body = body GỐC của client (tham số ForwardAsync), KHÔNG phải requestBody đã
-                            // rewrite: dữ liệu train phản ánh đúng thứ client gửi — rewrite mang stream:true
-                            // + include_usage do app tự thêm, đưa vào dataset là nhiễm rác (spec §7.1).
-                            dataset.Capture(new DatasetCapture(requestId, protocol.Endpoint, DateTimeOffset.UtcNow, body,
-                                completion, tee.CompletionComplete, provider.Name, account.Name, model.ModelId,
-                                monitorRecord?.Model, monitorRecord?.Mode, ClientKeyItems.IdOf(ctx),
-                                tee.Usage?.PromptTokens, tee.Usage?.CompletionTokens,
-                                lane, toolsRewritten));
+                            // V2 §7.2: shaping là quyết định của SIDECAR (Go) — host đọc tín hiệu
+                            // X-Sidecar-Shaped thay vì suy lại từ body (spec cấm duplicate logic
+                            // giữa hai ngôn ngữ); header vắng (provider không qua sidecar) → false.
+                            // Giữ lane guard: provider ngoài OpenCode không bao giờ báo đã đổi tools
+                            // dù một middlebox nào đó lỡ dội header về.
+                            var shaped = HeaderValue(response, SidecarShapedHeader);
+                            var toolsRewritten = lane != DatasetLane.Plain
+                                && shaped.Contains("tools", StringComparison.OrdinalIgnoreCase);
+                            // Title synthesized: sidecar tự sinh completion (title request gặp 429/
+                            // lỗi transport) — không phải model trả lời nên KHÔNG vào dataset train,
+                            // chỉ đếm counter riêng (spec v2 §7.2).
+                            if (HeaderValue(response, SidecarTitleHeader)
+                                .Contains("synthesized", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // CountSkip là method internal của sink cụ thể: DI production luôn
+                                // dựng DatasetSink; sink khác (test/decorator tương lai) chỉ bị bỏ
+                                // đường đếm — không được phép nổ đường forward.
+                                if (dataset is DatasetSink sink)
+                                {
+                                    sink.CountSkip(DatasetSkipReason.Synthetic);
+                                }
+                            }
+                            else
+                            {
+                                // body = body GỐC của client (tham số ForwardAsync), KHÔNG phải requestBody đã
+                                // rewrite: dữ liệu train phản ánh đúng thứ client gửi — rewrite mang stream:true
+                                // + include_usage do app tự thêm, đưa vào dataset là nhiễm rác (spec §7.1).
+                                dataset.Capture(new DatasetCapture(requestId, protocol.Endpoint, DateTimeOffset.UtcNow, body,
+                                    completion, tee.CompletionComplete, provider.Name, account.Name, model.ModelId,
+                                    monitorRecord?.Model, monitorRecord?.Mode, ClientKeyItems.IdOf(ctx),
+                                    tee.Usage?.PromptTokens, tee.Usage?.CompletionTokens,
+                                    lane, toolsRewritten));
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -545,6 +563,22 @@ public sealed class ProxyRequestHandler(
             // intentional swallow — không còn chỗ report nào an toàn hơn (mirror TraceFeed.Publish)
         }
     }
+
+    // Tín hiệu sidecar → host (spec v2 §5.7): custom response header, nằm ở response.Headers
+    // (KHÔNG phải response.Content.Headers). X-Sidecar-Shaped: "tools+prompt" khi free lane đã
+    // shaping / "none" (title-gen, lane keyed); X-Sidecar-Title: "synthesized" chỉ khi sidecar
+    // tự sinh completion. Vắng cả hai = provider không qua sidecar.
+    private const string SidecarShapedHeader = "X-Sidecar-Shaped";
+    private const string SidecarTitleHeader = "X-Sidecar-Title";
+
+    /// <summary>
+    /// Giá trị header tín hiệu sidecar dạng chuỗi — vắng → rỗng; join nhiều giá trị phòng
+    /// trường hợp trung gian tách header (sidecar thật chỉ gửi một giá trị).
+    /// </summary>
+    private static string HeaderValue(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out var values)
+            ? string.Join(", ", values)
+            : string.Empty;
 
     // Encoder relax giữ nguyên apostrophe (0x27) trong message — default encoder escape
     // apostrophe thành chuỗi unicode, sai contract OpenAI (spec §4) — GIỮ NGUYÊN comment 3A

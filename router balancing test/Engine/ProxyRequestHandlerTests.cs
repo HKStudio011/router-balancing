@@ -120,7 +120,8 @@ public class ProxyRequestHandlerTests
         public int UpstreamIdleTimeoutSec { get; set; } = 300;
         public int ProviderQuotaBlockSec { get; set; } = 120;
         public string OpenCodeConfigPath => OpenCodeConfigPaths.DefaultPath;
-        public bool DatasetExportEnabled => false;
+        // Settable: test dataset cần bật export để đi vào khối capture của ForwardAsync
+        public bool DatasetExportEnabled { get; set; }
         public string DatasetExportPath => "";
         public int DatasetRetentionDays => 0;
         public T Get<T>(string key, T defaultValue) => defaultValue;
@@ -1087,5 +1088,46 @@ public class ProxyRequestHandlerTests
 
         Assert.IsType<DispatchOutcome.Handled>(outcome);
         Assert.Empty(log.Warns);
+    }
+
+    /// <summary>Sink chỉ ghi lại capture để assert — không chạm đĩa, không writer thread.</summary>
+    private sealed class CapturingDatasetSink : IDatasetSink
+    {
+        public List<DatasetCapture> Captures { get; } = [];
+
+        // Test không đọc stats của fake — chỉ cần shape hợp lệ với field synthetic mới.
+        public DatasetStats Stats => new(0, 0, 0, 0, 0, 0, 0, 0, null);
+
+        public event Action Changed = delegate { };
+
+        public void Capture(DatasetCapture capture) => Captures.Add(capture);
+    }
+
+    [Theory]
+    [InlineData(true, "tools+prompt", true)]   // free lane: sidecar đã shaping tools+prompt
+    [InlineData(true, "none", false)]          // title-gen hoặc lane keyed: sidecar không đụng tools
+    [InlineData(true, null, false)]            // không có header (provider không qua sidecar)
+    [InlineData(false, "tools+prompt", false)] // lane plain: provider ngoài OpenCode không bao giờ bị đổi tools
+    public async Task TestDataset_ToolsRewritten_FromSidecarShapedHeader(bool openCode,
+        string? shaped, bool expected)
+    {
+        // V2 §7.2: shaping là quyết định của SIDECAR (Go) — host chỉ đọc tín hiệu
+        // X-Sidecar-Shaped thay vì suy lại từ body (hết duplicate logic hai ngôn ngữ).
+        var provider = openCode ? SeedOpenCodeProvider() : SeedProvider();
+        var response = Upstream(200, "{}");
+        if (shaped is not null)
+        {
+            response.Headers.TryAddWithoutValidation("X-Sidecar-Shaped", shaped);
+        }
+
+        var dataset = new CapturingDatasetSink();
+        var sut = Create(new StubUpstream(() => response),
+            settings: new StubSettings { DatasetExportEnabled = true }, dataset: dataset);
+
+        var outcome = await sut.ForwardAsync(Ctx(), provider, ModelOf(provider), Body(ValidJson),
+            AccountIdOf(provider), ProxyProtocols.Chat, default);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(expected, Assert.Single(dataset.Captures).ToolsRewritten);
     }
 }

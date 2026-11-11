@@ -9,6 +9,10 @@ namespace RouterBalancing.Core.Dataset;
 /// <param name="SkippedEmpty">Bỏ vì output/completion rỗng hoặc thiếu.</param>
 /// <param name="SkippedRefusal">Bỏ vì 2xx nhưng completion là lời từ chối của upstream.</param>
 /// <param name="SkippedQueueFull">Bỏ vì channel writer đã đầy (bảo vệ RAM, spec §7.6).</param>
+/// <param name="SkippedSynthetic">
+/// Bỏ vì completion do sidecar tự tổng hợp (title synthesized) — không đi qua Capture,
+/// handler đếm trực tiếp (spec opencode-free-gate-v2 §7.2).
+/// </param>
 /// <param name="BytesWritten">Tổng byte đã ghi kể từ khi sink khởi động.</param>
 /// <param name="CurrentFile">Đường dẫn file đang mở; <see langword="null"/> khi chưa có.</param>
 public sealed record DatasetStats(
@@ -18,5 +22,6 @@ public sealed record DatasetStats(
     int SkippedEmpty,
     int SkippedRefusal,
     int SkippedQueueFull,
+    int SkippedSynthetic,
     long BytesWritten,
     string? CurrentFile);

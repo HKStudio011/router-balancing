@@ -141,6 +141,13 @@ Trong `ProxyRequestHandler.ForwardAsync`, nhánh 2xx, ngay sau khối tee/`monit
 - `tools_rewritten`: `true` khi fingerprint thực sự đổi mảng `tools` (rename casing, xoá trùng,
   chèn decoy) — ghi để offline biết `tools` trong record là **góc nhìn của client**, không phải
   thứ model thấy (sidecar Go còn thay toàn bộ `tools` nữa, app không thấy được phần đó).
+- **Amend 2026-11-12 (nhánh `fix/opencode-free-gate`, spec `2026-11-10-opencode-free-gate-v2-design.md` §7.2):**
+  host không còn tự suy `tools_rewritten` từ body — đọc response header `X-Sidecar-Shaped`: `true` khi
+  giá trị chứa `tools` (mọi request free-lane đã shaping), `false` cho title-gen **và lane keyed
+  passthrough** (`none` — lane `keyed_fingerprint` giữ nguyên tên nhưng mang nghĩa "đi qua sidecar không
+  shaping"). Response có `X-Sidecar-Title: synthesized` (sidecar tự sinh completion) **không được ghi
+  record** và tăng counter mới `SkippedSynthetic` trong `DatasetStats` (dòng status i18n thêm `{7}`
+  tương ứng; shape record trên đĩa không đổi).
 - `unknown_tool_calls`: danh sách `function.name` xuất hiện trong `completion.tool_calls` nhưng
   **không có** trong `tools` đã ghi — tính **động** bằng cách so hai tập name trong chính record.
   Không hard-code tên tool nào (kể cả quartet `bash/glob/grep/read`), nên nó vẫn đúng với client
