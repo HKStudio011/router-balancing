@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -150,10 +151,106 @@ func TestInjectOfficialPrompt_PartListContentFolded(t *testing.T) {
 	}
 }
 
+// Bảng GOOS→label chính thức của official CLI; branch default gom mọi GOOS còn
+// lại (plan9, js, aix, …) về linux. Không có test này thì cả map không được kiểm
+// và render chỉ cần giữ nguyên dòng "  Platform: win32" của asset là vẫn pass.
+func TestPlatformLabelFor(t *testing.T) {
+	cases := []struct {
+		goos string
+		want string
+	}{
+		{"windows", "win32"},
+		{"darwin", "darwin"},
+		{"linux", "linux"},
+		{"plan9", "linux"},
+	}
+	for _, c := range cases {
+		if got := platformLabelFor(c.goos); got != c.want {
+			t.Errorf("platformLabelFor(%q) = %q, want %q", c.goos, got, c.want)
+		}
+	}
+	if platformLabelFor(runtime.GOOS) == "" {
+		t.Error("platformLabelFor(runtime.GOOS) rỗng")
+	}
+}
+
+// Guard chống fail-im lặng ở phía template: template đã build phải không còn bất kỳ
+// sentinel capture nào (asset capture lại ⇒ replaceExact panic, code bỏ sót replace
+// ⇒ test này đỏ), và phải còn đủ token để render điền.
+func TestOfficialPromptTemplate_NoUnreplacedSentinels(t *testing.T) {
+	tpl := officialPromptTemplate()
+
+	for _, sentinel := range capturedSentinels() {
+		if strings.Contains(tpl, sentinel) {
+			t.Errorf("template chưa thay sentinel %q", sentinel)
+		}
+	}
+	for _, token := range []string{modelToken, dateToken, platformToken} {
+		if !strings.Contains(tpl, token) {
+			t.Errorf("template thiếu token %q — segment động sẽ không được điền theo request", token)
+		}
+	}
+}
+
+// Chốt giá trị segment động bằng input cố định: ngày/platform được truyền vào chứ
+// không suy từ đồng hồ, nên bug "token không được thay" hoặc "token đặt sai dòng"
+// luôn đỏ, kể cả khi máy test chạy đúng vào ngày capture.
+func TestFillPromptTemplate_DynamicSegmentsFilled(t *testing.T) {
+	const (
+		pinnedDate     = "Mon Jan 2 2006"
+		pinnedPlatform = "linux"
+	)
+	out := fillPromptTemplate(officialPromptTemplate(), testModelID, pinnedDate, pinnedPlatform)
+
+	for _, want := range []string{
+		"Today's date: " + pinnedDate,
+		"  Platform: " + pinnedPlatform,
+		"- Name: " + testModelID,
+		"- Model ID: " + testModelID,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("thiếu %q — segment động không nằm đúng chỗ hoặc không được điền (got %q)", want, firstLineContaining(out, want))
+		}
+	}
+	for _, bad := range append(capturedSentinels(), modelToken, dateToken, platformToken) {
+		if strings.Contains(out, bad) {
+			t.Errorf("còn giá trị capture/token %q trong kết quả đã fill", bad)
+		}
+	}
+}
+
+// capturedSentinels là 8 dòng capture nguyên văn phải biến mất khỏi prompt gửi đi.
+func capturedSentinels() []string {
+	return []string{
+		capturedModelNameLine,
+		capturedModelProviderLine,
+		capturedModelIDLine,
+		capturedDateLine,
+		capturedWorkdirLine,
+		capturedRootFolderLine,
+		capturedPlatformLine,
+		capturedPreferTempLine,
+	}
+}
+
+// without trả về slice bỏ phần tử value — dùng để loại khỏi danh sách cấm ở render
+// đúng những sentinel mà output đúng của run hiện tại trùng byte với capture.
+func without(values []string, value string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v != value {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // Bất kỳ segment nào còn giữ giá trị của máy capture (đường dẫn, username,
 // model capture, skills của máy dev) đều là leak quyền riêng tư hoặc sai spec.
 func TestRenderOfficialPrompt_NoCaptureMachineLeaks(t *testing.T) {
+	dateBefore := utcDateString()
 	out := renderOfficialPrompt(testModelID)
+	dateAfter := utcDateString() // chạy qua nửa đêm UTC thì before != after
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -164,22 +261,37 @@ func TestRenderOfficialPrompt_NoCaptureMachineLeaks(t *testing.T) {
 		t.Fatalf("os.UserHomeDir: %v", err)
 	}
 
-	banned := []string{
-		"Trinity Free X",
-		"trinity-free-x",
-		"Provider ID: capture",
-		// Đường dẫn capture (asset dòng 439-440) và đường dẫn trong dòng prefer-tmp
-		// (dòng 443) — phải biến mất khỏi prompt. Cấm cả prefix của chúng để bắt
-		// mọi biến thể. Không cấm trần "C:\Users\trucn": chính máy test có home là
-		// C:\Users\trucn nên cwd process hợp lệ cũng chia sẻ prefix đó; bất biến
-		// "không có đường dẫn máy khác" được kiểm tra riêng bên dưới.
+	// Toàn bộ 8 sentinel capture phải biến mất khỏi kết quả render. Chỉ những dòng
+	// mà output ĐÚNG cũng trùng byte với capture mới được bỏ qua, và danh sách đó
+	// suy ra từ chính giá trị kỳ vọng của run này (không hard-code máy nào):
+	//   - date: hôm nay đúng ngày capture (UTC) thì dòng date đúng == dòng capture;
+	//   - platform: GOOS=windows ⇒ label "win32" == dòng capture.
+	// Hai case bị loại được chốt bằng assertion giá trị-đúng bên dưới, cộng
+	// TestOfficialPromptTemplate_NoUnreplacedSentinels và
+	// TestFillPromptTemplate_DynamicSegmentsFilled (input cố định, không phụ thuộc
+	// ngày giờ hay GOOS) — nên guard vẫn total.
+	dateOf := func(line string) string { return strings.TrimPrefix(line, "Today's date: ") }
+	banned := capturedSentinels()
+	if dateOf(capturedDateLine) == dateBefore || dateOf(capturedDateLine) == dateAfter {
+		banned = without(banned, capturedDateLine)
+	}
+	if capturedPlatformLine == "  Platform: "+platformLabelFor(runtime.GOOS) {
+		banned = without(banned, capturedPlatformLine)
+	}
+	// Cấm cả prefix đường dẫn capture để bắt mọi biến thể, và "Prefer C:" vì dòng
+	// prefer-tmp phải biến mất trọn vẹn (asset dòng 443). Không cấm trần
+	// "C:\Users\trucn": chính máy test có home là C:\Users\trucn nên cwd process hợp
+	// lệ cũng chia sẻ prefix đó; bất biến "không có đường dẫn máy khác" được kiểm
+	// tra riêng bên dưới (controller đã chấp nhận cách thay thế này).
+	banned = append(banned,
 		`C:\Users\trucn\AppData\Local\Temp\opencode`,
 		"Prefer C:",
 		"<available_skills>",
 		"</available_skills>",
 		modelToken,
 		dateToken,
-	}
+		platformToken,
+	)
 	for _, bad := range banned {
 		if strings.Contains(out, bad) {
 			t.Errorf("prompt render ra chứa giá trị cấm %q", bad)
@@ -199,7 +311,8 @@ func TestRenderOfficialPrompt_NoCaptureMachineLeaks(t *testing.T) {
 		"- Provider ID: opencode",
 		"- Model ID: " + testModelID,
 		"No skills are currently available.",
-		"Platform: ",
+		// Platform phải là dẫn xuất từ runtime.GOOS, không phải dòng asset nguyên văn.
+		"  Platform: " + platformLabelFor(runtime.GOOS),
 	}
 	for _, want := range required {
 		if !strings.Contains(out, want) {
@@ -215,11 +328,64 @@ func TestRenderOfficialPrompt_NoCaptureMachineLeaks(t *testing.T) {
 	if !strings.HasPrefix(out, opencodePromptMarker) {
 		t.Errorf("prompt phải bắt đầu bằng marker, got %.80q", out)
 	}
-	// Date theo JS Date.toDateString() (Go layout "Mon Jan 2 2006") — regex để
-	// không phụ thuộc thời điểm test chạy qua nửa đêm UTC.
-	datePattern := regexp.MustCompile(`Today's date: (?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ 1]\d \d{4}`)
-	if !datePattern.MatchString(out) {
-		t.Errorf("thiếu dòng date đúng định dạng toDateString, got %.120q", firstLineContaining(out, "Today's date:"))
+
+	// Date: đúng một dòng, và giá trị là ngày UTC đọc quanh thời điểm render
+	// (midnight-tolerant). Regex giữ coverage định dạng toDateString() — kể cả khi
+	// ngày render trùng ngày capture thì định dạng vẫn bị bắt nếu layout sai.
+	dateLines := []string{}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Today's date: ") {
+			dateLines = append(dateLines, strings.TrimSpace(line))
+		}
+	}
+	if len(dateLines) != 1 {
+		t.Fatalf("phải có đúng một dòng Today's date, thấy %d: %v", len(dateLines), dateLines)
+	}
+	dateLine := dateLines[0]
+	if dateLine != "Today's date: "+dateBefore && dateLine != "Today's date: "+dateAfter {
+		t.Errorf("dòng date = %q, phải bằng ngày UTC tại thời điểm render (%q / %q)", dateLine, dateBefore, dateAfter)
+	}
+	datePattern := regexp.MustCompile(`^Today's date: (?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ 1]\d \d{4}$`)
+	if !datePattern.MatchString(dateLine) {
+		t.Errorf("dòng date sai định dạng toDateString (Go layout %q): %q", "Mon Jan 2 2006", dateLine)
+	}
+}
+
+// Ruling T4-R1: marker chỉ có ý nghĩa idempotency cho chính phần inject. Marker
+// nằm ở message do client/để model nói (user paste prompt của OpenCode, model echo
+// lại) KHÔNG được phép chặn inject — request đi tiếp mà thiếu prompt chính chủ là
+// đúng lỗi gate 403 task family này sửa.
+func TestInjectOfficialPrompt_MarkerInUserMessage_StillInjects(t *testing.T) {
+	for _, role := range []string{"user", "assistant"} {
+		t.Run(role, func(t *testing.T) {
+			quoted := "prompt mà tôi thấy trong docs: " + opencodePromptMarker + ", an interactive CLI tool..."
+			messages := []any{
+				map[string]any{"role": "user", "content": quoted},
+				map[string]any{"role": role, "content": "[client-rule-A]"},
+			}
+
+			got := injectOfficialPrompt(messages, testModelID)
+
+			content := injectedSystem(t, got)
+			if !strings.HasPrefix(content, opencodePromptMarker) {
+				t.Errorf("marker ở role %q không được chặn inject, got %.80q", role, content)
+			}
+			if len(got) != 3 {
+				t.Fatalf("số message = %d, want 3 (inject + 2 message gốc giữ nguyên)", len(got))
+			}
+			for i, want := range []string{quoted, "[client-rule-A]"} {
+				msg, ok := got[i+1].(map[string]any)
+				if !ok {
+					t.Fatalf("messages[%d] không phải map: %T", i+1, got[i+1])
+				}
+				if msg["content"] != want {
+					t.Errorf("messages[%d].content = %v, want giữ nguyên %q", i+1, msg["content"], want)
+				}
+			}
+			if !strings.Contains(got[1].(map[string]any)["content"].(string), opencodePromptMarker) {
+				t.Error("marker phải vẫn nằm nguyên trong message user gốc, không bị xoá hay di chuyển")
+			}
+		})
 	}
 }
 
