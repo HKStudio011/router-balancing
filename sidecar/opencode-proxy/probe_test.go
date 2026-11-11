@@ -12,8 +12,8 @@
 //
 // Kỷ luật budget (§8): 1 lần chạy = 1 request; không retry tự động. Kết quả
 // (status, upstream request id, X-Sidecar-Shaped, tối đa 200 ký tự đầu của error
-// body) đi vào task report. KHÔNG BAO GIỜ log nội dung hội thoại hay completion
-// text — mọi log ở đây chỉ chứa field chẩn đoán được phép.
+// body — CHỈ body non-2xx) đi vào task report. KHÔNG BAO GIỜ log nội dung hội
+// thoại hay completion text — mọi log ở đây chỉ chứa field chẩn đoán được phép.
 package main
 
 import (
@@ -50,7 +50,9 @@ const (
 // X-Proxy-Url) rồi cho chạy qua đúng pipeline handleChat. Nhận định:
 //   - 200 + ít nhất một dòng SSE data: mang completion content ⇒ shape v2 được
 //     gate chấp nhận (PASS);
-//   - status khác ⇒ FAIL kèm phân loại và error snippet ≤200 ký tự.
+//   - status ngoài 2xx ⇒ FAIL kèm phân loại và error snippet ≤200 ký tự;
+//   - 200 thiếu dòng data ⇒ FAIL kèm metadata không phải nội dung — body 200 có
+//     thể chứa completion text nên không bao giờ được quote (§8).
 func TestLiveProbe_FreeChat(t *testing.T) {
 	// Guard: probe chỉ có nghĩa khi trỏ đúng lane free thật — chặn trước khi gửi
 	// request nếu ai đó sửa default (đổi điểm đến là đổi contract của instrument).
@@ -96,16 +98,29 @@ func TestLiveProbe_FreeChat(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		classification := liveProbeClassify(resp.StatusCode, respBody)
+		if !liveProbeErrorBodyStatus(resp.StatusCode) {
+			// 2xx không phải 200 (201/204...): vẫn FAIL — contract của probe là
+			// đúng 200 — nhưng body 2xx có thể chứa completion text nên không
+			// được quote bất kỳ phần nào.
+			t.Fatalf("live probe: upstream trả %d (2xx khác 200) — %s; body_bytes=%d — body 2xx không log snippet (§8)",
+				resp.StatusCode, classification, len(respBody))
+		}
 		t.Fatalf("live probe: upstream trả %d — %s; error snippet: %q",
 			resp.StatusCode, classification, liveProbeErrorSnippet(respBody))
 	}
 
 	content := liveProbeCompletionContent(respBody)
 	if content == "" {
-		if count := liveProbeDataLineCount(respBody); count > 0 {
+		count := liveProbeDataLineCount(respBody)
+		if count > 0 {
 			t.Fatalf("live probe: 200 nhưng %d dòng data không có completion content — instrument cần xem lại", count)
 		}
-		t.Fatalf("live probe: 200 nhưng body không có dòng data nào; snippet: %q", liveProbeErrorSnippet(respBody))
+		// Body 200 không có dòng data: nhiều khả năng upstream bỏ qua stream:true
+		// và trả JSON thường chứa completion text (choices[].message.content) —
+		// KHÔNG quote bất kỳ phần nào của body. Chỉ log metadata không phải nội
+		// dung theo §8: never completion text.
+		t.Fatalf("live probe: 200 nhưng body không có dòng SSE data nào (content_type=%q body_bytes=%d data_line_count=%d) — body 200 có thể chứa completion text nên không log snippet; instrument cần xem lại",
+			resp.Header.Get("Content-Type"), len(respBody), count)
 	}
 	t.Logf("live probe PASS: 200 + completion content (content_chars=%d)", len([]rune(content)))
 }
@@ -207,8 +222,17 @@ func liveProbeClassify(status int, body []byte) string {
 	}
 }
 
+// liveProbeErrorBodyStatus cho biết body của status này là body lỗi (ngoài 2xx)
+// và do đó mới được phép quote snippet. Body 2xx — kể cả 201/204 — có thể chứa
+// completion text nên tuyệt đối không được log.
+func liveProbeErrorBodyStatus(status int) bool {
+	return status < http.StatusOK || status >= http.StatusMultipleChoices
+}
+
 // liveProbeErrorSnippet trả tối đa liveProbeSnippetCap ký tự (rune — không cắt
 // giữa ký tự UTF-8) của body lỗi; dùng cho report, không bao giờ cho completion.
+// Chỉ được gọi khi liveProbeErrorBodyStatus báo đây là body lỗi — body 2xx có
+// thể chứa completion text nên không nhánh nào được quote nó (§8).
 func liveProbeErrorSnippet(body []byte) string {
 	runes := []rune(string(body))
 	if len(runes) > liveProbeSnippetCap {
