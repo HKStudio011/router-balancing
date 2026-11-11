@@ -25,10 +25,8 @@ const (
 //
 // Sáu cụm đầu do spec Task 6 quy định. Hai cụm cuối là chữ ký thật của
 // PROMPT_TITLE client 2.1.1 (MIT, packages/core/src/plugin/agent.ts:19-62), xác
-// nhận từ capture 2026-11-10 (ruling T6-R1). Chúng là bản lowercase của hai
-// phần tử trong titlePromptSignatureParts (main.go) nhưng phục vụ mục đích
-// khác: bên đó rewrite prompt để qua content gate, bên này phân loại request —
-// gộp hai danh sách sẽ khiến một thay đổi gate âm thầm đổi cách nhận diện title.
+// nhận từ capture 2026-11-10 (ruling T6-R1) — bản lowercase của hai dòng mở đầu
+// trong prompt thật, phải nằm trong danh sách này vì detection so khớp lowercase.
 var titleRequestSignatures = []string{
 	"you name conversations so the user can find them later in a list of past sessions",
 	"you generate a descriptive title for this conversation",
