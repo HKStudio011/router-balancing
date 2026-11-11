@@ -61,6 +61,13 @@ public sealed class RetryState
     /// </summary>
     public int TransientRetries { get; set; }
 
+    /// <summary>
+    /// Số lần đổi exit proxy đã dùng sau IP-abuse 403 (spec opencode-free-gate-v2 §7.3) —
+    /// cap 2 tại dispatcher: mỗi lần chặn exit vừa dùng rồi thử lại CÙNG route; hết lượt
+    /// vẫn bị chặn → mở gate toàn-provider thay vì đốt thêm exit.
+    /// </summary>
+    public int BlockedRetries { get; set; }
+
     /// <summary>Ghi nhận đã thử 1 candidate.</summary>
     /// <param name="providerId">Id provider của candidate.</param>
     /// <param name="modelId">Model id của candidate.</param>

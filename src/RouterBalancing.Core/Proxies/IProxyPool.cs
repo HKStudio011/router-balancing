@@ -29,6 +29,16 @@ public interface IProxyPool
     /// </summary>
     bool ReportFailure(long proxyId);
 
+    /// <summary>
+    /// Chặn proxy tới hết <paramref name="ttl"/> vì egress của nó bị upstream từ chối
+    /// (IP-abuse 403 — OpenCode free tier, spec §7.3). Cooldown RIÊNG, tách
+    /// <see cref="ReportFailure"/> (lỗi kết nối): <see cref="ReportSuccess"/> KHÔNG xóa block —
+    /// exit chỉ tự trở lại rotation khi hết TTL. Id không tồn tại = no-op.
+    /// </summary>
+    /// <param name="proxyId">Id proxy vừa trả IP-abuse 403.</param>
+    /// <param name="ttl">Thời gian chặn tính từ lúc gọi.</param>
+    void ReportBlocked(long proxyId, TimeSpan ttl);
+
     /// <summary>Ghi nhận thành công — reset trạng thái failure của proxy.</summary>
     void ReportSuccess(long proxyId);
 

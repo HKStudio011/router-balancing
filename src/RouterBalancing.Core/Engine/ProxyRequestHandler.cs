@@ -360,8 +360,10 @@ public sealed class ProxyRequestHandler(
 
                 // Journal Info chung cho Fatal lẫn Passthrough (parity quen sát 3A)
                 LogForwarded(ctx, provider, model, response, stopwatch);
-                return ClassifyFatal((int)response.StatusCode, errorBody, contentType,
-                    retryAfterRaw, RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow));
+                var retryAfter = RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow);
+                var fatal = ClassifyFatal((int)response.StatusCode, errorBody, contentType,
+                    retryAfterRaw, retryAfter);
+                return RefineOpencodeGate(ctx, provider, fatal, errorBody, contentType, retryAfter);
             }
             }
         finally
@@ -393,6 +395,68 @@ public sealed class ProxyRequestHandler(
         }
 
         return new DispatchOutcome.Passthrough(status, contentType, body, retryAfterRaw);
+    }
+
+    /// <summary>
+    /// Tinh chỉnh 403 của provider OpenCode free sau <see cref="ClassifyFatal"/> (spec
+    /// opencode-free-gate-v2 §7.3) — 3 đường phân loại, chỉ áp cho host opencode.ai:
+    /// <list type="bullet">
+    /// <item>IP-abuse (marker egress) → <see cref="DispatchOutcome.Blocked"/>: dispatcher chặn
+    /// exit proxy vừa dùng rồi thử exit khác, KHÔNG xoay account (cùng egress = cùng câu trả lời).</item>
+    /// <item>Shape refusal ("within OpenCode") → nâng lên <see cref="FailoverLevel.Provider"/>
+    /// (deterministic: retry account/model cùng shape là vô ích) + log Error kèm RequestId để
+    /// báo hiệu gate đổi contract, cần cập nhật sidecar.</item>
+    /// <item>Còn lại → giữ nguyên outcome của <see cref="ClassifyFatal"/>.</item>
+    /// </list>
+    /// </summary>
+    private DispatchOutcome RefineOpencodeGate(HttpContext ctx, Provider provider,
+        DispatchOutcome outcome, byte[] errorBody, string? contentType, TimeSpan? retryAfter)
+    {
+        if (!OpenCodeFreeFingerprint.IsApplicable(provider)
+            || outcome is not DispatchOutcome.Fatal { Status: 403 })
+        {
+            return outcome;
+        }
+
+        if (OpencodeGateClassifier.IsIpAbuse(errorBody))
+        {
+            return new DispatchOutcome.Blocked(403, contentType, errorBody);
+        }
+
+        if (OpencodeGateClassifier.IsShapeRefusal(errorBody))
+        {
+            // Error (không phải Warn): gate đổi contract = fingerprint sidecar cần cập nhật,
+            // không phải lỗi tạm thời; RequestId để correlate ngay trong log người dùng.
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Error,
+                Category = LogCategory.Request,
+                Message = "OpenCode từ chối shape request (403 within OpenCode) — gate đã đổi "
+                    + "contract; kiểm tra/cập nhật fingerprint sidecar.",
+                Details = ErrorBodySnippet(errorBody),
+                RequestId = ClientKeyItems.RequestIdOf(ctx),
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
+            return new DispatchOutcome.Fatal(FailoverLevel.Provider, 403, contentType, errorBody,
+                retryAfter);
+        }
+
+        return outcome;
+    }
+
+    /// <summary>Snippet body lỗi cho <c>Details</c> log (≤500 ký tự, best-effort UTF-8).</summary>
+    private static string ErrorBodySnippet(byte[] errorBody)
+    {
+        try
+        {
+            var text = System.Text.Encoding.UTF8.GetString(errorBody);
+            return text.Length <= 500 ? text : text[..500];
+        }
+        catch
+        {
+            // Decode lỗi (best-effort) — bỏ snippet, message vẫn đầy đủ
+            return string.Empty;
+        }
     }
 
     /// <summary>

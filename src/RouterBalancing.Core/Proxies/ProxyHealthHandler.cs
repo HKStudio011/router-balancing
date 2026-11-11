@@ -73,6 +73,9 @@ public sealed class ProxyHealthHandler : DelegatingHandler
             proxyAttempts++;
 
             ProxyContext.Current = pick;
+            // Sticky cho dispatcher: exit này vừa phục vụ attempt — IP-abuse 403 của attempt
+            // sẽ chặn đúng exit (Current bị clear ở finally nên không dùng lại được)
+            ProxyContext.LastPick = pick;
             HttpResponseMessage response;
             try
             {
@@ -192,6 +195,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
                 attempts++;
 
                 ProxyContext.Current = pick;
+                ProxyContext.LastPick = pick; // sticky — dispatcher chặn exit khi IP-abuse 403
                 HttpResponseMessage response;
                 try
                 {
@@ -242,6 +246,7 @@ public sealed class ProxyHealthHandler : DelegatingHandler
         foreach (var pick in _pool.GetLivingInOrder(ids))
         {
             ProxyContext.Current = pick;
+            ProxyContext.LastPick = pick; // sticky — dispatcher chặn exit khi IP-abuse 403
             HttpResponseMessage response;
             try
             {

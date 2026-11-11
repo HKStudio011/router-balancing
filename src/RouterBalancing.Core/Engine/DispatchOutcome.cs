@@ -50,6 +50,16 @@ public abstract record DispatchOutcome
         byte[] Body, TimeSpan? RetryAfter) : DispatchOutcome;
 
     /// <summary>
+    /// Egress bị upstream chặn (IP-abuse 403 — OpenCode free tier): tín hiệu NỘI BỘ, dispatcher
+    /// chặn exit proxy vừa dùng rồi thử exit khác CÙNG route; hết exit (hoặc direct) → mở gate
+    /// toàn-provider và trả nguyên 403 cho client (spec opencode-free-gate-v2 §7.3).
+    /// </summary>
+    /// <param name="Status">HTTP statuscode upstream trả (403).</param>
+    /// <param name="ContentType">Content-Type upstream trả (null khi upstream không kèm).</param>
+    /// <param name="Body">Body đã buffer — giữ nguyên khi trả client (passthrough byte).</param>
+    public sealed record Blocked(int Status, string? ContentType, byte[] Body) : DispatchOutcome;
+
+    /// <summary>
     /// Response cần endpoint ghi NGUYÊN status + content-type + body (passthrough byte —
     /// exhaustion §3.3 và 4xx non-retryable, quan sát client y hệt 3A).
     /// </summary>

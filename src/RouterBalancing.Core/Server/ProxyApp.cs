@@ -377,6 +377,12 @@ public static class ProxyApp
                     await WriteInBand(ctx, SseErrorEvent.Passthrough(inBandPassthrough.Status,
                         inBandPassthrough.Body, inBandPassthrough.RetryAfterHeader));
                     break;
+                case DispatchOutcome.Blocked inBandBlocked:
+                    // Không xảy ra ở luồng thường (403 tới trước flush head 200) — nếu có, ghi
+                    // nguyên 403 vào stream để client không bị cắt im lặng (không nuốt outcome)
+                    await WriteInBand(ctx, SseErrorEvent.Passthrough(inBandBlocked.Status,
+                        inBandBlocked.Body, null));
+                    break;
                 case DispatchOutcome.Retryable or DispatchOutcome.Fatal:
                     // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
                     log.Write(new LogEntry
@@ -432,6 +438,16 @@ public static class ProxyApp
             if (passthrough.RetryAfterHeader is not null)
                 ctx.Response.Headers["Retry-After"] = passthrough.RetryAfterHeader;
             await ctx.Response.Body.WriteAsync(passthrough.Body, ctx.RequestAborted);
+        }
+        else if (outcome is DispatchOutcome.Blocked blockedOutcome)
+        {
+            // IP-abuse 403 tới endpoint khi proxy/exit đã kiệt: client phải thấy NGUYÊN
+            // 403 upstream (không JSON wrap, không Retry-After — outcome không mang header đó;
+            // request sau trong window nhận Retry-After đếm ngược qua nhánh Passthrough)
+            ctx.Response.StatusCode = blockedOutcome.Status;
+            if (blockedOutcome.ContentType is not null)
+                ctx.Response.ContentType = blockedOutcome.ContentType;
+            await ctx.Response.Body.WriteAsync(blockedOutcome.Body, ctx.RequestAborted);
         }
         else if (outcome is DispatchOutcome.Retryable or DispatchOutcome.Fatal)
         {
@@ -639,6 +655,9 @@ public static class ProxyApp
             DispatchOutcome.Error e => (TraceStage.Finished, false, e.Status),
             DispatchOutcome.Cancelled => (TraceStage.Canceled, null, null),
             DispatchOutcome.Aborted => (TraceStage.Canceled, null, null),
+            // Blocked tới endpoint = proxy/exit đã kiệt, client nhận nguyên 403 (dispatcher đã
+            // chặn exit + mở gate trước khi hoàn tất) — trace ghi như Passthrough lỗi
+            DispatchOutcome.Blocked b => (TraceStage.Finished, false, b.Status),
             // Retryable/Fatal là tín hiệu nội bộ — dispatcher đã convert trước khi outcome
             // về endpoint, nên 2 nhánh này chỉ là bug-path defensive (không được nuốt im lặng
             // nếu invariant vỡ): map theo status (null = lỗi mạng) để trace vẫn ghi được.

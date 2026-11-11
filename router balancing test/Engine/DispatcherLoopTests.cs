@@ -7,7 +7,9 @@ using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
+using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
 
@@ -46,13 +48,13 @@ public class DispatcherLoopTests : IDisposable
     }
 
     private long SeedProvider(string name, int maxConcurrent = 4, string modelId = "m1",
-        int accounts = 1, string[]? accountNames = null)
+        int accounts = 1, string[]? accountNames = null, string baseUrl = "https://api.openai.com")
     {
         using var db = _db.CreateFactory().CreateDbContext();
         var provider = new Provider
         {
             Name = name,
-            BaseUrl = "https://api.openai.com",
+            BaseUrl = baseUrl,
             MaxConcurrent = maxConcurrent,
         };
         provider.Models.Add(new Model { ModelId = modelId, Enabled = true });
@@ -120,7 +122,8 @@ public class DispatcherLoopTests : IDisposable
     }
 
     private async Task StartAsync(IComboResolver resolver, IModelSelector selector,
-        IUpstreamClient upstream, CapturingLog log, IExecutionList? executions = null)
+        IUpstreamClient upstream, CapturingLog log, IExecutionList? executions = null,
+        IProxyPool? pool = null, IProviderQuotaGate? quotaGate = null)
     {
         // Cùng log của test — TraceFeed ghi lỗi contract qua log này (Task 1);
         // feed tạo TRƯỚC để monitor store subscribe đúng instance dispatcher publish vào
@@ -132,7 +135,8 @@ public class DispatcherLoopTests : IDisposable
             new DatasetSink(_settings, log, TimeProvider.System));
         _settings.Set(SettingsKeys.TransientMaxRetries, 0); // baseline opt-out — test transient riêng Set lại (đọc tại mỗi quyết định retry)
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
-            log, _trace, _settings, new ProviderQuotaGate(TimeProvider.System), _drain);
+            pool ?? new DirectProxyPool(), log, _trace, _settings,
+            quotaGate ?? new ProviderQuotaGate(TimeProvider.System), _drain);
         await _loop.StartAsync(CancellationToken.None);
     }
 
@@ -371,6 +375,72 @@ public class DispatcherLoopTests : IDisposable
         var response = Resp429(body);
         response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
         return response;
+    }
+
+    /// <summary>403 kèm body bất kỳ — nhánh phân loại IP-abuse/shape của OpenCode free gate.</summary>
+    private static HttpResponseMessage Resp403Body(string body) =>
+        new(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+
+    // Body 403 thật của gate OpenCode free (spec opencode-free-gate-v2 §5.9): marker egress bị
+    // chặn (IP-abuse) và câu từ chối theo hình thể request (shape-403).
+    private const string IpAbuse403Body =
+        """{"error":{"message":"We have detected abusive traffic from your network.","type":"FreeTierError"}}""";
+    private const string ShapeRefusal403Body =
+        """{"error":{"message":"OpenCode's free tier can only be used from within OpenCode","type":"FreeTierError"}}""";
+
+    // Body 429 hết quota shape v2 (backlog E2): wrap của AI SDK, KHÔNG kèm Retry-After
+    private const string E2Quota429Body =
+        """{"error":{"message":"AI_APICallError: Upstream request failed: Invalid credential","type":"upstream_error"}}""";
+
+    /// <summary>ProxyAttempt giả cho exit — test Blocked chỉ cần id để assert ReportBlocked.</summary>
+    private static ProxyAttempt ProxyAt(long id) =>
+        new(id, new Uri($"http://127.0.0.1:{8000 + id}"), null, null, $"http://127.0.0.1:{8000 + id}");
+
+    /// <summary>
+    /// Pool proxy giả cho nhánh Blocked: chỉ ghi lại <c>ReportBlocked</c> — request trong test
+    /// đi qua fake <see cref="IUpstreamClient"/> (không qua ProxyHealthHandler) nên pool không
+    /// quyết định exit thực tế; test tự set <see cref="ProxyContext.LastPick"/> trong fake.
+    /// </summary>
+    private sealed class RecordingPool : IProxyPool
+    {
+        private readonly List<(long Id, TimeSpan Ttl)> _blocked = [];
+
+        /// <summary>ReportBlocked đã nhận theo thứ tự — assert exit nào bị chặn + TTL.</summary>
+        public IReadOnlyList<(long Id, TimeSpan Ttl)> Blocked
+        {
+            get
+            {
+                lock (_blocked)
+                    return _blocked.ToArray();
+            }
+        }
+
+        public ProxyAttempt? GetNext() => null;
+
+        public ProxyAttempt? GetNext(IReadOnlyList<long>? allowedIds) => null;
+
+        public IReadOnlyList<ProxyAttempt> GetLivingInOrder(IReadOnlyList<long> ids) => [];
+
+        public bool ReportFailure(long proxyId) => false;
+
+        public void ReportBlocked(long proxyId, TimeSpan ttl)
+        {
+            lock (_blocked)
+                _blocked.Add((proxyId, ttl));
+        }
+
+        public void ReportSuccess(long proxyId)
+        {
+        }
+
+        public void Invalidate()
+        {
+        }
+
+        public IReadOnlyList<ProxyRuntimeStatus> Snapshot() => [];
     }
 
     /// <summary>Đọc trường <c>model</c> trong body upstream — phân biệt attempt đi model nào.</summary>
@@ -1996,5 +2066,179 @@ public class DispatcherLoopTests : IDisposable
         Assert.Equal(2, path.Count);
         Assert.Equal(("root", ComboMode.Fallback), (path[0].Name, path[0].Mode));
         Assert.Equal(("child", ComboMode.RoundRobin), (path[1].Name, path[1].Mode));
+    }
+
+    // ===== OpenCode free gate v2 (spec 2026-11-10-opencode-free-gate-v2 §7.3) =====
+
+    [Fact]
+    public async Task TestServeAsync_IpAbuse403_ReportsBlockedAndRotatesExitOnce()
+    {
+        // IP-abuse 403 = egress bị chặn, KHÔNG phải lỗi request → không xoay account: chặn exit
+        // vừa dùng rồi thử LẠI cùng route trên exit kế (pool round-robin đã bỏ qua exit block).
+        var pid = SeedProvider("p1", baseUrl: "https://opencode.ai");
+        var pool = new RecordingPool();
+        var exitA = ProxyAt(1);
+        var exitB = ProxyAt(2);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var calls = 0;
+        var upstream = new WalkUpstream((_, _, _, _) =>
+        {
+            var call = Interlocked.Increment(ref calls);
+            // Exit của attempt (fake thay ProxyHealthHandler — test set sticky value tại đây)
+            ProxyContext.LastPick = call == 1 ? exitA : exitB;
+            return Task.FromResult(call == 1 ? Resp403Body(IpAbuse403Body) : Sse());
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log, pool: pool);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls.Count);
+        // Cùng route (provider + account): retry exit không được đổi account
+        Assert.Equal(("p1", "sk-p1-a1"), upstream.Calls[0]);
+        Assert.Equal(("p1", "sk-p1-a1"), upstream.Calls[1]);
+        var blocked = Assert.Single(pool.Blocked);
+        Assert.Equal(exitA.Id, blocked.Id);
+        Assert.Equal(ProxyPool.BlockedTtl, blocked.Ttl);
+        Assert.Equal(1, request.Retry.BlockedRetries);
+    }
+
+    [Fact]
+    public async Task TestServeAsync_IpAbuse403_WhenExitsExhausted_CompletesBlockedAndOpensProviderGate()
+    {
+        // Hết lượt đổi exit (cap BlockedRetries = 2) mà vẫn IP-abuse → không còn exit nào để
+        // thử: mở gate toàn-provider 15m rồi trả nguyên 403 cho client (request sau replay).
+        var pid = SeedProvider("p1", baseUrl: "https://opencode.ai");
+        var pool = new RecordingPool();
+        var exitA = ProxyAt(1);
+        var gate = new ProviderQuotaGate(TimeProvider.System);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((_, _, _, _) =>
+        {
+            ProxyContext.LastPick = exitA; // pool chỉ có 1 exit — lần nào cũng dính exit đã chặn
+            return Task.FromResult(Resp403Body(IpAbuse403Body));
+        });
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log, pool: pool, quotaGate: gate);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
+
+        // 1 attempt + 2 retry exit (cap 2) — lần thứ 3 kiệt lượt → complete với outcome Blocked
+        Assert.Equal(3, upstream.Calls.Count);
+        var blockedOutcome = Assert.IsType<DispatchOutcome.Blocked>(outcome);
+        Assert.Equal(403, blockedOutcome.Status);
+        Assert.Equal(IpAbuse403Body, Encoding.UTF8.GetString(blockedOutcome.Body));
+        Assert.Equal(2, request.Retry.BlockedRetries);
+        Assert.Equal(3, pool.Blocked.Count);
+        Assert.All(pool.Blocked, b => Assert.Equal(exitA.Id, b.Id));
+        Assert.All(pool.Blocked, b => Assert.Equal(ProxyPool.BlockedTtl, b.Ttl));
+
+        // Gate toàn-provider: TTL 15m (constant, không phải setting) + replay nguyên body 403
+        Assert.True(gate.TryGetBlock(pid, out var block));
+        Assert.Equal(403, block!.Status);
+        Assert.InRange(block.RetryAfter!.Value.TotalSeconds, 899, 900);
+        Assert.Contains(log.Warns, w => w.Contains("IP-abuse") && w.Contains("p1"));
+        Assert.False(_executions.Contains("req00001")); // slot trả trước khi complete
+    }
+
+    [Fact]
+    public async Task TestServeAsync_ShapeRefusal403_FailsFastAtProviderLevel()
+    {
+        // Shape-403 = gate từ chối HÌNH THỂ request (deterministic): refinement nâng Fatal lên
+        // cấp Provider → không thử TK/model khác cùng provider, log ERROR kèm request id để
+        // báo hiệu gate đổi contract (cần cập nhật sidecar).
+        var pid = SeedProvider("p1", accounts: 2, baseUrl: "https://opencode.ai");
+        AddModel(pid, "m2");
+        var resolver = new StubResolver(new SelectionSuccess(
+            [Candidate(pid, "m1"), Candidate(pid, "m2")], ComboMode.Fallback));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => Resp403Body(ShapeRefusal403Body));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log);
+
+        var request = Req("req00001");
+        request.Context.Items[ClientKeyItems.RequestId] = request.Id; // endpoint set trước enqueue
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
+
+        var passthrough = Assert.IsType<DispatchOutcome.Passthrough>(outcome);
+        Assert.Equal(403, passthrough.Status);
+        Assert.Equal(ShapeRefusal403Body, Encoding.UTF8.GetString(passthrough.Body));
+        Assert.Equal(1, upstream.Calls); // TK 2 + model khác cùng provider KHÔNG được thử
+        var refusalLog = Assert.Single(log.Entries, e =>
+            e.Severity == LogSeverity.Error && e.Message.Contains("within OpenCode"));
+        Assert.Equal("req00001", refusalLog.RequestId);
+    }
+
+    [Fact]
+    public async Task TestServeAsync_Plain403_OnOpencodeProvider_KeepsAccountLevelFailover()
+    {
+        // 403 KHÔNG marker trên provider opencode.ai — refinement phải để nguyên:
+        // vẫn Fatal cấp Account → xoay TK kế cùng provider, không chặn exit, không mở gate.
+        var pid = SeedProvider("p1", accounts: 2, baseUrl: "https://opencode.ai");
+        var pool = new RecordingPool();
+        var gate = new ProviderQuotaGate(TimeProvider.System);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new WalkUpstream((_, key, _, _) => Task.FromResult(
+            key == "sk-p1-a1" ? Resp403Body("""{"error":{"message":"forbidden"}}""") : Sse()));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log, pool: pool, quotaGate: gate);
+
+        var request = Req("req00001");
+        _queue.Enqueue(request);
+        var outcome = await request.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(2, upstream.Calls.Count);
+        Assert.Equal(("p1", "sk-p1-a1"), upstream.Calls[0]);
+        Assert.Equal(("p1", "sk-p1-a2"), upstream.Calls[1]); // xoay TK như hành vi cũ
+        Assert.Empty(pool.Blocked);
+        Assert.False(gate.TryGetBlock(pid, out _));
+    }
+
+    [Fact]
+    public async Task TestIsProviderWideQuotaFailure_E2Shape_AI_APICallError_InvalidCredential_True()
+    {
+        // Review Focus 4 (spec §5.9 #3 / backlog E2): 429 hết quota shape v2 (AI SDK wrap
+        // "AI_APICallError … Invalid credential", KHÔNG Retry-After) phải mở gate toàn-provider
+        // với fallback TTL (setting default 120s) — request kế cùng provider không gọi upstream.
+        var pid = SeedProvider("p1");
+        var gate = new ProviderQuotaGate(TimeProvider.System);
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ScriptedUpstream(_ => Resp429(E2Quota429Body));
+        var log = new CapturingLog();
+        await StartAsync(resolver, selector, upstream, log, quotaGate: gate);
+
+        var first = Req("req00001");
+        _queue.Enqueue(first);
+        var firstOutcome = await first.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
+
+        Assert.IsType<DispatchOutcome.Passthrough>(firstOutcome);
+        Assert.Equal(1, upstream.Calls);
+        Assert.True(gate.TryGetBlock(pid, out var block));
+        Assert.Equal(429, block!.Status);
+        // Không có Retry-After upstream → TTL lấy fallback setting (120s), không phải 15m của proxy block
+        Assert.InRange(block.RetryAfter!.Value.TotalSeconds, 118, 120);
+
+        // Request kế trong cùng window: bỏ provider TRƯỚC khi chọn candidate → không attempt nào
+        var second = Req("req00002");
+        _queue.Enqueue(second);
+        var secondOutcome = await second.Completion.Task.WaitAsync(TestTimeouts.Rendezvous);
+
+        var replay = Assert.IsType<DispatchOutcome.Passthrough>(secondOutcome);
+        Assert.Equal(429, replay.Status);
+        Assert.Equal(E2Quota429Body, Encoding.UTF8.GetString(replay.Body));
+        Assert.Equal(1, upstream.Calls);
+        Assert.InRange(int.Parse(replay.RetryAfterHeader!), 118, 120); // đếm ngược từ window
+        Assert.Contains(log.Debugs, d => d.Contains("bỏ qua provider") && d.Contains("p1"));
     }
 }

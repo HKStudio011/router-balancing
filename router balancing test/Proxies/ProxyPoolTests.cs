@@ -143,6 +143,41 @@ public class ProxyPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task TestReportBlocked_SkipsProxyInGetNext_ReportSuccessDoesNotClear()
+    {
+        // IP-abuse 403 = exit bị upstream chặn 15m (spec opencode-free-gate-v2 §7.3): cooldown
+        // RIÊNG với ReportFailure (lỗi kết nối) và ReportSuccess (credit path của
+        // ProxyHealthHandler cho MỌI HTTP response) KHÔNG được xóa block.
+        var blockedId = await AddProxyAsync(port: 8101);
+        var otherId = await AddProxyAsync(port: 8102);
+        var time = new FakeTime(Start);
+        var pool = CreatePool(time);
+
+        pool.ReportBlocked(blockedId, TimeSpan.FromMinutes(15));
+
+        // Blocked = không còn khả dụng: RR bỏ qua (rotation sang exit kế)
+        Assert.Equal("http://127.0.0.1:8102", pool.GetNext()!.Endpoint);
+        Assert.Equal("http://127.0.0.1:8102", pool.GetNext()!.Endpoint);
+        var blockedStatus = pool.Snapshot().Single(s => s.Id == blockedId);
+        Assert.True(blockedStatus.IsDown);
+        Assert.Equal(Start + TimeSpan.FromMinutes(15), blockedStatus.DownUntil);
+
+        pool.ReportSuccess(blockedId);
+        Assert.Equal("http://127.0.0.1:8102", pool.GetNext()!.Endpoint); // vẫn bị bỏ qua
+        Assert.True(pool.Snapshot().Single(s => s.Id == blockedId).IsDown);
+
+        // Còn 1s trong TTL → vẫn chặn
+        time.Advance(TimeSpan.FromMinutes(14) + TimeSpan.FromSeconds(59));
+        Assert.Equal("http://127.0.0.1:8102", pool.GetNext()!.Endpoint);
+
+        // Hết TTL → passive recover, không cần ReportSuccess
+        time.Advance(TimeSpan.FromSeconds(2));
+        var picks = new HashSet<long> { pool.GetNext()!.Id, pool.GetNext()!.Id };
+        Assert.Equal(new HashSet<long> { blockedId, otherId }, picks);
+        Assert.False(pool.Snapshot().Single(s => s.Id == blockedId).IsDown);
+    }
+
+    [Fact]
     public async Task Invalidate_PicksUpNewProxy()
     {
         var pool = CreatePool();
