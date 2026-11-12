@@ -27,7 +27,9 @@ public sealed class ProxyRequestHandler(
     IRequestUsageSink usageSink,
     IApiMonitorStore monitor,
     IAppSettingsService settings,
-    IDatasetSink dataset)
+    IDatasetSink dataset,
+    IProxySelectionResolver proxySelectionResolver,
+    IProxyPool proxyPool)
 {
     /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
     /// <param name="ModelId">Model id đã validate (resolve alias tại dispatcher).</param>
@@ -244,7 +246,7 @@ public sealed class ProxyRequestHandler(
                         monitor.RecordError(requestId, 0, null);
                         return new DispatchOutcome.Fatal(FailoverLevel.Provider, null, null, [], null);
                     }
-                    catch
+                    catch (Exception ex)
                     {
                         // Hủy kết nối upstream TRƯỚC khi exception rời handler — endpoint và
                         // dispatcher mới ghi lỗi cho client sau đó (cancel-before-error, chuẩn
@@ -256,6 +258,32 @@ public sealed class ProxyRequestHandler(
                         // Canceled bị gắn FailureKind=network gây nhầm lẫn khi chẩn đoán.
                         if (!ctx.RequestAborted.IsCancellationRequested)
                             monitor.RecordError(requestId, 0, null);
+                        // Điểm #1 (spec §4.1): nơi DUY NHẤT còn stopwatch/account/route — exception rời handler
+                        // thì dispatcher chỉ còn message. Warning (không Error) đúng D1; chỉ ghi khi client còn
+                        // nối vì client tự ngắt không phải sự cố upstream (D4).
+                        if (!ctx.RequestAborted.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                log.Write(new LogEntry
+                                {
+                                    Severity = LogSeverity.Warning,
+                                    Category = LogCategory.Request,
+                                    Message = $"Upstream '{provider.Name}' đứt stream sau {stopwatch.ElapsedMilliseconds}ms "
+                                              + $"— account '{account.Name}', route {DescribeProxyRoute(provider, account)}.",
+                                    Details = ex.ToString(),
+                                    // Type lỗi đọc GỐC (watchdog bọc thành UpstreamStreamDiedException) — cùng quy ước
+                                    // với catch pre-content để filter được HttpIOException trong DB
+                                    ErrorCode = (ex.InnerException ?? ex).GetType().Name,
+                                    RequestId = ClientKeyItems.RequestIdOf(ctx),
+                                    ClientKeyId = ClientKeyItems.IdOf(ctx),
+                                });
+                            }
+                            catch
+                            {
+                                // Nuốt chủ đích: chẩn đoán không được thay thế exception gốc đang rethrow
+                            }
+                        }
                         throw;
                     }
                     // Monitor ghi NGAY sau tee, KỂ CẢ khi upstream thiếu usage (token null) —
@@ -517,6 +545,20 @@ public sealed class ProxyRequestHandler(
             RequestId = ClientKeyItems.RequestIdOf(ctx),
             ClientKeyId = ClientKeyItems.IdOf(ctx),
         });
+
+    // Route CẤU HÌNH + down-state, không phải hop thật: ProxyContext.Current đã bị reset sau khi
+    // nhận header nên hop không còn truy được (spec §4.1/D3). Endpoint không chứa credentials.
+    private string DescribeProxyRoute(Provider provider, ProviderAccount account)
+    {
+        var selection = proxySelectionResolver.Resolve(provider, account);
+        if (selection.IsDirect)
+            return "direct";
+
+        var ids = selection.ProxyIds!;
+        var live = proxyPool.Snapshot().Where(s => ids.Contains(s.Id)).ToList();
+        var endpoints = string.Join(", ", live.Select(s => $"{s.Id}:{s.Endpoint}{(s.IsDown ? "(down)" : "")}"));
+        return $"{selection.Mode} ids=[{string.Join(",", ids)}] enabled=[{endpoints}]";
+    }
 
     // Tín hiệu CHẨN ĐOÁN (không đổi response/outcome): model gọi tên tool client KHÔNG khai báo
     // trong body gốc — với mọi provider, client sẽ báo "invalid tool" rất khó hiểu khi debug.

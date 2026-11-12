@@ -6,6 +6,7 @@ using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
@@ -183,7 +184,8 @@ public class ProxyRequestHandlerTests
             monitor ?? new ApiMonitorStore(new TraceFeed(effectiveLog), effectiveLog,
                 TimeProvider.System),
             effectiveSettings,
-            dataset ?? new DatasetSink(effectiveSettings, effectiveLog, TimeProvider.System));
+            dataset ?? new DatasetSink(effectiveSettings, effectiveLog, TimeProvider.System),
+            new ProxySelectionResolver(), new DirectProxyPool());
     }
 
     [Fact]
@@ -892,6 +894,40 @@ public class ProxyRequestHandlerTests
         Assert.Null(record.Status);
         Assert.Null(record.ResponseBody);
         Assert.Null(record.FirstTokenAt);
+
+        // Điểm #1 (spec §4.1): log chẩn đoán đọc được ngay — elapsed + account + route, Warning
+        // (không phải Error — tránh đếm đôi cảnh báo, D1), ErrorCode là type lỗi đọc gốc
+        var diag = Assert.Single(log.Entries.Where(e => e.Message.Contains("đứt stream")));
+        Assert.Equal(LogSeverity.Warning, diag.Severity);
+        Assert.Equal(LogCategory.Request, diag.Category);
+        Assert.Equal("req-mid", diag.RequestId);
+        Assert.Matches(@"^Upstream 'openai-main' đứt stream sau \d+ms — account 'a1', route direct\.$",
+            diag.Message);
+        Assert.Equal("IOException", diag.ErrorCode);
+        Assert.Contains("upstream stream broke mid-chunk", diag.Details);
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenClientAbortedMidStream_WritesNoStreamDeathDiagnostic()
+    {
+        var log = new CapturingLog();
+        var sut = Create(new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new BrokenSseContent(),
+        }), log);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var ctx = Ctx();
+        ctx.RequestAborted = cts.Token; // client tự ngắt — không phải sự cố upstream (D4)
+        ctx.Items[ClientKeyItems.RequestId] = "req-abort";
+        ctx.Items[SsePipeItems.Key] = new Pipe();
+        var provider = SeedProvider();
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+                AccountIdOf(provider), ProxyProtocols.Chat, default));
+
+        Assert.DoesNotContain(log.Entries, e => e.Message.Contains("đứt stream"));
     }
 
     [Fact]

@@ -132,7 +132,8 @@ public class DispatcherLoopTests : IDisposable
         _settings.Set(SettingsKeys.DatasetExportEnabled, false);
         var handler = new ProxyRequestHandler(upstream, _protector, log, new NullUsageSink(),
             new ApiMonitorStore(_trace, log, TimeProvider.System), _settings,
-            new DatasetSink(_settings, log, TimeProvider.System));
+            new DatasetSink(_settings, log, TimeProvider.System), new ProxySelectionResolver(),
+            pool ?? new DirectProxyPool());
         _settings.Set(SettingsKeys.TransientMaxRetries, 0); // baseline opt-out — test transient riêng Set lại (đọc tại mỗi quyết định retry)
         _loop = new DispatcherLoop(_queue, executions ?? _executions, resolver, selector, handler,
             pool ?? new DirectProxyPool(), log, _trace, _settings,
