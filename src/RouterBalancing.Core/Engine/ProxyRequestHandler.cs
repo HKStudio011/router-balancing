@@ -519,10 +519,10 @@ public sealed class ProxyRequestHandler(
         });
 
     // Tín hiệu CHẨN ĐOÁN (không đổi response/outcome): model gọi tên tool client KHÔNG khai báo
-    // trong body gốc. Lane OpenCode free: sidecar (Go) đã alias-restore tên tool trong response,
-    // nên tên không khớp danh sách client = model dùng official tool không có bản tương ứng phía
-    // client → client báo "invalid tool" rất khó hiểu khi debug. Ghi Warning kèm RequestId để
-    // correlate ngay trong log; mỗi tên chỉ cảnh báo MỘT lần (không spam theo chunk/occurrence).
+    // trong body gốc — với mọi provider, client sẽ báo "invalid tool" rất khó hiểu khi debug.
+    // Trên lane OpenCode free, nguyên nhân thường là official tool không có bản tương ứng phía
+    // client vì sidecar (Go) đã alias-restore tên tool trong response. Ghi Warning kèm RequestId
+    // để correlate ngay trong log; mỗi tên chỉ cảnh báo MỘT lần (không spam theo chunk/occurrence).
     private void WarnOnUnknownToolCalls(HttpContext ctx, Provider provider, byte[] body,
         string? responseBody)
     {
@@ -535,9 +535,10 @@ public sealed class ProxyRequestHandler(
                 Severity = LogSeverity.Warning,
                 Category = LogCategory.Request,
                 Message = $"Model gọi tool '{name}' không có trong danh sách tools client khai báo "
-                          + $"(provider '{provider.Name}') — lane OpenCode free: sidecar đã "
-                          + "alias-restore tên tool trong response, nên đây là official tool "
-                          + "không có bản tương ứng phía client; client sẽ báo invalid tool.",
+                          + $"(provider '{provider.Name}') — client sẽ báo lỗi invalid tool khi "
+                          + "nhận tên này; trên lane OpenCode free, đây thường là official tool "
+                          + "không có bản tương ứng phía client (sidecar đã alias-restore tên "
+                          + "tool trong response).",
                 RequestId = ClientKeyItems.RequestIdOf(ctx),
                 ClientKeyId = ClientKeyItems.IdOf(ctx),
             });
