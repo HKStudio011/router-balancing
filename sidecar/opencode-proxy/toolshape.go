@@ -292,7 +292,14 @@ func rewriteToolReferences(r *ToolRenames, messages []any) []any {
 			}
 			kept = append(kept, callEntry)
 		}
-		msg["tool_calls"] = kept
+		if len(kept) == 0 {
+			// Mọi call là orphan: bỏ hẳn key thay vì để "tool_calls": [] — mảng
+			// rỗng vô nghĩa với API và làm assistant message trông như khai báo
+			// tool rỗng với client.
+			delete(msg, "tool_calls")
+		} else {
+			msg["tool_calls"] = kept
+		}
 	}
 
 	out := make([]any, 0, len(messages))

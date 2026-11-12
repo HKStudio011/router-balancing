@@ -159,6 +159,42 @@ func TestRewriteBody_OrphanReferenceDropped(t *testing.T) {
 	}
 }
 
+// Assistant message mà MỌI tool_call đều orphan (tool không được declare) phải bỏ
+// hẳn key tool_calls — "tool_calls": [] re-marshal ra vô nghĩa và làm message trông
+// như khai báo tool rỗng.
+func TestRewriteBody_AllCallsOrphaned_DropsToolCallsKey(t *testing.T) {
+	r := NewToolRenames([]string{"Read"})
+	payload := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+			map[string]any{"role": "assistant", "content": "", "tool_calls": []any{
+				map[string]any{"id": "call_ghost", "type": "function",
+					"function": map[string]any{"name": "Ghost", "arguments": "{}"}},
+			}},
+			map[string]any{"role": "tool", "tool_call_id": "call_ghost", "content": "ghost result"},
+			map[string]any{"role": "user", "content": "next"},
+		},
+	}
+
+	r.RewriteBody(payload)
+
+	msgs := payload["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("số message = %d, want 3 (assistant giữ lại, orphan tool msg bị bỏ): %v", len(msgs), msgs)
+	}
+	asst := msgs[1].(map[string]any)
+	if got, exists := asst["tool_calls"]; exists {
+		t.Errorf("assistant hết call sống phải bị xoá hẳn key tool_calls, got %v", got)
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload sau rewrite: %v", err)
+	}
+	if strings.Contains(string(out), `"tool_calls"`) {
+		t.Errorf("re-marshal vẫn còn key tool_calls: %s", out)
+	}
+}
+
 func TestRewriteBody_ToolChoiceObjectForm_Rewritten(t *testing.T) {
 	r := NewToolRenames([]string{"Bash"})
 	wire := wireNameOf(t, "Bash")
