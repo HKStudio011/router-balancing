@@ -288,8 +288,12 @@ public sealed class DispatcherLoop(
                     {
                         Severity = LogSeverity.Error,
                         Category = LogCategory.Request,
-                        Message = $"Lỗi dispatcher: {ex.Message}",
-                        Details = ex.ToString(),
+                        // attempt/TK/kết luận: dispatcher là nơi DUY NHẤT biết attempt nào và client nhận gì
+                        // (handler không thấy attempt; endpoint không thấy exception) — spec §4.2
+                        Message = $"Lỗi dispatcher: {ex.Message} — attempt #{attemptNo}, "
+                                  + $"account '{AccountNameOf(candidate, accountId)}', "
+                                  + $"{(request.Context.Response.HasStarted ? "stream đã gửi → Aborted" : "chưa gửi gì → 500")}.",
+                        Details = ex.ToString() + StreamDeathHint(ex),
                         ErrorCode = ex.GetType().Name,
                         RequestId = request.Id,
                         ProviderKey = candidate.Provider.Name,
@@ -852,6 +856,15 @@ public sealed class DispatcherLoop(
     /// </summary>
     private static string AccountNameOf(ModelCandidate candidate, long accountId) =>
         candidate.Provider.Accounts?.FirstOrDefault(a => a.Id == accountId)?.Name ?? "-";
+
+    // Hint đọc-được-ngay cho người trực ca (spec §4.2/D2) — chỉ gắn cho 2 exception stream đã biết
+    // để không nhiễu khi lỗi dispatcher là do resolver/DB.
+    private static string StreamDeathHint(Exception ex) =>
+        ex is UpstreamStreamDiedException or UpstreamIdleTimeoutException
+            ? "\nChẩn đoán: upstream đóng/RST giữa stream (\"response ended prematurely\") — không "
+              + "phải client cancel; đối chiếu dòng cùng RequestId ở handler (elapsed + route) "
+              + "trước khi nghi proxy/hạ tầng."
+            : "";
 
     /// <summary>
     /// Tập TK của provider <paramref name="candidate"/> đã thử trong request — truyền vào

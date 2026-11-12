@@ -279,6 +279,14 @@ public class DispatcherLoopTests : IDisposable
         }
     }
 
+    /// <summary>Upstream ném ngay khi gửi — mô phỏng lỗi không thuộc nhóm handler tự nuốt.</summary>
+    private sealed class ThrowingUpstream(Exception ex) : IUpstreamClient
+    {
+        public Task<HttpResponseMessage> PostAsync(
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
+            Task.FromException<HttpResponseMessage>(ex);
+    }
+
     private sealed class GatedUpstream : IUpstreamClient
     {
         private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -808,6 +816,54 @@ public class DispatcherLoopTests : IDisposable
         Assert.IsType<DispatchOutcome.Handled>(await r2.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
         Assert.Equal(2, upstream.Calls);
         Assert.Single(log.Errors);
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenForwardThrows_LogsAttemptAccountAndOutcome()
+    {
+        var pid = SeedProvider("p1"); // TK mặc định "a1"
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        // Exception ngoài nhóm mạng → handler không nuốt, dispatcher catch là nơi duy nhất ghi log
+        var upstream = new ThrowingUpstream(new InvalidOperationException("boom"));
+        var log = new CapturingLog();
+
+        var r1 = Req("req00001");
+        _queue.Enqueue(r1);
+        await StartAsync(resolver, selector, upstream, log);
+
+        Assert.IsType<DispatchOutcome.Error>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+
+        // Đúng 1 dòng Error/ca chết — enrichment không nhân đôi cảnh báo (D1/Review Focus 3)
+        var entry = Assert.Single(log.Entries, e => e.Severity == LogSeverity.Error);
+        Assert.Contains("Lỗi dispatcher", entry.Message);
+        Assert.Contains("attempt #1", entry.Message);
+        Assert.Contains("account 'a1'", entry.Message);
+        Assert.Contains("chưa gửi gì → 500", entry.Message);
+        Assert.DoesNotContain("Chẩn đoán", entry.Details); // hint chỉ cho lỗi stream (D2)
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenUpstreamStreamDied_AppendsStreamDeathHint()
+    {
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ThrowingUpstream(
+            new UpstreamStreamDiedException(new IOException("response ended prematurely"), TimeSpan.Zero));
+        var log = new CapturingLog();
+
+        var r1 = Req("req00001");
+        _queue.Enqueue(r1);
+        await StartAsync(resolver, selector, upstream, log);
+
+        Assert.IsType<DispatchOutcome.Error>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+
+        var entry = Assert.Single(log.Entries, e => e.Severity == LogSeverity.Error);
+        Assert.Contains("attempt #1", entry.Message);
+        Assert.Contains("account 'a1'", entry.Message);
+        Assert.Contains("Chẩn đoán", entry.Details);
+        Assert.Contains("không phải client cancel", entry.Details);
     }
 
     [Fact]
