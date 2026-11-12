@@ -83,7 +83,7 @@ func isPlausibleOfficialSession(s string, now time.Time) bool {
 // ~(ts<<12|counter) trong 48-bit, counter 1 — low 12 hex digits luôn đọc "ffe".
 // Field wrap ở 2^36 ms; Go arithmetic tự cho đúng kết quả wrap như client thật.
 func encodeSessionTimePart(ts int64) string {
-	word := ^((uint64(ts)<<12) | 1) & 0xFFFFFFFFFFFF
+	word := ^((uint64(ts) << 12) | 1) & 0xFFFFFFFFFFFF
 	b := make([]byte, 6)
 	for i := 5; i >= 0; i-- {
 		b[i] = byte(word)

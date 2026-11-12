@@ -40,7 +40,7 @@ func assertPlausibleWindow(t *testing.T, id string) {
 // time part = ~(ts<<12|1) & 0xFFFFFFFFFFFF (counter 1) + 14 ký tự base62 cố định.
 func buildOfficialSession(t *testing.T, ts int64) string {
 	t.Helper()
-	word := ^((uint64(ts)<<12) | 1) & 0xFFFFFFFFFFFF
+	word := ^((uint64(ts) << 12) | 1) & 0xFFFFFFFFFFFF
 	var b [6]byte
 	for i := 5; i >= 0; i-- {
 		b[i] = byte(word)
@@ -73,7 +73,7 @@ func TestSessionID_StableWithinSameDay_DiffersAcrossSignals(t *testing.T) {
 }
 
 func TestSessionID_OfficialPlausibleSession_KeptVerbatim(t *testing.T) {
-	ts := utcMidnightMs(time.Now()) - int64((5*24*time.Hour).Milliseconds())
+	ts := utcMidnightMs(time.Now()) - int64((5 * 24 * time.Hour).Milliseconds())
 	official := buildOfficialSession(t, ts)
 	if got := sessionID(official); got != official {
 		t.Errorf("session chính chủ plausible phải giữ nguyên: got %q want %q", got, official)
