@@ -486,7 +486,10 @@
     /// </summary>
     private void ResetDatasetPath() => _draft.DatasetExportPath = DatasetPaths.Resolve(null);
 
-    /// <summary>Dòng trạng thái export — đủ counter của DatasetStats (spec §7.7).</summary>
+    /// <summary>
+    /// Dòng trạng thái export — đủ counter của DatasetStats (spec §7.7 + v2 §7.2:
+    /// <see cref="DatasetStats.SkippedSynthetic"/> cho completion do sidecar tự tổng hợp).
+    /// </summary>
     private string DatasetStatsLine()
     {
         var s = Dataset.Stats;
@@ -497,7 +500,8 @@
             s.SkippedTruncated,
             s.SkippedEmpty,
             s.SkippedRefusal,
-            s.SkippedQueueFull);
+            s.SkippedQueueFull,
+            s.SkippedSynthetic);
     }
 
     /// <summary>Mở explorer vào thư mục dataset (chỉ Windows — spec §7.7); lỗi không được nổ circuit.</summary>

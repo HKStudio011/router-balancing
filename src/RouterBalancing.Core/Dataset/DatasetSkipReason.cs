@@ -17,4 +17,10 @@ public enum DatasetSkipReason
 
     /// <summary>Upstream trả 2xx nhưng completion là lời từ chối (heuristic chuỗi, spec §7.8).</summary>
     Refusal = 3,
+
+    /// <summary>
+    /// Completion do sidecar tự tổng hợp (title request gặp 429/lỗi transport) — không phải
+    /// model sinh, không được vào dataset train (spec opencode-free-gate-v2 §7.2).
+    /// </summary>
+    Synthetic = 4,
 }

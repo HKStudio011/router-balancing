@@ -1,402 +1,46 @@
-using System.Text;
-using System.Text.Json.Nodes;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 
 namespace router_balancing_test.Providers;
 
 /// <summary>
-/// Fingerprint OpenCode Free: header x-opencode-* + UA opencode + bộ 4 tool decoy
-/// trong body — thiếu bất kỳ thành phần nào → 403 FreeTierError (probe live 2026-10-04).
+/// <see cref="OpenCodeFreeFingerprint"/> sau v2 (decision A) chỉ còn LANE SELECTION cho
+/// <c>opencode.ai</c> — shaping (UA/x-opencode-*, đổi tên tool, restore tên trong SSE) đã
+/// chuyển hẳn sang Go sidecar (<c>sidecar/opencode-proxy</c>), hợp đồng đó test phía Go.
+/// Ở đây giữ hợp đồng nhận diện lane — đầu vào cho phân loại gate + lane dataset.
 /// </summary>
 public class OpenCodeFreeFingerprintTests
 {
-    private static Provider OpenCode() => new()
+    private static Provider ProviderOf(ProviderType type, string baseUrl) => new()
     {
-        Name = "OpenCode Free",
-        Type = ProviderType.OpenAI,
-        BaseUrl = "https://opencode.ai/zen",
+        Name = "P",
+        Type = type,
+        BaseUrl = baseUrl,
     };
 
-    private static ByteArrayContent JsonBody(string json)
-    {
-        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(json));
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-        return content;
-    }
+    [Theory]
+    [InlineData("https://opencode.ai/zen")]      // BaseUrl thật của lane free
+    [InlineData("https://opencode.ai")]          // không path
+    [InlineData("HTTPS://OPENCODE.AI/zen")]      // host so sánh ignore-case
+    public void IsApplicable_OpenCodeHost_ReturnsTrue(string baseUrl) =>
+        Assert.True(OpenCodeFreeFingerprint.IsApplicable(
+            ProviderOf(ProviderType.OpenAI, baseUrl)));
 
-    private static string? Header(HttpRequestMessage request, string name) =>
-        request.Headers.TryGetValues(name, out var values) ? values.Single() : null;
-
-    private static async Task<JsonObject> ContentJson(HttpRequestMessage request)
-    {
-        var json = await request.Content!.ReadAsStringAsync();
-        return JsonNode.Parse(json)!.AsObject();
-    }
-
-    private static readonly string ChatBody =
-        """{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"hi"}],"stream":true}""";
-
-    /// <summary>ChatBody stream:true chèn thêm JSON <paramref name="extra"/> (tools, tool_choice...) vào object.</summary>
-    private static string ChatWith(string extra) =>
-        $$"""
-        {"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"hi"}],"stream":true,{{extra}}}
-        """;
+    [Theory]
+    [InlineData("https://api.openai.com")]        // provider thường — không qua sidecar
+    [InlineData("https://opencode.ai.evil.com")]  // host chỉ trùng tiền tố (không phải subdomain thật)
+    [InlineData("not-a-url")]                     // không parse được URI tuyệt đối → ngoài lane
+    [InlineData("")]                              // rỗng
+    public void IsApplicable_NonOpenCodeHost_ReturnsFalse(string baseUrl) =>
+        Assert.False(OpenCodeFreeFingerprint.IsApplicable(
+            ProviderOf(ProviderType.OpenAI, baseUrl)));
 
     [Fact]
-    public async Task Create_OpenCodeFreeChat_SetsFingerprintHeaders()
+    public void IsApplicable_AnthropicTypeOnOpenCodeHost_ReturnsFalse()
     {
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
-        Assert.Equal("public", request.Headers.Authorization?.Parameter);
-        Assert.Equal("opencode/1.18.31", Header(request, "User-Agent"));
-        Assert.Equal("desktop", Header(request, "x-opencode-client"));
-        Assert.Equal("global", Header(request, "x-opencode-project"));
-        Assert.Matches(@"^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$", Header(request, "x-opencode-session")!);
-        Assert.Matches(@"^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$", Header(request, "x-opencode-request")!);
-        Assert.Equal("text/event-stream", Header(request, "Accept"));
-        // Body đã qua fingerprint: tools có đủ quartet
-        var tools = (await ContentJson(request))["tools"]!.AsArray();
-        Assert.Equal(4, tools.Count);
-    }
-
-    [Fact]
-    public void Create_OpenCodeFreeChat_KeepsSessionStableAcrossRequests()
-    {
-        using var first = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-        using var second = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        // Session đổi mỗi request → đốt quota free tier (429 FreeUsageLimitError)
-        Assert.NotNull(Header(first, "x-opencode-session"));
-        Assert.Equal(Header(first, "x-opencode-session"), Header(second, "x-opencode-session"));
-    }
-
-    [Fact]
-    public void Create_OpenCodeFreeChat_DerivesRequestIdFromLastUserMessage()
-    {
-        var other = ChatBody.Replace("\"hi\"", "\"another question\"");
-        using var first = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-        using var retry = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-        using var otherTurn = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(other));
-
-        // Cùng turn (retry) → cùng id; turn khác → id khác
-        Assert.Equal(Header(first, "x-opencode-request"), Header(retry, "x-opencode-request"));
-        Assert.NotEqual(Header(first, "x-opencode-request"), Header(otherTurn, "x-opencode-request"));
-        // session vẫn stable kể cả id đổi
-        Assert.Equal(Header(first, "x-opencode-session"), Header(otherTurn, "x-opencode-session"));
-    }
-
-    [Fact]
-    public async Task Create_OpenCodeFreeChat_StreamFalse_ForcesStreamAndSseAccept()
-    {
-        // Gate (probe live 2026-10-13) 403 FreeTierError với stream:false —
-        // fingerprint force stream:true + Accept SSE, caller aggregate về JSON cho client
-        var body = ChatBody.Replace("\"stream\":true", "\"stream\":false");
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(body));
-
-        Assert.Equal("text/event-stream", Header(request, "Accept"));
-        var parsed = await ContentJson(request);
-        Assert.True(parsed["stream"]!.GetValue<bool>());
-        // Forced-stream chưa qua WithIncludeUsage → tự chèn usage chunk
-        Assert.True(parsed["stream_options"]!["include_usage"]!.GetValue<bool>());
-    }
-
-    [Fact]
-    public void Create_OpenCodeFreeChat_SessionHex_DecodesToRecentTimestamp()
-    {
-        // 12 hex đầu là inverted timestamp (9router generateSessionId) —
-        // hex ngẫu nhiên thường decode ra "tương lai" → gate 403. So sánh với cùng
-        // thuật toán encode: inversion đảo thứ tự nên v(now+Δ) < v(session) < v(now-Δ).
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        var session = Header(request, "x-opencode-session")!;
-        var value = Convert.ToUInt64(session[4..16], 16); // bỏ "ses_", 12 hex = 48-bit
-        Assert.InRange(value,
-            EncodeTimeHex(DateTimeOffset.UtcNow.AddMinutes(1)),
-            EncodeTimeHex(DateTimeOffset.UtcNow.AddHours(-1)));
-    }
-
-    /// <summary>Mirror <c>MintSessionId</c>: 48-bit cao của <c>~(unixMs * 0x1000 + 1)</c>.</summary>
-    private static ulong EncodeTimeHex(DateTimeOffset time) =>
-        ~((ulong)time.ToUnixTimeMilliseconds() * 0x1000UL + 1UL) & 0xFFFFFFFFFFFF;
-
-    [Fact]
-    public void Create_OpenCodeFreeProbe_NoFingerprintHeaders()
-    {
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty);
-
-        // GET probe đang chạy tốt today — không thêm header fingerprint vào
-        Assert.False(request.Headers.Contains("x-opencode-session"));
-        Assert.False(request.Headers.Contains("User-Agent"));
-        Assert.False(request.Headers.Contains("Accept"));
-        Assert.Null(request.Headers.Authorization);
-    }
-
-    [Fact]
-    public void Create_OpenAiKeyless_NoFingerprint()
-    {
-        using var request = ProviderRequestFactory.Create(
-            new Provider { Name = "P", Type = ProviderType.OpenAI, BaseUrl = "https://api.openai.com" },
-            string.Empty, "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        // D7: key rỗng = bỏ Authorization; không phải OpenCode thì không fingerprint
-        Assert.Null(request.Headers.Authorization);
-        Assert.False(request.Headers.Contains("x-opencode-session"));
-    }
-
-    [Fact]
-    public async Task Create_OpenCodeWithRealKey_AppliesFingerprintButKeepsRealKey()
-    {
-        using var request = ProviderRequestFactory.Create(OpenCode(), "sk-real",
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        // Gate kiểm theo client fingerprint, không phân biệt auth (9router opencode-zen.js
-        // cũng áp UA + x-opencode-* + quartet tools) — chỉ auth là key thật
-        Assert.Equal("sk-real", request.Headers.Authorization?.Parameter);
-        Assert.Equal("opencode/1.18.31", Header(request, "User-Agent"));
-        Assert.Matches(@"^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$", Header(request, "x-opencode-session")!);
-        var tools = (await ContentJson(request))["tools"]!.AsArray();
-        Assert.Equal(4, tools.Count);
-    }
-
-    [Fact]
-    public void Create_OpenCode_DifferentKeys_UseDifferentSessions()
-    {
-        // Quota free tier tính theo session gắn với identity (key) — trùng session giữa
-        // 2 account làm cháy quota oan (9router identityKey = auth digest)
-        using var free = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-        using var keyed = ProviderRequestFactory.Create(OpenCode(), "sk-real",
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-        using var sameKey = ProviderRequestFactory.Create(OpenCode(), "sk-real",
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        Assert.NotNull(Header(free, "x-opencode-session"));
-        Assert.NotNull(Header(keyed, "x-opencode-session"));
-        Assert.NotEqual(Header(free, "x-opencode-session"), Header(keyed, "x-opencode-session"));
-        Assert.Equal(Header(keyed, "x-opencode-session"), Header(sameKey, "x-opencode-session"));
-    }
-
-    [Fact]
-    public async Task Create_OpenCodeFreeChat_AppendsMissingFingerprintTools()
-    {
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        var body = await ContentJson(request);
-        var tools = body["tools"]!.AsArray();
-        Assert.Equal(
-            new[] { "bash", "glob", "grep", "read" },
-            tools.Select(t => t!["function"]!["name"]!.GetValue<string>()));
-        Assert.All(tools, t =>
-        {
-            Assert.Equal("function", t!["type"]!.GetValue<string>());
-            Assert.Equal("This tool is currently unavailable and must not be used.",
-                t["function"]!["description"]!.GetValue<string>());
-        });
-        // Không có client tools → tool_choice "none" để decoy không bị chọn
-        Assert.Equal("none", body["tool_choice"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task Create_OpenCodeFreeChat_KeepsClientToolsAndAddsMissingOnly()
-    {
-        var body = ChatWith("""
-            "tools":[{"type":"function","function":{"name":"web_search","description":"d","parameters":{"type":"object","properties":{}}}}]
-            """);
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(body));
-
-        var parsed = await ContentJson(request);
-        var names = parsed["tools"]!.AsArray()
-            .Select(t => t!["function"]!["name"]!.GetValue<string>());
-        Assert.Equal(
-            new[] { "web_search", "bash", "glob", "grep", "read" },
-            names);
-        // Client có tools nhưng không khai tool_choice → giữ nguyên (mặc định auto)
-        Assert.False(parsed.ContainsKey("tool_choice"));
-    }
-
-    [Fact]
-    public async Task Create_OpenCodeFreeChat_RenamesCaseVariantQuartetAndRetargetsToolChoice()
-    {
-        var body = ChatWith("""
-            "tools":[
-              {"type":"function","function":{"name":"Bash","description":"run","parameters":{"type":"object","properties":{}}}},
-              {"type":"function","function":{"name":"bash","description":"dup","parameters":{"type":"object","properties":{}}}},
-              {"type":"function","function":{"name":"Glob","description":"files","parameters":{"type":"object","properties":{}}}}
-            ],
-            "tool_choice":{"type":"function","function":{"name":"Bash"}}
-            """);
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(body));
-
-        var parsed = await ContentJson(request);
-        var names = parsed["tools"]!.AsArray()
-            .Select(t => t!["function"]!["name"]!.GetValue<string>()).ToList();
-        // Bash + bash là duplicate bị upstream từ chối → giữ 1 bản lowercase; Glob → glob
-        Assert.Equal(new[] { "bash", "glob", "grep", "read" }, names);
-        Assert.Equal("bash", parsed["tool_choice"]!["function"]!["name"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task Create_OpenCodeFreeChat_InvalidJson_LeavesBodyUntouched()
-    {
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody("not-json"));
-
-        Assert.Equal("not-json", await request.Content!.ReadAsStringAsync());
-        // Header fingerprint vẫn gắn (không phụ thuộc parse được body)
-        Assert.Matches(@"^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$", Header(request, "x-opencode-session")!);
-        // Không đọc được user text → id ngẫu nhiên nhưng vẫn đúng format
-        Assert.Matches(@"^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$", Header(request, "x-opencode-request")!);
-    }
-
-    [Fact]
-    public async Task Create_OpenCodeFreeChat_TransformedBody_ContentLengthMatchesNewBytes()
-    {
-        // Content-Length copy từ body CŨ trong khi transform chèn decoy làm bytes dài hơn →
-        // HttpRequestException "Sent N bytes, but Content-Length promised M" lúc gửi thật
-        // (bắt thật qua harness gửi request 2026-10-05; unit test chỉ đọc content nên trước đây không thấy)
-        using var request = ProviderRequestFactory.Create(OpenCode(), string.Empty,
-            "/v1/chat/completions", HttpMethod.Post, JsonBody(ChatBody));
-
-        var bytes = await request.Content!.ReadAsByteArrayAsync();
-        Assert.Equal(bytes.Length, request.Content.Headers.ContentLength);
-    }
-
-    // ─── RewritesTools: cờ cho dataset export (spec dataset §7.4 tools_rewritten) ───
-
-    [Fact]
-    public void RewritesTools_ClientDeclaresBashWithUpperCase_ReturnsTrue()
-    {
-        // "Bash" → canonicalize thành bash (upstream từ chối trùng casing) → mảng tools đổi
-        var body = ChatWith("""
-            "tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]
-            """);
-
-        Assert.True(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes(body)));
-    }
-
-    [Fact]
-    public void RewritesTools_BodyWithoutTools_ReturnsTrue()
-    {
-        // Hành vi kiểm chứng (2026-11-07, đọc ApplyTools + chạy test): client KHÔNG khai tool nào
-        // thì fingerprint chèn cả 4 decoy (gate yêu cầu quartet có mặt trong body) → mảng tools
-        // được tạo mới = "đổi". Plan hedge tên test là _ReturnsFalse — chốt theo hành vi thật.
-        Assert.True(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes(ChatBody)));
-    }
-
-    [Fact]
-    public void RewritesTools_ExactQuartetNames_ReturnsFalse()
-    {
-        // Quartet đúng lowercase: không rename, không trùng, không thiếu → mảng tools giữ nguyên
-        var body = ChatWith("""
-            "tools":[
-              {"type":"function","function":{"name":"bash","parameters":{"type":"object"}}},
-              {"type":"function","function":{"name":"glob","parameters":{"type":"object"}}},
-              {"type":"function","function":{"name":"grep","parameters":{"type":"object"}}},
-              {"type":"function","function":{"name":"read","parameters":{"type":"object"}}}
-            ]
-            """);
-
-        Assert.False(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes(body)));
-    }
-
-    [Fact]
-    public void RewritesTools_InvalidJson_ReturnsFalse()
-    {
-        // Fail-open: JSON hỏng → false, không bao giờ ném (gọi trên đường request)
-        Assert.False(OpenCodeFreeFingerprint.RewritesTools(Encoding.UTF8.GetBytes("{broken")));
-    }
-
-    [Fact]
-    public void RestoreMapFor_CaseVariantQuartet_MapsCanonicalToClientName()
-    {
-        // Map ngược cho response: client gọi "bash" phải khớp tên nó khai báo ("Bash")
-        var body = ChatWith("""
-            "tools":[
-              {"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}},
-              {"type":"function","function":{"name":"Glob","parameters":{"type":"object"}}}
-            ]
-            """);
-
-        var map = OpenCodeFreeFingerprint.RestoreMapFor(OpenCode(), Encoding.UTF8.GetBytes(body));
-
-        Assert.NotNull(map);
-        Assert.Equal(2, map.Count);
-        Assert.Equal("Bash", map["bash"]);
-        Assert.Equal("Glob", map["glob"]);
-    }
-
-    [Fact]
-    public void RestoreMapFor_NoRenamedTools_ReturnsNull()
-    {
-        // Không có tools (chỉ decoy chèn) hoặc tools đã đúng lowercase → không cần bọc response
-        Assert.Null(OpenCodeFreeFingerprint.RestoreMapFor(OpenCode(), Encoding.UTF8.GetBytes(ChatBody)));
-
-        var lower = ChatWith("""
-            "tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}]
-            """);
-        Assert.Null(OpenCodeFreeFingerprint.RestoreMapFor(OpenCode(), Encoding.UTF8.GetBytes(lower)));
-    }
-
-    [Fact]
-    public void RestoreMapFor_NonOpenCodeProvider_ReturnsNull()
-    {
-        var provider = new Provider
-        {
-            Name = "P", Type = ProviderType.OpenAI, BaseUrl = "https://api.openai.com",
-        };
-        var body = ChatWith("""
-            "tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]
-            """);
-
-        Assert.Null(OpenCodeFreeFingerprint.RestoreMapFor(provider, Encoding.UTF8.GetBytes(body)));
-    }
-
-    [Fact]
-    public void DecoyNamesFor_NoClientTools_ReturnsAllQuartet()
-    {
-        // Client không khai tool nào → fingerprint chèn cả 4 decoy; model gọi tên nào
-        // trong 4 tên này cũng là "tool ma" client không đăng ký
-        var names = OpenCodeFreeFingerprint.DecoyNamesFor(
-            OpenCode(), Encoding.UTF8.GetBytes(ChatBody));
-
-        Assert.Equal(new[] { "bash", "glob", "grep", "read" }, names);
-    }
-
-    [Fact]
-    public void DecoyNamesFor_ClientDeclaresCaseVariantBash_ReturnsOtherThree()
-    {
-        // Client khai "Bash" → canonicalize thành bash → chỉ glob/grep/read là decoy
-        var body = ChatWith("""
-            "tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]
-            """);
-
-        var names = OpenCodeFreeFingerprint.DecoyNamesFor(OpenCode(), Encoding.UTF8.GetBytes(body));
-
-        Assert.Equal(new[] { "glob", "grep", "read" }, names);
-    }
-
-    [Fact]
-    public void DecoyNamesFor_NonOpenCodeProvider_ReturnsEmpty()
-    {
-        var provider = new Provider
-        {
-            Name = "P", Type = ProviderType.OpenAI, BaseUrl = "https://api.openai.com",
-        };
-
-        Assert.Empty(OpenCodeFreeFingerprint.DecoyNamesFor(
-            provider, Encoding.UTF8.GetBytes(ChatBody)));
+        // Lane chỉ định nghĩa cho Type OpenAI (đường chat reroute sang sidecar) — host trùng
+        // nhưng Type Anthropic không đi qua handler/shape của lane
+        Assert.False(OpenCodeFreeFingerprint.IsApplicable(
+            ProviderOf(ProviderType.Anthropic, "https://opencode.ai/zen")));
     }
 }

@@ -324,6 +324,10 @@ public class ProxyHealthHandlerTests : IDisposable
             return removeOnFailure ? _alive.RemoveAll(a => a.Id == proxyId) > 0 : true;
         }
 
+        public void ReportBlocked(long proxyId, TimeSpan ttl)
+        {
+        }
+
         public void ReportSuccess(long proxyId) => Successes.Add(proxyId);
 
         public void Invalidate()

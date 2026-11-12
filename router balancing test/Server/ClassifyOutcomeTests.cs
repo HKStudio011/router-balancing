@@ -13,6 +13,9 @@ public class ClassifyOutcomeTests
         [new DispatchOutcome.Error(400, "m", "invalid_request_error", null, null), TraceStage.Finished, false, 400],
         [new DispatchOutcome.Cancelled(), TraceStage.Canceled, null, null],
         [new DispatchOutcome.Aborted(), TraceStage.Canceled, null, null],
+        // Blocked chỉ tới endpoint khi proxy/exit đã kiệt (dispatcher convert xong) — trace
+        // phải ghi finished+failed+403 như Passthrough, không nuốt im lặng
+        [new DispatchOutcome.Blocked(403, "application/json", []), TraceStage.Finished, false, 403],
     ];
 
     [Theory]

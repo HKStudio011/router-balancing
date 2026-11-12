@@ -27,7 +27,9 @@ public sealed class ProxyRequestHandler(
     IRequestUsageSink usageSink,
     IApiMonitorStore monitor,
     IAppSettingsService settings,
-    IDatasetSink dataset)
+    IDatasetSink dataset,
+    IProxySelectionResolver proxySelectionResolver,
+    IProxyPool proxyPool)
 {
     /// <summary>Body đã buffer + model id đã validate — input cho enqueue.</summary>
     /// <param name="ModelId">Model id đã validate (resolve alias tại dispatcher).</param>
@@ -180,8 +182,9 @@ public sealed class ProxyRequestHandler(
                     Stream dest = hasPipe
                         ? ((Pipe)pipeObj!).Writer.AsStream()
                         : ctx.Response.Body;
-                    // Client non-stream nhưng upstream trả SSE (fingerprint force stream —
-                    // OpenCode gate 403 stream:false) → aggregate về JSON giữ contract non-stream
+                    // Client non-stream nhưng upstream trả SSE (ChatBody ép stream:true; sidecar
+                    // OpenCode cũng ép vì gate 403 stream:false) → aggregate về JSON cho client,
+                    // giữ đúng contract non-stream
                     var aggregate = upstreamSse && !hasPipe;
                     if (!ctx.Response.HasStarted)
                     {
@@ -243,7 +246,7 @@ public sealed class ProxyRequestHandler(
                         monitor.RecordError(requestId, 0, null);
                         return new DispatchOutcome.Fatal(FailoverLevel.Provider, null, null, [], null);
                     }
-                    catch
+                    catch (Exception ex)
                     {
                         // Hủy kết nối upstream TRƯỚC khi exception rời handler — endpoint và
                         // dispatcher mới ghi lỗi cho client sau đó (cancel-before-error, chuẩn
@@ -255,6 +258,32 @@ public sealed class ProxyRequestHandler(
                         // Canceled bị gắn FailureKind=network gây nhầm lẫn khi chẩn đoán.
                         if (!ctx.RequestAborted.IsCancellationRequested)
                             monitor.RecordError(requestId, 0, null);
+                        // Điểm #1 (spec §4.1): nơi DUY NHẤT còn stopwatch/account/route — exception rời handler
+                        // thì dispatcher chỉ còn message. Warning (không Error) đúng D1; chỉ ghi khi client còn
+                        // nối vì client tự ngắt không phải sự cố upstream (D4).
+                        if (!ctx.RequestAborted.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                log.Write(new LogEntry
+                                {
+                                    Severity = LogSeverity.Warning,
+                                    Category = LogCategory.Request,
+                                    Message = $"Upstream '{provider.Name}' đứt stream sau {stopwatch.ElapsedMilliseconds}ms "
+                                              + $"— account '{account.Name}', route {DescribeProxyRoute(provider, account)}.",
+                                    Details = ex.ToString(),
+                                    // Type lỗi đọc GỐC (watchdog bọc thành UpstreamStreamDiedException) — cùng quy ước
+                                    // với catch pre-content để filter được HttpIOException trong DB
+                                    ErrorCode = (ex.InnerException ?? ex).GetType().Name,
+                                    RequestId = ClientKeyItems.RequestIdOf(ctx),
+                                    ClientKeyId = ClientKeyItems.IdOf(ctx),
+                                });
+                            }
+                            catch
+                            {
+                                // Nuốt chủ đích: chẩn đoán không được thay thế exception gốc đang rethrow
+                            }
+                        }
                         throw;
                     }
                     // Monitor ghi NGAY sau tee, KỂ CẢ khi upstream thiếu usage (token null) —
@@ -276,7 +305,7 @@ public sealed class ProxyRequestHandler(
                         });
                     }
                     LogForwarded(ctx, provider, model, response, stopwatch);
-                    WarnOnDecoyToolCalls(ctx, provider, body, tee.ResponseBody);
+                    WarnOnUnknownToolCalls(ctx, provider, body, tee.ResponseBody);
 
                     if (tee.Usage is not null)
                     {
@@ -307,8 +336,8 @@ public sealed class ProxyRequestHandler(
 
                     // Dataset export (spec §7.2): một lần, chỉ 2xx thắng — retry/failover không
                     // tạo bản ghi trùng. Fail-open tuyệt đối: Capture hợp đồng không ném, nhưng
-                    // bọc try/catch để KHÔNG helper nào (RewritesTools/Find/Capture) được phép
-                    // nổ đường forward — export hỏng thì request vẫn phục vụ bình thường.
+                    // bọc try/catch để KHÔNG helper nào (đọc header/Find/Capture/CountSkip) được
+                    // phép nổ đường forward — export hỏng thì request vẫn phục vụ bình thường.
                     if (datasetOn)
                     {
                         try
@@ -320,21 +349,39 @@ public sealed class ProxyRequestHandler(
                             var completion = aggregate ? tee.ResponseBody : tee.CompletionJson;
                             var monitorRecord = monitor.Find(requestId);
                             var lane = LaneFor(provider, account);
-                            // tools_rewritten chỉ đúng khi fingerprint THỰC SỰ áp dụng cho provider
-                            // (spec §7.4 — "true khi fingerprint thực sự đổi mảng tools"): plain lane
-                            // không bao giờ bị rewrite body, gọi RewritesTools vô điều kiện sẽ báo true
-                            // sai cho mọi body thiếu tools/case-variant — đảo ngược ý nghĩa cờ cho toàn
-                            // bộ traffic non-OpenCode (trường hợp phổ biến nhất). Tái dùng lane đã tính:
-                            // IsApplicable chỉ kiểm một lần.
-                            var toolsRewritten = lane != DatasetLane.Plain && OpenCodeFreeFingerprint.RewritesTools(body);
-                            // body = body GỐC của client (tham số ForwardAsync), KHÔNG phải requestBody đã
-                            // rewrite: dữ liệu train phản ánh đúng thứ client gửi — rewrite mang stream:true
-                            // + include_usage do app tự thêm, đưa vào dataset là nhiễm rác (spec §7.1).
-                            dataset.Capture(new DatasetCapture(requestId, protocol.Endpoint, DateTimeOffset.UtcNow, body,
-                                completion, tee.CompletionComplete, provider.Name, account.Name, model.ModelId,
-                                monitorRecord?.Model, monitorRecord?.Mode, ClientKeyItems.IdOf(ctx),
-                                tee.Usage?.PromptTokens, tee.Usage?.CompletionTokens,
-                                lane, toolsRewritten));
+                            // V2 §7.2: shaping là quyết định của SIDECAR (Go) — host đọc tín hiệu
+                            // X-Sidecar-Shaped thay vì suy lại từ body (spec cấm duplicate logic
+                            // giữa hai ngôn ngữ); header vắng (provider không qua sidecar) → false.
+                            // Giữ lane guard: provider ngoài OpenCode không bao giờ báo đã đổi tools
+                            // dù một middlebox nào đó lỡ dội header về.
+                            var shaped = HeaderValue(response, SidecarShapedHeader);
+                            var toolsRewritten = lane != DatasetLane.Plain
+                                && shaped.Contains("tools", StringComparison.OrdinalIgnoreCase);
+                            // Title synthesized: sidecar tự sinh completion (title request gặp 429/
+                            // lỗi transport) — không phải model trả lời nên KHÔNG vào dataset train,
+                            // chỉ đếm counter riêng (spec v2 §7.2).
+                            if (HeaderValue(response, SidecarTitleHeader)
+                                .Contains("synthesized", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // CountSkip là method internal của sink cụ thể: DI production luôn
+                                // dựng DatasetSink; sink khác (test/decorator tương lai) chỉ bị bỏ
+                                // đường đếm — không được phép nổ đường forward.
+                                if (dataset is DatasetSink sink)
+                                {
+                                    sink.CountSkip(DatasetSkipReason.Synthetic);
+                                }
+                            }
+                            else
+                            {
+                                // body = body GỐC của client (tham số ForwardAsync), KHÔNG phải requestBody đã
+                                // rewrite: dữ liệu train phản ánh đúng thứ client gửi — rewrite mang stream:true
+                                // + include_usage do app tự thêm, đưa vào dataset là nhiễm rác (spec §7.1).
+                                dataset.Capture(new DatasetCapture(requestId, protocol.Endpoint, DateTimeOffset.UtcNow, body,
+                                    completion, tee.CompletionComplete, provider.Name, account.Name, model.ModelId,
+                                    monitorRecord?.Model, monitorRecord?.Mode, ClientKeyItems.IdOf(ctx),
+                                    tee.Usage?.PromptTokens, tee.Usage?.CompletionTokens,
+                                    lane, toolsRewritten));
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -360,8 +407,10 @@ public sealed class ProxyRequestHandler(
 
                 // Journal Info chung cho Fatal lẫn Passthrough (parity quen sát 3A)
                 LogForwarded(ctx, provider, model, response, stopwatch);
-                return ClassifyFatal((int)response.StatusCode, errorBody, contentType,
-                    retryAfterRaw, RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow));
+                var retryAfter = RetryAfterParser.Parse(retryAfterRaw, DateTimeOffset.UtcNow);
+                var fatal = ClassifyFatal((int)response.StatusCode, errorBody, contentType,
+                    retryAfterRaw, retryAfter);
+                return RefineOpencodeGate(ctx, provider, fatal, errorBody, contentType, retryAfter);
             }
             }
         finally
@@ -393,6 +442,68 @@ public sealed class ProxyRequestHandler(
         }
 
         return new DispatchOutcome.Passthrough(status, contentType, body, retryAfterRaw);
+    }
+
+    /// <summary>
+    /// Tinh chỉnh 403 của provider OpenCode free sau <see cref="ClassifyFatal"/> (spec
+    /// opencode-free-gate-v2 §7.3) — 3 đường phân loại, chỉ áp cho host opencode.ai:
+    /// <list type="bullet">
+    /// <item>IP-abuse (marker egress) → <see cref="DispatchOutcome.Blocked"/>: dispatcher chặn
+    /// exit proxy vừa dùng rồi thử exit khác, KHÔNG xoay account (cùng egress = cùng câu trả lời).</item>
+    /// <item>Shape refusal ("within OpenCode") → nâng lên <see cref="FailoverLevel.Provider"/>
+    /// (deterministic: retry account/model cùng shape là vô ích) + log Error kèm RequestId để
+    /// báo hiệu gate đổi contract, cần cập nhật sidecar.</item>
+    /// <item>Còn lại → giữ nguyên outcome của <see cref="ClassifyFatal"/>.</item>
+    /// </list>
+    /// </summary>
+    private DispatchOutcome RefineOpencodeGate(HttpContext ctx, Provider provider,
+        DispatchOutcome outcome, byte[] errorBody, string? contentType, TimeSpan? retryAfter)
+    {
+        if (!OpenCodeFreeFingerprint.IsApplicable(provider)
+            || outcome is not DispatchOutcome.Fatal { Status: 403 })
+        {
+            return outcome;
+        }
+
+        if (OpencodeGateClassifier.IsIpAbuse(errorBody))
+        {
+            return new DispatchOutcome.Blocked(403, contentType, errorBody);
+        }
+
+        if (OpencodeGateClassifier.IsShapeRefusal(errorBody))
+        {
+            // Error (không phải Warn): gate đổi contract = shaping của sidecar cần cập nhật,
+            // không phải lỗi tạm thời; RequestId để correlate ngay trong log người dùng.
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Error,
+                Category = LogCategory.Request,
+                Message = "OpenCode từ chối shape request (403 within OpenCode) — gate đã đổi "
+                    + "contract; kiểm tra/cập nhật shaping của sidecar.",
+                Details = ErrorBodySnippet(errorBody),
+                RequestId = ClientKeyItems.RequestIdOf(ctx),
+                ClientKeyId = ClientKeyItems.IdOf(ctx),
+            });
+            return new DispatchOutcome.Fatal(FailoverLevel.Provider, 403, contentType, errorBody,
+                retryAfter);
+        }
+
+        return outcome;
+    }
+
+    /// <summary>Snippet body lỗi cho <c>Details</c> log (≤500 ký tự, best-effort UTF-8).</summary>
+    private static string ErrorBodySnippet(byte[] errorBody)
+    {
+        try
+        {
+            var text = System.Text.Encoding.UTF8.GetString(errorBody);
+            return text.Length <= 500 ? text : text[..500];
+        }
+        catch
+        {
+            // Decode lỗi (best-effort) — bỏ snippet, message vẫn đầy đủ
+            return string.Empty;
+        }
     }
 
     /// <summary>
@@ -435,31 +546,161 @@ public sealed class ProxyRequestHandler(
             ClientKeyId = ClientKeyItems.IdOf(ctx),
         });
 
-    // Tín hiệu CHẨN ĐOÁN (không đổi response/outcome): fingerprint opencode.ai chèn 4 tool
-    // decoy để qua gate, model có thể gọi một tên client KHÔNG đăng ký → client báo "invalid
-    // tool" rất khó hiểu khi debug. Ghi Warning kèm RequestId để correlate ngay trong log.
-    private void WarnOnDecoyToolCalls(HttpContext ctx, Provider provider, byte[] body,
+    // Route CẤU HÌNH + down-state, không phải hop thật: ProxyContext.Current đã bị reset sau khi
+    // nhận header nên hop không còn truy được (spec §4.1/D3). Endpoint không chứa credentials.
+    private string DescribeProxyRoute(Provider provider, ProviderAccount account)
+    {
+        var selection = proxySelectionResolver.Resolve(provider, account);
+        if (selection.IsDirect)
+            return "direct";
+
+        // Phòng thủ: NRE ở đây sẽ bị try/catch chẩn đoán nuốt — breadcrumb route biến mất
+        // đúng lúc proxy routing đang chạy; ?? [] cho route rỗng rõ ràng thay vì im lặng.
+        var ids = selection.ProxyIds ?? [];
+        var live = proxyPool.Snapshot().Where(s => ids.Contains(s.Id)).ToList();
+        var endpoints = string.Join(", ", live.Select(s => $"{s.Id}:{s.Endpoint}{(s.IsDown ? "(down)" : "")}"));
+        return $"{selection.Mode} ids=[{string.Join(",", ids)}] enabled=[{endpoints}]";
+    }
+
+    // Tín hiệu CHẨN ĐOÁN (không đổi response/outcome): model gọi tên tool client KHÔNG khai báo
+    // trong body gốc — với mọi provider, client sẽ báo "invalid tool" rất khó hiểu khi debug.
+    // Trên lane OpenCode free, nguyên nhân thường là official tool không có bản tương ứng phía
+    // client vì sidecar (Go) đã alias-restore tên tool trong response. Ghi Warning kèm RequestId
+    // để correlate ngay trong log; mỗi tên chỉ cảnh báo MỘT lần (không spam theo chunk/occurrence).
+    private void WarnOnUnknownToolCalls(HttpContext ctx, Provider provider, byte[] body,
         string? responseBody)
     {
-        foreach (var name in OpenCodeFreeFingerprint.FindDecoyCalls(provider, body, responseBody))
+        if (string.IsNullOrEmpty(responseBody)) return;
+
+        foreach (var name in UnknownToolCalls(responseBody, DeclaredToolNames(body)))
         {
             log.Write(new LogEntry
             {
                 Severity = LogSeverity.Warning,
                 Category = LogCategory.Request,
-                Message = $"Model gọi tool fingerprint '{name}' (decoy để qua gate) nhưng client "
-                          + "không đăng ký tên này — opencode sẽ báo invalid tool; "
-                          + "kiểm tra tool list client gửi lên.",
+                Message = $"Model gọi tool '{name}' không có trong danh sách tools client khai báo "
+                          + $"(provider '{provider.Name}') — client sẽ báo lỗi invalid tool khi "
+                          + "nhận tên này; trên lane OpenCode free, đây thường là official tool "
+                          + "không có bản tương ứng phía client (sidecar đã alias-restore tên "
+                          + "tool trong response).",
                 RequestId = ClientKeyItems.RequestIdOf(ctx),
                 ClientKeyId = ClientKeyItems.IdOf(ctx),
             });
         }
     }
 
+    /// <summary>Tên tool chứa <c>tool_calls</c> trong chat choice: stream (<c>delta</c>) và non-stream (<c>message</c>).</summary>
+    private static readonly string[] ToolCallHolderKeys = ["delta", "message"];
+
     /// <summary>
-    /// Làn provenance của record dataset (spec §7.4): <see cref="DatasetLane.Plain"/> khi
-    /// fingerprint OpenCode không áp dụng cho provider; <see cref="DatasetLane.FreeFingerprint"/>
-    /// khi account key rỗng (free lane), còn lại <see cref="DatasetLane.KeyedFingerprint"/>.
+    /// Tên tool client khai báo trong body chat GỐC (<c>tools[].function.name</c>) — body
+    /// hỏng/không phải JSON object → tập rỗng (chẩn đoán fail-open, không ném trên đường forward).
+    /// </summary>
+    private static HashSet<string> DeclaredToolNames(byte[] body)
+    {
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("tools", out var tools)
+                || tools.ValueKind != JsonValueKind.Array)
+            {
+                return declared;
+            }
+
+            foreach (var tool in tools.EnumerateArray())
+            {
+                if (tool.ValueKind == JsonValueKind.Object
+                    && tool.TryGetProperty("function", out var function)
+                    && function.ValueKind == JsonValueKind.Object
+                    && function.TryGetProperty("name", out var name)
+                    && name.ValueKind == JsonValueKind.String
+                    && name.GetString() is { } value)
+                {
+                    declared.Add(value);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // body hỏng: coi như client không khai báo tool nào — chỉ là tín hiệu chẩn đoán
+        }
+        return declared;
+    }
+
+    /// <summary>
+    /// Tên tool model ĐÃ gọi trong <paramref name="responseBody"/> nhưng client không khai báo —
+    /// walk <c>choices[].{delta,message}.tool_calls[].function.name</c> của mọi dòng JSON
+    /// (<paramref name="responseBody"/> là payload SSE ghép dòng hoặc JSON gộp của client
+    /// non-stream); mỗi tên trả về tối đa MỘT lần. Dòng hỏng/chunk cắt bị bỏ qua — chỉ là tín
+    /// hiệu chẩn đoán, không bao giờ ném.
+    /// </summary>
+    private static List<string> UnknownToolCalls(string responseBody, HashSet<string> declared)
+    {
+        var unknown = new List<string>();
+        foreach (var rawLine in responseBody.Split('\n'))
+        {
+            var text = rawLine.Trim();
+            if (text.Length == 0) continue;
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(text);
+            }
+            catch (JsonException)
+            {
+                continue; // dòng hỏng (chunk cắt giữa JSON) — bỏ qua
+            }
+
+            using (doc)
+            {
+                if (doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("choices", out var choices)
+                    || choices.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var choice in choices.EnumerateArray())
+                {
+                    if (choice.ValueKind != JsonValueKind.Object) continue;
+                    foreach (var holderKey in ToolCallHolderKeys)
+                    {
+                        if (!choice.TryGetProperty(holderKey, out var holder)
+                            || holder.ValueKind != JsonValueKind.Object
+                            || !holder.TryGetProperty("tool_calls", out var calls)
+                            || calls.ValueKind != JsonValueKind.Array)
+                        {
+                            continue;
+                        }
+
+                        foreach (var call in calls.EnumerateArray())
+                        {
+                            if (call.ValueKind == JsonValueKind.Object
+                                && call.TryGetProperty("function", out var function)
+                                && function.ValueKind == JsonValueKind.Object
+                                && function.TryGetProperty("name", out var name)
+                                && name.ValueKind == JsonValueKind.String
+                                && name.GetString() is { } value
+                                && !declared.Contains(value)
+                                && !unknown.Contains(value))
+                            {
+                                unknown.Add(value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return unknown;
+    }
+
+    /// <summary>
+    /// Làn provenance của record dataset (spec §7.4): <see cref="DatasetLane.Plain"/> khi provider
+    /// không thuộc lane OpenCode (không qua sidecar); <see cref="DatasetLane.FreeFingerprint"/>
+    /// khi account key rỗng (free lane — sidecar shaping), còn lại là
+    /// <see cref="DatasetLane.KeyedFingerprint"/> (lane keyed passthrough).
     /// </summary>
     private static DatasetLane LaneFor(Provider provider, ProviderAccount account) =>
         !OpenCodeFreeFingerprint.IsApplicable(provider)
@@ -481,6 +722,22 @@ public sealed class ProxyRequestHandler(
             // intentional swallow — không còn chỗ report nào an toàn hơn (mirror TraceFeed.Publish)
         }
     }
+
+    // Tín hiệu sidecar → host (spec v2 §5.7): custom response header, nằm ở response.Headers
+    // (KHÔNG phải response.Content.Headers). X-Sidecar-Shaped: "tools+prompt" khi free lane đã
+    // shaping / "none" (title-gen, lane keyed); X-Sidecar-Title: "synthesized" chỉ khi sidecar
+    // tự sinh completion. Vắng cả hai = provider không qua sidecar.
+    private const string SidecarShapedHeader = "X-Sidecar-Shaped";
+    private const string SidecarTitleHeader = "X-Sidecar-Title";
+
+    /// <summary>
+    /// Giá trị header tín hiệu sidecar dạng chuỗi — vắng → rỗng; join nhiều giá trị phòng
+    /// trường hợp trung gian tách header (sidecar thật chỉ gửi một giá trị).
+    /// </summary>
+    private static string HeaderValue(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out var values)
+            ? string.Join(", ", values)
+            : string.Empty;
 
     // Encoder relax giữ nguyên apostrophe (0x27) trong message — default encoder escape
     // apostrophe thành chuỗi unicode, sai contract OpenAI (spec §4) — GIỮ NGUYÊN comment 3A

@@ -22,7 +22,7 @@ namespace RouterBalancing.Core.Dataset;
 /// <param name="PromptTokens">Usage prompt từ upstream; <see langword="null"/> khi upstream không trả usage.</param>
 /// <param name="CompletionTokens">Usage completion từ upstream; <see langword="null"/> khi upstream không trả usage.</param>
 /// <param name="Lane">Làn provenance (spec §7.4).</param>
-/// <param name="ToolsRewritten"><see langword="true"/> khi fingerprint đổi mảng <c>tools</c> — record là góc nhìn client.</param>
+/// <param name="ToolsRewritten"><see langword="true"/> khi sidecar đã shaping <c>tools</c> (header <c>X-Sidecar-Shaped</c> chứa "tools") — record là góc nhìn client, không phải thứ model thấy.</param>
 public sealed record DatasetCapture(
     string RequestId,
     ProxyEndpoint Endpoint,

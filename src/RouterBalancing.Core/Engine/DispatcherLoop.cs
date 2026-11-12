@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Logging;
+using RouterBalancing.Core.Proxies;
 using RouterBalancing.Core.Settings;
 
 namespace RouterBalancing.Core.Engine;
@@ -22,12 +23,19 @@ public sealed class DispatcherLoop(
     IComboResolver resolver,
     IModelSelector selector,
     ProxyRequestHandler handler,
+    IProxyPool pool,
     ILogService log,
     ITraceFeed trace,
     IAppSettingsService settings,
     IProviderQuotaGate quotaGate,
     DrainGate drainGate) : BackgroundService
 {
+    /// <summary>
+    /// Số lần đổi exit proxy tối đa cho một request sau IP-abuse 403 (spec §7.3) — mỗi lần
+    /// chặn exit vừa dùng rồi thử lại cùng route; hết lượt vẫn bị chặn → gate toàn-provider.
+    /// </summary>
+    private const int MaxBlockedRetries = 2;
+
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
     private readonly DrainGate _drain = drainGate;
 
@@ -224,6 +232,11 @@ public sealed class DispatcherLoop(
         var attemptBudget = request.Retry.Attempts
             + remaining.Sum(r => r.Provider.Accounts?.Count(a => a.Enabled) ?? 0);
 
+        // Scope pick cho request này: ProxyHealthHandler (async frame con) ghi exit vừa dùng vào
+        // holder tạo ở đây — dispatcher đọc ProxyContext.LastPick sau attempt để chặn exit khi
+        // IP-abuse 403 (write AsyncLocal ở frame con không nổi lên frame này).
+        ProxyContext.BeginPickScope();
+
         // Complete exhaustion tập trung — 3 điểm gọi (advance đầu, prune trong loop, NoAccountLeft)
         // dùng chung: mô tả attempt VỪA fail (candidate/account current qua closure), log TRƯỚC
         // khi complete outcome (I2). Exit đã làm ở nhánh xử lý lỗi trước khi rơi xuống đây.
@@ -275,8 +288,12 @@ public sealed class DispatcherLoop(
                     {
                         Severity = LogSeverity.Error,
                         Category = LogCategory.Request,
-                        Message = $"Lỗi dispatcher: {ex.Message}",
-                        Details = ex.ToString(),
+                        // attempt/TK/kết luận: dispatcher là nơi DUY NHẤT biết attempt nào và client nhận gì
+                        // (handler không thấy attempt; endpoint không thấy exception) — spec §4.2
+                        Message = $"Lỗi dispatcher: {ex.Message} — attempt #{attemptNo}, "
+                                  + $"account '{AccountNameOf(candidate, accountId)}', "
+                                  + $"{(request.Context.Response.HasStarted ? "stream đã gửi → Aborted" : "chưa gửi gì → 500")}.",
+                        Details = ex.ToString() + StreamDeathHint(ex),
                         ErrorCode = ex.GetType().Name,
                         RequestId = request.Id,
                         ProviderKey = candidate.Provider.Name,
@@ -290,6 +307,30 @@ public sealed class DispatcherLoop(
                 outcome = request.Context.Response.HasStarted
                     ? new DispatchOutcome.Aborted()
                     : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
+            }
+
+            // IP-abuse 403 (spec opencode-free-gate-v2 §7.3): egress bị upstream chặn — account
+            // và shape request không liên quan nên KHÔNG xoay account/model. Chặn exit vừa dùng
+            // rồi thử LẠI cùng route; pool tự bỏ qua exit đã block nên lần sau đi exit kế.
+            if (outcome is DispatchOutcome.Blocked blocked)
+            {
+                var pick = ProxyContext.LastPick;
+                if (pick is not null)
+                {
+                    pool.ReportBlocked(pick.Id, ProxyPool.BlockedTtl);
+                    if (request.Retry.BlockedRetries < MaxBlockedRetries)
+                    {
+                        request.Retry.BlockedRetries++;
+                        continue; // cùng route, cùng slot — attempt kế trên exit khác
+                    }
+                }
+
+                // Direct egress (không có exit nào) hoặc đã kiệt lượt đổi exit: mở gate
+                // toàn-provider để request sau fail nhanh, rồi trả nguyên 403 cho client.
+                NoteNetworkBlocked(candidate, blocked);
+                executions.Exit(request.Id);
+                request.Completion.TrySetResult(blocked);
+                return;
             }
 
             if (outcome is not (DispatchOutcome.Retryable or DispatchOutcome.Fatal))
@@ -666,13 +707,51 @@ public sealed class DispatcherLoop(
     }
 
     /// <summary>
-    /// 429 kèm <c>error.type=FreeUsageLimitError</c> (OpenCode Zen free tier) = quota cap theo
-    /// provider/IP, không theo key — probe 26/10: key hợp lệ/key sai/không key đều cùng 429.
-    /// Retry account/model khác cùng provider không thể thành công → failover cấp Provider.
+    /// 429 hết quota cap theo provider — không xoay account/model cùng provider được:
+    /// shape cũ <c>error.type=FreeUsageLimitError</c> (OpenCode Zen free tier — probe 26/10:
+    /// key hợp lệ/key sai/không key đều cùng 429), hoặc shape v2 của backlog E2
+    /// (<c>AI_APICallError</c> + <c>Invalid credential</c>, issue #54338 — hết quota mà
+    /// thường không kèm <c>Retry-After</c>; gate vẫn nghe Retry-After khi upstream có).
     /// </summary>
     private static bool IsProviderWideQuotaFailure(DispatchOutcome.Retryable retryable) =>
         retryable.Status == 429
-        && retryable.Body.AsSpan().IndexOf("FreeUsageLimitError"u8) >= 0;
+        && (retryable.Body.AsSpan().IndexOf("FreeUsageLimitError"u8) >= 0
+            || (retryable.Body.AsSpan().IndexOf("AI_APICallError"u8) >= 0
+                && retryable.Body.AsSpan().IndexOf("Invalid credential"u8) >= 0));
+
+    /// <summary>
+    /// Egress hiện tại bị OpenCode chặn (IP-abuse 403) và không còn exit để đổi — mở gate
+    /// toàn-provider 15m (<see cref="ProxyPool.BlockedTtl"/>, constant theo spec §7.3: chưa
+    /// setting hóa) rồi log Warning để người dùng biết phải đổi egress/proxy hoặc chờ.
+    /// Request sau trong window replay nguyên body 403 này (ApplyQuotaBlocks).
+    /// </summary>
+    /// <param name="candidate">Candidate vừa fail (nguồn tên/id provider).</param>
+    /// <param name="blocked">Outcome Blocked — status/body để replay cho request sau.</param>
+    private void NoteNetworkBlocked(ModelCandidate candidate, DispatchOutcome.Blocked blocked)
+    {
+        quotaGate.Report(candidate.Provider.Id,
+            new RetryState.Failure(blocked.Status, blocked.ContentType, blocked.Body,
+                ProxyPool.BlockedTtl),
+            ProxyPool.BlockedTtl);
+        try
+        {
+            log.Write(new LogEntry
+            {
+                Severity = LogSeverity.Warning,
+                Category = LogCategory.Request,
+                Message =
+                    $"OpenCode chặn egress hiện tại (IP-abuse 403) — provider '{candidate.Provider.Name}' " +
+                    $"tạm bỏ {(int)ProxyPool.BlockedTtl.TotalMinutes} phút; đổi egress/proxy hoặc chờ hết hạn.",
+                Details = ErrorSnippet(new RetryState.Failure(
+                    blocked.Status, blocked.ContentType, blocked.Body, ProxyPool.BlockedTtl)),
+                ProviderId = candidate.Provider.Id,
+            });
+        }
+        catch
+        {
+            // Nuốt chủ đích: log không được làm hỏng request path
+        }
+    }
 
     /// <summary>
     /// Attempt 429 cap-toàn-cục → mở gate cho provider (kèm log Warning CHỈ ở transition mở
@@ -777,6 +856,15 @@ public sealed class DispatcherLoop(
     /// </summary>
     private static string AccountNameOf(ModelCandidate candidate, long accountId) =>
         candidate.Provider.Accounts?.FirstOrDefault(a => a.Id == accountId)?.Name ?? "-";
+
+    // Hint đọc-được-ngay cho người trực ca (spec §4.2/D2) — chỉ gắn cho 2 exception stream đã biết
+    // để không nhiễu khi lỗi dispatcher là do resolver/DB.
+    private static string StreamDeathHint(Exception ex) =>
+        ex is UpstreamStreamDiedException or UpstreamIdleTimeoutException
+            ? "\nChẩn đoán: upstream đóng/RST giữa stream (\"response ended prematurely\") — không "
+              + "phải client cancel; đối chiếu dòng cùng RequestId ở handler (elapsed + route) "
+              + "trước khi nghi proxy/hạ tầng."
+            : "";
 
     /// <summary>
     /// Tập TK của provider <paramref name="candidate"/> đã thử trong request — truyền vào

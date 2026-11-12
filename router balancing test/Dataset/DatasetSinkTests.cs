@@ -374,6 +374,24 @@ public class DatasetSinkTests : IDisposable
         Assert.Equal(0, sink.Stats.RecordsWritten);
     }
 
+    [Fact]
+    public async Task TestCountSkip_Synthetic_IncrementsStatsCounter()
+    {
+        await using var sink = CreateSink();
+
+        // V2 §7.2: response synthesized của sidecar không đi qua Capture (không tạo record) mà
+        // handler gọi CountSkip trực tiếp — counter phải có mặt trong stats và tăng tại chỗ.
+        Assert.Equal(0, sink.Stats.SkippedSynthetic);
+
+        sink.CountSkip(DatasetSkipReason.Synthetic);
+
+        Assert.Equal(1, sink.Stats.SkippedSynthetic);
+        // Đếm đúng nhóm của nó — không lẫn vào counter của builder hay hàng đợi.
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+        Assert.Equal(0, sink.Stats.SkippedEmpty);
+        Assert.Equal(0, sink.Stats.SkippedQueueFull);
+    }
+
     private DatasetSink CreateSink(CapturingLog? log = null) =>
         new(_settings, (ILogService?)log ?? new NullLog(), _time);
 

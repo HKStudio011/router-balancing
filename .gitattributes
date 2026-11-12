@@ -65,3 +65,8 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# Asset capture của sidecar phải giữ LF (//go:embed đọc byte trực tiếp; CRLF sẽ phá vỡ shape fidelity).
+# Ghi đè "* text=auto" ở trên: với core.autocrlf=true, checkout tự nhiên sẽ biến asset thành CRLF.
+sidecar/opencode-proxy/prompt_v2.txt text eol=lf
+sidecar/opencode-proxy/tools_v2.json text eol=lf

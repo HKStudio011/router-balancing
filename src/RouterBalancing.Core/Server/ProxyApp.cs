@@ -377,6 +377,12 @@ public static class ProxyApp
                     await WriteInBand(ctx, SseErrorEvent.Passthrough(inBandPassthrough.Status,
                         inBandPassthrough.Body, inBandPassthrough.RetryAfterHeader));
                     break;
+                case DispatchOutcome.Blocked inBandBlocked:
+                    // Không xảy ra ở luồng thường (403 tới trước flush head 200) — nếu có, ghi
+                    // nguyên 403 vào stream để client không bị cắt im lặng (không nuốt outcome)
+                    await WriteInBand(ctx, SseErrorEvent.Passthrough(inBandBlocked.Status,
+                        inBandBlocked.Body, null));
+                    break;
                 case DispatchOutcome.Retryable or DispatchOutcome.Fatal:
                     // Dispatcher đã convert Retryable/Fatal → Passthrough/Error (spec §2.2) — tới đây là bug
                     log.Write(new LogEntry
@@ -404,6 +410,26 @@ public static class ProxyApp
                 case DispatchOutcome.Aborted when contentBytes == 0
                     && !ctx.RequestAborted.IsCancellationRequested:
                     // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
+                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn
+                    // dấu vết nếu chính WriteInBand ném (head 200 đã commit từ trước, hết fallback
+                    // status); Warning (không Error) đúng D1; mệnh đề `when` ở trên đã giới hạn
+                    // nhánh này cho client CÒN nối (D4), log không chạy sau khi client đã ngắt
+                    try
+                    {
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Warning,
+                            Category = LogCategory.Request,
+                            Message = $"Stream chết trước khi có byte content nào — trả in-band server_error (request {id}).",
+                            RequestId = id,
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                    }
+                    catch
+                    {
+                        // Nuốt chủ đích: LogService.Write fail-closed (dispose khi app đóng,
+                        // SQLite locked/disk-full) — breadcrumb mất được, event in-band tới client mất không được
+                    }
                     await WriteInBand(ctx, SseErrorEvent.ServerFault());
                     break;
                 case DispatchOutcome.Aborted when contentBytes > 0
@@ -411,6 +437,26 @@ public static class ProxyApp
                     // Upstream cắt giữa chừng (HttpIOException mid-SSE) — client đang đọc
                     // phải biết stream cụt để discard tool-call partial, không parse JSON hụt;
                     // đảo ngược chủ đích "đóng im lặng" của b0b3ae7 ở wire, monitor giữ vàng
+                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn
+                    // dấu vết nếu chính WriteInBand ném (head 200 đã commit từ trước, hết fallback
+                    // status); Warning (không Error) đúng D1; mệnh đề `when` ở trên đã giới hạn
+                    // nhánh này cho client CÒN nối (D4), log không chạy sau khi client đã ngắt
+                    try
+                    {
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Warning,
+                            Category = LogCategory.Request,
+                            Message = $"Stream chết sau {contentBytes} byte content — trả in-band upstream_disconnected (request {id}).",
+                            RequestId = id,
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                    }
+                    catch
+                    {
+                        // Nuốt chủ đích: LogService.Write fail-closed (dispose khi app đóng,
+                        // SQLite locked/disk-full) — breadcrumb mất được, event in-band tới client mất không được
+                    }
                     await WriteInBand(ctx, SseErrorEvent.UpstreamLostMidStream());
                     break;
                 // Handled / Cancelled+client-abort / Aborted do client ngắt: không ghi gì —
@@ -432,6 +478,16 @@ public static class ProxyApp
             if (passthrough.RetryAfterHeader is not null)
                 ctx.Response.Headers["Retry-After"] = passthrough.RetryAfterHeader;
             await ctx.Response.Body.WriteAsync(passthrough.Body, ctx.RequestAborted);
+        }
+        else if (outcome is DispatchOutcome.Blocked blockedOutcome)
+        {
+            // IP-abuse 403 tới endpoint khi proxy/exit đã kiệt: client phải thấy NGUYÊN
+            // 403 upstream (không JSON wrap, không Retry-After — outcome không mang header đó;
+            // request sau trong window nhận Retry-After đếm ngược qua nhánh Passthrough)
+            ctx.Response.StatusCode = blockedOutcome.Status;
+            if (blockedOutcome.ContentType is not null)
+                ctx.Response.ContentType = blockedOutcome.ContentType;
+            await ctx.Response.Body.WriteAsync(blockedOutcome.Body, ctx.RequestAborted);
         }
         else if (outcome is DispatchOutcome.Retryable or DispatchOutcome.Fatal)
         {
@@ -639,6 +695,9 @@ public static class ProxyApp
             DispatchOutcome.Error e => (TraceStage.Finished, false, e.Status),
             DispatchOutcome.Cancelled => (TraceStage.Canceled, null, null),
             DispatchOutcome.Aborted => (TraceStage.Canceled, null, null),
+            // Blocked tới endpoint = proxy/exit đã kiệt, client nhận nguyên 403 (dispatcher đã
+            // chặn exit + mở gate trước khi hoàn tất) — trace ghi như Passthrough lỗi
+            DispatchOutcome.Blocked b => (TraceStage.Finished, false, b.Status),
             // Retryable/Fatal là tín hiệu nội bộ — dispatcher đã convert trước khi outcome
             // về endpoint, nên 2 nhánh này chỉ là bug-path defensive (không được nuốt im lặng
             // nếu invariant vỡ): map theo status (null = lỗi mạng) để trace vẫn ghi được.

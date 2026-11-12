@@ -49,6 +49,10 @@ public sealed class DirectProxyPool : IProxyPool
 
     public bool ReportFailure(long proxyId) => false;
 
+    public void ReportBlocked(long proxyId, TimeSpan ttl)
+    {
+    }
+
     public void ReportSuccess(long proxyId)
     {
     }

@@ -86,7 +86,15 @@ public class DatasetExportIntegrationTests : IDisposable
     private void SeedProvider(string name, int maxConcurrent, params string[] modelIds) =>
         SeedProvider(name, "https://api.openai.com", maxConcurrent, modelIds);
 
-    private void SeedProvider(string name, string baseUrl, int maxConcurrent, params string[] modelIds)
+    private void SeedProvider(string name, string baseUrl, int maxConcurrent, params string[] modelIds) =>
+        SeedProvider(name, baseUrl, maxConcurrent, withKey: true, modelIds);
+
+    /// <summary>
+    /// <paramref name="withKey"/> false → account no-key (free lane, spec v2 §5.2) để test lane
+    /// dataset <c>free_fingerprint</c> đúng nhánh của nó; true → key thật (keyed lane).
+    /// </summary>
+    private void SeedProvider(string name, string baseUrl, int maxConcurrent, bool withKey,
+        params string[] modelIds)
     {
         using var db = _db.CreateFactory().CreateDbContext();
         var provider = new Provider
@@ -103,10 +111,25 @@ public class DatasetExportIntegrationTests : IDisposable
         {
             Name = "a1",
             Enabled = true,
-            ApiKeyEncrypted = _protector.Protect($"sk-{name}-a1"),
+            // Sentinel chuỗi rỗng của account no-key (ProviderAccountService.NoKey)
+            ApiKeyEncrypted = withKey ? _protector.Protect($"sk-{name}-a1") : string.Empty,
         });
         db.Providers.Add(provider);
         db.SaveChanges();
+    }
+
+    /// <summary>
+    /// Gắn header tín hiệu sidecar (spec v2 §5.7) lên response upstream giả — y như sidecar thật
+    /// làm trước khi trả host. <paramref name="title"/> non-null → X-Sidecar-Title (chỉ khi
+    /// sidecar tổng hợp title).
+    /// </summary>
+    private static HttpResponseMessage WithSidecarHeaders(HttpResponseMessage response,
+        string shaped, string? title = null)
+    {
+        response.Headers.TryAddWithoutValidation("X-Sidecar-Shaped", shaped);
+        if (title is not null)
+            response.Headers.TryAddWithoutValidation("X-Sidecar-Title", title);
+        return response;
     }
 
     /// <summary>Upstream theo script (mirror ApiMonitorIntegrationTests) — factory throw được (mạng giả).</summary>
@@ -270,6 +293,7 @@ public class DatasetExportIntegrationTests : IDisposable
         return $"RecordsWritten={s.RecordsWritten}, SkippedTooLarge={s.SkippedTooLarge}, " +
                $"SkippedTruncated={s.SkippedTruncated}, SkippedEmpty={s.SkippedEmpty}, " +
                $"SkippedRefusal={s.SkippedRefusal}, SkippedQueueFull={s.SkippedQueueFull}, " +
+               $"SkippedSynthetic={s.SkippedSynthetic}, " +
                $"BytesWritten={s.BytesWritten}, CurrentFile={s.CurrentFile ?? "<none>"}";
     }
 
@@ -404,9 +428,9 @@ public class DatasetExportIntegrationTests : IDisposable
     [Fact]
     public async Task PlainLaneNoToolsBody_ToolsRewrittenFalse()
     {
-        // Provider thường (không opencode.ai) → lane plain: fingerprint KHÔNG BAO GIỜ rewrite body,
-        // nên tools_rewritten phải false dù body thiếu tools (spec §7.4 — cờ chỉ đúng khi fingerprint
-        // thực sự áp dụng; body no-tools là trường hợp phổ biến nhất của traffic non-OpenCode).
+        // Provider thường (không opencode.ai) → lane plain: không đi qua sidecar nên không có
+        // header tín hiệu, và lane guard chặn mọi suy đoán — tools_rewritten phải false dù body
+        // thiếu tools (spec v2 §7.2: chỉ header mới được nói tools đã bị shaped).
         SeedProvider(maxConcurrent: 4, "m1");
         var client = await StartAsync(new ScriptedUpstream(_ => SseChatOk()));
 
@@ -422,12 +446,14 @@ public class DatasetExportIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task OpenCodeProviderNoToolsBody_ToolsRewrittenTrue()
+    public async Task OpenCodeKeyedLane_ShapedNone_ToolsRewrittenFalse()
     {
-        // Provider opencode.ai → fingerprint áp dụng (key thật → keyed lane): body thiếu tools bị
-        // chèn decoy quartet upstream, nên cờ phải true trên đĩa — record là góc nhìn client (spec §7.4).
+        // V2 §5.2/§7.2: lane keyed là passthrough — sidecar giữ body nguyên trạng, không đụng
+        // tools array, và khai báo đúng như vậy bằng X-Sidecar-Shaped: none. Host tin header
+        // (hết suy đoán từ body) → cờ false, đảo ngược nghĩa so với v1 (keyed từng báo true).
         SeedProvider("p-oc", "https://opencode.ai/v1", maxConcurrent: 4, ["m1"]);
-        var client = await StartAsync(new ScriptedUpstream(_ => SseChatOk()));
+        var client = await StartAsync(
+            new ScriptedUpstream(_ => WithSidecarHeaders(SseChatOk(), "none")));
 
         var response = await client.PostAsync("/v1/chat/completions",
             Json("""{"model":"m1","messages":[{"role":"user","content":"hi"}]}"""));
@@ -437,7 +463,54 @@ public class DatasetExportIntegrationTests : IDisposable
         var lines = await WaitDatasetLinesAsync(1);
         Assert.Single(lines);
         Assert.Equal("keyed_fingerprint", lines[0]!["lane"]!.GetValue<string>());
+        Assert.False(lines[0]!["tools_rewritten"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task OpenCodeFreeLane_ShapedTools_ToolsRewrittenTrue()
+    {
+        // Free lane (account no-key) → sidecar shaping đầy đủ tools+prompt; header là nguồn duy
+        // nhất cho tools_rewritten (spec v2 §7.2) — dòng trên đĩa phải mang cờ true.
+        SeedProvider("p-oc-free", "https://opencode.ai/v1", maxConcurrent: 4, withKey: false, "m1");
+        var client = await StartAsync(
+            new ScriptedUpstream(_ => WithSidecarHeaders(SseChatOk(), "tools+prompt")));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"m1","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var lines = await WaitDatasetLinesAsync(1);
+        Assert.Single(lines);
+        Assert.Equal("free_fingerprint", lines[0]!["lane"]!.GetValue<string>());
         Assert.True(lines[0]!["tools_rewritten"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task SynthesizedTitle_ShapedTools_WritesNoLineAndCountsSkippedSynthetic()
+    {
+        // V2 §7.2: response mang X-Sidecar-Title: synthesized là completion do SIDECAR tự sinh
+        // (title request gặp 429/lỗi transport) — không phải model trả lời nên không được vào
+        // dataset train. Cả hai header cùng có mặt (brief): synthetic thắng cờ shaped.
+        SeedProvider(maxConcurrent: 4, "m1");
+        var client = await StartAsync(new ScriptedUpstream(_ =>
+            WithSidecarHeaders(SseChatOk(), "tools+prompt", title: "synthesized")));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"m1","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // Rendezvous: CountSkip chạy trên thread request TRƯỚC khi handler trả outcome — record
+        // giả (nếu wiring sai) đã được enqueue trước thời điểm này và writer ghi trong <ms.
+        await WaitUntilAsync(() => _sink.Stats.SkippedSynthetic == 1,
+            "handler phải đếm SkippedSynthetic cho response synthesized");
+        // Cửa sổ quan sát 2s cho bất kỳ dòng muộn nào (mirror Upstream400_WritesNoDatasetLine).
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        while (DateTime.UtcNow < deadline && _sink.Stats.RecordsWritten == 0)
+            await Task.Delay(25);
+
+        Assert.Equal(0, _sink.Stats.RecordsWritten);
+        Assert.Empty(ReadAllDatasetLines());
     }
 
     [Fact]
