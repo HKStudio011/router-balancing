@@ -1,7 +1,7 @@
 # Log chẩn đoán stream chết giữa chừng — thiết kế
 
 - **Ngày:** 2026-11-11
-- **Trạng thái:** chờ duyệt
+- **Trạng thái:** đã triển khai 2026-11-12
 - **Liên quan:** `docs/superpowers/specs/2026-11-07-cf-idle-timeout-hardening-design.md` (premise "CF idle timeout là thủ phạm chính" đã bị dữ liệu production bác bỏ — xem §1)
 
 ## 1. Vì sao
