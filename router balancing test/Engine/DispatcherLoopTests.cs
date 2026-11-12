@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
@@ -285,6 +286,22 @@ public class DispatcherLoopTests : IDisposable
         public Task<HttpResponseMessage> PostAsync(
             Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
             Task.FromException<HttpResponseMessage>(ex);
+    }
+
+    /// <summary>
+    /// Response feature mô phỏng stream ĐÃ commit (HasStarted = true) — test pin nửa còn lại
+    /// của ternary kết luận trong DispatcherLoop.ServeAsync ("stream đã gửi → Aborted"),
+    /// thứ mà DefaultHttpContext chưa commit không tạo được.
+    /// </summary>
+    private sealed class StartedResponseFeature : IHttpResponseFeature
+    {
+        public int StatusCode { get; set; } = 200;
+        public string? ReasonPhrase { get; set; }
+        public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
+        public Stream Body { get; set; } = new MemoryStream();
+        public bool HasStarted => true;
+        public void OnStarting(Func<object, Task> callback, object state) { }
+        public void OnCompleted(Func<object, Task> callback, object state) { }
     }
 
     private sealed class GatedUpstream : IUpstreamClient
@@ -864,6 +881,33 @@ public class DispatcherLoopTests : IDisposable
         Assert.Contains("account 'a1'", entry.Message);
         Assert.Contains("Chẩn đoán", entry.Details);
         Assert.Contains("không phải client cancel", entry.Details);
+    }
+
+    [Fact]
+    public async Task ServeAsync_WhenStreamSentAndUpstreamStreamDied_CompletesAbortedWithSentHint()
+    {
+        // Pin nửa còn lại của ternary kết luận (spec §4.2): response đã commit (client đã nhận
+        // byte stream) → dispatcher PHẢI trả Aborted — endpoint không được append JSON 500 vào
+        // stream đã gửi; dòng "Lỗi dispatcher" phải kết luận "stream đã gửi → Aborted"
+        // (đối xứng với test "chưa gửi gì → 500" ở trên).
+        var pid = SeedProvider("p1");
+        var resolver = new StubResolver(new SelectionSuccess([Candidate(pid)], ComboMode.RoundRobin));
+        var selector = new CountingSelector(new ModelSelector(_executions));
+        var upstream = new ThrowingUpstream(
+            new UpstreamStreamDiedException(new IOException("response ended prematurely"), TimeSpan.Zero));
+        var log = new CapturingLog();
+
+        var r1 = Req("req00001");
+        r1.Context.Features.Set<IHttpResponseFeature>(new StartedResponseFeature());
+        _queue.Enqueue(r1);
+        await StartAsync(resolver, selector, upstream, log);
+
+        Assert.IsType<DispatchOutcome.Aborted>(await r1.Completion.Task.WaitAsync(TestTimeouts.Rendezvous));
+
+        // Đúng 1 dòng Error/ca chết; Details có hint chẩn đoán như nhánh chưa-gửi-gì
+        var entry = Assert.Single(log.Entries, e => e.Severity == LogSeverity.Error);
+        Assert.Contains("stream đã gửi → Aborted", entry.Message);
+        Assert.Contains("Chẩn đoán", entry.Details);
     }
 
     [Fact]

@@ -185,6 +185,7 @@ public class ProxyRequestHandlerTests
                 TimeProvider.System),
             effectiveSettings,
             dataset ?? new DatasetSink(effectiveSettings, effectiveLog, TimeProvider.System),
+            // Test không phụ thuộc proxy → pool luôn direct — điều kiện để assert "route direct" ở điểm #1 hợp lệ.
             new ProxySelectionResolver(), new DirectProxyPool());
     }
 
@@ -897,7 +898,7 @@ public class ProxyRequestHandlerTests
 
         // Điểm #1 (spec §4.1): log chẩn đoán đọc được ngay — elapsed + account + route, Warning
         // (không phải Error — tránh đếm đôi cảnh báo, D1), ErrorCode là type lỗi đọc gốc
-        var diag = Assert.Single(log.Entries.Where(e => e.Message.Contains("đứt stream")));
+        var diag = Assert.Single(log.Entries, e => e.Message.Contains("đứt stream"));
         Assert.Equal(LogSeverity.Warning, diag.Severity);
         Assert.Equal(LogCategory.Request, diag.Category);
         Assert.Equal("req-mid", diag.RequestId);
