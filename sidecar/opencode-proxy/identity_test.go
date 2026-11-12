@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
@@ -111,6 +115,93 @@ func TestProjectID_RandomWhenEmpty_40Hex(t *testing.T) {
 	}
 	if len(seen) < 2 {
 		t.Error("10 project id random phải có ít nhất 2 giá trị khác nhau")
+	}
+}
+
+// chatBodyFor ráp body chat thật (JSON như client gửi) từ danh sách message.
+func chatBodyFor(t *testing.T, messages ...any) []byte {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"model": "mimo-v2.6-flash-free", "messages": messages})
+	if err != nil {
+		t.Fatalf("marshal body chat: %v", err)
+	}
+	return body
+}
+
+// sessionSignalFor gọi sessionSignal với request không mang identity header —
+// đúng ca production (host không gửi x-opencode-*).
+func sessionSignalFor(t *testing.T, body []byte) string {
+	t.Helper()
+	return sessionSignal(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), body)
+}
+
+// Trái tim của fix: seed lấy từ HAI message đầu nên history dài thêm (body khác
+// bytes) vẫn ra cùng signal — nếu rơi về body hash thì hai body khác nhau sẽ ra
+// signal khác và test đỏ.
+func TestSessionSignal_ConversationSeedStableAsHistoryGrows(t *testing.T) {
+	system := map[string]any{"role": "system", "content": "bạn là trợ lý"}
+	firstUser := map[string]any{"role": "user", "content": "câu hỏi đầu tiên"}
+	head := chatBodyFor(t, system, firstUser)
+	tail := chatBodyFor(t, system, firstUser,
+		map[string]any{"role": "assistant", "content": "trả lời đầu"},
+		map[string]any{"role": "user", "content": "turn tiếp theo"})
+
+	gotHead := sessionSignalFor(t, head)
+	gotTail := sessionSignalFor(t, tail)
+	if gotHead != gotTail {
+		t.Errorf("seed hội thoại phải ổn định khi history dài thêm: head %q vs tail %q", gotHead, gotTail)
+	}
+}
+
+func TestSessionSignal_DifferentFirstUserTurn_DifferentSignal(t *testing.T) {
+	a := chatBodyFor(t, map[string]any{"role": "system", "content": "bạn là trợ lý"},
+		map[string]any{"role": "user", "content": "câu hỏi A"})
+	b := chatBodyFor(t, map[string]any{"role": "system", "content": "bạn là trợ lý"},
+		map[string]any{"role": "user", "content": "câu hỏi B"})
+
+	if sessionSignalFor(t, a) == sessionSignalFor(t, b) {
+		t.Error("first user turn khác nhau phải cho seed khác nhau")
+	}
+}
+
+func TestSessionSignal_UnparseableBody_FallsBackToBodyHash(t *testing.T) {
+	body := []byte("{không phải JSON")
+	sum := sha256.Sum256(body)
+	want := hex.EncodeToString(sum[:16])
+
+	got := sessionSignalFor(t, body)
+	if got != want {
+		t.Errorf("body không parse được phải rơi về hash toàn body: got %q want %q", got, want)
+	}
+	if again := sessionSignalFor(t, body); again != got {
+		t.Errorf("cùng bytes phải ra cùng hash: %q vs %q", got, again)
+	}
+}
+
+// Thứ tự ưu tiên (1) header client thắng seed (2) — không đổi hành vi cũ.
+func TestSessionSignal_ClientHeaderWinsOverSeed(t *testing.T) {
+	body := chatBodyFor(t, map[string]any{"role": "user", "content": "hi"})
+	for _, header := range []string{"x-opencode-session", "x-opencode-session-id", "x-session-affinity", "X-Session-Id"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		req.Header.Set(header, "ses_from_client")
+		if got := sessionSignal(req, body); got != "ses_from_client" {
+			t.Errorf("header %s phải thắng seed: got %q", header, got)
+		}
+	}
+}
+
+// Seed dùng lại messageContentText của prompt.go: content dạng part-list phải cho
+// cùng seed với content string đã nối — shape không đổi nghĩa hội thoại.
+func TestSessionSignal_PartListContentMatchesConcatenatedText(t *testing.T) {
+	parts := chatBodyFor(t,
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "phần một "},
+			map[string]any{"type": "text", "text": "phần hai"},
+		}})
+	plain := chatBodyFor(t, map[string]any{"role": "user", "content": "phần một phần hai"})
+
+	if sessionSignalFor(t, parts) != sessionSignalFor(t, plain) {
+		t.Error("content part-list phải được đọc như text đã nối, cho cùng seed")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -137,15 +138,68 @@ func projectID(clientValue string) string {
 	}
 }
 
-// sessionSignal lấy tín hiệu session từ client headers (nếu có) — mỗi cuộc hội
-// thoại cùng session giữ affinity; thiếu thì derive từ body.
+// conversationSeedBody là shape tối thiểu để trích seed hội thoại: chỉ cần
+// messages[].role/content — rẻ hơn parse body thành map[string]any đầy đủ.
+type conversationSeedBody struct {
+	Messages []struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	} `json:"messages"`
+}
+
+// conversationSeed trích seed ổn định của cuộc hội thoại từ body chat: text của
+// message system/developer ĐẦU TIÊN + text của message user ĐẦU TIÊN, nối bằng
+// separator. Hội thoại nhiều turn chỉ nối thêm message phía sau nên seed không đổi
+// khi history dài ra — khác với hash toàn body (đổi mỗi turn, phá prompt-cache
+// affinity và tạo pattern bất thường với gate; spec §5.4/§6).
+//
+// ok=false khi body không parse được hoặc không có message user đọc được — caller
+// rơi về hash toàn body. Content lạ shape (messageContentText ok=false) coi như
+// không có text: không đoán nghĩa dữ liệu.
+func conversationSeed(body []byte) (string, bool) {
+	var parsed conversationSeedBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", false
+	}
+	var systemText, userText string
+	systemSeen, userSeen := false, false
+	for _, msg := range parsed.Messages {
+		text, readable := messageContentText(msg.Content)
+		if !readable {
+			continue
+		}
+		switch msg.Role {
+		case "system", "developer":
+			if !systemSeen {
+				systemText, systemSeen = text, true
+			}
+		case "user":
+			if !userSeen {
+				userText, userSeen = text, true
+			}
+		}
+	}
+	if !userSeen {
+		return "", false
+	}
+	return systemText + "\x00" + userText, true
+}
+
+// sessionSignal lấy tín hiệu session theo thứ tự ưu tiên: (1) identity headers của
+// client; (2) conversation seed từ body đã parse — ổn định qua các turn; (3) hash
+// toàn body làm last resort (body không parse được / không có message user).
 func sessionSignal(r *http.Request, body []byte) string {
 	for _, h := range []string{"x-opencode-session", "x-opencode-session-id", "x-session-affinity", "X-Session-Id"} {
 		if v := r.Header.Get(h); v != "" {
 			return v
 		}
 	}
-	// Fallback: hash nguyên body — cùng request body → cùng session.
+	if seed, ok := conversationSeed(body); ok {
+		// Domain separator: seed và body-hash không thể va nhau dù cùng bytes.
+		sum := sha256.Sum256([]byte("opencode-conversation\x00" + seed))
+		return hex.EncodeToString(sum[:16])
+	}
+	// Fallback cuối: hash nguyên body — cùng request body → cùng session.
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:16])
 }
