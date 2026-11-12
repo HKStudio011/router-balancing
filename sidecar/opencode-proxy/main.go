@@ -71,10 +71,12 @@ const (
 )
 
 func main() {
-	// Fail-fast (ruling T7-R4): asset prompt lệch capture phải nổ ở boot, không
-	// phải ở request đầu tiên của user — officialPromptTemplate panic nếu thiếu
-	// sentinel, warm một lần trước Serve để lỗi build asset lộ ngay.
+	// Fail-fast (ruling T7-R4): asset lệch capture phải nổ ở boot, không phải ở
+	// request đầu tiên của user. Cả hai asset panic khi thiếu sentinel/parse hỏng
+	// (officialPromptTemplate, shapedOfficialToolsJSON) — warm một lần trước Serve
+	// để lỗi build asset lộ ngay, thay vì rơi vào handler qua lazy validation.
 	officialPromptTemplate()
+	shapedOfficialToolsJSON()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
