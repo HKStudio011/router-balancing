@@ -219,6 +219,34 @@ func TestFillPromptTemplate_DynamicSegmentsFilled(t *testing.T) {
 	}
 }
 
+// Carry-forward T4→T7: model id là dữ liệu không tin được — id chứa token không
+// được phép (a) chiếm slot điền của dòng date/platform thật, (b) để lại text token
+// trong prompt gửi đi. Pin cả hai mặt bằng model chứa nguyên văn cả hai token.
+func TestFillPromptTemplate_ModelContainingTokens_NoTokenLeaks(t *testing.T) {
+	const (
+		pinnedDate     = "Mon Jan 2 2006"
+		pinnedPlatform = "linux"
+		trickyModel    = "evil@@OC_DATE@@-mid-@@OC_PLATFORM@@-end"
+	)
+	out := fillPromptTemplate(officialPromptTemplate(), trickyModel, pinnedDate, pinnedPlatform)
+
+	if strings.Contains(out, "@@OC_") {
+		t.Errorf("prompt còn token sót lại: %q", firstLineContaining(out, "@@OC_"))
+	}
+	for _, want := range []string{
+		"Today's date: " + pinnedDate,
+		"  Platform: " + pinnedPlatform,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dòng thật không được điền %q (got %q)", want, firstLineContaining(out, strings.TrimPrefix(want, "  ")))
+		}
+	}
+	// Model vẫn phải được nhúng (phần không phải token) — không biến mất khỏi Name.
+	if !strings.Contains(out, "- Name: evil") {
+		t.Errorf("dòng Name thiếu model id: %q", firstLineContaining(out, "- Name:"))
+	}
+}
+
 // capturedSentinels là 8 dòng capture nguyên văn phải biến mất khỏi prompt gửi đi.
 func capturedSentinels() []string {
 	return []string{

@@ -147,11 +147,19 @@ func renderOfficialPrompt(model string) string {
 // chốt được ngày/platform bằng giá trị cố định: assert "ngày render ra == ngày vừa
 // đọc từ đồng hồ" vẫn mù với bug stale-date nếu máy test chạy đúng vào ngày capture,
 // còn assert với ngày cố định thì không.
+//
+// Thứ tự điền: date, platform, rồi model CUỐI CÙNG. Model id là dữ liệu từ request;
+// điền model trước thì id chứa token (VD "@@OC_DATE@@") chiếm mất slot một-lần của
+// date/platform và để literal token ở dòng thật (carry-forward T4→T7). Đổi thứ tự
+// vẫn chưa đủ: model điền cuối có thể mang nguyên văn token vào kết quả, nên quét
+// nốt date/platform lần cuối — prompt gửi đi không bao giờ được chứa text token.
 func fillPromptTemplate(template, model, date, platform string) string {
+	s := strings.Replace(template, dateToken, date, 1)
+	s = strings.Replace(s, platformToken, platform, 1)
 	// modelToken xuất hiện đúng 2 lần (- Name:, - Model ID:).
-	s := strings.Replace(template, modelToken, model, 2)
-	s = strings.Replace(s, dateToken, date, 1)
-	return strings.Replace(s, platformToken, platform, 1)
+	s = strings.Replace(s, modelToken, model, 2)
+	s = strings.ReplaceAll(s, dateToken, date)
+	return strings.ReplaceAll(s, platformToken, platform)
 }
 
 // utcDateString mô phỏng Date.toDateString() của client JS chính chủ
