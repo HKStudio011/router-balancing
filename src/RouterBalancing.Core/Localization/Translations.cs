@@ -168,7 +168,7 @@ public static class Translations
         ["settings.error.retention"] = "Log retention must be between 1 and 3650 days.",
         ["settings.error.threshold"] = "Error rate threshold must be between 1 and 100.",
         ["settings.error.openCodeConfigPath"] = "Path must not be empty or contain invalid characters.",
-        // Dataset export (spec dataset-export §7.7) — status line: {0}=records, {1}=MB, {2..6}=5 skip counters
+        // Dataset export (spec dataset-export §7.7) — status line: {0}=records, {1}=MB, {2..7}=6 skip counters
         ["settings.section.dataset"] = "Dataset export",
         ["settings.field.datasetEnabled"] = "Export dataset JSONL",
         ["settings.field.datasetPath"] = "Storage folder",
@@ -732,7 +732,7 @@ public static class Translations
         ["settings.error.retention"] = "Giữ nhật ký phải từ 1–3650 ngày.",
         ["settings.error.threshold"] = "Ngưỡng tỷ lệ lỗi phải từ 1–100.",
         ["settings.error.openCodeConfigPath"] = "Đường dẫn không được để trống hoặc chứa ký tự không hợp lệ.",
-        // Dataset export (spec dataset-export §7.7) — dòng trạng thái: {0}=số dòng, {1}=MB, {2..6}=5 counter bỏ qua
+        // Dataset export (spec dataset-export §7.7) — dòng trạng thái: {0}=số dòng, {1}=MB, {2..7}=6 counter bỏ qua
         ["settings.section.dataset"] = "Xuất dataset",
         ["settings.field.datasetEnabled"] = "Xuất dataset JSONL",
         ["settings.field.datasetPath"] = "Thư mục lưu",
