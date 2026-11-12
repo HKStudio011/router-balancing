@@ -410,16 +410,26 @@ public static class ProxyApp
                 case DispatchOutcome.Aborted when contentBytes == 0
                     && !ctx.RequestAborted.IsCancellationRequested:
                     // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
-                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn dấu
-                    // vết cả khi client đã đóng kết nối; Warning (không Error) đúng D1
-                    log.Write(new LogEntry
+                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn
+                    // dấu vết nếu chính WriteInBand ném (head 200 đã commit từ trước, hết fallback
+                    // status); Warning (không Error) đúng D1; mệnh đề `when` ở trên đã giới hạn
+                    // nhánh này cho client CÒN nối (D4), log không chạy sau khi client đã ngắt
+                    try
                     {
-                        Severity = LogSeverity.Warning,
-                        Category = LogCategory.Request,
-                        Message = $"Stream chết trước khi có byte content nào — trả in-band server_error (request {id}).",
-                        RequestId = id,
-                        ClientKeyId = ClientKeyItems.IdOf(ctx),
-                    });
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Warning,
+                            Category = LogCategory.Request,
+                            Message = $"Stream chết trước khi có byte content nào — trả in-band server_error (request {id}).",
+                            RequestId = id,
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                    }
+                    catch
+                    {
+                        // Nuốt chủ đích: LogService.Write fail-closed (dispose khi app đóng,
+                        // SQLite locked/disk-full) — breadcrumb mất được, event in-band tới client mất không được
+                    }
                     await WriteInBand(ctx, SseErrorEvent.ServerFault());
                     break;
                 case DispatchOutcome.Aborted when contentBytes > 0
@@ -427,16 +437,26 @@ public static class ProxyApp
                     // Upstream cắt giữa chừng (HttpIOException mid-SSE) — client đang đọc
                     // phải biết stream cụt để discard tool-call partial, không parse JSON hụt;
                     // đảo ngược chủ đích "đóng im lặng" của b0b3ae7 ở wire, monitor giữ vàng
-                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn dấu
-                    // vết cả khi client đã đóng kết nối; Warning (không Error) đúng D1
-                    log.Write(new LogEntry
+                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn
+                    // dấu vết nếu chính WriteInBand ném (head 200 đã commit từ trước, hết fallback
+                    // status); Warning (không Error) đúng D1; mệnh đề `when` ở trên đã giới hạn
+                    // nhánh này cho client CÒN nối (D4), log không chạy sau khi client đã ngắt
+                    try
                     {
-                        Severity = LogSeverity.Warning,
-                        Category = LogCategory.Request,
-                        Message = $"Stream chết sau {contentBytes} byte content — trả in-band upstream_disconnected (request {id}).",
-                        RequestId = id,
-                        ClientKeyId = ClientKeyItems.IdOf(ctx),
-                    });
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Warning,
+                            Category = LogCategory.Request,
+                            Message = $"Stream chết sau {contentBytes} byte content — trả in-band upstream_disconnected (request {id}).",
+                            RequestId = id,
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                    }
+                    catch
+                    {
+                        // Nuốt chủ đích: LogService.Write fail-closed (dispose khi app đóng,
+                        // SQLite locked/disk-full) — breadcrumb mất được, event in-band tới client mất không được
+                    }
                     await WriteInBand(ctx, SseErrorEvent.UpstreamLostMidStream());
                     break;
                 // Handled / Cancelled+client-abort / Aborted do client ngắt: không ghi gì —
