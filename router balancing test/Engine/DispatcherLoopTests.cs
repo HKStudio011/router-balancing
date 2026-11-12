@@ -293,6 +293,11 @@ public class DispatcherLoopTests : IDisposable
     /// của ternary kết luận trong DispatcherLoop.ServeAsync ("stream đã gửi → Aborted"),
     /// thứ mà DefaultHttpContext chưa commit không tạo được.
     /// </summary>
+    /// <remarks>
+    /// Stub tồn tại CHỈ để ép HasStarted = true cho pin ternary message/outcome; nó thay thế
+    /// nguyên IHttpResponseFeature (Headers/Body tự quản) nên KHÔNG tái sử dụng ở test nào
+    /// dispatcher thực sự ghi vào response — sẽ che mất hành vi ghi thật.
+    /// </remarks>
     private sealed class StartedResponseFeature : IHttpResponseFeature
     {
         public int StatusCode { get; set; } = 200;
@@ -880,6 +885,7 @@ public class DispatcherLoopTests : IDisposable
         Assert.Contains("attempt #1", entry.Message);
         Assert.Contains("account 'a1'", entry.Message);
         Assert.Contains("Chẩn đoán", entry.Details);
+        Assert.Contains("response ended prematurely", entry.Details); // pin marker lỗi gốc — hint đổi chữ thì bằng chứng vẫn phải còn trong Details
         Assert.Contains("không phải client cancel", entry.Details);
     }
 
@@ -908,6 +914,7 @@ public class DispatcherLoopTests : IDisposable
         var entry = Assert.Single(log.Entries, e => e.Severity == LogSeverity.Error);
         Assert.Contains("stream đã gửi → Aborted", entry.Message);
         Assert.Contains("Chẩn đoán", entry.Details);
+        Assert.Contains("response ended prematurely", entry.Details); // pin marker lỗi gốc — đối xứng với test nhánh chưa-gửi-gì
     }
 
     [Fact]

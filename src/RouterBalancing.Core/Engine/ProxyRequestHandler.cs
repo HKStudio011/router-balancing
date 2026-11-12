@@ -554,7 +554,9 @@ public sealed class ProxyRequestHandler(
         if (selection.IsDirect)
             return "direct";
 
-        var ids = selection.ProxyIds!;
+        // Phòng thủ: NRE ở đây sẽ bị try/catch chẩn đoán nuốt — breadcrumb route biến mất
+        // đúng lúc proxy routing đang chạy; ?? [] cho route rỗng rõ ràng thay vì im lặng.
+        var ids = selection.ProxyIds ?? [];
         var live = proxyPool.Snapshot().Where(s => ids.Contains(s.Id)).ToList();
         var endpoints = string.Join(", ", live.Select(s => $"{s.Id}:{s.Endpoint}{(s.IsDown ? "(down)" : "")}"));
         return $"{selection.Mode} ids=[{string.Join(",", ids)}] enabled=[{endpoints}]";
