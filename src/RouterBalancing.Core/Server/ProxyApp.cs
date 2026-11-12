@@ -410,6 +410,16 @@ public static class ProxyApp
                 case DispatchOutcome.Aborted when contentBytes == 0
                     && !ctx.RequestAborted.IsCancellationRequested:
                     // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
+                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn dấu
+                    // vết cả khi client đã đóng kết nối; Warning (không Error) đúng D1
+                    log.Write(new LogEntry
+                    {
+                        Severity = LogSeverity.Warning,
+                        Category = LogCategory.Request,
+                        Message = $"Stream chết trước khi có byte content nào — trả in-band server_error (request {id}).",
+                        RequestId = id,
+                        ClientKeyId = ClientKeyItems.IdOf(ctx),
+                    });
                     await WriteInBand(ctx, SseErrorEvent.ServerFault());
                     break;
                 case DispatchOutcome.Aborted when contentBytes > 0
@@ -417,6 +427,16 @@ public static class ProxyApp
                     // Upstream cắt giữa chừng (HttpIOException mid-SSE) — client đang đọc
                     // phải biết stream cụt để discard tool-call partial, không parse JSON hụt;
                     // đảo ngược chủ đích "đóng im lặng" của b0b3ae7 ở wire, monitor giữ vàng
+                    // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn dấu
+                    // vết cả khi client đã đóng kết nối; Warning (không Error) đúng D1
+                    log.Write(new LogEntry
+                    {
+                        Severity = LogSeverity.Warning,
+                        Category = LogCategory.Request,
+                        Message = $"Stream chết sau {contentBytes} byte content — trả in-band upstream_disconnected (request {id}).",
+                        RequestId = id,
+                        ClientKeyId = ClientKeyItems.IdOf(ctx),
+                    });
                     await WriteInBand(ctx, SseErrorEvent.UpstreamLostMidStream());
                     break;
                 // Handled / Cancelled+client-abort / Aborted do client ngắt: không ghi gì —

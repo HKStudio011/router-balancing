@@ -548,6 +548,9 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal(ApiCallState.Error, record!.State);
         Assert.Equal(502, record.Status);
         Assert.Equal("network", record.FailureKind);
+
+        // Pre-content đi nhánh Fatal/exhaustion (in-band 502) — KHÔNG được lẫn thành log #8
+        Assert.DoesNotContain(_messages, m => m.Contains("Stream chết sau"));
     }
 
     [Fact]
@@ -604,6 +607,10 @@ public class ProxyRetryIntegrationTests : IDisposable
         var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
         Assert.Equal(ApiCallState.Cancelled, record!.State);
         Assert.Equal("network", record.FailureKind);
+
+        // Điểm #3 (spec §4.3): số byte content đã tới client trước khi stream cụt — keep-alive KHÔNG đếm
+        Assert.Contains(_messages, m => m.Contains("Stream chết sau 15 byte content")
+            && m.Contains("upstream_disconnected") && m.Contains(id));
 
         // Đã có byte trên wire → KHÔNG retry (không attempt nào sau attempt đầu)
         Assert.Equal(1, upstream.Calls);
