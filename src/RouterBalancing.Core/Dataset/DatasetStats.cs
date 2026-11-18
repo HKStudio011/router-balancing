@@ -14,7 +14,11 @@ namespace RouterBalancing.Core.Dataset;
 /// handler đếm trực tiếp (spec opencode-free-gate-v2 §7.2).
 /// </param>
 /// <param name="BytesWritten">Tổng byte đã ghi kể từ khi sink khởi động.</param>
-/// <param name="CurrentFile">Đường dẫn file đang mở; <see langword="null"/> khi chưa có.</param>
+/// <param name="CurrentFile">Đường dẫn file ghi gần nhất; <see langword="null"/> khi chưa có.</param>
+/// <param name="LargeRecordsWritten">Số record v1 đã ghi vào file large.</param>
+/// <param name="PayloadRecordsWritten">Số manifest v2 đã ghi vào file payload.</param>
+/// <param name="ExternalizedPayloadCount">Số binary payload đã externalize.</param>
+/// <param name="ExternalizedPayloadBytes">Tổng byte binary đã externalize.</param>
 public sealed record DatasetStats(
     int RecordsWritten,
     int SkippedTooLarge,
@@ -24,4 +28,8 @@ public sealed record DatasetStats(
     int SkippedQueueFull,
     int SkippedSynthetic,
     long BytesWritten,
-    string? CurrentFile);
+    string? CurrentFile,
+    int LargeRecordsWritten = 0,
+    int PayloadRecordsWritten = 0,
+    int ExternalizedPayloadCount = 0,
+    long ExternalizedPayloadBytes = 0);

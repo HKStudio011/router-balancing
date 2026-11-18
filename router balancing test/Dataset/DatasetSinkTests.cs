@@ -122,6 +122,76 @@ public class DatasetSinkTests : IDisposable
     }
 
     [Fact]
+    public async Task RecordLarge_WritesOnlyLargeFile()
+    {
+        await using var sink = CreateSink();
+        var largeContent = new string('x', DatasetRecordBuilder.InlineMaxFieldBytes);
+
+        sink.Capture(ChatCapture("req-large", clientBody: ChatBodyWithContent(largeContent)));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        var normalPath = Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
+        var largePath = Path.Combine(_dir, DatasetPaths.LargeFileName(new DateOnly(2026, 11, 6)));
+        Assert.False(File.Exists(normalPath));
+        Assert.True(File.Exists(largePath));
+        Assert.Equal(1, sink.Stats.LargeRecordsWritten);
+
+        var line = (JsonObject)JsonNode.Parse(Assert.Single(ReadAllLinesShared(largePath)))!;
+        Assert.Equal(1, line["v"]!.GetValue<int>());
+        Assert.Equal("req-large", line["request_id"]!.GetValue<string>());
+        Assert.Equal(largeContent, line["messages"]![0]!["content"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task MixedRecords_CountsLargeAndTracksLastWrittenFile()
+    {
+        await using var sink = CreateSink();
+        var largeContent = new string('x', DatasetRecordBuilder.InlineMaxFieldBytes);
+
+        sink.Capture(ChatCapture("req-normal"));
+        sink.Capture(ChatCapture("req-large", clientBody: ChatBodyWithContent(largeContent)));
+        WaitUntil(() => sink.Stats.RecordsWritten == 2);
+
+        var normalPath = Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
+        var largePath = Path.Combine(_dir, DatasetPaths.LargeFileName(new DateOnly(2026, 11, 6)));
+        Assert.Equal(2, sink.Stats.RecordsWritten);
+        Assert.Equal(1, sink.Stats.LargeRecordsWritten);
+        Assert.Equal(largePath, sink.Stats.CurrentFile); // large written last
+        Assert.Contains("req-normal", Assert.Single(ReadAllLinesShared(normalPath)));
+        Assert.Contains("req-large", Assert.Single(ReadAllLinesShared(largePath)));
+    }
+
+    [Fact]
+    public async Task LargeFile_RotationAndRetention_UseFinishedAtDay()
+    {
+        _time.SetUtcNow(new DateTimeOffset(2026, 11, 16, 8, 0, 0, TimeSpan.Zero));
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 2);
+        Directory.CreateDirectory(_dir);
+        var expiredLargePath = Path.Combine(_dir, DatasetPaths.LargeFileName(new DateOnly(2026, 11, 15)));
+        File.WriteAllText(expiredLargePath, "{\"v\":1}\n");
+
+        await using var sink = CreateSink();
+        var largeContent = new string('x', DatasetRecordBuilder.InlineMaxFieldBytes);
+        sink.Capture(ChatCapture("req-large-16", clientBody: ChatBodyWithContent(largeContent),
+            finishedAt: new DateTimeOffset(2026, 11, 16, 23, 59, 0, TimeSpan.Zero)));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        Assert.True(File.Exists(expiredLargePath), "file một ngày tuổi phải còn ở retention hai ngày");
+
+        sink.Capture(ChatCapture("req-large-17", clientBody: ChatBodyWithContent(largeContent),
+            finishedAt: new DateTimeOffset(2026, 11, 17, 0, 1, 0, TimeSpan.Zero)));
+        WaitUntil(() => sink.Stats.RecordsWritten == 2);
+
+        var largePath = sink.Stats.CurrentFile;
+        Assert.Equal(Path.Combine(_dir, DatasetPaths.LargeFileName(new DateOnly(2026, 11, 17))), largePath);
+        Assert.Equal(2, sink.Stats.LargeRecordsWritten);
+        Assert.False(File.Exists(expiredLargePath), "file đạt tuổi retention phải bị xoá theo FinishedAt");
+        Assert.True(File.Exists(Path.Combine(_dir, DatasetPaths.LargeFileName(new DateOnly(2026, 11, 16)))));
+        Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 16)))));
+        Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 17)))));
+    }
+
+    [Fact]
     public async Task Constructor_SameDayExistingFile_AppendsDoesNotTruncate()
     {
         // File cùng ngày đã có một dòng của "phiên chạy trước" — sink mới phải append, không truncate.
@@ -175,6 +245,44 @@ public class DatasetSinkTests : IDisposable
         Assert.False(File.Exists(oldFile), "file cũ hơn retention phải bị purge khi writer start");
         Assert.True(File.Exists(boundaryFile), "file trong cửa sổ retention không được xoá");
         Assert.True(File.Exists(Path.Combine(_dir, "requests-2026-11-07.jsonl")));
+    }
+
+    [Fact]
+    public async Task Retention_LeavesUnrelatedJsonlAndKeepsForeverSetting()
+    {
+        _time.SetUtcNow(new DateTimeOffset(2026, 11, 7, 9, 0, 0, TimeSpan.Zero));
+        Directory.CreateDirectory(_dir);
+        var oldNormalPath = Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 1)));
+        var oldLargePath = Path.Combine(_dir, DatasetPaths.LargeFileName(new DateOnly(2026, 11, 1)));
+        var unrelatedPath = Path.Combine(_dir, "requests-user-notes.jsonl");
+        var otherJsonlPath = Path.Combine(_dir, "other.jsonl");
+        foreach (var path in new[] { oldNormalPath, oldLargePath, unrelatedPath, otherJsonlPath })
+        {
+            File.WriteAllText(path, "{\"v\":1}\n");
+        }
+
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 0);
+        var keepForeverSink = CreateSink();
+        await using (keepForeverSink)
+        {
+            keepForeverSink.Capture(ChatCapture("req-keep"));
+            WaitUntil(() => keepForeverSink.Stats.RecordsWritten == 1);
+
+            Assert.True(File.Exists(oldNormalPath));
+            Assert.True(File.Exists(oldLargePath));
+            Assert.True(File.Exists(unrelatedPath));
+            Assert.True(File.Exists(otherJsonlPath));
+        }
+
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 3);
+        await using var sink = CreateSink();
+        sink.Capture(ChatCapture("req-purge"));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        Assert.False(File.Exists(oldNormalPath));
+        Assert.False(File.Exists(oldLargePath));
+        Assert.True(File.Exists(unrelatedPath), "file jsonl do người dùng tạo phải được giữ");
+        Assert.True(File.Exists(otherJsonlPath), "file ngoài prefix dataset phải được giữ");
     }
 
     [Fact]
@@ -406,11 +514,15 @@ public class DatasetSinkTests : IDisposable
     /// Capture chat hợp lệ; truyền <c>completionJson: null</c> tường minh để tạo record bị builder
     /// skip Empty (test counter).
     /// </summary>
-    private DatasetCapture ChatCapture(string requestId, string? completionJson = ValidCompletion) => new(
+    private DatasetCapture ChatCapture(
+        string requestId,
+        string? completionJson = ValidCompletion,
+        byte[]? clientBody = null,
+        DateTimeOffset? finishedAt = null) => new(
         RequestId: requestId,
         Endpoint: ProxyEndpoint.Chat,
-        FinishedAt: DayOne.AddHours(1),
-        ClientBody: Encoding.UTF8.GetBytes(ValidBody),
+        FinishedAt: finishedAt ?? _time.GetUtcNow().AddHours(1),
+        ClientBody: clientBody ?? Encoding.UTF8.GetBytes(ValidBody),
         CompletionJson: completionJson,
         CompletionComplete: true,
         Provider: "openrouter",
@@ -423,6 +535,13 @@ public class DatasetSinkTests : IDisposable
         CompletionTokens: 3,
         Lane: DatasetLane.Plain,
         ToolsRewritten: false);
+
+    private static byte[] ChatBodyWithContent(string content)
+    {
+        var body = JsonNode.Parse(ValidBody)!.AsObject();
+        body["messages"]![0]!["content"] = content;
+        return Encoding.UTF8.GetBytes(body.ToJsonString());
+    }
 
     /// <summary>
     /// Đọc file JSONL mà writer của sink VẪN đang giữ handle append: Windows yêu cầu share mode

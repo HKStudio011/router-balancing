@@ -12,6 +12,15 @@ public static class DatasetPaths
     /// <summary>Prefix tên file hàng ngày.</summary>
     public const string FileNamePrefix = "requests-";
 
+    /// <summary>Prefix tên file hàng ngày cho record v1 có trường vượt ngưỡng inline.</summary>
+    public const string LargeFileNamePrefix = "requests-large-";
+
+    /// <summary>Prefix tên file manifest v2 có payload externalized.</summary>
+    public const string PayloadFileNamePrefix = "requests-payload-";
+
+    /// <summary>Thư mục gốc tương đối chứa source documents và binary payload.</summary>
+    public const string PayloadRootDirectoryName = "payloads";
+
     /// <summary>Mở rộng tên file JSONL.</summary>
     public const string FileNameExtension = ".jsonl";
 
@@ -32,4 +41,20 @@ public static class DatasetPaths
     /// <summary>Tên file cho ngày UTC: <c>requests-YYYY-MM-DD.jsonl</c>.</summary>
     public static string FileName(DateOnly utcDay) =>
         $"{FileNamePrefix}{utcDay:yyyy-MM-dd}{FileNameExtension}";
+
+    /// <summary>Tên file large cho ngày UTC: <c>requests-large-YYYY-MM-DD.jsonl</c>.</summary>
+    public static string LargeFileName(DateOnly utcDay) =>
+        $"{LargeFileNamePrefix}{utcDay:yyyy-MM-dd}{FileNameExtension}";
+
+    /// <summary>Tên file manifest payload cho ngày UTC: <c>requests-payload-YYYY-MM-DD.jsonl</c>.</summary>
+    public static string PayloadFileName(DateOnly utcDay) =>
+        $"{PayloadFileNamePrefix}{utcDay:yyyy-MM-dd}{FileNameExtension}";
+
+    /// <summary>Thư mục artifact tương đối của một export; luôn dùng <c>/</c> trong manifest.</summary>
+    public static string PayloadRelativeDirectory(DateOnly day, string exportId) =>
+        $"{PayloadRootDirectoryName}/{day:yyyy-MM-dd}/{exportId}";
+
+    /// <summary>Đường dẫn artifact tương đối của một export; luôn dùng <c>/</c> trong manifest.</summary>
+    public static string PayloadRelativePath(DateOnly day, string exportId, string fileName) =>
+        $"{PayloadRelativeDirectory(day, exportId)}/{fileName}";
 }

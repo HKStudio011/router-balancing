@@ -263,10 +263,12 @@ public class DatasetExportIntegrationTests : IDisposable
     /// either of two adjacent dates — chọn phương án này vì không cần đoán request kết thúc ngày nào).
     /// File chưa tồn tại → đóng góp 0 dòng.
     /// </summary>
-    private List<string> ReadAllDatasetLines()
+    private List<string> ReadAllDatasetLines() => ReadDatasetLines(CandidateFileNames());
+
+    private List<string> ReadDatasetLines(IEnumerable<string> fileNames)
     {
         var lines = new List<string>();
-        foreach (var name in CandidateFileNames())
+        foreach (var name in fileNames)
         {
             var path = Path.Combine(_dir, name);
             if (!File.Exists(path)) continue;
@@ -280,11 +282,20 @@ public class DatasetExportIntegrationTests : IDisposable
         return lines;
     }
 
-    // Tên file qua DatasetPaths.FileName — không tự format "requests-..." (brief ruling).
-    private static string[] CandidateFileNames()
+    // Tên file qua DatasetPaths — không tự format "requests-..." (brief ruling).
+    private static string[] CandidateFileNames() =>
+        [.. NormalCandidateFileNames(), .. LargeCandidateFileNames()];
+
+    private static string[] NormalCandidateFileNames()
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         return [DatasetPaths.FileName(today), DatasetPaths.FileName(today.AddDays(-1))];
+    }
+
+    private static string[] LargeCandidateFileNames()
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        return [DatasetPaths.LargeFileName(today), DatasetPaths.LargeFileName(today.AddDays(-1))];
     }
 
     private string DescribeStats()
@@ -293,7 +304,7 @@ public class DatasetExportIntegrationTests : IDisposable
         return $"RecordsWritten={s.RecordsWritten}, SkippedTooLarge={s.SkippedTooLarge}, " +
                $"SkippedTruncated={s.SkippedTruncated}, SkippedEmpty={s.SkippedEmpty}, " +
                $"SkippedRefusal={s.SkippedRefusal}, SkippedQueueFull={s.SkippedQueueFull}, " +
-               $"SkippedSynthetic={s.SkippedSynthetic}, " +
+               $"SkippedSynthetic={s.SkippedSynthetic}, LargeRecordsWritten={s.LargeRecordsWritten}, " +
                $"BytesWritten={s.BytesWritten}, CurrentFile={s.CurrentFile ?? "<none>"}";
     }
 
@@ -335,6 +346,75 @@ public class DatasetExportIntegrationTests : IDisposable
         Assert.Equal(id, line["request_id"]!.GetValue<string>());
         Assert.Equal("chat", line["endpoint"]!.GetValue<string>());
         Assert.Equal("hello world", line["completion"]!["content"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ChatRequest_BodyOverOneMiB_WritesFullRecordToLargeFile()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        var client = await StartAsync(new ScriptedUpstream(_ => SseChatOk()));
+        var largeContent = new string('x', DatasetRecordBuilder.InlineMaxFieldBytes);
+        var request = new JsonObject
+        {
+            ["model"] = "m1",
+            ["stream"] = true,
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = largeContent,
+            }),
+        };
+
+        var response = await client.PostAsync("/v1/chat/completions", Json(request.ToJsonString()));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var lines = await WaitDatasetLinesAsync(1);
+        var line = Assert.Single(lines);
+        Assert.Equal(largeContent, line["messages"]![0]!["content"]!.GetValue<string>());
+        Assert.Equal("hello world", line["completion"]!["content"]!.GetValue<string>());
+        Assert.Equal(1, _sink.Stats.LargeRecordsWritten);
+        Assert.Empty(ReadDatasetLines(NormalCandidateFileNames()));
+        Assert.Single(ReadDatasetLines(LargeCandidateFileNames()));
+    }
+
+    [Fact]
+    public async Task ChatCompletion_OverOneMiB_WritesLargeFile_AndClientUnchanged()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        var largeContent = new string('y', DatasetRecordBuilder.InlineMaxFieldBytes + 1);
+        var completion = new JsonObject
+        {
+            ["id"] = "chatcmpl-large",
+            ["object"] = "chat.completion",
+            ["choices"] = new JsonArray(new JsonObject
+            {
+                ["index"] = 0,
+                ["message"] = new JsonObject { ["role"] = "assistant", ["content"] = largeContent },
+                ["finish_reason"] = "stop",
+            }),
+            ["usage"] = new JsonObject { ["prompt_tokens"] = 2, ["completion_tokens"] = 3 },
+        };
+        var originalCompletionBytes = Encoding.UTF8.GetBytes(completion.ToJsonString());
+        var client = await StartAsync(new ScriptedUpstream(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(originalCompletionBytes)
+            {
+                Headers = { ContentType = new("application/json") },
+            },
+        }));
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"m1","messages":[{"role":"user","content":"hi"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var clientResponseBytes = await response.Content.ReadAsByteArrayAsync();
+        Assert.Equal(originalCompletionBytes, clientResponseBytes);
+        var lines = await WaitDatasetLinesAsync(1);
+        var line = Assert.Single(lines);
+        Assert.Equal(largeContent, line["completion"]!["content"]!.GetValue<string>());
+        Assert.Equal(1, _sink.Stats.LargeRecordsWritten);
+        Assert.Empty(ReadDatasetLines(NormalCandidateFileNames()));
+        Assert.Single(ReadDatasetLines(LargeCandidateFileNames()));
     }
 
     [Fact]

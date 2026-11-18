@@ -9,8 +9,8 @@ namespace RouterBalancing.Core.Dataset;
 /// <summary>
 /// Ống export dataset JSONL (spec §7.6): <see cref="Capture"/> trên thread request chỉ đo size +
 /// đẩy tham chiếu vào channel bounded — một writer task nền build dòng qua
-/// <see cref="DatasetRecordBuilder"/> và append vào file theo ngày UTC
-/// <c>requests-YYYY-MM-DD.jsonl</c>, xoay ngày + purge theo retention.
+/// <see cref="DatasetRecordBuilder"/> và append vào file thường/large theo ngày UTC của FinishedAt:
+/// <c>requests(-large)-YYYY-MM-DD.jsonl</c>, xoay ngày + purge theo retention.
 /// Mọi lỗi chỉ log (fail-open, pattern <c>ApiMonitorStore.SafeLog</c>) — không bao giờ ném ra
 /// caller, request đang phục vụ chạy bình thường dù đĩa hỏng. Lỗi IO đặt sink vào chế độ tắt:
 /// <c>Capture</c> return ngay, không enqueue; lưu Settings (bất kỳ key nào) bật lại writer và
@@ -35,7 +35,6 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
 
     private readonly IAppSettingsService _settings;
     private readonly ILogService _log;
-    private readonly TimeProvider _time;
     private readonly Channel<DatasetCapture> _channel;
 
     /// <summary>Mutex chỉ cho <see cref="EnsureStarted"/> — tạo writer task đúng một lần.</summary>
@@ -50,6 +49,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private int _skippedRefusal;
     private int _skippedQueueFull;
     private int _skippedSynthetic;
+    private int _largeRecordsWritten;
     private long _bytesWritten;
 
     /// <summary>Tổng byte đang nằm chờ trong queue — thêm ở Capture, trừ khi writer đọc.</summary>
@@ -58,7 +58,10 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     // Trạng thái file — chỉ writer task chạm (DisposeAsync không tự đóng: nó đợi writer thoát).
     private DateOnly _currentDay;
     private StreamWriter? _writer;
+    private StreamWriter? _largeWriter;
     private string? _currentFile;
+    private string? _currentDirectory;
+    private bool _storageReady;
 
     // Chế độ tắt sau lỗi IO — spec §7.6: "tắt cho tới khi Settings được lưu lại". Capture chạy trên
     // thread request nên hai cờ này truy cập qua Volatile. _disabled do writer đặt, do
@@ -78,7 +81,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     /// </summary>
     /// <param name="settings">Nguồn gate bật/tắt + đường dẫn đích + retention — đọc tại thời điểm dùng.</param>
     /// <param name="log">Log service — mọi lỗi chỉ về đây, không ra caller (contract fail-open).</param>
-    /// <param name="time">Clock cho quy tắc ngày UTC — inject để test đóng băng/đẩy clock.</param>
+    /// <param name="time">Clock tương thích với caller; ngày của record được quyết định bởi FinishedAt.</param>
     public DatasetSink(IAppSettingsService settings, ILogService log, TimeProvider time)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -87,7 +90,6 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
 
         _settings = settings;
         _log = log;
-        _time = time;
 
         // FullMode.Wait (KHÔNG phải DropNewest): channel đầy báo về caller qua TryWrite=false
         // để sink tự đếm SkippedQueueFull — drop im lặng thì không có số nào cho UI.
@@ -115,7 +117,8 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         Volatile.Read(ref _skippedQueueFull),
         Volatile.Read(ref _skippedSynthetic),
         Interlocked.Read(ref _bytesWritten),
-        _currentFile);
+        _currentFile,
+        Volatile.Read(ref _largeRecordsWritten));
 
     /// <inheritdoc />
     public void Capture(DatasetCapture capture)
@@ -235,8 +238,8 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     }
 
     /// <summary>
-    /// Vòng writer: mỗi record xử lý độc lập — kiểm tra ngày/mở file TRƯỚC khi đọc để lỗi đích
-    /// không nuốt mất record nào (item chờ vẫn nằm trong channel, sink chỉ chuyển chế độ tắt).
+    /// Vòng writer: kiểm tra thư mục đích TRƯỚC khi đọc để lỗi quyền/đường dẫn không nuốt mất
+    /// record đang chờ. Ngày file và writer được chọn sau khi đọc, từ FinishedAt của từng record.
     /// </summary>
     private async Task WriterLoopAsync()
     {
@@ -248,10 +251,10 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         {
             while (true)
             {
-                if (!EnsureFileForCurrentDay())
+                if (!EnsureDestinationDirectory())
                 {
-                    // _disabled đã được đặt TRONG EnsureFileForCurrentDay (trước khi log) — sink
-                    // tắt cho tới khi Settings được lưu lại; Capture mới sẽ return ngay.
+                    // _disabled đã được đặt TRƯỚC khi log — Capture mới return ngay cho tới khi
+                    // Settings được lưu lại; record đang chờ vẫn nằm trong channel.
                     break;
                 }
 
@@ -263,7 +266,6 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                         break;
                     }
 
-                    // Quay lại kiểm tra ngày LẦN NỮA trước khi đọc — clock có thể đổi trong lúc chờ.
                     continue;
                 }
 
@@ -284,13 +286,14 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
         finally
         {
-            CloseFile();
+            CloseFiles();
         }
     }
 
     /// <summary>
     /// Xử lý một record trên thread writer: build dòng JSONL (parse/SHA-256 — việc nặng, không chạy
-    /// trên thread request) rồi append vào file. Mọi exception đều log + drop record.
+    /// trên thread request) rồi append vào file thường hoặc large theo phân loại của builder.
+    /// Mọi exception đều log + drop record.
     /// </summary>
     private void Process(DatasetCapture capture)
     {
@@ -303,6 +306,12 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             // (review Important #1: một NRE ngoài try giết writer và cả record đang chờ trong queue).
             Interlocked.Add(ref _pendingBytes, -RawSize(capture));
 
+            var recordDay = DateOnly.FromDateTime(capture.FinishedAt.UtcDateTime);
+            if (!EnsureStorageForDay(recordDay))
+            {
+                return;
+            }
+
             var result = DatasetRecordBuilder.Build(capture);
             if (result.Skip is DatasetSkipReason reason)
             {
@@ -311,17 +320,31 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 return;
             }
 
-            // EnsureFileForCurrentDay đã đảm bảo _writer mở trước khi Process được gọi.
-            var writer = _writer;
-            if (writer is null)
+            var fileName = result.IsLargeRecord
+                ? DatasetPaths.LargeFileName(recordDay)
+                : DatasetPaths.FileName(recordDay);
+            var path = Path.Combine(_currentDirectory!, fileName);
+            StreamWriter writer;
+            if (result.IsLargeRecord)
             {
-                return;
+                writer = _largeWriter ??= OpenWriter(path);
+            }
+            else
+            {
+                writer = _writer ??= OpenWriter(path);
             }
 
             // LF cố định — chuẩn JSONL, không phụ thuộc Environment.NewLine (\r\n trên Windows).
             writer.Write(result.JsonLine!);
             writer.Write('\n');
+            _currentFile = path;
             Interlocked.Add(ref _bytesWritten, result.JsonLine!.Length + 1L); // +1: newline vừa ghi
+            if (result.IsLargeRecord)
+            {
+                Interlocked.Increment(ref _largeRecordsWritten);
+            }
+
+            // Publish RecordsWritten cuối cùng: test/UI thấy counter mới thì cùng lượt đã có path + stats.
             Interlocked.Increment(ref _recordsWritten);
         }
         catch (Exception ex)
@@ -342,45 +365,21 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         InvokeChanged();
     }
 
-    /// <summary>
-    /// Đảm bảo file của ngày hiện tại đang mở (append): đổi ngày hoặc lần đầu → đóng file cũ,
-    /// purge theo retention, mở file mới. Trả về false khi không tạo được thư mục/mở được file —
-    /// caller dừng writer (sink chuyển chế độ tắt, spec §7.6).
-    /// </summary>
-    private bool EnsureFileForCurrentDay()
+    /// <summary>Kiểm tra đích trước khi dequeue; file JSONL chỉ mở sau khi biết loại record.</summary>
+    private bool EnsureDestinationDirectory()
     {
-        var today = DateOnly.FromDateTime(_time.GetUtcNow().UtcDateTime);
-        if (today == _currentDay && _writer is not null)
+        if (_storageReady)
         {
-            return true; // Cùng ngày, file vẫn mở — không IO.
+            return true;
         }
-
-        // Đổi ngày (hoặc khởi động lần đầu): purge chạy ở ĐÚNG hai thời điểm này theo spec §7.6.
-        CloseFile();
-        _currentDay = today;
 
         try
         {
-            var directory = DatasetPaths.Resolve(_settings.DatasetExportPath);
-            Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, DatasetPaths.FileName(today));
-            // FileShare.Read: cho phép reader đồng thời (bộ nạp dataset, script kiểm tra) đọc file
-            // khi app đang chạy — reader vẫn phải mở với share mode cho phép Write của handle này
-            // (thực tế Windows: chỉ FileShare.Write/ReadWrite bên đọc mới mở được; Python open()
-            // mặc định đủ rộng nên hoạt động). Mở độc quyền sẽ chặn mọi việc xem file giữa chừng.
-            // FileMode.Append tự seek cuối file khi append, tạo mới khi chưa có.
-            var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
-            // UTF8Encoding(false) = không BOM: file JSONL thuần, loader nào cũng đọc được.
-            _writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
-            _currentFile = path;
-            PurgeOldFiles(directory, today);
+            Directory.CreateDirectory(DatasetPaths.Resolve(_settings.DatasetExportPath));
             return true;
         }
         catch (Exception ex)
         {
-            // Đích chưa tồn tại và không tạo được / mất quyền ghi: đặt _disabled TRƯỚC khi log để
-            // ai quan sát thấy dòng log đều suy ra cờ tắt đã nhìn thấy được (test chờ log rồi
-            // mới save + capture — không race), rồi tắt cho tới khi Settings được lưu lại.
             Volatile.Write(ref _disabled, true);
             LogOnce(ref _openErrorLogs, "open daily file", ex);
             return false;
@@ -388,9 +387,51 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     }
 
     /// <summary>
-    /// Xoá file hàng ngày cũ hơn retention (spec §7.6): giữ đúng <c>retention</c> ngày gần nhất
-    /// kể cả hôm nay (age &gt;= retention mới xoá); 0 = giữ mãi, không purge. File không khớp
-    /// pattern ngày hoặc chính file đang mở không bao giờ bị xoá.
+    /// Chuẩn bị thư mục và retention cho ngày FinishedAt. Đổi ngày đóng cả hai writer; writer của
+    /// từng loại file được mở lười ở lần ghi đầu tiên để record large không tạo file thường rỗng.
+    /// </summary>
+    private bool EnsureStorageForDay(DateOnly day)
+    {
+        if (day == _currentDay && _storageReady)
+        {
+            return true;
+        }
+
+        CloseFiles();
+        _currentDay = day;
+        _storageReady = false;
+
+        try
+        {
+            var directory = DatasetPaths.Resolve(_settings.DatasetExportPath);
+            Directory.CreateDirectory(directory);
+            _currentDirectory = directory;
+            PurgeOldFiles(directory, day);
+            _storageReady = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Đặt _disabled TRƯỚC khi log để người quan sát log không race với trạng thái recovery.
+            Volatile.Write(ref _disabled, true);
+            LogOnce(ref _openErrorLogs, "open daily file", ex);
+            return false;
+        }
+    }
+
+    private static StreamWriter OpenWriter(string path)
+    {
+        // FileShare.Read cho phép reader đồng thời; reader trên Windows phải cho phép Write của
+        // handle này (FileShare.ReadWrite). Append giữ dữ liệu các phiên chạy trước.
+        var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+        // UTF8Encoding(false) = không BOM; AutoFlush giữ invariant counter tăng sau khi ghi stream.
+        return new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
+    }
+
+    /// <summary>
+    /// Xoá file thường/large cũ hơn retention (spec §7.6): giữ đúng <c>retention</c> ngày gần nhất
+    /// kể cả ngày record (age &gt;= retention mới xoá); 0 = giữ mãi, không purge. File không khớp
+    /// pattern ngày hoặc file ghi gần nhất không bao giờ bị xoá.
     /// </summary>
     private void PurgeOldFiles(string directory, DateOnly today)
     {
@@ -424,22 +465,36 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
     }
 
-    /// <summary>Parse ngày từ tên file <c>requests-YYYY-MM-DD.jsonl</c>; false khi không khớp pattern.</summary>
+    /// <summary>Parse ngày từ file JSONL thường/large; false với mọi tên file khác.</summary>
     private static bool TryParseDay(string fileName, out DateOnly day)
     {
-        if (!fileName.StartsWith(DatasetPaths.FileNamePrefix, StringComparison.Ordinal)
-            || !fileName.EndsWith(DatasetPaths.FileNameExtension, StringComparison.Ordinal))
+        string prefix;
+        if (fileName.StartsWith(DatasetPaths.LargeFileNamePrefix, StringComparison.Ordinal))
+        {
+            prefix = DatasetPaths.LargeFileNamePrefix;
+        }
+        else if (fileName.StartsWith(DatasetPaths.FileNamePrefix, StringComparison.Ordinal))
+        {
+            prefix = DatasetPaths.FileNamePrefix;
+        }
+        else
         {
             day = default;
             return false;
         }
 
-        var datePart = fileName[DatasetPaths.FileNamePrefix.Length..^DatasetPaths.FileNameExtension.Length];
+        if (!fileName.EndsWith(DatasetPaths.FileNameExtension, StringComparison.Ordinal))
+        {
+            day = default;
+            return false;
+        }
+
+        var datePart = fileName[prefix.Length..^DatasetPaths.FileNameExtension.Length];
         return DateOnly.TryParseExact(datePart, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
     }
 
-    /// <summary>Đóng file hiện tại — chỉ writer task gọi (xuất vòng hoặc xoay ngày).</summary>
-    private void CloseFile()
+    /// <summary>Đóng cả hai writer — chỉ writer task gọi (xuất vòng hoặc xoay ngày).</summary>
+    private void CloseFiles()
     {
         try
         {
@@ -447,14 +502,28 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Lỗi khi đóng không được phá vòng writer/rollover.
+            // Vẫn phải đóng writer large kể cả khi writer thường lỗi lúc dispose.
             SafeLog("close file", ex);
         }
         finally
         {
             _writer = null;
-            _currentFile = null;
         }
+
+        try
+        {
+            _largeWriter?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            SafeLog("close large file", ex);
+        }
+        finally
+        {
+            _largeWriter = null;
+        }
+
+        // CurrentFile là file ghi gần nhất, không phải handle đang mở — giữ sau dispose/rotation.
     }
 
     /// <summary>
