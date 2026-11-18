@@ -7,4 +7,6 @@ namespace RouterBalancing.Core.Dataset;
 /// </summary>
 /// <param name="JsonLine">Dòng JSON v:1; <see langword="null"/> khi record bị bỏ.</param>
 /// <param name="Skip">Lý do bỏ record; <see langword="null"/> khi ghi.</param>
-public sealed record DatasetBuildResult(string? JsonLine, DatasetSkipReason? Skip);
+/// <param name="IsLargeRecord">Body hoặc completion vượt ngưỡng inline; chỉ được bật khi dựng JSONL thành công.</param>
+public sealed record DatasetBuildResult(
+    string? JsonLine, DatasetSkipReason? Skip, bool IsLargeRecord = false);

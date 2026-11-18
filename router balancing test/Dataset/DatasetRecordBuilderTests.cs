@@ -238,43 +238,95 @@ public class DatasetRecordBuilderTests
     }
 
     [Fact]
-    public void Build_BodyAtMaxFieldBytes_Writes()
+    public void Build_BodyAtInlineThreshold_KeepsNormalClassification()
     {
-        // Biên cap (Review Focus 1): body đúng MaxFieldBytes - 10 byte PHẢI ghi được và không bị cắt.
         const string head = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"";
         const string tail = "\"}]}";
-        var body = ExactLengthJson(head, tail, DatasetRecordBuilder.MaxFieldBytes - 10);
-        Assert.Equal(DatasetRecordBuilder.MaxFieldBytes - 10, Encoding.UTF8.GetByteCount(body));
+        var body = ExactLengthJson(head, tail, DatasetRecordBuilder.InlineMaxFieldBytes);
+        Assert.Equal(DatasetRecordBuilder.InlineMaxFieldBytes, Encoding.UTF8.GetByteCount(body));
 
         const string completion = """{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}""";
         var result = DatasetRecordBuilder.Build(Capture(body, completion));
 
         Assert.Null(result.Skip);
+        Assert.False(result.IsLargeRecord);
         var content = Text(((JsonArray)Line(result)["messages"]!)[0]!["content"]!);
-        // Nội dung giữ nguyên từng byte — cap là điều kiện bỏ record, không bao giờ cắt.
-        Assert.Equal(DatasetRecordBuilder.MaxFieldBytes - 10 - head.Length - tail.Length, content.Length);
+        Assert.Equal(DatasetRecordBuilder.InlineMaxFieldBytes - head.Length - tail.Length, content.Length);
     }
 
     [Fact]
-    public void Build_BodyOverMaxFieldBytes_SkipsTooLarge()
+    public void Build_BodyOverInlineThreshold_MarksLargeWithoutSkipping()
     {
-        // Vượt cap ngay 1 byte → bỏ hẳn record.
         const string head = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"";
         const string tail = "\"}]}";
-        var body = ExactLengthJson(head, tail, DatasetRecordBuilder.MaxFieldBytes + 1);
+        var body = ExactLengthJson(head, tail, DatasetRecordBuilder.InlineMaxFieldBytes + 1);
+        const string completion = """{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}""";
+
+        var result = DatasetRecordBuilder.Build(Capture(body, completion));
+
+        Assert.Null(result.Skip);
+        Assert.NotNull(result.JsonLine);
+        Assert.True(result.IsLargeRecord);
+    }
+
+    [Fact]
+    public void Build_BodyAtExportThreshold_WritesLargeRecord()
+    {
+        // Biên export: body đúng 16 MiB vẫn ghi nguyên vẹn, nhưng được đánh dấu là record lớn.
+        const string head = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"";
+        const string tail = "\"}]}";
+        var body = ExactLengthJson(head, tail, DatasetRecordBuilder.MaxExportFieldBytes);
+        Assert.Equal(DatasetRecordBuilder.MaxExportFieldBytes, Encoding.UTF8.GetByteCount(body));
+
+        const string completion = """{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}""";
+        var result = DatasetRecordBuilder.Build(Capture(body, completion));
+
+        Assert.Null(result.Skip);
+        Assert.True(result.IsLargeRecord);
+        var content = Text(((JsonArray)Line(result)["messages"]!)[0]!["content"]!);
+        Assert.Equal(DatasetRecordBuilder.MaxExportFieldBytes - head.Length - tail.Length, content.Length);
+    }
+
+    [Fact]
+    public void Build_BodyOverExportThreshold_SkipsTooLarge()
+    {
+        // Vượt cap export ngay 1 byte → bỏ hẳn record, không trả cờ phân loại cho record đã skip.
+        const string head = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"";
+        const string tail = "\"}]}";
+        var body = ExactLengthJson(head, tail, DatasetRecordBuilder.MaxExportFieldBytes + 1);
         const string completion = """{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}""";
 
         var result = DatasetRecordBuilder.Build(Capture(body, completion));
 
         Assert.Equal(DatasetSkipReason.TooLarge, result.Skip);
         Assert.Null(result.JsonLine);
+        Assert.False(result.IsLargeRecord);
 
         // Spec §7.6: "body HOẶC completion" vượt cap đều bỏ — completion to cũng phải skip.
         const string cHead = "{\"id\":\"1\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"";
         const string cTail = "\"}}]}";
-        var bigCompletion = ExactLengthJson(cHead, cTail, DatasetRecordBuilder.MaxFieldBytes + 1);
-        Assert.Equal(DatasetSkipReason.TooLarge,
-            DatasetRecordBuilder.Build(Capture("""{"model":"m","messages":[{"role":"user","content":"hi"}]}""", bigCompletion)).Skip);
+        var bigCompletion = ExactLengthJson(cHead, cTail, DatasetRecordBuilder.MaxExportFieldBytes + 1);
+        var completionResult = DatasetRecordBuilder.Build(
+            Capture("""{"model":"m","messages":[{"role":"user","content":"hi"}]}""", bigCompletion));
+        Assert.Equal(DatasetSkipReason.TooLarge, completionResult.Skip);
+        Assert.False(completionResult.IsLargeRecord);
+    }
+
+    [Fact]
+    public void Build_CompletionUtf8OverInlineThreshold_MarksLarge()
+    {
+        const string body = """{"model":"m","messages":[{"role":"user","content":"hi"}]}""";
+        const string cHead = "{\"id\":\"1\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"";
+        const string cTail = "\"}}]}";
+        var completion = cHead + new string('é', DatasetRecordBuilder.InlineMaxFieldBytes / 2 + 1) + cTail;
+        Assert.True(completion.Length < DatasetRecordBuilder.InlineMaxFieldBytes);
+        Assert.True(Encoding.UTF8.GetByteCount(completion) > DatasetRecordBuilder.InlineMaxFieldBytes);
+
+        var result = DatasetRecordBuilder.Build(Capture(body, completion));
+
+        Assert.Null(result.Skip);
+        Assert.NotNull(result.JsonLine);
+        Assert.True(result.IsLargeRecord);
     }
 
     [Fact]
