@@ -501,7 +501,11 @@
             s.SkippedEmpty,
             s.SkippedRefusal,
             s.SkippedQueueFull,
-            s.SkippedSynthetic);
+            s.SkippedSynthetic,
+            s.LargeRecordsWritten,
+            s.PayloadRecordsWritten,
+            s.ExternalizedPayloadCount,
+            Math.Round(s.ExternalizedPayloadBytes / 1024d / 1024d, 1));
     }
 
     /// <summary>Mở explorer vào thư mục dataset (chỉ Windows — spec §7.7); lỗi không được nổ circuit.</summary>
