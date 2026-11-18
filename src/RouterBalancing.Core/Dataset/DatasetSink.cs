@@ -63,6 +63,9 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private string? _currentDirectory;
     private bool _storageReady;
 
+    // Capture đã dequeue nhưng chưa mở được file phải được giữ lại để replay sau Settings recovery.
+    private DatasetCapture? _pendingCapture;
+
     // Chế độ tắt sau lỗi IO — spec §7.6: "tắt cho tới khi Settings được lưu lại". Capture chạy trên
     // thread request nên hai cờ này truy cập qua Volatile. _disabled do writer đặt, do
     // OnSettingsChanged (thread gọi Set) xoá; _disposed do DisposeAsync đặt và không bao giờ xoá.
@@ -258,7 +261,14 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                     break;
                 }
 
-                if (!_channel.Reader.TryRead(out var capture))
+                DatasetCapture capture;
+                if (_pendingCapture is { } pendingCapture)
+                {
+                    // Replay capture bị lỗi open TRƯỚC mọi record trong channel để giữ thứ tự.
+                    capture = pendingCapture;
+                    _pendingCapture = null;
+                }
+                else if (!_channel.Reader.TryRead(out var dequeuedCapture))
                 {
                     // Chưa có record: đợi tới khi có; false = channel đã complete → thoát vòng.
                     if (!await _channel.Reader.WaitToReadAsync().ConfigureAwait(false))
@@ -267,6 +277,10 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                     }
 
                     continue;
+                }
+                else
+                {
+                    capture = dequeuedCapture;
                 }
 
                 Process(capture);
@@ -325,13 +339,28 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 : DatasetPaths.FileName(recordDay);
             var path = Path.Combine(_currentDirectory!, fileName);
             StreamWriter writer;
-            if (result.IsLargeRecord)
+            try
             {
-                writer = _largeWriter ??= OpenWriter(path);
+                if (result.IsLargeRecord)
+                {
+                    writer = _largeWriter ??= OpenWriter(path);
+                }
+                else
+                {
+                    writer = _writer ??= OpenWriter(path);
+                }
             }
-            else
+            catch (Exception ex)
             {
-                writer = _writer ??= OpenWriter(path);
+                // Open khác write: capture chưa có nơi ghi nên phải giữ nguyên để replay, không drop.
+                // Cộng lại pending bytes vì capture vẫn chiếm RAM dù đã rời channel.
+                _pendingCapture = capture;
+                Interlocked.Add(ref _pendingBytes, RawSize(capture));
+                _storageReady = false; // lần retry phải resolve lại path người dùng có thể vừa sửa
+                Volatile.Write(ref _disabled, true);
+                LogOnce(ref _openErrorLogs, "open daily file", ex);
+                InvokeChanged();
+                return;
             }
 
             // LF cố định — chuẩn JSONL, không phụ thuộc Environment.NewLine (\r\n trên Windows).

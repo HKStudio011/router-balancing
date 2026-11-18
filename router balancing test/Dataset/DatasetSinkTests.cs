@@ -408,6 +408,66 @@ public class DatasetSinkTests : IDisposable
     }
 
     [Fact]
+    public Task OpenFailure_NormalFile_RetainsCaptureAndDrainsItFirstAfterRecovery() =>
+        AssertOpenFailureDrainsOriginalCaptureAfterRecovery(largeRecord: false);
+
+    [Fact]
+    public Task OpenFailure_LargeFile_RetainsCaptureAndDrainsItFirstAfterRecovery() =>
+        AssertOpenFailureDrainsOriginalCaptureAfterRecovery(largeRecord: true);
+
+    private async Task AssertOpenFailureDrainsOriginalCaptureAfterRecovery(bool largeRecord)
+    {
+        var log = new CapturingLog();
+        Directory.CreateDirectory(_dir);
+        var day = new DateOnly(2026, 11, 6);
+        var targetPath = Path.Combine(_dir, largeRecord
+            ? DatasetPaths.LargeFileName(day)
+            : DatasetPaths.FileName(day));
+        // Directory.CreateDirectory thành công nhưng FileStream Append trên selected JSONL phải fail.
+        Directory.CreateDirectory(targetPath);
+        var largeBody = largeRecord
+            ? ChatBodyWithContent(new string('x', DatasetRecordBuilder.InlineMaxFieldBytes))
+            : null;
+        DatasetCapture Capture(string requestId) => ChatCapture(requestId, clientBody: largeBody);
+
+        await using var sink = CreateSink(log);
+        sink.Capture(Capture("req-first"));
+        WaitUntil(() => log.ErrorCount == 1);
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+
+        // Open failure phải disable TRƯỚC log: capture này là no-op, không được vượt pending record.
+        sink.Capture(Capture("req-disabled"));
+
+        Directory.Delete(targetPath);
+        _settings.Set(SettingsKeys.LogRetentionDays, 30); // recovery trigger
+        // Restart vẫn lazy sau Settings: nhiều capture mồi tránh race writer cũ chưa completed.
+        for (var i = 0; i < 5; i++)
+        {
+            sink.Capture(Capture("req-resume"));
+        }
+
+        WaitUntil(() =>
+        {
+            if (!File.Exists(targetPath))
+            {
+                return false;
+            }
+
+            var currentLines = ReadAllLinesShared(targetPath);
+            return currentLines.Any(line => line.Contains("req-resume", StringComparison.Ordinal))
+                && sink.Stats.RecordsWritten >= currentLines.Length;
+        });
+
+        var lines = ReadAllLinesShared(targetPath);
+        Assert.True(lines.Length >= 2);
+        Assert.Contains("req-first", lines[0]);
+        Assert.All(lines[1..], line => Assert.Contains("req-resume", line));
+        Assert.DoesNotContain(lines, line => line.Contains("req-disabled", StringComparison.Ordinal));
+        Assert.Equal(1, log.ErrorCount);
+        Assert.Contains("open daily file", log.FirstError);
+    }
+
+    [Fact]
     public async Task Capture_DisposedSink_CapturesAreNoOps()
     {
         var sink = CreateSink();
