@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using RouterBalancing.Core.Dataset;
@@ -192,6 +193,119 @@ public class DatasetSinkTests : IDisposable
     }
 
     [Fact]
+    public async Task WritePayload_WritesSourceDocumentsBinaryThenManifest()
+    {
+        await using var sink = CreateSink();
+        var binary = LargePng();
+
+        sink.Capture(PayloadCapture("req-payload", binary));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        var day = new DateOnly(2026, 11, 6);
+        var payloadPath = Path.Combine(_dir, DatasetPaths.PayloadFileName(day));
+        var manifest = Assert.Single(ReadPayloadManifests(day));
+        Assert.Equal(2, manifest["v"]!.GetValue<int>());
+        Assert.Equal("req-payload", manifest["request_id"]!.GetValue<string>());
+        var exportId = manifest["export_id"]!.GetValue<string>();
+        Assert.True(Guid.TryParseExact(exportId, "N", out _));
+
+        var requestRelativePath = manifest["documents"]!["request"]!.GetValue<string>();
+        var completionRelativePath = manifest["documents"]!["completion"]!.GetValue<string>();
+        Assert.Equal(DatasetPaths.PayloadRelativePath(day, exportId, "request.json"), requestRelativePath);
+        Assert.Equal(DatasetPaths.PayloadRelativePath(day, exportId, "completion.json"), completionRelativePath);
+        var requestDocumentPath = ArtifactPath(_dir, requestRelativePath);
+        var completionDocumentPath = ArtifactPath(_dir, completionRelativePath);
+        Assert.True(File.Exists(requestDocumentPath));
+        Assert.True(File.Exists(completionDocumentPath));
+
+        var reference = Assert.Single(manifest["payload_refs"]!.AsArray())!;
+        var binaryPath = ArtifactPath(_dir, reference["path"]!.GetValue<string>());
+        Assert.True(File.Exists(binaryPath));
+        Assert.Equal(binary, File.ReadAllBytes(binaryPath));
+        var requestDocument = JsonNode.Parse(File.ReadAllText(requestDocumentPath))!;
+        Assert.Equal(reference["url"]!.GetValue<string>(), requestDocument["messages"]![0]!
+            ["content"]![1]!["image_url"]!["url"]!.GetValue<string>());
+        Assert.Equal(payloadPath, sink.Stats.CurrentFile);
+        Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.FileName(day))));
+        Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.LargeFileName(day))));
+        Assert.Empty(Directory.GetFiles(_dir, "*.tmp-*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task WritePayload_SameRequestIdDifferentExportId_DoesNotOverwrite()
+    {
+        await using var sink = CreateSink();
+        var firstBinary = LargePng(0x20);
+        var secondBinary = LargePng(0x21);
+
+        sink.Capture(PayloadCapture("same-request", firstBinary));
+        sink.Capture(PayloadCapture("same-request", secondBinary));
+        WaitUntil(() => sink.Stats.RecordsWritten == 2);
+
+        var day = new DateOnly(2026, 11, 6);
+        var manifests = ReadPayloadManifests(day);
+        Assert.Equal(2, manifests.Length);
+        var firstExportId = manifests[0]["export_id"]!.GetValue<string>();
+        var secondExportId = manifests[1]["export_id"]!.GetValue<string>();
+        Assert.NotEqual(firstExportId, secondExportId);
+        Assert.All(manifests, manifest => Assert.Equal("same-request", manifest["request_id"]!.GetValue<string>()));
+
+        var firstReference = Assert.Single(manifests[0]["payload_refs"]!.AsArray())!;
+        var secondReference = Assert.Single(manifests[1]["payload_refs"]!.AsArray())!;
+        Assert.NotEqual(firstReference["path"]!.GetValue<string>(), secondReference["path"]!.GetValue<string>());
+        Assert.Equal(firstBinary, File.ReadAllBytes(ArtifactPath(_dir, firstReference["path"]!.GetValue<string>())));
+        Assert.Equal(secondBinary, File.ReadAllBytes(ArtifactPath(_dir, secondReference["path"]!.GetValue<string>())));
+        Assert.True(File.Exists(ArtifactPath(_dir, manifests[0]["documents"]!["request"]!.GetValue<string>())));
+        Assert.True(File.Exists(ArtifactPath(_dir, manifests[1]["documents"]!["request"]!.GetValue<string>())));
+    }
+
+    [Fact]
+    public async Task WritePayload_FinishedAtControlsAllArtifactDays()
+    {
+        _time.SetUtcNow(new DateTimeOffset(2026, 11, 18, 12, 0, 0, TimeSpan.Zero));
+        await using var sink = CreateSink();
+        // 00:30 ở UTC+02 vẫn là 22:30 ngày 17/11 UTC; clock writer đã sang ngày 18.
+        var finishedAt = new DateTimeOffset(2026, 11, 18, 0, 30, 0, TimeSpan.FromHours(2));
+
+        sink.Capture(PayloadCapture("req-utc-day", LargePng(), finishedAt));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        var finishedDay = new DateOnly(2026, 11, 17);
+        var manifest = Assert.Single(ReadPayloadManifests(finishedDay));
+        Assert.Equal("2026-11-17T22:30:00Z", manifest["ts"]!.GetValue<string>());
+        var exportId = manifest["export_id"]!.GetValue<string>();
+        Assert.Equal(DatasetPaths.PayloadRelativePath(finishedDay, exportId, "request.json"),
+            manifest["documents"]!["request"]!.GetValue<string>());
+        var reference = Assert.Single(manifest["payload_refs"]!.AsArray())!;
+        Assert.StartsWith("payloads/2026-11-17/", reference["path"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.True(File.Exists(ArtifactPath(_dir, reference["path"]!.GetValue<string>())));
+        Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.PayloadFileName(new DateOnly(2026, 11, 18)))));
+        Assert.False(Directory.Exists(Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "2026-11-18")));
+    }
+
+    [Fact]
+    public async Task WritePayload_ArtifactFailure_DoesNotWriteManifest()
+    {
+        var log = new CapturingLog();
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName), "not a directory");
+        await using var sink = CreateSink(log);
+
+        sink.Capture(PayloadCapture("req-artifact-failure", LargePng()));
+        WaitUntil(() => log.ErrorCount > 0 || sink.Stats.RecordsWritten > 0);
+
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+        Assert.Equal(1, log.ErrorCount);
+        Assert.Equal(0, sink.Stats.PayloadRecordsWritten);
+        Assert.Equal(0, sink.Stats.ExternalizedPayloadCount);
+        var day = new DateOnly(2026, 11, 6);
+        var payloadJsonlPath = Path.Combine(_dir, DatasetPaths.PayloadFileName(day));
+        Assert.False(File.Exists(payloadJsonlPath));
+        Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.FileName(day))));
+        Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.LargeFileName(day))));
+    }
+
+    [Fact]
     public async Task Constructor_SameDayExistingFile_AppendsDoesNotTruncate()
     {
         // File cùng ngày đã có một dòng của "phiên chạy trước" — sink mới phải append, không truncate.
@@ -283,6 +397,84 @@ public class DatasetSinkTests : IDisposable
         Assert.False(File.Exists(oldLargePath));
         Assert.True(File.Exists(unrelatedPath), "file jsonl do người dùng tạo phải được giữ");
         Assert.True(File.Exists(otherJsonlPath), "file ngoài prefix dataset phải được giữ");
+    }
+
+    [Fact]
+    public async Task Retention_RemovesPayloadFilesAndDirectoriesOnlyWhenExpired()
+    {
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 3);
+        Directory.CreateDirectory(_dir);
+        var expiredDay = new DateOnly(2026, 11, 10);
+        var retainedDay = new DateOnly(2026, 11, 15);
+        var currentDay = new DateOnly(2026, 11, 17);
+        var expiredManifest = Path.Combine(_dir, DatasetPaths.PayloadFileName(expiredDay));
+        var retainedManifest = Path.Combine(_dir, DatasetPaths.PayloadFileName(retainedDay));
+        File.WriteAllText(expiredManifest, "{\"v\":2}\n");
+        File.WriteAllText(retainedManifest, "{\"v\":2}\n");
+
+        string CreateExport(DateOnly day, string exportId)
+        {
+            var exportDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName,
+                day.ToString("yyyy-MM-dd"), exportId);
+            Directory.CreateDirectory(exportDirectory);
+            var binaryPath = Path.Combine(exportDirectory, "image.bin");
+            File.WriteAllBytes(binaryPath, [1, 2, 3]);
+            File.WriteAllText(Path.Combine(exportDirectory, "request.json"), "{}");
+            return binaryPath;
+        }
+
+        CreateExport(expiredDay, "expired-export");
+        var retainedBinary = CreateExport(retainedDay, "retained-export");
+        var currentBinary = CreateExport(currentDay, "existing-current-export");
+        var unrelatedDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "user-created");
+        Directory.CreateDirectory(unrelatedDirectory);
+        var unrelatedPayload = Path.Combine(unrelatedDirectory, "keep.bin");
+        File.WriteAllBytes(unrelatedPayload, [4, 5, 6]);
+        var unrelatedRootFile = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "keep.txt");
+        File.WriteAllText(unrelatedRootFile, "keep");
+        var unrelatedJsonl = Path.Combine(_dir, "requests-user-notes.jsonl");
+        File.WriteAllText(unrelatedJsonl, "{\"v\":1}\n");
+
+        await using var sink = CreateSink();
+        sink.Capture(PayloadCapture("req-retention", LargePng(),
+            new DateTimeOffset(2026, 11, 17, 9, 0, 0, TimeSpan.Zero)));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        Assert.False(File.Exists(expiredManifest));
+        Assert.False(Directory.Exists(Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "2026-11-10")));
+        Assert.True(File.Exists(retainedManifest));
+        Assert.True(File.Exists(retainedBinary));
+        Assert.True(File.Exists(currentBinary), "artifacts của ngày record hiện tại không được purge");
+        Assert.True(File.Exists(unrelatedPayload));
+        Assert.True(File.Exists(unrelatedRootFile));
+        Assert.True(File.Exists(unrelatedJsonl));
+    }
+
+    [Fact]
+    public async Task WritePayload_UpdatesPayloadAndExternalizedStats()
+    {
+        await using var sink = CreateSink();
+        var binary = LargePng();
+
+        sink.Capture(PayloadCapture("req-stats", binary));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        var day = new DateOnly(2026, 11, 6);
+        var payloadPath = Path.Combine(_dir, DatasetPaths.PayloadFileName(day));
+        var manifestLine = Assert.Single(ReadAllLinesShared(payloadPath));
+        var manifest = (JsonObject)JsonNode.Parse(manifestLine)!;
+        var reference = Assert.Single(manifest["payload_refs"]!.AsArray())!;
+        var expectedJsonlBytes = Encoding.UTF8.GetByteCount(manifestLine) + 1L;
+        Assert.Equal(1, sink.Stats.RecordsWritten);
+        Assert.Equal(0, sink.Stats.LargeRecordsWritten);
+        Assert.Equal(1, sink.Stats.PayloadRecordsWritten);
+        Assert.Equal(1, sink.Stats.ExternalizedPayloadCount);
+        Assert.Equal(binary.Length, sink.Stats.ExternalizedPayloadBytes);
+        Assert.Equal(expectedJsonlBytes, sink.Stats.BytesWritten);
+        Assert.Equal(payloadPath, sink.Stats.CurrentFile);
+        Assert.Equal(reference["sha256"]!.GetValue<string>(),
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(
+                ArtifactPath(_dir, reference["path"]!.GetValue<string>())))).ToLowerInvariant());
     }
 
     [Fact]
@@ -559,6 +751,45 @@ public class DatasetSinkTests : IDisposable
         Assert.Equal(0, sink.Stats.SkippedEmpty);
         Assert.Equal(0, sink.Stats.SkippedQueueFull);
     }
+
+    private DatasetCapture PayloadCapture(
+        string requestId, byte[] binary, DateTimeOffset? finishedAt = null)
+    {
+        var dataUri = $"data:image/png;base64,{Convert.ToBase64String(binary)}";
+        var body = new JsonObject
+        {
+            ["model"] = "gpt-vision",
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray(
+                    new JsonObject { ["type"] = "text", ["text"] = "look" },
+                    new JsonObject
+                    {
+                        ["type"] = "image_url",
+                        ["image_url"] = new JsonObject { ["url"] = dataUri },
+                    }),
+            }),
+        };
+        return ChatCapture(requestId, clientBody: Encoding.UTF8.GetBytes(body.ToJsonString()), finishedAt: finishedAt);
+    }
+
+    private static byte[] LargePng(byte fill = 0x20)
+    {
+        var binary = new byte[DatasetRecordBuilder.InlineMaxFieldBytes];
+        binary.AsSpan().Fill(fill);
+        new byte[] { 0x89, 0x50, 0x4E, 0x47 }.AsSpan().CopyTo(binary);
+        return binary;
+    }
+
+    private JsonObject[] ReadPayloadManifests(DateOnly day)
+    {
+        var path = Path.Combine(_dir, DatasetPaths.PayloadFileName(day));
+        return [.. ReadAllLinesShared(path).Select(line => (JsonObject)JsonNode.Parse(line)!)];
+    }
+
+    private static string ArtifactPath(string root, string relativePath) =>
+        Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
 
     private DatasetSink CreateSink(CapturingLog? log = null) =>
         new(_settings, (ILogService?)log ?? new NullLog(), _time);

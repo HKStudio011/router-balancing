@@ -4,7 +4,7 @@ namespace RouterBalancing.Core.Dataset;
 /// Đếm trạng thái export — hiển thị ở Settings và dùng cho test/monitoring (spec §7.6–7.7).
 /// </summary>
 /// <param name="RecordsWritten">Số record đã ghi file thành công.</param>
-/// <param name="SkippedTooLarge">Bỏ vì body/completion vượt cap 1MB.</param>
+/// <param name="SkippedTooLarge">Bỏ vì body/completion vượt cap export 16 MiB.</param>
 /// <param name="SkippedTruncated">Bỏ vì completion cụt giữa stream (không terminal).</param>
 /// <param name="SkippedEmpty">Bỏ vì output/completion rỗng hoặc thiếu.</param>
 /// <param name="SkippedRefusal">Bỏ vì 2xx nhưng completion là lời từ chối của upstream.</param>

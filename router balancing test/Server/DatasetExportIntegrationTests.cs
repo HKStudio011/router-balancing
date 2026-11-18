@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
@@ -133,11 +134,15 @@ public class DatasetExportIntegrationTests : IDisposable
     }
 
     /// <summary>Upstream theo script (mirror ApiMonitorIntegrationTests) — factory throw được (mạng giả).</summary>
-    private sealed class ScriptedUpstream(Func<Provider, HttpResponseMessage> factory) : IUpstreamClient
+    private sealed class ScriptedUpstream(
+        Func<Provider, HttpResponseMessage> factory, Action<byte[]>? observeBody = null) : IUpstreamClient
     {
         public Task<HttpResponseMessage> PostAsync(
-            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct) =>
-            Task.FromResult(factory(provider));
+            Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
+        {
+            observeBody?.Invoke(body);
+            return Task.FromResult(factory(provider));
+        }
     }
 
     // SSE chat hoàn chỉnh: delta content + finish_reason/usage ở chunk cuối + [DONE] — đủ cho cả
@@ -284,7 +289,7 @@ public class DatasetExportIntegrationTests : IDisposable
 
     // Tên file qua DatasetPaths — không tự format "requests-..." (brief ruling).
     private static string[] CandidateFileNames() =>
-        [.. NormalCandidateFileNames(), .. LargeCandidateFileNames()];
+        [.. NormalCandidateFileNames(), .. LargeCandidateFileNames(), .. PayloadCandidateFileNames()];
 
     private static string[] NormalCandidateFileNames()
     {
@@ -297,6 +302,15 @@ public class DatasetExportIntegrationTests : IDisposable
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         return [DatasetPaths.LargeFileName(today), DatasetPaths.LargeFileName(today.AddDays(-1))];
     }
+
+    private static string[] PayloadCandidateFileNames()
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        return [DatasetPaths.PayloadFileName(today), DatasetPaths.PayloadFileName(today.AddDays(-1))];
+    }
+
+    private string ArtifactPath(string relativePath) =>
+        Path.Combine(_dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
 
     private string DescribeStats()
     {
@@ -375,6 +389,81 @@ public class DatasetExportIntegrationTests : IDisposable
         Assert.Equal(1, _sink.Stats.LargeRecordsWritten);
         Assert.Empty(ReadDatasetLines(NormalCandidateFileNames()));
         Assert.Single(ReadDatasetLines(LargeCandidateFileNames()));
+    }
+
+    [Fact]
+    public async Task ChatRequest_LargeBase64Image_ProviderGetsOriginalWhileManifestReferencesDecodedBlob()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        byte[]? upstreamObservedRequestBytes = null;
+        var client = await StartAsync(new ScriptedUpstream(
+            _ => SseChatOk(), body => upstreamObservedRequestBytes = body.ToArray()));
+        var binary = new byte[DatasetRecordBuilder.InlineMaxFieldBytes];
+        binary.AsSpan().Fill(0x20);
+        new byte[] { 0x89, 0x50, 0x4E, 0x47 }.AsSpan().CopyTo(binary);
+
+        static JsonObject ImageRequest(string url) => new()
+        {
+            ["model"] = "m1",
+            ["stream"] = true,
+            // Khai báo sẵn các option proxy vốn inject để phép so byte cô lập dataset khỏi rewrite đó.
+            ["stream_options"] = new JsonObject { ["include_usage"] = true },
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray(
+                    new JsonObject { ["type"] = "text", ["text"] = "look" },
+                    new JsonObject
+                    {
+                        ["type"] = "image_url",
+                        ["image_url"] = new JsonObject { ["url"] = url },
+                    }),
+            }),
+        };
+
+        var largeDataUri = $"data:image/png;base64,{Convert.ToBase64String(binary)}";
+        var originalRequestBytes = Encoding.UTF8.GetBytes(ImageRequest(largeDataUri).ToJsonString());
+        var response = await client.PostAsync("/v1/chat/completions", Json(Encoding.UTF8.GetString(originalRequestBytes)));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(originalRequestBytes, upstreamObservedRequestBytes);
+        var lines = await WaitDatasetLinesAsync(1);
+        var manifest = Assert.Single(lines);
+        Assert.Equal(2, manifest["v"]!.GetValue<int>());
+        Assert.True(Guid.TryParseExact(manifest["export_id"]!.GetValue<string>(), "N", out _));
+        var reference = Assert.Single(manifest["payload_refs"]!.AsArray())!;
+        var requestDocumentPath = ArtifactPath(manifest["documents"]!["request"]!.GetValue<string>());
+        var completionDocumentPath = ArtifactPath(manifest["documents"]!["completion"]!.GetValue<string>());
+        var binaryPath = ArtifactPath(reference["path"]!.GetValue<string>());
+        Assert.True(File.Exists(requestDocumentPath));
+        Assert.True(File.Exists(completionDocumentPath));
+        Assert.True(File.Exists(binaryPath));
+        Assert.Equal(binary, File.ReadAllBytes(binaryPath));
+        Assert.Equal(reference["sha256"]!.GetValue<string>(),
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binaryPath))).ToLowerInvariant());
+        var requestDocument = JsonNode.Parse(File.ReadAllText(requestDocumentPath))!;
+        Assert.Equal(reference["url"]!.GetValue<string>(), requestDocument["messages"]![0]!
+            ["content"]![1]!["image_url"]!["url"]!.GetValue<string>());
+        Assert.Equal(1, _sink.Stats.PayloadRecordsWritten);
+        Assert.Equal(1, _sink.Stats.ExternalizedPayloadCount);
+        Assert.Equal(binary.Length, _sink.Stats.ExternalizedPayloadBytes);
+        Assert.Empty(ReadDatasetLines(NormalCandidateFileNames()));
+        Assert.Empty(ReadDatasetLines(LargeCandidateFileNames()));
+        Assert.Single(ReadDatasetLines(PayloadCandidateFileNames()));
+
+        var smallDataUri = $"data:image/png;base64,{Convert.ToBase64String(new byte[] { 1, 2, 3, 4 })}";
+        var smallResponse = await client.PostAsync("/v1/chat/completions", Json(ImageRequest(smallDataUri).ToJsonString()));
+        Assert.Equal(HttpStatusCode.OK, smallResponse.StatusCode);
+        var allLines = await WaitDatasetLinesAsync(2);
+        Assert.True(allLines.Length == 2, $"Expected normal v1 + one v2 manifest, got {allLines.Length} records.");
+        var normalLine = Assert.Single(ReadDatasetLines(NormalCandidateFileNames()));
+        var normalRecord = (JsonObject)JsonNode.Parse(normalLine)!;
+        Assert.Equal(1, normalRecord["v"]!.GetValue<int>());
+        Assert.Equal(smallDataUri, normalRecord["messages"]![0]!["content"]![1]!
+            ["image_url"]!["url"]!.GetValue<string>());
+        Assert.Single(ReadDatasetLines(PayloadCandidateFileNames()));
+        Assert.Equal(1, _sink.Stats.PayloadRecordsWritten);
+        Assert.Equal(1, _sink.Stats.ExternalizedPayloadCount);
     }
 
     [Fact]

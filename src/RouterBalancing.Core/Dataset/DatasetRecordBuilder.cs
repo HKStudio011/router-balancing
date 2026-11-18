@@ -598,7 +598,7 @@ public static class DatasetRecordBuilder
         node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     /// <summary>Định dạng UTC ISO-8601 kiểu mẫu spec §7.4 (giây lẻ chỉ ghi khi có).</summary>
-    private static string FormatTimestamp(DateTimeOffset finishedAt)
+    internal static string FormatTimestamp(DateTimeOffset finishedAt)
     {
         var utc = finishedAt.ToUniversalTime();
         return utc.Millisecond == 0

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Settings;
@@ -9,8 +10,8 @@ namespace RouterBalancing.Core.Dataset;
 /// <summary>
 /// Ống export dataset JSONL (spec §7.6): <see cref="Capture"/> trên thread request chỉ đo size +
 /// đẩy tham chiếu vào channel bounded — một writer task nền build dòng qua
-/// <see cref="DatasetRecordBuilder"/> và append vào file thường/large theo ngày UTC của FinishedAt:
-/// <c>requests(-large)-YYYY-MM-DD.jsonl</c>, xoay ngày + purge theo retention.
+/// <see cref="DatasetRecordBuilder"/> và append vào file thường/large/payload theo ngày UTC của FinishedAt:
+/// <c>requests(-large|-payload)-YYYY-MM-DD.jsonl</c>, xoay ngày + purge theo retention.
 /// Mọi lỗi chỉ log (fail-open, pattern <c>ApiMonitorStore.SafeLog</c>) — không bao giờ ném ra
 /// caller, request đang phục vụ chạy bình thường dù đĩa hỏng. Lỗi IO đặt sink vào chế độ tắt:
 /// <c>Capture</c> return ngay, không enqueue; lưu Settings (bất kỳ key nào) bật lại writer và
@@ -50,6 +51,9 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private int _skippedQueueFull;
     private int _skippedSynthetic;
     private int _largeRecordsWritten;
+    private int _payloadRecordsWritten;
+    private int _externalizedPayloadCount;
+    private long _externalizedPayloadBytes;
     private long _bytesWritten;
 
     /// <summary>Tổng byte đang nằm chờ trong queue — thêm ở Capture, trừ khi writer đọc.</summary>
@@ -59,6 +63,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private DateOnly _currentDay;
     private StreamWriter? _writer;
     private StreamWriter? _largeWriter;
+    private StreamWriter? _payloadWriter;
     private string? _currentFile;
     private string? _currentDirectory;
     private bool _storageReady;
@@ -121,7 +126,10 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         Volatile.Read(ref _skippedSynthetic),
         Interlocked.Read(ref _bytesWritten),
         _currentFile,
-        Volatile.Read(ref _largeRecordsWritten));
+        Volatile.Read(ref _largeRecordsWritten),
+        Volatile.Read(ref _payloadRecordsWritten),
+        Volatile.Read(ref _externalizedPayloadCount),
+        Interlocked.Read(ref _externalizedPayloadBytes));
 
     /// <inheritdoc />
     public void Capture(DatasetCapture capture)
@@ -334,47 +342,57 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 return;
             }
 
-            var fileName = result.IsLargeRecord
-                ? DatasetPaths.LargeFileName(recordDay)
-                : DatasetPaths.FileName(recordDay);
-            var path = Path.Combine(_currentDirectory!, fileName);
-            StreamWriter writer;
-            try
+            var exportId = Guid.NewGuid().ToString("N");
+            var transformed = DatasetPayloadTransformer.Transform(capture, exportId);
+            if (transformed is not null)
             {
+                // V2 thay hoàn toàn đường v1: không fallback hay ghi trùng sang large khi có base64 large.
+                WritePayload(capture, transformed, exportId, recordDay);
+            }
+            else
+            {
+                var fileName = result.IsLargeRecord
+                    ? DatasetPaths.LargeFileName(recordDay)
+                    : DatasetPaths.FileName(recordDay);
+                var path = Path.Combine(_currentDirectory!, fileName);
+                StreamWriter writer;
+                try
+                {
+                    if (result.IsLargeRecord)
+                    {
+                        writer = _largeWriter ??= OpenWriter(path);
+                    }
+                    else
+                    {
+                        writer = _writer ??= OpenWriter(path);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Open khác write: capture chưa có nơi ghi nên phải giữ nguyên để replay, không drop.
+                    // Cộng lại pending bytes vì capture vẫn chiếm RAM dù đã rời channel.
+                    _pendingCapture = capture;
+                    Interlocked.Add(ref _pendingBytes, RawSize(capture));
+                    _storageReady = false; // lần retry phải resolve lại path người dùng có thể vừa sửa
+                    Volatile.Write(ref _disabled, true);
+                    LogOnce(ref _openErrorLogs, "open daily file", ex);
+                    InvokeChanged();
+                    return;
+                }
+
+                // LF cố định — chuẩn JSONL, không phụ thuộc Environment.NewLine (\r\n trên Windows).
+                writer.Write(result.JsonLine!);
+                writer.Write('\n');
+                _currentFile = path;
+                Interlocked.Add(ref _bytesWritten, result.JsonLine!.Length + 1L); // +1: newline vừa ghi
                 if (result.IsLargeRecord)
                 {
-                    writer = _largeWriter ??= OpenWriter(path);
+                    Interlocked.Increment(ref _largeRecordsWritten);
                 }
-                else
-                {
-                    writer = _writer ??= OpenWriter(path);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Open khác write: capture chưa có nơi ghi nên phải giữ nguyên để replay, không drop.
-                // Cộng lại pending bytes vì capture vẫn chiếm RAM dù đã rời channel.
-                _pendingCapture = capture;
-                Interlocked.Add(ref _pendingBytes, RawSize(capture));
-                _storageReady = false; // lần retry phải resolve lại path người dùng có thể vừa sửa
-                Volatile.Write(ref _disabled, true);
-                LogOnce(ref _openErrorLogs, "open daily file", ex);
-                InvokeChanged();
-                return;
-            }
 
-            // LF cố định — chuẩn JSONL, không phụ thuộc Environment.NewLine (\r\n trên Windows).
-            writer.Write(result.JsonLine!);
-            writer.Write('\n');
-            _currentFile = path;
-            Interlocked.Add(ref _bytesWritten, result.JsonLine!.Length + 1L); // +1: newline vừa ghi
-            if (result.IsLargeRecord)
-            {
-                Interlocked.Increment(ref _largeRecordsWritten);
+                // Publish RecordsWritten cuối cùng: test/UI thấy counter mới thì cùng lượt đã có path + stats.
+                Interlocked.Increment(ref _recordsWritten);
             }
-
-            // Publish RecordsWritten cuối cùng: test/UI thấy counter mới thì cùng lượt đã có path + stats.
-            Interlocked.Increment(ref _recordsWritten);
         }
         catch (Exception ex)
         {
@@ -392,6 +410,74 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
 
         InvokeChanged();
+    }
+
+    /// <summary>
+    /// Ghi source documents và binary bằng sibling temp + rename, rồi mới append manifest. Nếu bất kỳ
+    /// artifact nào lỗi, exception đi qua <see cref="Process"/> và record đó chưa chạm tới payload JSONL.
+    /// </summary>
+    private void WritePayload(
+        DatasetCapture capture,
+        DatasetPayloadTransformResult transformed,
+        string exportId,
+        DateOnly recordDay)
+    {
+        WritePayloadArtifact(
+            DatasetPaths.PayloadRelativePath(recordDay, exportId, "request.json"),
+            JsonSerializer.SerializeToUtf8Bytes(transformed.RequestDocument));
+        WritePayloadArtifact(
+            DatasetPaths.PayloadRelativePath(recordDay, exportId, "completion.json"),
+            JsonSerializer.SerializeToUtf8Bytes(transformed.CompletionDocument));
+        foreach (var file in transformed.Files)
+        {
+            WritePayloadArtifact(file.RelativePath, file.Content);
+        }
+
+        var manifest = DatasetPayloadManifestFactory.Build(capture, transformed, exportId);
+        var path = Path.Combine(_currentDirectory!, DatasetPaths.PayloadFileName(recordDay));
+        var writer = _payloadWriter ??= OpenWriter(path);
+        writer.Write(manifest);
+        writer.Write('\n');
+        _currentFile = path;
+        Interlocked.Add(ref _bytesWritten, Encoding.UTF8.GetByteCount(manifest) + 1L);
+        Interlocked.Increment(ref _payloadRecordsWritten);
+        Interlocked.Add(ref _externalizedPayloadCount, transformed.Files.Count);
+        Interlocked.Add(ref _externalizedPayloadBytes, transformed.Files.Sum(file => file.Content.LongLength));
+        Interlocked.Increment(ref _recordsWritten);
+    }
+
+    private void WritePayloadArtifact(string relativePath, byte[] content)
+    {
+        // Manifest chỉ chứa '/' theo format; đổi separator duy nhất tại filesystem boundary của sink.
+        var path = Path.Combine(_currentDirectory!, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temporaryPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            using (var stream = new FileStream(
+                       temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(content);
+                stream.Flush(flushToDisk: true);
+            }
+
+            // Temp nằm cùng thư mục nên rename là atomic; overwrite=false bảo vệ artifact đã tồn tại.
+            File.Move(temporaryPath, path, overwrite: false);
+        }
+        catch
+        {
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch (Exception ex)
+            {
+                // Cleanup best-effort: giữ exception artifact gốc để state machine record-error xử lý.
+                SafeLog("delete temporary payload artifact", ex);
+            }
+
+            throw;
+        }
     }
 
     /// <summary>Kiểm tra đích trước khi dequeue; file JSONL chỉ mở sau khi biết loại record.</summary>
@@ -416,8 +502,8 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     }
 
     /// <summary>
-    /// Chuẩn bị thư mục và retention cho ngày FinishedAt. Đổi ngày đóng cả hai writer; writer của
-    /// từng loại file được mở lười ở lần ghi đầu tiên để record large không tạo file thường rỗng.
+    /// Chuẩn bị thư mục và retention cho ngày FinishedAt. Đổi ngày đóng cả ba writer; từng loại file
+    /// được mở lười ở lần ghi đầu tiên để một record không tạo file rỗng ở hai làn còn lại.
     /// </summary>
     private bool EnsureStorageForDay(DateOnly day)
     {
@@ -458,9 +544,9 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     }
 
     /// <summary>
-    /// Xoá file thường/large cũ hơn retention (spec §7.6): giữ đúng <c>retention</c> ngày gần nhất
-    /// kể cả ngày record (age &gt;= retention mới xoá); 0 = giữ mãi, không purge. File không khớp
-    /// pattern ngày hoặc file ghi gần nhất không bao giờ bị xoá.
+    /// Xoá đúng ba file JSONL và payload day directories cũ hơn retention: giữ đúng <c>retention</c>
+    /// ngày gần nhất kể cả ngày record; 0 = giữ mãi. Tên không khớp pattern, artifact hiện tại và
+    /// dữ liệu không thuộc dataset không bao giờ bị xoá.
     /// </summary>
     private void PurgeOldFiles(string directory, DateOnly today)
     {
@@ -492,13 +578,44 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 LogOnce(ref _purgeErrorLogs, "purge old files", ex);
             }
         }
+
+        var payloadRoot = Path.Combine(directory, DatasetPaths.PayloadRootDirectoryName);
+        if (!Directory.Exists(payloadRoot))
+        {
+            return;
+        }
+
+        foreach (var path in Directory.GetDirectories(payloadRoot))
+        {
+            try
+            {
+                if (!DateOnly.TryParseExact(Path.GetFileName(path), "yyyy-MM-dd",
+                        CultureInfo.InvariantCulture, DateTimeStyles.None, out var payloadDay))
+                {
+                    continue;
+                }
+
+                if (today.DayNumber - payloadDay.DayNumber >= retention)
+                {
+                    Directory.Delete(path, recursive: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogOnce(ref _purgeErrorLogs, "purge old payload directories", ex);
+            }
+        }
     }
 
-    /// <summary>Parse ngày từ file JSONL thường/large; false với mọi tên file khác.</summary>
+    /// <summary>Parse ngày từ đúng ba pattern JSONL dataset; false với mọi tên file khác.</summary>
     private static bool TryParseDay(string fileName, out DateOnly day)
     {
         string prefix;
-        if (fileName.StartsWith(DatasetPaths.LargeFileNamePrefix, StringComparison.Ordinal))
+        if (fileName.StartsWith(DatasetPaths.PayloadFileNamePrefix, StringComparison.Ordinal))
+        {
+            prefix = DatasetPaths.PayloadFileNamePrefix;
+        }
+        else if (fileName.StartsWith(DatasetPaths.LargeFileNamePrefix, StringComparison.Ordinal))
         {
             prefix = DatasetPaths.LargeFileNamePrefix;
         }
@@ -522,7 +639,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         return DateOnly.TryParseExact(datePart, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
     }
 
-    /// <summary>Đóng cả hai writer — chỉ writer task gọi (xuất vòng hoặc xoay ngày).</summary>
+    /// <summary>Đóng cả ba writer — chỉ writer task gọi (xuất vòng hoặc xoay ngày).</summary>
     private void CloseFiles()
     {
         try
@@ -550,6 +667,19 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         finally
         {
             _largeWriter = null;
+        }
+
+        try
+        {
+            _payloadWriter?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            SafeLog("close payload file", ex);
+        }
+        finally
+        {
+            _payloadWriter = null;
         }
 
         // CurrentFile là file ghi gần nhất, không phải handle đang mở — giữ sau dispose/rotation.
