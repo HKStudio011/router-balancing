@@ -169,6 +169,83 @@ public class DatasetPayloadTransformerTests
             result.CompletionDocument["data"]![0]!["b64_json"]!.GetValue<string>());
     }
 
+    [Theory]
+    [InlineData("jpeg", "image/jpeg", ".jpg")]
+    [InlineData("webp", "image/webp", ".webp")]
+    public void Transform_B64JsonImageSignature_DetectsTypeAndRoundTrips(
+        string signature, string expectedMediaType, string expectedExtension)
+    {
+        var binary = LargeBinary(0x20);
+        if (signature == "jpeg")
+        {
+            new byte[] { 0xFF, 0xD8, 0xFF }.AsSpan().CopyTo(binary);
+        }
+        else
+        {
+            "RIFF"u8.ToArray().AsSpan().CopyTo(binary);
+            "WEBP"u8.ToArray().AsSpan().CopyTo(binary.AsSpan(8));
+        }
+
+        var originalBase64 = Convert.ToBase64String(binary);
+        var completion = new JsonObject
+        {
+            ["data"] = new JsonArray(new JsonObject { ["b64_json"] = originalBase64 }),
+        }.ToJsonString();
+
+        var result = Assert.IsType<DatasetPayloadTransformResult>(
+            DatasetPayloadTransformer.Transform(Capture(ChatImageRequest("inline"), completion), ExportId));
+
+        var file = Assert.Single(result.Files);
+        var reference = Assert.Single(result.References);
+        Assert.Equal(expectedMediaType, reference.MediaType);
+        Assert.Equal($"image-000-{reference.Sha256[..8]}{expectedExtension}",
+            file.RelativePath.Split('/')[^1]);
+        Assert.Equal(reference.Url,
+            ResolvePointer(result.CompletionDocument, reference.JsonPointer)!.GetValue<string>());
+        Assert.Equal(originalBase64, Convert.ToBase64String(file.Content));
+    }
+
+    [Fact]
+    public void Transform_B64JsonUnknownSignature_UsesSafeBinaryFallback()
+    {
+        var originalBase64 = Convert.ToBase64String(LargeBinary(0x20));
+        var completion = new JsonObject
+        {
+            ["data"] = new JsonArray(new JsonObject { ["b64_json"] = originalBase64 }),
+        }.ToJsonString();
+
+        var result = Assert.IsType<DatasetPayloadTransformResult>(
+            DatasetPayloadTransformer.Transform(Capture(ChatImageRequest("inline"), completion), ExportId));
+
+        var file = Assert.Single(result.Files);
+        var reference = Assert.Single(result.References);
+        Assert.Equal("application/octet-stream", reference.MediaType);
+        Assert.Equal($"file-000-{reference.Sha256[..8]}.bin", file.RelativePath.Split('/')[^1]);
+        Assert.Equal(originalBase64, Convert.ToBase64String(file.Content));
+    }
+
+    [Theory]
+    [InlineData("image/svg+xml;charset=utf-8", ".svg")]
+    [InlineData("text/plain;charset=utf-8", ".txt")]
+    public void Transform_ParameterizedDataUri_PreservesMediaTypeAndRoundTrips(
+        string mediaType, string expectedExtension)
+    {
+        var dataUri = $"data:{mediaType};base64,{Convert.ToBase64String(LargeBinary(0x41))}";
+        var capture = Capture(ChatImageRequest(dataUri));
+
+        var result = Assert.IsType<DatasetPayloadTransformResult>(
+            DatasetPayloadTransformer.Transform(capture, ExportId));
+
+        var file = Assert.Single(result.Files);
+        var reference = Assert.Single(result.References);
+        Assert.Equal(mediaType, reference.MediaType);
+        Assert.EndsWith(expectedExtension, file.RelativePath, StringComparison.Ordinal);
+        Assert.Equal(reference.Url,
+            ResolvePointer(result.RequestDocument, reference.JsonPointer)!.GetValue<string>());
+        var reconstructed = $"data:{reference.MediaType};base64,{Convert.ToBase64String(file.Content)}";
+        Assert.Equal(dataUri, reconstructed);
+    }
+
     [Fact]
     public void Transform_PointerEscapesTildeAndSlash()
     {
@@ -261,6 +338,24 @@ public class DatasetPayloadTransformerTests
                 }),
         }),
     }.ToJsonString();
+
+    private static JsonNode? ResolvePointer(JsonNode document, string pointer)
+    {
+        JsonNode? current = document;
+        foreach (var segment in pointer.Split('/').Skip(1))
+        {
+            var token = segment.Replace("~1", "/", StringComparison.Ordinal)
+                .Replace("~0", "~", StringComparison.Ordinal);
+            current = current switch
+            {
+                JsonObject obj => obj[token],
+                JsonArray array => array[int.Parse(token)],
+                _ => throw new InvalidOperationException($"Pointer không resolve được tại '{token}'."),
+            };
+        }
+
+        return current;
+    }
 
     private static DatasetCapture Capture(
         string requestJson,

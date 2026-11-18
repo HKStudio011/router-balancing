@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -450,6 +451,53 @@ public class DatasetSinkTests : IDisposable
         Assert.True(File.Exists(unrelatedJsonl));
     }
 
+    [Theory]
+    [InlineData("normal")]
+    [InlineData("large")]
+    [InlineData("payload")]
+    public async Task Retention_LastWrittenArtifacts_ExpireTogetherAfterIdleRotation(string lane)
+    {
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 2);
+        await using var sink = CreateSink();
+        var day = new DateOnly(2026, 11, 6);
+        var capture = lane switch
+        {
+            "large" => ChatCapture("req-large-old",
+                clientBody: ChatBodyWithContent(new string('x', DatasetRecordBuilder.InlineMaxFieldBytes))),
+            "payload" => PayloadCapture("req-payload-old", LargePng()),
+            _ => ChatCapture("req-normal-old"),
+        };
+
+        sink.Capture(capture);
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        var lastWritten = sink.Stats.CurrentFile;
+        Assert.NotNull(lastWritten);
+        Assert.True(File.Exists(lastWritten));
+        var payloadDayDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "2026-11-06");
+        if (lane == "payload")
+        {
+            Assert.Equal(Path.Combine(_dir, DatasetPaths.PayloadFileName(day)), lastWritten);
+            Assert.True(Directory.Exists(payloadDayDirectory));
+        }
+
+        // Hai ngày không có write, rồi đổi sang làn normal: CloseFiles chạy trước purge nên file vừa
+        // ghi lần trước không còn là handle active và phải hết hạn cùng artifact ngày của nó.
+        _time.AdvanceDays(2);
+        sink.Capture(ChatCapture("req-after-idle"));
+        WaitUntil(() => sink.Stats.RecordsWritten == 2);
+
+        Assert.False(File.Exists(lastWritten), $"file {lane} vừa ghi lần trước đã hết retention");
+        if (lane == "payload")
+        {
+            Assert.Equal(File.Exists(lastWritten), Directory.Exists(payloadDayDirectory));
+            Assert.False(Directory.Exists(payloadDayDirectory),
+                "manifest và payload directory không được phép hết hạn độc lập");
+        }
+
+        Assert.True(File.Exists(Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 8)))));
+    }
+
     [Fact]
     public async Task WritePayload_UpdatesPayloadAndExternalizedStats()
     {
@@ -597,6 +645,54 @@ public class DatasetSinkTests : IDisposable
         Assert.All(lines[1..], l => Assert.Contains("req-resume", l));
         Assert.Equal(0, sink.Stats.SkippedQueueFull);
         Assert.Equal(1, log.ErrorCount); // mở lại thành công — không log lỗi thêm
+    }
+
+    [Fact]
+    public async Task StoragePreparationFailure_AfterDequeue_RestoresPendingBytes()
+    {
+        var log = new CapturingLog();
+        using var settings = CreateSettingsWithInvalidRetention();
+        await using var sink = new DatasetSink(settings, log, _time);
+        var first = ChatCapture("req-storage-first");
+
+        sink.Capture(first);
+        WaitUntil(() => log.ErrorCount == 1);
+
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+        var expectedPendingBytes = first.ClientBody.LongLength + first.CompletionJson!.Length;
+        Assert.Equal(expectedPendingBytes, PendingBytes(sink));
+        Assert.Contains("open daily file", log.FirstError);
+    }
+
+    [Fact]
+    public async Task StoragePreparationFailure_AfterDequeue_ReplaysOriginalCaptureFirst()
+    {
+        var log = new CapturingLog();
+        using var settings = CreateSettingsWithInvalidRetention();
+        await using var sink = new DatasetSink(settings, log, _time);
+        var targetPath = Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
+
+        sink.Capture(ChatCapture("req-storage-first"));
+        WaitUntil(() => log.ErrorCount == 1);
+        sink.Capture(ChatCapture("req-storage-disabled"));
+
+        settings.Set(SettingsKeys.DatasetRetentionDays, 0); // sửa lỗi storage + recovery trigger
+        for (var i = 0; i < 5; i++)
+        {
+            sink.Capture(ChatCapture("req-storage-resume"));
+        }
+
+        WaitUntil(() => File.Exists(targetPath)
+            && ReadAllLinesShared(targetPath).Count(line =>
+                line.Contains("req-storage-resume", StringComparison.Ordinal)) == 5);
+
+        var lines = ReadAllLinesShared(targetPath);
+        Assert.Equal(6, lines.Length);
+        Assert.Contains("req-storage-first", lines[0]);
+        Assert.All(lines[1..], line => Assert.Contains("req-storage-resume", line));
+        Assert.DoesNotContain(lines, line => line.Contains("req-storage-disabled", StringComparison.Ordinal));
+        Assert.Equal(0, PendingBytes(sink));
+        Assert.Equal(1, log.ErrorCount);
     }
 
     [Fact]
@@ -834,6 +930,29 @@ public class DatasetSinkTests : IDisposable
 
     private DatasetSink CreateSink(CapturingLog? log = null) =>
         new(_settings, (ILogService?)log ?? new NullLog(), _time);
+
+    private AppSettingsService CreateSettingsWithInvalidRetention()
+    {
+        var factory = _db.CreateFactory();
+        using var context = factory.CreateDbContext();
+        // EnsureDestinationDirectory vẫn thành công; deserialization này chỉ ném trong PurgeOldFiles,
+        // sau khi writer đã dequeue capture — đúng nhánh EnsureStorageForDay cần kiểm thử.
+        context.AppSettings.Add(new AppSetting
+        {
+            Key = SettingsKeys.DatasetRetentionDays,
+            ValueJson = "\"not-an-integer\"",
+        });
+        context.SaveChanges();
+        return new AppSettingsService(factory);
+    }
+
+    private static long PendingBytes(DatasetSink sink)
+    {
+        var field = typeof(DatasetSink).GetField("_pendingBytes",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<long>(field.GetValue(sink));
+    }
 
     /// <summary>Body chat tối thiểu hợp lệ cho builder (messages có content).</summary>
     private const string ValidBody = """{"model":"m","messages":[{"role":"user","content":"hi"}]}""";

@@ -68,7 +68,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private string? _currentDirectory;
     private bool _storageReady;
 
-    // Capture đã dequeue nhưng chưa mở được file phải được giữ lại để replay sau Settings recovery.
+    // Capture đã dequeue nhưng chưa chuẩn bị được storage/mở file phải replay sau Settings recovery.
     private DatasetCapture? _pendingCapture;
 
     // Chế độ tắt sau lỗi IO — spec §7.6: "tắt cho tới khi Settings được lưu lại". Capture chạy trên
@@ -272,7 +272,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 DatasetCapture capture;
                 if (_pendingCapture is { } pendingCapture)
                 {
-                    // Replay capture bị lỗi open TRƯỚC mọi record trong channel để giữ thứ tự.
+                    // Replay capture bị lỗi storage/open TRƯỚC mọi record trong channel để giữ thứ tự.
                     capture = pendingCapture;
                     _pendingCapture = null;
                 }
@@ -329,8 +329,9 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             Interlocked.Add(ref _pendingBytes, -RawSize(capture));
 
             var recordDay = DateOnly.FromDateTime(capture.FinishedAt.UtcDateTime);
-            if (!EnsureStorageForDay(recordDay))
+            if (!EnsureStorageForDay(recordDay, capture))
             {
+                InvokeChanged();
                 return;
             }
 
@@ -370,10 +371,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 catch (Exception ex)
                 {
                     // Open khác write: capture chưa có nơi ghi nên phải giữ nguyên để replay, không drop.
-                    // Cộng lại pending bytes vì capture vẫn chiếm RAM dù đã rời channel.
-                    _pendingCapture = capture;
-                    Interlocked.Add(ref _pendingBytes, RawSize(capture));
-                    _storageReady = false; // lần retry phải resolve lại path người dùng có thể vừa sửa
+                    RetainCaptureForReplay(capture);
                     Volatile.Write(ref _disabled, true);
                     LogOnce(ref _openErrorLogs, "open daily file", ex);
                     InvokeChanged();
@@ -501,11 +499,20 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
     }
 
+    private void RetainCaptureForReplay(DatasetCapture capture)
+    {
+        // Capture vẫn chiếm RAM dù đã rời channel: khôi phục cả tham chiếu và byte guard trước khi
+        // publish disabled/log, để recovery replay đúng record đầu tiên và accounting không thất thoát.
+        _pendingCapture = capture;
+        Interlocked.Add(ref _pendingBytes, RawSize(capture));
+        _storageReady = false; // lần retry phải resolve lại path người dùng có thể vừa sửa
+    }
+
     /// <summary>
     /// Chuẩn bị thư mục và retention cho ngày FinishedAt. Đổi ngày đóng cả ba writer; từng loại file
     /// được mở lười ở lần ghi đầu tiên để một record không tạo file rỗng ở hai làn còn lại.
     /// </summary>
-    private bool EnsureStorageForDay(DateOnly day)
+    private bool EnsureStorageForDay(DateOnly day, DatasetCapture capture)
     {
         if (day == _currentDay && _storageReady)
         {
@@ -527,7 +534,9 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            // Capture đã dequeue nhưng chưa có storage: giữ lại trước khi publish trạng thái lỗi.
             // Đặt _disabled TRƯỚC khi log để người quan sát log không race với trạng thái recovery.
+            RetainCaptureForReplay(capture);
             Volatile.Write(ref _disabled, true);
             LogOnce(ref _openErrorLogs, "open daily file", ex);
             return false;
@@ -545,8 +554,8 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
 
     /// <summary>
     /// Xoá đúng ba file JSONL và payload day directories cũ hơn retention: giữ đúng <c>retention</c>
-    /// ngày gần nhất kể cả ngày record; 0 = giữ mãi. Tên không khớp pattern, artifact hiện tại và
-    /// dữ liệu không thuộc dataset không bao giờ bị xoá.
+    /// ngày gần nhất kể cả ngày record; 0 = giữ mãi. Tên không khớp pattern và dữ liệu không thuộc
+    /// dataset không bao giờ bị xoá. Mọi writer đã đóng trước purge nên CurrentFile chỉ là thống kê.
     /// </summary>
     private void PurgeOldFiles(string directory, DateOnly today)
     {
@@ -560,9 +569,9 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         {
             try
             {
-                if (!TryParseDay(Path.GetFileName(path), out var fileDay) || path == _currentFile)
+                if (!TryParseDay(Path.GetFileName(path), out var fileDay))
                 {
-                    continue; // tên không khớp pattern ngày hoặc là file đang ghi — không xoá.
+                    continue; // tên không khớp pattern ngày — không xoá.
                 }
 
                 // DayNumber = số ngày kể từ 0001-01-01 — hiệu hai DayNumber là tuổi file (ngày).

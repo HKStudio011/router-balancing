@@ -129,8 +129,8 @@ public static class DatasetPayloadTransformer
         }
         else if (string.Equals(fieldName, "b64_json", StringComparison.Ordinal))
         {
-            // Images API định nghĩa b64_json là ảnh PNG; không suy đoán media type cho field base64 tuỳ ý.
-            mediaType = "image/png";
+            // b64_json không đảm bảo PNG trên mọi provider; sau decode phải nhận diện signature thật.
+            mediaType = string.Empty;
             encoded = text;
         }
         else if (string.Equals(fieldName, "data", StringComparison.Ordinal)
@@ -153,6 +153,11 @@ public static class DatasetPayloadTransformer
         try
         {
             binary = Convert.FromBase64String(encoded);
+            if (mediaType.Length == 0)
+            {
+                mediaType = DetectImageMediaType(binary);
+            }
+
             return true;
         }
         catch (FormatException)
@@ -172,15 +177,39 @@ public static class DatasetPayloadTransformer
         var markerIndex = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
         if (markerIndex <= "data:".Length
             || !MediaTypeHeaderValue.TryParse(text["data:".Length..markerIndex], out var parsed)
-            || parsed.MediaType is null
-            || parsed.Parameters.Count != 0)
+            || parsed.MediaType is null)
         {
             return false;
         }
 
-        mediaType = parsed.MediaType.ToLowerInvariant();
+        // Giữ nguyên parameters (ví dụ charset) để consumer dựng lại data URI đúng semantic.
+        mediaType = text["data:".Length..markerIndex];
         encoded = text[(markerIndex + marker.Length)..];
         return true;
+    }
+
+    private static string DetectImageMediaType(byte[] binary)
+    {
+        ReadOnlySpan<byte> pngSignature = [0x89, 0x50, 0x4E, 0x47];
+        ReadOnlySpan<byte> jpegSignature = [0xFF, 0xD8, 0xFF];
+        if (binary.AsSpan().StartsWith(pngSignature))
+        {
+            return "image/png";
+        }
+
+        if (binary.AsSpan().StartsWith(jpegSignature))
+        {
+            return "image/jpeg";
+        }
+
+        if (binary.Length >= 12
+            && binary.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+            && binary.AsSpan(8, 4).SequenceEqual("WEBP"u8))
+        {
+            return "image/webp";
+        }
+
+        return "application/octet-stream";
     }
 
     private static string InputAudioMediaType(JsonObject? inputAudio)
@@ -207,6 +236,13 @@ public static class DatasetPayloadTransformer
     private static string EscapePointerSegment(string segment) =>
         segment.Replace("~", "~0", StringComparison.Ordinal)
             .Replace("/", "~1", StringComparison.Ordinal);
+
+    private static string BaseMediaType(string mediaType)
+    {
+        var parameterIndex = mediaType.IndexOf(';');
+        var baseMediaType = parameterIndex >= 0 ? mediaType[..parameterIndex] : mediaType;
+        return baseMediaType.Trim().ToLowerInvariant();
+    }
 
     private static string FilePrefix(string mediaType)
     {
@@ -252,7 +288,8 @@ public static class DatasetPayloadTransformer
         public string Externalize(string document, string pointer, string mediaType, byte[] binary)
         {
             var sha256 = Convert.ToHexString(SHA256.HashData(binary)).ToLowerInvariant();
-            var fileName = $"{FilePrefix(mediaType)}-{Files.Count:D3}-{sha256[..8]}{FileExtension(mediaType)}";
+            var baseMediaType = BaseMediaType(mediaType);
+            var fileName = $"{FilePrefix(baseMediaType)}-{Files.Count:D3}-{sha256[..8]}{FileExtension(baseMediaType)}";
             var url = $"payload://{exportId}/{fileName}";
             var relativePath = DatasetPaths.PayloadRelativePath(datasetDay, exportId, fileName);
 
