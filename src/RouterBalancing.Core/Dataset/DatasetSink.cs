@@ -384,7 +384,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 writer.Write(result.JsonLine!);
                 writer.Write('\n');
                 _currentFile = path;
-                Interlocked.Add(ref _bytesWritten, result.JsonLine!.Length + 1L); // +1: newline vừa ghi
+                Interlocked.Add(ref _bytesWritten, Encoding.UTF8.GetByteCount(result.JsonLine!) + 1L); // +1: newline vừa ghi
                 if (result.IsLargeRecord)
                 {
                     Interlocked.Increment(ref _largeRecordsWritten);

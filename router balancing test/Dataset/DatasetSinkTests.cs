@@ -721,6 +721,47 @@ public class DatasetSinkTests : IDisposable
         Assert.True(sink.Stats.BytesWritten > afterFirst.BytesWritten, "BytesWritten phải tăng dần");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Capture_NonAsciiV1_BytesWrittenCountsUtf8(bool largeRecord)
+    {
+        await using var sink = CreateSink();
+        var content = largeRecord
+            ? new string('ớ', DatasetRecordBuilder.InlineMaxFieldBytes)
+            : "Xin chào 👋";
+
+        sink.Capture(ChatCapture("req-non-ascii", clientBody: ChatBodyWithContent(content)));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
+
+        var day = new DateOnly(2026, 11, 6);
+        var path = Path.Combine(_dir, largeRecord
+            ? DatasetPaths.LargeFileName(day)
+            : DatasetPaths.FileName(day));
+        Assert.Equal(new FileInfo(path).Length, sink.Stats.BytesWritten);
+        Assert.Equal(largeRecord ? 1 : 0, sink.Stats.LargeRecordsWritten);
+    }
+
+    [Fact]
+    public async Task MixedV1AndV2_BytesWrittenCountsUtf8Jsonl()
+    {
+        await using var sink = CreateSink();
+        var binary = LargePng();
+
+        sink.Capture(ChatCapture("req-normal-utf8",
+            clientBody: ChatBodyWithContent("Xin chào 👋")));
+        sink.Capture(PayloadCapture("req-payload", binary));
+        WaitUntil(() => sink.Stats.RecordsWritten == 2);
+
+        var day = new DateOnly(2026, 11, 6);
+        var normalPath = Path.Combine(_dir, DatasetPaths.FileName(day));
+        var payloadPath = Path.Combine(_dir, DatasetPaths.PayloadFileName(day));
+        var expectedJsonlBytes = new FileInfo(normalPath).Length + new FileInfo(payloadPath).Length;
+        Assert.Equal(expectedJsonlBytes, sink.Stats.BytesWritten);
+        Assert.Equal(1, sink.Stats.PayloadRecordsWritten);
+        Assert.Equal(binary.Length, sink.Stats.ExternalizedPayloadBytes);
+    }
+
     [Fact]
     public async Task Sink_RecordsWrittenCounterCountsLineNotCapture()
     {
