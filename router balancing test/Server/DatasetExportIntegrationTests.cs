@@ -527,6 +527,138 @@ public class DatasetExportIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ChatRequest_LargeTextAndBase64_PreservesUpstreamAndClientBytes()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        var largeText = new string('x', 1_048_576);
+        var largeBase64 = Convert.ToBase64String(new byte[786_435]);
+        Assert.Equal(1_048_580, largeBase64.Length);
+        var originalClientSseBytes = ClientSse("chatcmpl-large-text", largeText);
+        var originalBase64ClientSseBytes = ClientSse("chatcmpl-large-base64", largeBase64);
+        var upstreamResponses = new Queue<byte[]>([originalClientSseBytes, originalBase64ClientSseBytes]);
+        var upstreamObservedBodies = new List<byte[]>();
+        var client = await StartAsync(new ScriptedUpstream(
+            _ => SseResponse(upstreamResponses.Dequeue()),
+            body => upstreamObservedBodies.Add(body.ToArray())));
+
+        var largeTextRequest = new JsonObject
+        {
+            ["model"] = "m1",
+            ["stream"] = true,
+            ["stream_options"] = new JsonObject { ["include_usage"] = true },
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = largeText,
+            }),
+        };
+        var originalUpstreamBody = Encoding.UTF8.GetBytes(largeTextRequest.ToJsonString());
+        var largeTextResponse = await client.PostAsync("/v1/chat/completions",
+            Json(Encoding.UTF8.GetString(originalUpstreamBody)));
+
+        Assert.Equal(HttpStatusCode.OK, largeTextResponse.StatusCode);
+        var clientResponseBytes = await largeTextResponse.Content.ReadAsByteArrayAsync();
+        Assert.Equal(originalClientSseBytes, clientResponseBytes);
+        var upstreamObservedBody = Assert.Single(upstreamObservedBodies);
+        Assert.Equal(originalUpstreamBody, upstreamObservedBody);
+        var largeLine = Assert.Single(await WaitDatasetLinesAsync(1));
+        Assert.Equal(1, largeLine["v"]!.GetValue<int>());
+        Assert.Equal(largeText, largeLine["messages"]![0]!["content"]!.GetValue<string>());
+        Assert.Equal(largeText, largeLine["completion"]!["content"]!.GetValue<string>());
+        Assert.Equal(1, _sink.Stats.LargeRecordsWritten);
+        Assert.Empty(ReadDatasetLines(NormalCandidateFileNames()));
+        Assert.Single(ReadDatasetLines(LargeCandidateFileNames()));
+
+        var binary = new byte[1_048_576];
+        binary.AsSpan().Fill(0x20);
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.AsSpan().CopyTo(binary);
+        var largeDataUri = $"data:image/png;base64,{Convert.ToBase64String(binary)}";
+        var base64Request = new JsonObject
+        {
+            ["model"] = "m1",
+            ["stream"] = true,
+            ["stream_options"] = new JsonObject { ["include_usage"] = true },
+            ["metadata"] = new JsonObject { ["unmapped_v1_field"] = "keep" },
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray(
+                    new JsonObject { ["type"] = "text", ["text"] = "look" },
+                    new JsonObject
+                    {
+                        ["type"] = "image_url",
+                        ["image_url"] = new JsonObject { ["url"] = largeDataUri },
+                    }),
+            }),
+        };
+        var originalBase64UpstreamBody = Encoding.UTF8.GetBytes(base64Request.ToJsonString());
+        var base64Response = await client.PostAsync("/v1/chat/completions",
+            Json(Encoding.UTF8.GetString(originalBase64UpstreamBody)));
+
+        Assert.Equal(HttpStatusCode.OK, base64Response.StatusCode);
+        var base64ClientResponseBytes = await base64Response.Content.ReadAsByteArrayAsync();
+        Assert.Equal(originalBase64ClientSseBytes, base64ClientResponseBytes);
+        Assert.Equal(2, upstreamObservedBodies.Count);
+        Assert.Equal(originalBase64UpstreamBody, upstreamObservedBodies[1]);
+
+        var lines = await WaitDatasetLinesAsync(2);
+        var manifest = Assert.Single(lines, line => line["v"]!.GetValue<int>() == 2);
+        var reference = Assert.Single(manifest["payload_refs"]!.AsArray())!;
+        var requestDocument = ReadJson(ArtifactPath(manifest["documents"]!["request"]!.GetValue<string>()));
+        var completionDocument = ReadJson(ArtifactPath(manifest["documents"]!["completion"]!.GetValue<string>()));
+        var binaryPath = ArtifactPath(reference["path"]!.GetValue<string>());
+        Assert.Equal(reference["url"]!.GetValue<string>(), requestDocument["messages"]![0]!["content"]![1]!
+            ["image_url"]!["url"]!.GetValue<string>());
+        Assert.Equal("keep", requestDocument["metadata"]!["unmapped_v1_field"]!.GetValue<string>());
+        Assert.Equal(largeBase64, completionDocument["choices"]![0]!["message"]!["content"]!.GetValue<string>());
+        Assert.Equal(binary, File.ReadAllBytes(binaryPath));
+        Assert.Equal(1, _sink.Stats.LargeRecordsWritten);
+        Assert.Equal(1, _sink.Stats.PayloadRecordsWritten);
+        Assert.Equal(1, _sink.Stats.ExternalizedPayloadCount);
+        Assert.Equal(binary.Length, _sink.Stats.ExternalizedPayloadBytes);
+        Assert.Empty(ReadDatasetLines(NormalCandidateFileNames()));
+        Assert.Single(ReadDatasetLines(LargeCandidateFileNames()));
+        Assert.Single(ReadDatasetLines(PayloadCandidateFileNames()));
+
+        static byte[] ClientSse(string id, string content)
+        {
+            var delta = new JsonObject
+            {
+                ["id"] = id,
+                ["model"] = "m1",
+                ["created"] = 1_700_000_000,
+                ["choices"] = new JsonArray(new JsonObject
+                {
+                    ["index"] = 0,
+                    ["delta"] = new JsonObject { ["role"] = "assistant", ["content"] = content },
+                }),
+            };
+            var terminal = new JsonObject
+            {
+                ["choices"] = new JsonArray(new JsonObject
+                {
+                    ["index"] = 0,
+                    ["delta"] = new JsonObject(),
+                    ["finish_reason"] = "stop",
+                }),
+                ["usage"] = new JsonObject { ["prompt_tokens"] = 7, ["completion_tokens"] = 5 },
+            };
+            return Encoding.UTF8.GetBytes(
+                "data: " + delta.ToJsonString() + "\n\n" +
+                "data: " + terminal.ToJsonString() + "\n\n" +
+                "data: [DONE]\n\n");
+        }
+
+        static HttpResponseMessage SseResponse(byte[] bytes) => new(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(bytes)
+            {
+                Headers = { ContentType = new("text/event-stream") },
+            },
+        };
+    }
+
+    [Fact]
     public async Task ChatCompletion_OverOneMiB_WritesLargeFile_AndClientUnchanged()
     {
         SeedProvider(maxConcurrent: 4, "m1");

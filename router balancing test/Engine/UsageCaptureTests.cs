@@ -513,6 +513,35 @@ public class UsageCaptureTests
     }
 
     [Fact]
+    public async Task Tee_Sse_CaptureCompletion_ExactBudgetAndPlusOneByte()
+    {
+        await AssertBudgetBoundaryAsync(16_777_216, expectCompletion: true);
+        await AssertBudgetBoundaryAsync(16_777_217, expectCompletion: false);
+
+        static async Task AssertBudgetBoundaryAsync(int contentBytes, bool expectCompletion)
+        {
+            var text = new string('a', contentBytes);
+            var sse = DatasetDeltaLine(text) + "data: [DONE]\n\n";
+            var originalClientSseBytes = Bytes(sse);
+            using var content = new ByteArrayContent(originalClientSseBytes);
+            content.Headers.ContentType = new("text/event-stream");
+            using var dest = new MemoryStream();
+
+            var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+                captureCompletion: true);
+
+            Assert.Equal(originalClientSseBytes, dest.ToArray());
+            Assert.Equal(expectCompletion, result.CompletionJson is not null);
+            Assert.Equal(expectCompletion, result.CompletionComplete);
+            if (!expectCompletion) return;
+
+            using var doc = JsonDocument.Parse(result.CompletionJson!);
+            Assert.Equal(16_777_216, doc.RootElement.GetProperty("choices")[0]
+                .GetProperty("message").GetProperty("content").GetString()!.Length);
+        }
+    }
+
+    [Fact]
     public async Task Tee_Sse_CaptureCompletion_NonAsciiEscapedContent_UsesDefaultJsonUtf8Budget()
     {
         const string text = "Aé<&👋";

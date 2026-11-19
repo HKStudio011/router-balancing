@@ -26,6 +26,39 @@ public class DatasetPayloadTransformerTests
     }
 
     [Fact]
+    public void Transform_Base64EncodedCutoff_ExactNAndNextValidLength()
+    {
+        var inlineBinary = new byte[786_432];
+        var inlineBase64 = Convert.ToBase64String(inlineBinary);
+        Assert.Equal(1_048_576, inlineBase64.Length);
+        Assert.True(inlineBinary.Length < 1_048_576);
+        var inlineCapture = Capture(ChatImageRequest($"data:image/png;base64,{inlineBase64}"));
+        var originalInlineBody = inlineCapture.ClientBody.ToArray();
+
+        Assert.Null(DatasetPayloadTransformer.Transform(inlineCapture, ExportId));
+        Assert.Equal(originalInlineBody, inlineCapture.ClientBody);
+
+        // N+4 là encoded length hợp lệ kế tiếp; decoded vẫn dưới 1 MiB nên cutoff phải theo encoded.
+        var externalizedBinary = new byte[786_435];
+        var externalizedBase64 = Convert.ToBase64String(externalizedBinary);
+        Assert.Equal(1_048_580, externalizedBase64.Length);
+        Assert.True(externalizedBinary.Length < 1_048_576);
+        var externalizedCapture = Capture(ChatImageRequest($"data:image/png;base64,{externalizedBase64}"));
+        var originalExternalizedBody = externalizedCapture.ClientBody.ToArray();
+
+        var result = Assert.IsType<DatasetPayloadTransformResult>(
+            DatasetPayloadTransformer.Transform(externalizedCapture, ExportId));
+
+        var file = Assert.Single(result.Files);
+        var reference = Assert.Single(result.References);
+        Assert.Equal(externalizedBinary, file.Content);
+        Assert.Equal("image/png", reference.MediaType);
+        Assert.Equal(reference.Url, result.RequestDocument["messages"]![0]!["content"]![1]!
+            ["image_url"]!["url"]!.GetValue<string>());
+        Assert.Equal(originalExternalizedBody, externalizedCapture.ClientBody);
+    }
+
+    [Fact]
     public void Transform_InvalidBase64_LeavesInlineAndReturnsNull()
     {
         var invalidBase64 = "!" + new string('A', DatasetRecordBuilder.InlineMaxFieldBytes);
@@ -55,6 +88,28 @@ public class DatasetPayloadTransformerTests
         var result = DatasetPayloadTransformer.Transform(Capture(request), ExportId);
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public void Transform_OrdinaryBase64AlphabetText_IsNotExternalized()
+    {
+        var ordinaryBase64AlphabetText = new string('A', 1_048_578) + "==";
+        Assert.Equal(1_048_580, ordinaryBase64AlphabetText.Length);
+        // (N+4)/4*3 trừ hai byte padding == = 786_433 byte decoded.
+        Assert.Equal(786_433, Convert.FromBase64String(ordinaryBase64AlphabetText).Length);
+        var request = new JsonObject
+        {
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = ordinaryBase64AlphabetText,
+            }),
+        }.ToJsonString();
+        var ordinaryBase64AlphabetCapture = Capture(request);
+        var originalClientBody = ordinaryBase64AlphabetCapture.ClientBody.ToArray();
+
+        Assert.Null(DatasetPayloadTransformer.Transform(ordinaryBase64AlphabetCapture, ExportId));
+        Assert.Equal(originalClientBody, ordinaryBase64AlphabetCapture.ClientBody);
     }
 
     [Fact]

@@ -238,6 +238,53 @@ public class DatasetRecordBuilderTests
     }
 
     [Fact]
+    public void Build_BodyAndCompletionThresholds_UseLiteralBoundaries()
+    {
+        const int inlineLimit = 1_048_576;
+        const int exportLimit = 16_777_216;
+        Assert.Equal(1_048_576, DatasetRecordBuilder.InlineMaxFieldBytes);
+        Assert.Equal(16_777_216, DatasetRecordBuilder.MaxExportFieldBytes);
+
+        const string bodyHead = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"";
+        const string bodyTail = "\"}]}";
+        const string smallBody = """{"model":"m","messages":[{"role":"user","content":"hi"}]}""";
+        const string completionHead = "{\"id\":\"1\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"";
+        const string completionTail = "\"}}]}";
+        const string smallCompletion = """{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}""";
+
+        foreach (var targetBytes in new[]
+                 {
+                     inlineLimit - 1, inlineLimit, inlineLimit + 1,
+                     exportLimit - 1, exportLimit, exportLimit + 1,
+                 })
+        {
+            // Mỗi fixture chứa cả ký tự hai byte để ma trận kiểm UTF-8, không đếm nhầm char.
+            var body = ExactUtf8LengthJson(bodyHead, bodyTail, targetBytes);
+            Assert.Equal(targetBytes, Encoding.UTF8.GetByteCount(body));
+            AssertBoundary(DatasetRecordBuilder.Build(Capture(body, smallCompletion)), targetBytes);
+
+            var completion = ExactUtf8LengthJson(completionHead, completionTail, targetBytes);
+            Assert.Equal(targetBytes, Encoding.UTF8.GetByteCount(completion));
+            AssertBoundary(DatasetRecordBuilder.Build(Capture(smallBody, completion)), targetBytes);
+        }
+
+        static void AssertBoundary(DatasetBuildResult result, int byteCount)
+        {
+            if (byteCount > 16_777_216)
+            {
+                Assert.Equal(DatasetSkipReason.TooLarge, result.Skip);
+                Assert.Null(result.JsonLine);
+                Assert.False(result.IsLargeRecord);
+                return;
+            }
+
+            Assert.Null(result.Skip);
+            Assert.NotNull(result.JsonLine);
+            Assert.Equal(byteCount > 1_048_576, result.IsLargeRecord);
+        }
+    }
+
+    [Fact]
     public void Build_BodyAtInlineThreshold_KeepsNormalClassification()
     {
         const string head = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"";
@@ -415,6 +462,20 @@ public class DatasetRecordBuilderTests
             CompletionTokens: completionTokens,
             Lane: DatasetLane.Plain,
             ToolsRewritten: false);
+
+    private static string ExactUtf8LengthJson(string head, string tail, int totalBytes)
+    {
+        var contentBytes = totalBytes - Encoding.UTF8.GetByteCount(head) - Encoding.UTF8.GetByteCount(tail);
+        const int multibyteCharacters = 16;
+        Assert.True(contentBytes >= multibyteCharacters * 2);
+        var json = new StringBuilder(head)
+            .Append('é', multibyteCharacters)
+            .Append('a', contentBytes - multibyteCharacters * 2)
+            .Append(tail)
+            .ToString();
+        Assert.Equal(totalBytes, Encoding.UTF8.GetByteCount(json));
+        return json;
+    }
 
     /// <summary>
     /// Dựng JSON hợp lệ có độ dài byte chính xác: <paramref name="head"/> kết thúc bằng dấu mở của

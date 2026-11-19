@@ -490,23 +490,8 @@
     /// Dòng trạng thái export — đủ counter của DatasetStats (spec §7.7 + v2 §7.2:
     /// <see cref="DatasetStats.SkippedSynthetic"/> cho completion do sidecar tự tổng hợp).
     /// </summary>
-    private string DatasetStatsLine()
-    {
-        var s = Dataset.Stats;
-        return string.Format(L["settings.status.datasetStats"],
-            s.RecordsWritten,
-            Math.Round(s.BytesWritten / 1024d / 1024d, 1),
-            s.SkippedTooLarge,
-            s.SkippedTruncated,
-            s.SkippedEmpty,
-            s.SkippedRefusal,
-            s.SkippedQueueFull,
-            s.SkippedSynthetic,
-            s.LargeRecordsWritten,
-            s.PayloadRecordsWritten,
-            s.ExternalizedPayloadCount,
-            Math.Round(s.ExternalizedPayloadBytes / 1024d / 1024d, 1));
-    }
+    private string DatasetStatsLine() =>
+        DatasetStatsFormatter.Format(Dataset.Stats, key => L[key]);
 
     /// <summary>Mở explorer vào thư mục dataset (chỉ Windows — spec §7.7); lỗi không được nổ circuit.</summary>
     private void OpenDatasetFolder()
