@@ -38,7 +38,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private readonly ILogService _log;
     private readonly Channel<DatasetCapture> _channel;
 
-    /// <summary>Mutex chỉ cho <see cref="EnsureStarted"/> — tạo writer task đúng một lần.</summary>
+    /// <summary>Mutex bảo vệ <see cref="_writerTask"/> và linearize start, handoff, dispose.</summary>
     private readonly object _startGate = new();
     private Task? _writerTask;
 
@@ -76,6 +76,11 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     // OnSettingsChanged (thread gọi Set) xoá; _disposed do DisposeAsync đặt và không bao giờ xoá.
     private bool _disabled;
     private bool _disposed;
+
+    // Save chỉ recovery failure đã publish trước nó. Generation chặn race save tăng counter nhưng
+    // failure publish ngay sau đó rồi save mới vô tình xoá cờ disabled của failure đó.
+    private int _settingsGeneration;
+    private int _failureGeneration = -1;
 
     // Mỗi điều kiện lỗi một bộ đếm riêng, cùng cap MaxIoErrorLog (spec §7.6 "mỗi loại lỗi").
     // OnSettingsChanged reset cả ba để điều kiện lỗi còn tồn tại được log lại đúng một lần mới.
@@ -188,18 +193,23 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     {
         try
         {
-            // No-op hoá mọi Capture sau dispose (kể cả SkippedQueueFull) + cắt subscription để
-            // AppSettingsService (sống bằng app) không giữ handler của sink đã chết.
-            Volatile.Write(ref _disposed, true);
-            _settings.SettingsChanged -= OnSettingsChanged;
+            Task? writerTask;
+            lock (_startGate)
+            {
+                // Linearize với handoff ở WriterLoopAsync.finally: dispose trước thì không có task
+                // mới; handoff trước thì dispose capture đúng task mới để chờ bên dưới.
+                Volatile.Write(ref _disposed, true);
+                _settings.SettingsChanged -= OnSettingsChanged;
+                _channel.Writer.TryComplete();
+                writerTask = _writerTask;
+            }
 
-            _channel.Writer.TryComplete();
-            if (_writerTask is not null)
+            if (writerTask is not null)
             {
                 // Chờ writer drain hết record còn lại + tự đóng file ở finally của loop; timeout để
                 // đĩa đơ không treo app exit (task bị bỏ rơi — OS thu handle khi process kết thúc).
-                var finished = await Task.WhenAny(_writerTask, Task.Delay(DisposeTimeoutMs)).ConfigureAwait(false);
-                if (finished != _writerTask)
+                var finished = await Task.WhenAny(writerTask, Task.Delay(DisposeTimeoutMs)).ConfigureAwait(false);
+                if (finished != writerTask)
                 {
                     SafeLog("dispose", new TimeoutException($"DatasetSink writer chưa thoát sau {DisposeTimeoutMs}ms."));
                 }
@@ -220,6 +230,13 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     {
         lock (_startGate)
         {
+            // Capture có thể đã qua gate trước khi failure/dispose publish; kiểm tra lại dưới lock
+            // để request lỡ enqueue trong khoảng hở không tự tạo writer ngoài recovery/dispose.
+            if (Volatile.Read(ref _disposed) || Volatile.Read(ref _disabled))
+            {
+                return;
+            }
+
             if (_writerTask is { IsCompleted: true })
             {
                 _writerTask = null;
@@ -237,15 +254,22 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     /// <summary>
     /// Settings được lưu lại (bất kể key nào) = lệnh "chạy lại" của spec §7.6: xoá cờ tắt và reset
     /// giới hạn log-one-per-condition để điều kiện lỗi (nếu đĩa vẫn hỏng) được log lại đúng MỘT lần
-    /// mới. Writer khởi động lại lười ở Capture kế tiếp qua <see cref="EnsureStarted"/> — save không
-    /// tự làm IO trên thread gọi Set.
+    /// mới. Writer khởi động lại qua Capture kế tiếp hoặc handoff của writer đang thoát — save
+    /// không tự làm IO trên thread gọi Set.
     /// </summary>
     private void OnSettingsChanged()
     {
-        Volatile.Write(ref _disabled, false);
+        var generation = Interlocked.Increment(ref _settingsGeneration);
         Volatile.Write(ref _openErrorLogs, 0);
         Volatile.Write(ref _purgeErrorLogs, 0);
         Volatile.Write(ref _recordErrorLogs, 0);
+
+        // Nếu failure publish chen giữa Increment và đoạn này, nó ghi cùng generation và giữ
+        // _disabled=true: save bắt đầu trước failure không được nhầm thành recovery.
+        if (Volatile.Read(ref _failureGeneration) != generation)
+        {
+            Volatile.Write(ref _disabled, false);
+        }
     }
 
     /// <summary>
@@ -254,10 +278,6 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     /// </summary>
     private async Task WriterLoopAsync()
     {
-        // Task mới = nỗ lực chạy lại (lần đầu hoặc sau recovery qua Settings): xoá cờ tắt cũ
-        // TRƯỚC khi vòng lặp bắt đầu để tiến trình fail mới sau đó set lại nhất quán.
-        Volatile.Write(ref _disabled, false);
-
         try
         {
             while (true)
@@ -309,6 +329,19 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         finally
         {
             CloseFiles();
+            lock (_startGate)
+            {
+                // Task hiện tại chưa IsCompleted tới khi finally kết thúc; EnsureStarted của một
+                // Capture trong cửa sổ này không thể tự restart. Trao quyền dưới cùng lock với
+                // Dispose/EnsureStarted để queue không bị bỏ lại và không start sau dispose.
+                _writerTask = null;
+                if (!Volatile.Read(ref _disposed)
+                    && !_channel.Reader.Completion.IsCompleted
+                    && !Volatile.Read(ref _disabled))
+                {
+                    EnsureStarted();
+                }
+            }
         }
     }
 
@@ -347,8 +380,25 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             var transformed = DatasetPayloadTransformer.Transform(capture, exportId);
             if (transformed is not null)
             {
+                var path = Path.Combine(_currentDirectory!, DatasetPaths.PayloadFileName(recordDay));
+                StreamWriter writer;
+                try
+                {
+                    // Manifest phải mở được TRƯỚC mọi artifact IO; nếu không, giữ capture để replay
+                    // với exportId mới thay vì để lại artifact orphan rồi drop record ở catch chung.
+                    writer = _payloadWriter ??= OpenWriter(path);
+                }
+                catch (Exception ex)
+                {
+                    RetainCaptureForReplay(capture);
+                    PublishFailure();
+                    LogOnce(ref _openErrorLogs, "open daily file", ex);
+                    InvokeChanged();
+                    return;
+                }
+
                 // V2 thay hoàn toàn đường v1: không fallback hay ghi trùng sang large khi có base64 large.
-                WritePayload(capture, transformed, exportId, recordDay);
+                WritePayload(capture, transformed, exportId, recordDay, writer);
             }
             else
             {
@@ -372,7 +422,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                 {
                     // Open khác write: capture chưa có nơi ghi nên phải giữ nguyên để replay, không drop.
                     RetainCaptureForReplay(capture);
-                    Volatile.Write(ref _disabled, true);
+                    PublishFailure();
                     LogOnce(ref _openErrorLogs, "open daily file", ex);
                     InvokeChanged();
                     return;
@@ -401,7 +451,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             // Volatile.Read: OnSettingsChanged (thread khác) có thể vừa reset bộ đếm về 0.
             if (Volatile.Read(ref _recordErrorLogs) >= MaxIoErrorLog)
             {
-                Volatile.Write(ref _disabled, true);
+                PublishFailure();
             }
 
             LogOnce(ref _recordErrorLogs, "write record", ex);
@@ -418,7 +468,8 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         DatasetCapture capture,
         DatasetPayloadTransformResult transformed,
         string exportId,
-        DateOnly recordDay)
+        DateOnly recordDay,
+        StreamWriter writer)
     {
         WritePayloadArtifact(
             DatasetPaths.PayloadRelativePath(recordDay, exportId, "request.json"),
@@ -432,11 +483,9 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
 
         var manifest = DatasetPayloadManifestFactory.Build(capture, transformed, exportId);
-        var path = Path.Combine(_currentDirectory!, DatasetPaths.PayloadFileName(recordDay));
-        var writer = _payloadWriter ??= OpenWriter(path);
         writer.Write(manifest);
         writer.Write('\n');
-        _currentFile = path;
+        _currentFile = Path.Combine(_currentDirectory!, DatasetPaths.PayloadFileName(recordDay));
         Interlocked.Add(ref _bytesWritten, Encoding.UTF8.GetByteCount(manifest) + 1L);
         Interlocked.Increment(ref _payloadRecordsWritten);
         Interlocked.Add(ref _externalizedPayloadCount, transformed.Files.Count);
@@ -493,10 +542,18 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Volatile.Write(ref _disabled, true);
+            PublishFailure();
             LogOnce(ref _openErrorLogs, "open daily file", ex);
             return false;
         }
+    }
+
+    private void PublishFailure()
+    {
+        // Ghi generation ngay tại failure publish. OnSettingsChanged dùng cặp generation này để
+        // phân biệt save trước/sau failure khi hai thread chen nhau giữa các store.
+        Volatile.Write(ref _failureGeneration, Volatile.Read(ref _settingsGeneration));
+        Volatile.Write(ref _disabled, true);
     }
 
     private void RetainCaptureForReplay(DatasetCapture capture)
@@ -537,7 +594,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             // Capture đã dequeue nhưng chưa có storage: giữ lại trước khi publish trạng thái lỗi.
             // Đặt _disabled TRƯỚC khi log để người quan sát log không race với trạng thái recovery.
             RetainCaptureForReplay(capture);
-            Volatile.Write(ref _disabled, true);
+            PublishFailure();
             LogOnce(ref _openErrorLogs, "open daily file", ex);
             return false;
         }

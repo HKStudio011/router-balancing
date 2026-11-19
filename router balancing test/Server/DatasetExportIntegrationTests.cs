@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -312,6 +313,13 @@ public class DatasetExportIntegrationTests : IDisposable
     private string ArtifactPath(string relativePath) =>
         Path.Combine(_dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
 
+    private static bool Disabled(DatasetSink sink)
+    {
+        var field = typeof(DatasetSink).GetField("_disabled", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<bool>(field.GetValue(sink));
+    }
+
     private string DescribeStats()
     {
         var s = _sink.Stats;
@@ -331,6 +339,8 @@ public class DatasetExportIntegrationTests : IDisposable
         {
             if (Directory.Exists(path))
                 Directory.Delete(path, recursive: true);
+            else if (File.Exists(path))
+                File.Delete(path);
         }
         catch (IOException)
         {
@@ -360,6 +370,33 @@ public class DatasetExportIntegrationTests : IDisposable
         Assert.Equal(id, line["request_id"]!.GetValue<string>());
         Assert.Equal("chat", line["endpoint"]!.GetValue<string>());
         Assert.Equal("hello world", line["completion"]!["content"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ChatSuccess_AfterStorageRecovery_DrainsOriginalAndNextCapture()
+    {
+        SeedProvider(maxConcurrent: 4, "m1");
+        // Destination là file: request đầu vẫn thành công nhưng capture nằm lại trong channel.
+        File.WriteAllText(_dir, "not a directory");
+        var client = await StartAsync(new ScriptedUpstream(_ => SseChatOk()));
+
+        var firstResponse = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"m1","stream":true,"messages":[{"role":"user","content":"first"}]}"""));
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        var firstId = firstResponse.Headers.GetValues("X-Request-Id").Single();
+        await WaitUntilAsync(() => Disabled(_sink),
+            "storage failure phải disable sink sau khi request đầu đã capture");
+
+        File.Delete(_dir);
+        _settings.Set(SettingsKeys.LogRetentionDays, 30); // save sau failure = recovery trigger
+        var secondResponse = await client.PostAsync("/v1/chat/completions",
+            Json("""{"model":"m1","stream":true,"messages":[{"role":"user","content":"second"}]}"""));
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        var secondId = secondResponse.Headers.GetValues("X-Request-Id").Single();
+
+        var lines = await WaitDatasetLinesAsync(2);
+        Assert.Contains(lines, line => line["request_id"]!.GetValue<string>() == firstId);
+        Assert.Contains(lines, line => line["request_id"]!.GetValue<string>() == secondId);
     }
 
     [Fact]

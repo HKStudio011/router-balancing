@@ -301,9 +301,67 @@ public class DatasetSinkTests : IDisposable
         Assert.Equal(0, sink.Stats.ExternalizedPayloadCount);
         var day = new DateOnly(2026, 11, 6);
         var payloadJsonlPath = Path.Combine(_dir, DatasetPaths.PayloadFileName(day));
-        Assert.False(File.Exists(payloadJsonlPath));
+        // Manifest writer được mở trước artifact nên file rỗng tồn tại; invariant là không có dòng
+        // manifest nào trỏ tới export chưa hoàn chỉnh, không phải file phải vắng mặt.
+        Assert.Empty(ReadAllLinesShared(payloadJsonlPath));
         Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.FileName(day))));
         Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.LargeFileName(day))));
+    }
+
+    [Fact]
+    public Task WritePayload_CompletionArtifactFailure_DoesNotWriteManifestOrCounters() =>
+        AssertPayloadArtifactFailureDoesNotWriteManifestOrCounters(binaryArtifact: false);
+
+    [Fact]
+    public Task WritePayload_BinaryArtifactFailure_DoesNotWriteManifestOrCounters() =>
+        AssertPayloadArtifactFailureDoesNotWriteManifestOrCounters(binaryArtifact: true);
+
+    private async Task AssertPayloadArtifactFailureDoesNotWriteManifestOrCounters(bool binaryArtifact)
+    {
+        await using var sink = CreateSink();
+        var capture = PayloadCapture(binaryArtifact ? "req-binary-failure" : "req-completion-failure", LargePng());
+        var recordDay = DateOnly.FromDateTime(capture.FinishedAt.UtcDateTime);
+        var exportId = "0123456789abcdef0123456789abcdef";
+        var transformed = DatasetPayloadTransformer.Transform(capture, exportId);
+        Assert.NotNull(transformed);
+        Directory.CreateDirectory(_dir);
+        SetCurrentDirectory(sink, _dir);
+        var exportDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName,
+            recordDay.ToString("yyyy-MM-dd"), exportId);
+        Directory.CreateDirectory(exportDirectory);
+        var payloadJsonlPath = Path.Combine(_dir, DatasetPaths.PayloadFileName(recordDay));
+        using var writer = OpenPayloadWriter(payloadJsonlPath);
+        var failedArtifactPath = binaryArtifact
+            ? ArtifactPath(_dir, Assert.Single(transformed.Files).RelativePath)
+            : Path.Combine(exportDirectory, "completion.json");
+        Directory.CreateDirectory(failedArtifactPath);
+
+        var failure = InvokeWritePayload(sink, capture, transformed, exportId, recordDay, writer);
+
+        Assert.NotNull(failure);
+        Assert.Empty(ReadAllLinesShared(payloadJsonlPath));
+        Assert.Empty(Directory.GetFiles(exportDirectory, "*.tmp-*", SearchOption.AllDirectories));
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+        Assert.Equal(0, sink.Stats.PayloadRecordsWritten);
+        Assert.Equal(0, sink.Stats.ExternalizedPayloadCount);
+        Assert.Equal(0, sink.Stats.ExternalizedPayloadBytes);
+        Assert.Equal(0, sink.Stats.BytesWritten);
+        Assert.True(File.Exists(Path.Combine(exportDirectory, "request.json")));
+        if (binaryArtifact)
+        {
+            Assert.True(File.Exists(Path.Combine(exportDirectory, "completion.json")));
+        }
+
+        // Replay phải tạo export mới, không ghép manifest với artifact orphan của lượt lỗi.
+        Directory.Delete(failedArtifactPath);
+        var recoveryExportId = "fedcba9876543210fedcba9876543210";
+        var recovered = DatasetPayloadTransformer.Transform(capture, recoveryExportId);
+        Assert.NotNull(recovered);
+        failure = InvokeWritePayload(sink, capture, recovered, recoveryExportId, recordDay, writer);
+        Assert.Null(failure);
+        var manifest = Assert.Single(ReadPayloadManifests(recordDay));
+        Assert.Equal(recoveryExportId, manifest["export_id"]!.GetValue<string>());
+        Assert.NotEqual(exportId, manifest["export_id"]!.GetValue<string>());
     }
 
     [Fact]
@@ -696,6 +754,44 @@ public class DatasetSinkTests : IDisposable
     }
 
     [Fact]
+    public async Task OpenFailure_PayloadManifest_RetainsCaptureWithoutCreatingArtifacts()
+    {
+        var log = new CapturingLog();
+        Directory.CreateDirectory(_dir);
+        var capture = PayloadCapture("req-first", LargePng(0x31));
+        var recordDay = DateOnly.FromDateTime(capture.FinishedAt.UtcDateTime);
+        var payloadJsonlPath = Path.Combine(_dir, DatasetPaths.PayloadFileName(recordDay));
+        // FileStream Append trên manifest phải fail trước khi bất kỳ artifact nào được tạo.
+        Directory.CreateDirectory(payloadJsonlPath);
+        await using var sink = CreateSink(log);
+
+        sink.Capture(capture);
+        WaitUntil(() => log.ErrorCount == 1);
+
+        Assert.Equal(0, sink.Stats.RecordsWritten);
+        Assert.Equal(0, sink.Stats.PayloadRecordsWritten);
+        Assert.Same(capture, PendingCapture(sink));
+        Assert.Equal(RawSize(capture), PendingBytes(sink));
+        var payloadDayDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName,
+            recordDay.ToString("yyyy-MM-dd"));
+        Assert.False(Directory.Exists(payloadDayDirectory));
+        Assert.False(File.Exists(payloadJsonlPath));
+        Assert.Empty(Directory.GetFiles(_dir, "*.tmp-*", SearchOption.AllDirectories));
+
+        // Disabled phải chặn record này; recovery chỉ nhận đúng một capture mới, không cần capture mồi.
+        sink.Capture(PayloadCapture("req-disabled", LargePng(0x32)));
+        Directory.Delete(payloadJsonlPath);
+        _settings.Set(SettingsKeys.LogRetentionDays, 30);
+        sink.Capture(PayloadCapture("req-resume", LargePng(0x33)));
+
+        WaitUntil(() => sink.Stats.RecordsWritten == 2);
+        Assert.Equal(new[] { "req-first", "req-resume" }, ReadRequestIds(payloadJsonlPath));
+        Assert.DoesNotContain("req-disabled", ReadRequestIds(payloadJsonlPath));
+        Assert.Equal(0, PendingBytes(sink));
+        Assert.Empty(Directory.GetFiles(_dir, "*.tmp-*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
     public Task OpenFailure_NormalFile_RetainsCaptureAndDrainsItFirstAfterRecovery() =>
         AssertOpenFailureDrainsOriginalCaptureAfterRecovery(largeRecord: false);
 
@@ -753,6 +849,201 @@ public class DatasetSinkTests : IDisposable
         Assert.DoesNotContain(lines, line => line.Contains("req-disabled", StringComparison.Ordinal));
         Assert.Equal(1, log.ErrorCount);
         Assert.Contains("open daily file", log.FirstError);
+    }
+
+    [Fact]
+    public async Task WriterRecovery_OneCaptureAfterFailureSave_HandoffsAndDrains()
+    {
+        using var settings = CreateSettingsWithInvalidRetention();
+        var log = new CapturingLog();
+        DatasetSink? sink = null;
+        log.OnError = message =>
+        {
+            if (message.Contains("open daily file", StringComparison.Ordinal))
+            {
+                SetThrowingWriter(sink!);
+            }
+            else if (message.Contains("close file", StringComparison.Ordinal))
+            {
+                // CloseFiles chạy sau khi writer cũ đã quyết định thoát. Save + đúng một Capture tại
+                // đây buộc phải có handoff: EnsureStarted vẫn thấy task cũ chưa completed.
+                settings.Set(SettingsKeys.DatasetRetentionDays, 0);
+                sink!.Capture(ChatCapture("req-resume"));
+            }
+        };
+        await using (sink = new DatasetSink(settings, log, _time))
+        {
+            var first = ChatCapture("req-first");
+            sink.Capture(first);
+
+            WaitUntil(() => sink.Stats.RecordsWritten == 2);
+            var normalFile = Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
+            Assert.Equal(new[] { "req-first", "req-resume" }, ReadRequestIds(normalFile));
+            Assert.Equal(0, PendingBytes(sink));
+            Assert.Null(PendingCapture(sink));
+        }
+    }
+
+    [Fact]
+    public async Task WriterRecovery_SaveBeforeFailure_IsNotRecovery()
+    {
+        var log = new CapturingLog();
+        using var closeEntered = new ManualResetEventSlim();
+        using var allowClose = new ManualResetEventSlim();
+        Directory.CreateDirectory(_dir);
+        var normalFile = Path.Combine(_dir, DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
+        Directory.CreateDirectory(normalFile);
+        DatasetSink? sink = null;
+        log.OnError = message =>
+        {
+            if (message.Contains("open daily file", StringComparison.Ordinal))
+            {
+                SetThrowingWriter(sink!);
+            }
+            else if (message.Contains("close file", StringComparison.Ordinal))
+            {
+                closeEntered.Set();
+                allowClose.Wait();
+                // Chỉ save này (sau failure) mới được recovery và ghi req-resume.
+                _settings.Set(SettingsKeys.LogRetentionDays, 31);
+                sink!.Capture(ChatCapture("req-resume"));
+            }
+        };
+        await using (sink = CreateSink(log))
+        {
+            var first = ChatCapture("req-first");
+            try
+            {
+                Task captureTask;
+                lock (StartGate(sink))
+                {
+                    // Capture đã enqueue nhưng chưa start writer: save tại đây chắc chắn xảy ra
+                    // TRƯỚC failure publish, nên không được xóa trạng thái lỗi sắp tới.
+                    captureTask = Task.Run(() => sink.Capture(first));
+                    WaitUntil(() => PendingBytes(sink) == RawSize(first));
+                    _settings.Set(SettingsKeys.LogRetentionDays, 30);
+                    Assert.False(captureTask.IsCompleted);
+                }
+
+                await captureTask.WaitAsync(TimeSpan.FromSeconds(10));
+                WaitUntil(() => closeEntered.IsSet);
+                Assert.True(Disabled(sink));
+                Assert.Same(first, PendingCapture(sink));
+                Assert.Equal(RawSize(first), PendingBytes(sink));
+                sink.Capture(ChatCapture("req-disabled"));
+                Assert.Equal(0, sink.Stats.RecordsWritten);
+
+                Directory.Delete(normalFile);
+                allowClose.Set();
+                WaitUntil(() => sink.Stats.RecordsWritten == 2);
+                Assert.Equal(new[] { "req-first", "req-resume" }, ReadRequestIds(normalFile));
+                Assert.DoesNotContain("req-disabled", ReadRequestIds(normalFile));
+                Assert.Equal(0, PendingBytes(sink));
+            }
+            finally
+            {
+                allowClose.Set();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task WriterDispose_RacingHandoff_DoesNotStartNewWriter()
+    {
+        // Nhánh dispose thắng: writer cũ đang ở CloseFiles, dispose phải chặn mọi handoff mới.
+        var disposeRoot = Path.Combine(_dir, "dispose-wins");
+        Directory.CreateDirectory(disposeRoot);
+        var disposeFile = Path.Combine(disposeRoot, DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
+        Directory.CreateDirectory(disposeFile);
+        _settings.Set(SettingsKeys.DatasetExportPath, disposeRoot);
+        var disposeLog = new CapturingLog();
+        using var disposeCloseEntered = new ManualResetEventSlim();
+        using var allowDisposeClose = new ManualResetEventSlim();
+        DatasetSink? disposeSink = null;
+        disposeLog.OnError = message =>
+        {
+            if (message.Contains("open daily file", StringComparison.Ordinal))
+            {
+                SetThrowingWriter(disposeSink!);
+            }
+            else if (message.Contains("close file", StringComparison.Ordinal))
+            {
+                disposeCloseEntered.Set();
+                allowDisposeClose.Wait();
+            }
+        };
+        disposeSink = CreateSink(disposeLog);
+        disposeSink.Capture(ChatCapture("req-dispose-pending"));
+        try
+        {
+            WaitUntil(() => disposeCloseEntered.IsSet);
+            var disposeTask = disposeSink.DisposeAsync().AsTask();
+            WaitUntil(() => Disposed(disposeSink));
+            allowDisposeClose.Set();
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Null(WriterTask(disposeSink));
+            disposeSink.Capture(ChatCapture("req-after-dispose"));
+            Assert.Null(WriterTask(disposeSink));
+            Assert.Equal(0, disposeSink.Stats.RecordsWritten);
+        }
+        finally
+        {
+            allowDisposeClose.Set();
+            await disposeSink.DisposeAsync();
+        }
+
+        // Nhánh handoff thắng: task mới xuất hiện trước dispose; dispose phải capture và chờ đúng
+        // task mới, để pending + queue drain xong rồi mới kết thúc.
+        var handoffRoot = Path.Combine(_dir, "handoff-wins");
+        Directory.CreateDirectory(handoffRoot);
+        var handoffFile = Path.Combine(handoffRoot, DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
+        Directory.CreateDirectory(handoffFile);
+        _settings.Set(SettingsKeys.DatasetExportPath, handoffRoot);
+        var handoffLog = new CapturingLog();
+        using var handoffCloseEntered = new ManualResetEventSlim();
+        using var allowHandoffClose = new ManualResetEventSlim();
+        DatasetSink? handoffSink = null;
+        handoffLog.OnError = message =>
+        {
+            if (message.Contains("open daily file", StringComparison.Ordinal))
+            {
+                SetThrowingWriter(handoffSink!);
+            }
+            else if (message.Contains("close file", StringComparison.Ordinal))
+            {
+                handoffCloseEntered.Set();
+                allowHandoffClose.Wait();
+            }
+        };
+        handoffSink = CreateSink(handoffLog);
+        handoffSink.Capture(ChatCapture("req-first"));
+        try
+        {
+            WaitUntil(() => handoffCloseEntered.IsSet);
+            var oldTask = WriterTask(handoffSink);
+            Assert.NotNull(oldTask);
+            Directory.Delete(handoffFile);
+            _settings.Set(SettingsKeys.LogRetentionDays, 32);
+            handoffSink.Capture(ChatCapture("req-resume"));
+            allowHandoffClose.Set();
+            WaitUntil(() => WriterTask(handoffSink) is { } current && !ReferenceEquals(oldTask, current));
+            var handoffTask = WriterTask(handoffSink);
+            Assert.NotNull(handoffTask);
+
+            await handoffSink.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(handoffTask.IsCompleted);
+            Assert.Equal(new[] { "req-first", "req-resume" }, ReadRequestIds(handoffFile));
+            Assert.Null(WriterTask(handoffSink));
+            handoffSink.Capture(ChatCapture("req-after-handoff-dispose"));
+            Assert.Null(WriterTask(handoffSink));
+        }
+        finally
+        {
+            allowHandoffClose.Set();
+            await handoffSink.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -946,13 +1237,71 @@ public class DatasetSinkTests : IDisposable
         return new AppSettingsService(factory);
     }
 
-    private static long PendingBytes(DatasetSink sink)
+    private static FieldInfo PrivateField(string name)
     {
-        var field = typeof(DatasetSink).GetField("_pendingBytes",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+        var field = typeof(DatasetSink).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
-        return Assert.IsType<long>(field.GetValue(sink));
+        return field;
     }
+
+    private static long PendingBytes(DatasetSink sink) =>
+        Assert.IsType<long>(PrivateField("_pendingBytes").GetValue(sink));
+
+    private static DatasetCapture? PendingCapture(DatasetSink sink) =>
+        (DatasetCapture?)PrivateField("_pendingCapture").GetValue(sink);
+
+    private static long RawSize(DatasetCapture capture) =>
+        capture.ClientBody.LongLength + (capture.CompletionJson?.Length ?? 0);
+
+    private static object StartGate(DatasetSink sink) =>
+        PrivateField("_startGate").GetValue(sink)!;
+
+    private static Task? WriterTask(DatasetSink sink) =>
+        (Task?)PrivateField("_writerTask").GetValue(sink);
+
+    private static bool Disabled(DatasetSink sink) =>
+        Assert.IsType<bool>(PrivateField("_disabled").GetValue(sink));
+
+    private static bool Disposed(DatasetSink sink) =>
+        Assert.IsType<bool>(PrivateField("_disposed").GetValue(sink));
+
+    private static void SetThrowingWriter(DatasetSink sink) =>
+        PrivateField("_writer").SetValue(sink, new ThrowingDisposeStreamWriter());
+
+    private static void SetCurrentDirectory(DatasetSink sink, string directory) =>
+        PrivateField("_currentDirectory").SetValue(sink, directory);
+
+    private static StreamWriter OpenPayloadWriter(string path)
+    {
+        var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+        return new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
+    }
+
+    private static Exception? InvokeWritePayload(
+        DatasetSink sink,
+        DatasetCapture capture,
+        DatasetPayloadTransformResult transformed,
+        string exportId,
+        DateOnly recordDay,
+        StreamWriter writer)
+    {
+        var method = typeof(DatasetSink).GetMethod("WritePayload", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        object?[] arguments = [capture, transformed, exportId, recordDay, writer];
+        try
+        {
+            method.Invoke(sink, arguments);
+            return null;
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            return ex.InnerException;
+        }
+    }
+
+    private static string[] ReadRequestIds(string path) =>
+        [.. ReadAllLinesShared(path).Select(line =>
+            JsonNode.Parse(line)!["request_id"]!.GetValue<string>())];
 
     /// <summary>Body chat tối thiểu hợp lệ cho builder (messages có content).</summary>
     private const string ValidBody = """{"model":"m","messages":[{"role":"user","content":"hi"}]}""";
@@ -1021,6 +1370,15 @@ public class DatasetSinkTests : IDisposable
         }
     }
 
+    /// <summary>Cho CloseFiles một lỗi có kiểm soát để dừng writer ở finally trước handoff.</summary>
+    private sealed class ThrowingDisposeStreamWriter : StreamWriter
+    {
+        public ThrowingDisposeStreamWriter() : base(Stream.Null) { }
+
+        protected override void Dispose(bool disposing) =>
+            throw new IOException("Lỗi đóng file giả lập để rendezvous writer handoff.");
+    }
+
     /// <summary>
     /// Log bắt sự kiện — thread-safe vì writer task ghi, test thread đọc (pattern CapturingLog
     /// trong ProxyRequestHandlerTests, thêm lock vì hai chiều thật sự chạy song song ở đây).
@@ -1040,6 +1398,9 @@ public class DatasetSinkTests : IDisposable
             get { lock (_gate) return _errors.Count > 0 ? _errors[0] : null; }
         }
 
+        /// <summary>Rendezvous các race ở đúng boundary log, không thêm API test-only vào production.</summary>
+        public Action<string>? OnError { get; set; }
+
         public event Action<LogEntry>? LogAdded { add { } remove { } }
 
         public void Write(LogEntry entry)
@@ -1052,8 +1413,12 @@ public class DatasetSinkTests : IDisposable
 
         public void Info(string message, LogCategory category = LogCategory.App) { }
         public void Warn(string message, LogCategory category = LogCategory.App) { }
-        public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App) =>
+        public void Error(string message, Exception? exception = null, LogCategory category = LogCategory.App)
+        {
             Write(new LogEntry { Severity = LogSeverity.Error, Category = category, Message = message });
+            OnError?.Invoke(message);
+        }
+
         public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
         public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
         public int Count(LogQuery query) => 0;
