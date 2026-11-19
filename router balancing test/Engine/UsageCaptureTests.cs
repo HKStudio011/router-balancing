@@ -513,6 +513,74 @@ public class UsageCaptureTests
     }
 
     [Fact]
+    public async Task Tee_Sse_CaptureCompletion_NonAsciiEscapedContent_UsesDefaultJsonUtf8Budget()
+    {
+        const string text = "Aé<&👋";
+        Assert.Equal(ExpectedDefaultEncodedByteCount(text), ActualDatasetAccumulatorSize(text));
+
+        // Mỗi 'é' chiếm một char nhưng default encoder của BuildCompletionJson ghi "\\u00E9"
+        // (6 byte). Chuỗi này vẫn dưới 16 MiB theo char nhưng vượt budget theo JSON UTF-8.
+        var largeText = new string('é', DatasetRecordBuilder.MaxExportFieldBytes / 6 + 1);
+        var sse = DatasetDeltaLine(largeText) + "data: [DONE]\n\n";
+        var originalClientBytes = Bytes(sse);
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+            captureCompletion: true);
+
+        Assert.Null(result.CompletionJson);
+        Assert.False(result.CompletionComplete);
+        Assert.Equal(originalClientBytes, dest.ToArray());
+    }
+
+    [Fact]
+    public void Tee_Sse_CaptureCompletion_SurrogateSplit_NeverOverrunsUtf8Budget()
+    {
+        const string highSurrogate = "\uD83D";
+        const string lowSurrogate = "\uDC4B";
+        var encodedPairBytes = ExpectedDefaultEncodedByteCount("👋");
+
+        var result = CaptureDatasetDeltas(encodedPairBytes - 1, highSurrogate, lowSurrogate);
+
+        Assert.True(result.Overflowed || result.CompletionJson is null);
+    }
+
+    private static int ExpectedDefaultEncodedByteCount(string text) =>
+        Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(text)) - 2;
+
+    private static int ActualDatasetAccumulatorSize(string text)
+    {
+        // Ngưỡng nhỏ nhất còn chấp nhận delta chính là kích thước accumulator quan sát được;
+        // không đọc private counter và không suy ra expected từ implementation.
+        for (var budget = 0; budget <= 128; budget++)
+        {
+            var result = CaptureDatasetDeltas(budget, text);
+            if (!result.Overflowed)
+            {
+                return budget;
+            }
+        }
+
+        throw new InvalidOperationException("Dataset accumulator vượt 128 byte cho fixture ngắn.");
+    }
+
+    private static (bool Overflowed, string? CompletionJson) CaptureDatasetDeltas(
+        int budget, params string[] deltas)
+    {
+        var state = new ChatSseAggregateState(budget, budgetInUtf8Bytes: true);
+        foreach (var delta in deltas)
+        {
+            state.HandleLine(Bytes(DatasetDeltaLine(delta)));
+        }
+
+        return (state.Overflowed, state.Overflowed ? null : state.BuildCompletionJson());
+    }
+
+    private static string DatasetDeltaLine(string text) =>
+        "data: {\"choices\":[{\"delta\":{\"content\":" + JsonSerializer.Serialize(text) + "}}]}\n\n";
+
+    [Fact]
     public async Task Tee_Sse_CaptureCompletion_OutOfRangeNumber_ContainedAndForwardsClientBytes()
     {
         // "created": 1e30 là JSON Number hợp lệ nhưng vượt phạm vi Int64 — GetInt64 ném lỗi

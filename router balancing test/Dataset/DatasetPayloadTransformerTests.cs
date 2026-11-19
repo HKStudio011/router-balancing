@@ -294,6 +294,51 @@ public class DatasetPayloadTransformerTests
     }
 
     [Fact]
+    public void Transform_PngPrefixOnly_UsesUnknownFallback()
+    {
+        var binary = LargeBinary(0x20);
+        new byte[] { 0x89, 0x50, 0x4E, 0x47 }.AsSpan().CopyTo(binary);
+        var completion = new JsonObject
+        {
+            ["data"] = new JsonArray(new JsonObject
+            {
+                ["b64_json"] = Convert.ToBase64String(binary),
+            }),
+        }.ToJsonString();
+
+        var result = Assert.IsType<DatasetPayloadTransformResult>(
+            DatasetPayloadTransformer.Transform(Capture(ChatImageRequest("inline"), completion), ExportId));
+
+        var prefixOnlyReference = Assert.Single(result.References);
+        Assert.Equal("application/octet-stream", prefixOnlyReference.MediaType);
+        Assert.Equal(".bin", Path.GetExtension(prefixOnlyReference.Path));
+    }
+
+    [Fact]
+    public void Transform_SourceDocuments_DifferOnlyAtPayloadReferences()
+    {
+        var binary = LargePng();
+        var source = DatasetSemanticFixtures.CreateSourceDocuments(
+            $"data:image/png;base64,{Convert.ToBase64String(binary)}",
+            Convert.ToBase64String(binary));
+
+        var transformed = Assert.IsType<DatasetPayloadTransformResult>(
+            DatasetPayloadTransformer.Transform(Capture(
+                source.Request.ToJsonString(), source.Completion.ToJsonString()), ExportId));
+
+        Assert.Equal(
+            ["/messages/0/content/1/image_url/url", "/data/0/b64_json"],
+            transformed.References.Select(reference => reference.JsonPointer));
+        var (expectedRequest, expectedCompletion) = DatasetSemanticFixtures.ExpectedDocuments(
+            source.Request, source.Completion,
+            transformed.References.Select(reference =>
+                (reference.Document, reference.JsonPointer, reference.Url)));
+
+        Assert.True(JsonNode.DeepEquals(expectedRequest, transformed.RequestDocument));
+        Assert.True(JsonNode.DeepEquals(expectedCompletion, transformed.CompletionDocument));
+    }
+
+    [Fact]
     public void Transform_SameRequestIdDifferentExportId_DoesNotCollide()
     {
         var capture = Capture(ChatImageRequest(
@@ -313,7 +358,7 @@ public class DatasetPayloadTransformerTests
     private static byte[] LargePng()
     {
         var binary = LargeBinary(0x20);
-        new byte[] { 0x89, 0x50, 0x4E, 0x47 }.AsSpan().CopyTo(binary);
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.AsSpan().CopyTo(binary);
         return binary;
     }
 
@@ -378,4 +423,148 @@ public class DatasetPayloadTransformerTests
             CompletionTokens: 20,
             Lane: DatasetLane.Plain,
             ToolsRewritten: false);
+}
+
+internal static class DatasetSemanticFixtures
+{
+    internal static (JsonObject Request, JsonObject Completion) CreateSourceDocuments(
+        string requestDataUri, string completionBase64)
+    {
+        var request = new JsonObject
+        {
+            ["model"] = "gpt-vision",
+            ["metadata"] = new JsonObject
+            {
+                ["trace"] = new JsonObject
+                {
+                    ["nullable"] = null,
+                    ["flags"] = new JsonArray(true, false, null),
+                    ["unmapped_v1_field"] = "keep-request-metadata",
+                },
+            },
+            ["stream_options"] = new JsonObject
+            {
+                ["include_usage"] = true,
+                ["custom_options"] = new JsonArray("preserve", null, 7),
+            },
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = "look",
+                        ["cache_control"] = null,
+                    },
+                    new JsonObject
+                    {
+                        ["type"] = "image_url",
+                        ["image_url"] = new JsonObject
+                        {
+                            ["url"] = requestDataUri,
+                            ["detail"] = "high",
+                        },
+                        ["unmapped_content_field"] = new JsonArray("keep", null),
+                    }),
+                ["vendor_extension"] = new JsonObject { ["enabled"] = true },
+            }),
+            ["vendor~extension/part"] = new JsonObject
+            {
+                ["nullable"] = null,
+                ["values"] = new JsonArray("one", "two"),
+            },
+        };
+        var completion = new JsonObject
+        {
+            ["id"] = "completion-rich",
+            ["object"] = "chat.completion",
+            ["model"] = "gpt-vision",
+            ["metadata"] = new JsonObject
+            {
+                ["trace"] = new JsonObject
+                {
+                    ["nullable"] = null,
+                    ["unmapped_v1_field"] = "keep-completion-metadata",
+                },
+            },
+            ["choices"] = new JsonArray(new JsonObject
+            {
+                ["index"] = 0,
+                ["message"] = new JsonObject
+                {
+                    ["role"] = "assistant",
+                    ["content"] = "done",
+                    ["unmapped_message_field"] = new JsonArray("keep", null, 11),
+                },
+                ["finish_reason"] = "stop",
+                ["logprobs"] = null,
+            }),
+            ["data"] = new JsonArray(new JsonObject
+            {
+                ["b64_json"] = completionBase64,
+                ["unmapped_data_field"] = "preserve",
+            }),
+            ["usage"] = new JsonObject
+            {
+                ["prompt_tokens"] = 10,
+                ["completion_tokens"] = 20,
+            },
+        };
+        return (request, completion);
+    }
+
+    internal static (JsonNode Request, JsonNode Completion) ExpectedDocuments(
+        JsonNode sourceRequest,
+        JsonNode sourceCompletion,
+        IEnumerable<(string Document, string JsonPointer, string Url)> references)
+    {
+        var expectedRequest = sourceRequest.DeepClone();
+        var expectedCompletion = sourceCompletion.DeepClone();
+        foreach (var reference in references)
+        {
+            var document = reference.Document switch
+            {
+                "request" => expectedRequest,
+                "completion" => expectedCompletion,
+                _ => throw new InvalidOperationException($"Document lạ: {reference.Document}"),
+            };
+            ReplaceAtPointer(document, reference.JsonPointer, reference.Url);
+        }
+
+        return (expectedRequest, expectedCompletion);
+    }
+
+    private static void ReplaceAtPointer(JsonNode document, string pointer, string url)
+    {
+        var segments = pointer.Split('/').Skip(1).Select(UnescapePointerSegment).ToArray();
+        Assert.NotEmpty(segments);
+        JsonNode current = document;
+        foreach (var segment in segments[..^1])
+        {
+            current = current switch
+            {
+                JsonObject obj => obj[segment]!,
+                JsonArray array => array[int.Parse(segment)]!,
+                _ => throw new InvalidOperationException($"Pointer không resolve được tại '{segment}'."),
+            };
+        }
+
+        var last = segments[^1];
+        switch (current)
+        {
+            case JsonObject obj:
+                obj[last] = url;
+                break;
+            case JsonArray array:
+                array[int.Parse(last)] = url;
+                break;
+            default:
+                throw new InvalidOperationException($"Pointer không thay được tại '{last}'.");
+        }
+    }
+
+    private static string UnescapePointerSegment(string segment) =>
+        segment.Replace("~1", "/", StringComparison.Ordinal)
+            .Replace("~0", "~", StringComparison.Ordinal);
 }

@@ -16,6 +16,7 @@ using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Settings;
 using RouterBalancing.Core.Storage;
+using router_balancing_test.Dataset;
 
 namespace router_balancing_test.Server;
 
@@ -150,7 +151,7 @@ public class DatasetExportIntegrationTests : IDisposable
     // ScanSseLine (usage 7/5) lẫn ChatSseAggregateState.BuildCompletionJson
     // (completion.content == "hello world").
     private const string SseChat =
-        "data: {\"id\":\"chatcmpl-1\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello world\"}}]}\n\n" +
+        "data: {\"id\":\"chatcmpl-1\",\"model\":\"m1\",\"created\":1700000000,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello world\"}}]}\n\n" +
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5}}\n\n" +
         "data: [DONE]\n\n";
 
@@ -313,6 +314,9 @@ public class DatasetExportIntegrationTests : IDisposable
     private string ArtifactPath(string relativePath) =>
         Path.Combine(_dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
 
+    private static JsonNode ReadJson(string path) =>
+        JsonNode.Parse(File.ReadAllText(path))!;
+
     private static bool Disabled(DatasetSink sink)
     {
         var field = typeof(DatasetSink).GetField("_disabled", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -437,29 +441,44 @@ public class DatasetExportIntegrationTests : IDisposable
             _ => SseChatOk(), body => upstreamObservedRequestBytes = body.ToArray()));
         var binary = new byte[DatasetRecordBuilder.InlineMaxFieldBytes];
         binary.AsSpan().Fill(0x20);
-        new byte[] { 0x89, 0x50, 0x4E, 0x47 }.AsSpan().CopyTo(binary);
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.AsSpan().CopyTo(binary);
 
         static JsonObject ImageRequest(string url) => new()
         {
             ["model"] = "m1",
             ["stream"] = true,
             // Khai báo sẵn các option proxy vốn inject để phép so byte cô lập dataset khỏi rewrite đó.
-            ["stream_options"] = new JsonObject { ["include_usage"] = true },
+            ["stream_options"] = new JsonObject
+            {
+                ["include_usage"] = true,
+                ["custom_options"] = new JsonArray("preserve", null, 7),
+            },
+            ["metadata"] = new JsonObject
+            {
+                ["trace"] = new JsonObject
+                {
+                    ["nullable"] = null,
+                    ["unmapped_v1_field"] = "keep-request-metadata",
+                },
+            },
             ["messages"] = new JsonArray(new JsonObject
             {
                 ["role"] = "user",
                 ["content"] = new JsonArray(
-                    new JsonObject { ["type"] = "text", ["text"] = "look" },
+                    new JsonObject { ["type"] = "text", ["text"] = "look", ["cache_control"] = null },
                     new JsonObject
                     {
                         ["type"] = "image_url",
-                        ["image_url"] = new JsonObject { ["url"] = url },
+                        ["image_url"] = new JsonObject { ["url"] = url, ["detail"] = "high" },
+                        ["unmapped_content_field"] = new JsonArray("keep", null),
                     }),
+                ["vendor_extension"] = new JsonObject { ["enabled"] = true },
             }),
         };
 
         var largeDataUri = $"data:image/png;base64,{Convert.ToBase64String(binary)}";
-        var originalRequestBytes = Encoding.UTF8.GetBytes(ImageRequest(largeDataUri).ToJsonString());
+        var sourceRequest = ImageRequest(largeDataUri);
+        var originalRequestBytes = Encoding.UTF8.GetBytes(sourceRequest.ToJsonString());
         var response = await client.PostAsync("/v1/chat/completions", Json(Encoding.UTF8.GetString(originalRequestBytes)));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -478,9 +497,13 @@ public class DatasetExportIntegrationTests : IDisposable
         Assert.Equal(binary, File.ReadAllBytes(binaryPath));
         Assert.Equal(reference["sha256"]!.GetValue<string>(),
             Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binaryPath))).ToLowerInvariant());
-        var requestDocument = JsonNode.Parse(File.ReadAllText(requestDocumentPath))!;
-        Assert.Equal(reference["url"]!.GetValue<string>(), requestDocument["messages"]![0]!
-            ["content"]![1]!["image_url"]!["url"]!.GetValue<string>());
+        var (expectedRequest, _) = DatasetSemanticFixtures.ExpectedDocuments(
+            sourceRequest, new JsonObject(),
+            [("request", reference["json_pointer"]!.GetValue<string>(), reference["url"]!.GetValue<string>())]);
+        var expectedCompletion = JsonNode.Parse(
+            """{"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"hello world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":5}}""")!;
+        Assert.True(JsonNode.DeepEquals(expectedRequest, ReadJson(requestDocumentPath)));
+        Assert.True(JsonNode.DeepEquals(expectedCompletion, ReadJson(completionDocumentPath)));
         Assert.Equal(1, _sink.Stats.PayloadRecordsWritten);
         Assert.Equal(1, _sink.Stats.ExternalizedPayloadCount);
         Assert.Equal(binary.Length, _sink.Stats.ExternalizedPayloadBytes);

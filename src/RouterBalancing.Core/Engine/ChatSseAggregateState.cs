@@ -9,11 +9,14 @@ namespace RouterBalancing.Core.Engine;
 /// role, finish_reason, id/model/created từ chunk đầu + usage last-wins. JSON hỏng
 /// → bỏ chunk, không throw (fail-open như <see cref="UsageCapture"/>). Dùng chung cho
 /// aggregate (client non-stream, upstream forced-stream) và tee capture completion
-/// cho dataset export — budget <paramref name="contentBudgetChars"/> giới hạn tổng
-/// ký tự tích lũy (content + arguments tool_calls); chạm budget thì ngừng tích lũy
-/// và đánh dấu <see cref="Overflowed"/> thay vì phình memory theo độ dài stream.
+/// cho dataset export — budget <paramref name="contentBudgetChars"/> giới hạn phần
+/// content + arguments tool_calls tích lũy; mặc định đếm ký tự cho client aggregation,
+/// còn dataset bật <paramref name="budgetInUtf8Bytes"/> để đếm theo JSON UTF-8 đã encode.
+/// Chạm budget thì ngừng tích lũy và đánh dấu <see cref="Overflowed"/> thay vì phình memory.
 /// </summary>
-internal sealed class ChatSseAggregateState(int? contentBudgetChars = null)
+internal sealed class ChatSseAggregateState(
+    int? contentBudgetChars = null,
+    bool budgetInUtf8Bytes = false)
 {
     private readonly StringBuilder _content = new();
     // tool_calls stream theo index (OpenAI spec): id/name first-wins, arguments concat
@@ -28,8 +31,8 @@ internal sealed class ChatSseAggregateState(int? contentBudgetChars = null)
     // dấu hiệu để phân biệt "stream kết thúc" với "upstream đóng sạch giữa chừng".
     private bool _doneSeen;
 
-    // Tổng ký tự đã tích lũy (content + arguments) — so với budget ở mỗi lần append;
-    // null = không giới hạn (hành vi aggregate cũ y hệt, không tốn check).
+    // Tổng ký tự hoặc JSON UTF-8 byte đã tích lũy (content + arguments), tùy mode;
+    // budget null = không giới hạn (hành vi aggregate cũ y hệt, không tốn check).
     private readonly int? _budget = contentBudgetChars;
     private int _accumulated;
 
@@ -82,10 +85,14 @@ internal sealed class ChatSseAggregateState(int? contentBudgetChars = null)
                 return;
             _role = ReadDeltaString(choice, "role") ?? _role;
             var text = ReadDeltaString(choice, "content");
-            if (text is not null && TryAccumulate(text.Length))
+            if (text is not null)
             {
-                _content.Append(text);
-                _accumulated += text.Length;
+                var deltaSize = DeltaSize(text);
+                if (TryAccumulate(deltaSize))
+                {
+                    _content.Append(text);
+                    _accumulated += deltaSize;
+                }
             }
             AccumulateToolCalls(choice);
             _finishReason = ReadString(choice, "finish_reason") ?? _finishReason;
@@ -149,12 +156,18 @@ internal sealed class ChatSseAggregateState(int? contentBudgetChars = null)
         return completion.ToJsonString();
     }
 
+    // Dataset phải trả giá theo chính default encoder của BuildCompletionJson. Đếm từng delta
+    // độc lập có thể overflow sớm khi tách surrogate pair, nhưng không bao giờ vượt budget muộn.
+    private int DeltaSize(string text) => budgetInUtf8Bytes
+        ? Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(text)) - 2
+        : text.Length;
+
     // Chặn append khi đã chạm budget — sau Overflowed KHÔNG tích lũy thêm dù mảnh
     // nhỏ (ngừng hẳn, không "lấp đầy phần còn lại") vì completion đã mất tính nguyên vẹn.
-    private bool TryAccumulate(int addedChars)
+    private bool TryAccumulate(int addedSize)
     {
         if (Overflowed) return false;
-        if (_budget is null || _accumulated + addedChars <= _budget) return true;
+        if (_budget is null || _accumulated + addedSize <= _budget) return true;
         Overflowed = true;
         return false;
     }
@@ -215,11 +228,14 @@ internal sealed class ChatSseAggregateState(int? contentBudgetChars = null)
                 // vô hạn không được phình memory cho dataset export.
                 if (function.TryGetProperty("arguments", out var args)
                     && args.ValueKind == JsonValueKind.String
-                    && args.GetString() is { } argText
-                    && TryAccumulate(argText.Length))
+                    && args.GetString() is { } argText)
                 {
-                    state.Arguments.Append(argText);
-                    _accumulated += argText.Length;
+                    var deltaSize = DeltaSize(argText);
+                    if (TryAccumulate(deltaSize))
+                    {
+                        state.Arguments.Append(argText);
+                        _accumulated += deltaSize;
+                    }
                 }
             }
         }

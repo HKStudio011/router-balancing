@@ -132,7 +132,9 @@ public static class UsageCapture
         var terminal = false;
         // Budget = MaxExportFieldBytes của dataset: chạm budget thì ngừng tích lũy (Overflowed) —
         // completion bị bỏ, nhưng byte client vẫn forward nguyên vẹn (không cắt ở đây).
-        var capture = captureCompletion ? new ChatSseAggregateState(DatasetRecordBuilder.MaxExportFieldBytes) : null;
+        var capture = captureCompletion
+            ? new ChatSseAggregateState(DatasetRecordBuilder.MaxExportFieldBytes, budgetInUtf8Bytes: true)
+            : null;
         try
         {
             var wroteAny = false;

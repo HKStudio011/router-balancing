@@ -190,7 +190,7 @@ public static class DatasetPayloadTransformer
 
     private static string DetectImageMediaType(byte[] binary)
     {
-        ReadOnlySpan<byte> pngSignature = [0x89, 0x50, 0x4E, 0x47];
+        ReadOnlySpan<byte> pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         ReadOnlySpan<byte> jpegSignature = [0xFF, 0xD8, 0xFF];
         if (binary.AsSpan().StartsWith(pngSignature))
         {

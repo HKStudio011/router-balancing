@@ -198,8 +198,13 @@ public class DatasetSinkTests : IDisposable
     {
         await using var sink = CreateSink();
         var binary = LargePng();
+        var source = DatasetSemanticFixtures.CreateSourceDocuments(
+            $"data:image/png;base64,{Convert.ToBase64String(binary)}",
+            Convert.ToBase64String(binary));
 
-        sink.Capture(PayloadCapture("req-payload", binary));
+        sink.Capture(ChatCapture("req-payload",
+            completionJson: source.Completion.ToJsonString(),
+            clientBody: Encoding.UTF8.GetBytes(source.Request.ToJsonString())));
         WaitUntil(() => sink.Stats.RecordsWritten == 1);
 
         var day = new DateOnly(2026, 11, 6);
@@ -219,13 +224,23 @@ public class DatasetSinkTests : IDisposable
         Assert.True(File.Exists(requestDocumentPath));
         Assert.True(File.Exists(completionDocumentPath));
 
-        var reference = Assert.Single(manifest["payload_refs"]!.AsArray())!;
-        var binaryPath = ArtifactPath(_dir, reference["path"]!.GetValue<string>());
-        Assert.True(File.Exists(binaryPath));
-        Assert.Equal(binary, File.ReadAllBytes(binaryPath));
-        var requestDocument = JsonNode.Parse(File.ReadAllText(requestDocumentPath))!;
-        Assert.Equal(reference["url"]!.GetValue<string>(), requestDocument["messages"]![0]!
-            ["content"]![1]!["image_url"]!["url"]!.GetValue<string>());
+        var references = manifest["payload_refs"]!.AsArray();
+        Assert.Equal(2, references.Count);
+        foreach (var reference in references)
+        {
+            var binaryPath = ArtifactPath(_dir, reference!["path"]!.GetValue<string>());
+            Assert.True(File.Exists(binaryPath));
+            Assert.Equal(binary, File.ReadAllBytes(binaryPath));
+        }
+
+        var (expectedRequest, expectedCompletion) = DatasetSemanticFixtures.ExpectedDocuments(
+            source.Request, source.Completion,
+            references.Select(reference =>
+                (reference!["document"]!.GetValue<string>(),
+                    reference["json_pointer"]!.GetValue<string>(),
+                    reference["url"]!.GetValue<string>())));
+        Assert.True(JsonNode.DeepEquals(expectedRequest, ReadJson(requestDocumentPath)));
+        Assert.True(JsonNode.DeepEquals(expectedCompletion, ReadJson(completionDocumentPath)));
         Assert.Equal(payloadPath, sink.Stats.CurrentFile);
         Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.FileName(day))));
         Assert.False(File.Exists(Path.Combine(_dir, DatasetPaths.LargeFileName(day))));
@@ -1380,7 +1395,7 @@ public class DatasetSinkTests : IDisposable
     {
         var binary = new byte[DatasetRecordBuilder.InlineMaxFieldBytes];
         binary.AsSpan().Fill(fill);
-        new byte[] { 0x89, 0x50, 0x4E, 0x47 }.AsSpan().CopyTo(binary);
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.AsSpan().CopyTo(binary);
         return binary;
     }
 
@@ -1392,6 +1407,9 @@ public class DatasetSinkTests : IDisposable
 
     private static string ArtifactPath(string root, string relativePath) =>
         Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+    private static JsonNode ReadJson(string path) =>
+        JsonNode.Parse(File.ReadAllText(path))!;
 
     private DatasetSink CreateSink(CapturingLog? log = null) =>
         new(_settings, (ILogService?)log ?? new NullLog(), _time);
