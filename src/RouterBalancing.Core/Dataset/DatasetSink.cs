@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Settings;
@@ -33,6 +34,12 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
 
     /// <summary>Chờ writer drain khi dispose — đĩa đơ không được treo app exit.</summary>
     private const int DisposeTimeoutMs = 5000;
+
+    // Tên artifact là ownership boundary của retention: hash chữ thường và extension đúng danh sách
+    // do DatasetPayloadTransformer tạo; không suy rộng sang file có tên gần giống của người dùng.
+    private static readonly Regex OwnedArtifactFileNameRegex = new(
+        @"^(?:image|audio|file)-[0-9]{3}-[0-9a-f]{8}\.(?:png|jpg|gif|webp|bmp|tiff|svg|wav|mp3|m4a|ogg|flac|pdf|zip|txt|bin)$",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     private readonly IAppSettingsService _settings;
     private readonly ILogService _log;
@@ -629,23 +636,36 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             return; // 0 = giữ mãi — không purge (spec §7.6).
         }
 
+        // Chỉ những ngày có manifest xoá thất bại mới bị chặn artifact purge. Manifest vắng mặt
+        // (kể cả đã xoá ở lượt trước) cho phép retry các export directory còn sót.
+        var payloadManifestDeletionFailures = new HashSet<DateOnly>();
         foreach (var path in Directory.GetFiles(directory, $"{DatasetPaths.FileNamePrefix}*{DatasetPaths.FileNameExtension}"))
         {
+            var fileName = Path.GetFileName(path);
+            var isPayloadManifest = fileName.StartsWith(DatasetPaths.PayloadFileNamePrefix, StringComparison.Ordinal);
+            var fileDay = default(DateOnly);
+            var expired = false;
             try
             {
-                if (!TryParseDay(Path.GetFileName(path), out var fileDay))
+                if (!TryParseDay(fileName, out fileDay))
                 {
                     continue; // tên không khớp pattern ngày — không xoá.
                 }
 
                 // DayNumber = số ngày kể từ 0001-01-01 — hiệu hai DayNumber là tuổi file (ngày).
-                if (today.DayNumber - fileDay.DayNumber >= retention)
+                expired = today.DayNumber - fileDay.DayNumber >= retention;
+                if (expired)
                 {
                     File.Delete(path);
                 }
             }
             catch (Exception ex)
             {
+                if (isPayloadManifest && expired)
+                {
+                    payloadManifestDeletionFailures.Add(fileDay);
+                }
+
                 // Purge best-effort: một file xoá không được (khoá/quyền) không cản file khác,
                 // và không giết cả sink — ghi tiếp vẫn là ưu tiên.
                 LogOnce(ref _purgeErrorLogs, "purge old files", ex);
@@ -668,10 +688,13 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
                     continue;
                 }
 
-                if (today.DayNumber - payloadDay.DayNumber >= retention)
+                if (today.DayNumber - payloadDay.DayNumber < retention
+                    || payloadManifestDeletionFailures.Contains(payloadDay))
                 {
-                    Directory.Delete(path, recursive: true);
+                    continue;
                 }
+
+                PurgePayloadDay(path);
             }
             catch (Exception ex)
             {
@@ -679,6 +702,47 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Chỉ xoá export có layout hoàn toàn do sink tạo. Phạm vi là một sink, không có writer ngoài
+    /// trong lúc purge; entry lạ từ trước làm cả export và day directory không rỗng được giữ lại.
+    /// </summary>
+    private static void PurgePayloadDay(string dayDirectory)
+    {
+        foreach (var exportDirectory in Directory.GetDirectories(dayDirectory))
+        {
+            if (!Guid.TryParseExact(Path.GetFileName(exportDirectory), "N", out _)
+                || !HasOnlyOwnedArtifactEntries(exportDirectory))
+            {
+                continue;
+            }
+
+            Directory.Delete(exportDirectory, recursive: true);
+        }
+
+        if (!Directory.EnumerateFileSystemEntries(dayDirectory).Any())
+        {
+            Directory.Delete(dayDirectory, recursive: false);
+        }
+    }
+
+    private static bool HasOnlyOwnedArtifactEntries(string exportDirectory)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(exportDirectory))
+        {
+            // Không xoá một phần khi có subdirectory/entry lạ: toàn bộ export không còn là layout
+            // mà sink có thể chứng minh quyền sở hữu.
+            if (Directory.Exists(entry) || !IsOwnedArtifactFileName(Path.GetFileName(entry)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsOwnedArtifactFileName(string fileName) =>
+        fileName is "request.json" or "completion.json" || OwnedArtifactFileNameRegex.IsMatch(fileName);
 
     /// <summary>Parse ngày từ đúng ba pattern JSONL dataset; false với mọi tên file khác.</summary>
     private static bool TryParseDay(string fileName, out DateOnly day)

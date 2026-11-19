@@ -476,15 +476,15 @@ public class DatasetSinkTests : IDisposable
             var exportDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName,
                 day.ToString("yyyy-MM-dd"), exportId);
             Directory.CreateDirectory(exportDirectory);
-            var binaryPath = Path.Combine(exportDirectory, "image.bin");
+            var binaryPath = Path.Combine(exportDirectory, "image-000-deadbeef.png");
             File.WriteAllBytes(binaryPath, [1, 2, 3]);
             File.WriteAllText(Path.Combine(exportDirectory, "request.json"), "{}");
             return binaryPath;
         }
 
-        CreateExport(expiredDay, "expired-export");
-        var retainedBinary = CreateExport(retainedDay, "retained-export");
-        var currentBinary = CreateExport(currentDay, "existing-current-export");
+        CreateExport(expiredDay, "0123456789abcdef0123456789abcdef");
+        var retainedBinary = CreateExport(retainedDay, "fedcba9876543210fedcba9876543210");
+        var currentBinary = CreateExport(currentDay, "00112233445566778899aabbccddeeff");
         var unrelatedDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "user-created");
         Directory.CreateDirectory(unrelatedDirectory);
         var unrelatedPayload = Path.Combine(unrelatedDirectory, "keep.bin");
@@ -507,6 +507,129 @@ public class DatasetSinkTests : IDisposable
         Assert.True(File.Exists(unrelatedPayload));
         Assert.True(File.Exists(unrelatedRootFile));
         Assert.True(File.Exists(unrelatedJsonl));
+    }
+
+    [Fact]
+    public async Task Retention_ExpiredPayloadDay_PreservesUserEntries()
+    {
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 3);
+        var expiredDay = new DateOnly(2026, 11, 1);
+        var dayDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "2026-11-01");
+        var userNestedDirectory = Path.Combine(dayDirectory, "nested");
+        Directory.CreateDirectory(userNestedDirectory);
+        var userFile = Path.Combine(dayDirectory, "user-notes.txt");
+        var nestedUserFile = Path.Combine(userNestedDirectory, "keep.bin");
+        File.WriteAllText(userFile, "keep");
+        File.WriteAllBytes(nestedUserFile, [1, 2, 3]);
+        var expiredManifest = Path.Combine(_dir, DatasetPaths.PayloadFileName(expiredDay));
+        File.WriteAllText(expiredManifest, "{\"v\":2}\n");
+
+        await RunRetentionPurge("req-retention-user-entries");
+
+        Assert.True(File.Exists(userFile));
+        Assert.True(Directory.Exists(userNestedDirectory));
+        Assert.True(File.Exists(nestedUserFile));
+        Assert.False(File.Exists(expiredManifest));
+        Assert.True(Directory.Exists(dayDirectory), "entry người dùng giữ day directory không rỗng");
+    }
+
+    [Fact]
+    public async Task Retention_UnknownExportDirectoryLayout_IsNotDeleted()
+    {
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 3);
+        var expiredDay = new DateOnly(2026, 11, 1);
+        var unknownExportDirectory = CreateOwnedExport(expiredDay, Guid.NewGuid().ToString("N"));
+        var unknownFile = Path.Combine(unknownExportDirectory, "user-notes.txt");
+        File.WriteAllText(unknownFile, "keep");
+        var nonGuidExportDirectory = CreateOwnedExport(expiredDay, "user-export");
+        var expiredManifest = Path.Combine(_dir, DatasetPaths.PayloadFileName(expiredDay));
+        File.WriteAllText(expiredManifest, "{\"v\":2}\n");
+
+        await RunRetentionPurge("req-retention-unknown-layout");
+
+        Assert.True(Directory.Exists(unknownExportDirectory));
+        Assert.True(File.Exists(unknownFile));
+        Assert.True(File.Exists(Path.Combine(unknownExportDirectory, "request.json")),
+            "export có entry lạ phải được giữ nguyên toàn bộ");
+        Assert.True(Directory.Exists(nonGuidExportDirectory));
+        Assert.True(File.Exists(Path.Combine(nonGuidExportDirectory, "request.json")));
+        Assert.False(File.Exists(expiredManifest));
+    }
+
+    [Fact]
+    public async Task Retention_ManifestDeletionFailure_PreservesArtifacts()
+    {
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 3);
+        var expiredDay = new DateOnly(2026, 11, 1);
+        var exportDirectory = CreateOwnedExport(expiredDay, Guid.NewGuid().ToString("N"));
+        var lockedManifest = Path.Combine(_dir, DatasetPaths.PayloadFileName(expiredDay));
+        File.WriteAllText(lockedManifest, "{\"v\":2}\n");
+        using var manifestLock = new FileStream(
+            lockedManifest, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        await RunRetentionPurge("req-retention-locked-manifest");
+
+        Assert.True(File.Exists(lockedManifest));
+        Assert.True(Directory.Exists(exportDirectory));
+        Assert.True(File.Exists(Path.Combine(exportDirectory, "request.json")));
+        Assert.True(File.Exists(Path.Combine(exportDirectory, "completion.json")));
+        Assert.True(File.Exists(Path.Combine(exportDirectory, "image-000-0123abcd.png")));
+    }
+
+    [Fact]
+    public async Task Retention_ManifestDeletionFailureAfterPreviousPayloadDeleteFailure_Retries()
+    {
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 3);
+        var expiredDay = new DateOnly(2026, 11, 1);
+        var dayDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "2026-11-01");
+        var exportDirectory = CreateOwnedExport(expiredDay, Guid.NewGuid().ToString("N"));
+        var lockedManifest = Path.Combine(_dir, DatasetPaths.PayloadFileName(expiredDay));
+        var lockedArtifact = Path.Combine(exportDirectory, "image-000-0123abcd.png");
+        File.WriteAllText(lockedManifest, "{\"v\":2}\n");
+
+        using (var manifestLock = new FileStream(
+                   lockedManifest, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            await RunRetentionPurge("req-retention-manifest-failure");
+
+            Assert.True(File.Exists(lockedManifest));
+            Assert.True(File.Exists(lockedArtifact));
+            Assert.True(File.Exists(Path.Combine(exportDirectory, "request.json")),
+                "manifest còn tồn tại thì chưa được thử xoá bất kỳ artifact nào");
+        }
+
+        using (var artifactLock = new FileStream(
+                   lockedArtifact, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            await RunRetentionPurge("req-retention-artifact-failure");
+
+            Assert.False(File.Exists(lockedManifest));
+            Assert.True(File.Exists(lockedArtifact));
+            Assert.True(Directory.Exists(exportDirectory));
+        }
+
+        // Manifest đã mất ở lượt trước; lượt này vẫn phải retry artifact đã từng bị khoá.
+        await RunRetentionPurge("req-retention-artifact-retry");
+
+        Assert.False(Directory.Exists(exportDirectory));
+        Assert.False(Directory.Exists(dayDirectory));
+    }
+
+    [Fact]
+    public async Task Retention_OwnedArtifactsAndManifest_ExpireTogether()
+    {
+        _settings.Set(SettingsKeys.DatasetRetentionDays, 3);
+        var expiredDay = new DateOnly(2026, 11, 1);
+        var dayDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName, "2026-11-01");
+        var expiredOwnedExportDirectory = CreateOwnedExport(expiredDay, Guid.NewGuid().ToString("N"));
+        var expiredManifest = Path.Combine(_dir, DatasetPaths.PayloadFileName(expiredDay));
+        File.WriteAllText(expiredManifest, "{\"v\":2}\n");
+
+        await RunRetentionPurge("req-retention-owned-export");
+
+        Assert.False(File.Exists(expiredManifest));
+        Assert.False(Directory.Exists(expiredOwnedExportDirectory));
+        Assert.False(Directory.Exists(dayDirectory));
     }
 
     [Theory]
@@ -1211,6 +1334,24 @@ public class DatasetSinkTests : IDisposable
         Assert.Equal(0, sink.Stats.RecordsWritten);
         Assert.Equal(0, sink.Stats.SkippedEmpty);
         Assert.Equal(0, sink.Stats.SkippedQueueFull);
+    }
+
+    private string CreateOwnedExport(DateOnly day, string exportId)
+    {
+        var exportDirectory = Path.Combine(_dir, DatasetPaths.PayloadRootDirectoryName,
+            day.ToString("yyyy-MM-dd"), exportId);
+        Directory.CreateDirectory(exportDirectory);
+        File.WriteAllText(Path.Combine(exportDirectory, "request.json"), "{}");
+        File.WriteAllText(Path.Combine(exportDirectory, "completion.json"), "{}");
+        File.WriteAllBytes(Path.Combine(exportDirectory, "image-000-0123abcd.png"), [1, 2, 3]);
+        return exportDirectory;
+    }
+
+    private async Task RunRetentionPurge(string requestId)
+    {
+        await using var sink = CreateSink();
+        sink.Capture(ChatCapture(requestId, finishedAt: DayOne));
+        WaitUntil(() => sink.Stats.RecordsWritten == 1);
     }
 
     private DatasetCapture PayloadCapture(
