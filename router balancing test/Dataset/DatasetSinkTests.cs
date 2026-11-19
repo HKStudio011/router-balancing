@@ -948,6 +948,39 @@ public class DatasetSinkTests : IDisposable
     }
 
     [Fact]
+    public async Task WriterRecovery_TwoOverlappingSavesBeforeFailure_RequireSubsequentSave()
+    {
+        await using var sink = CreateSink();
+        var saveSettings = PrivateAction(sink, "OnSettingsChanged");
+        var publishFailure = PrivateAction(sink, "PublishFailure");
+        Task saveA;
+
+        lock (StartGate(sink))
+        {
+            // Save A cấp generation 1 rồi chờ gate trước disabled transition. Save B trên thread
+            // đang giữ gate chạy reentrant để hoàn tất generation 2 trước failure publication.
+            saveA = Task.Run(saveSettings);
+            SpinWait.SpinUntil(() => SettingsGeneration(sink) == 1, TimeSpan.FromSeconds(10));
+            Assert.Equal(1, SettingsGeneration(sink));
+            var saveACompleted = SpinWait.SpinUntil(() => saveA.IsCompleted, TimeSpan.FromMilliseconds(100));
+            Assert.False(saveACompleted, "Save A phải chờ tại recovery gate để rendezvous stale save.");
+            saveSettings();
+            Assert.Equal(2, SettingsGeneration(sink));
+            publishFailure();
+            Assert.Equal(2, FailureGeneration(sink));
+            Assert.True(Disabled(sink));
+        }
+
+        // Save A generation 1 resume sau failure generation 2: callback cũ phải no-op.
+        await saveA.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(Disabled(sink));
+
+        // Chỉ save generation 3, bắt đầu sau khi failure ở generation 2 đã publish, được recovery.
+        saveSettings();
+        Assert.False(Disabled(sink));
+    }
+
+    [Fact]
     public async Task WriterDispose_RacingHandoff_DoesNotStartNewWriter()
     {
         // Nhánh dispose thắng: writer cũ đang ở CloseFiles, dispose phải chặn mọi handoff mới.
@@ -1243,6 +1276,19 @@ public class DatasetSinkTests : IDisposable
         Assert.NotNull(field);
         return field;
     }
+
+    private static Action PrivateAction(DatasetSink sink, string name)
+    {
+        var method = typeof(DatasetSink).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return (Action)Delegate.CreateDelegate(typeof(Action), sink, method);
+    }
+
+    private static int SettingsGeneration(DatasetSink sink) =>
+        Assert.IsType<int>(PrivateField("_settingsGeneration").GetValue(sink));
+
+    private static int FailureGeneration(DatasetSink sink) =>
+        Assert.IsType<int>(PrivateField("_failureGeneration").GetValue(sink));
 
     private static long PendingBytes(DatasetSink sink) =>
         Assert.IsType<long>(PrivateField("_pendingBytes").GetValue(sink));

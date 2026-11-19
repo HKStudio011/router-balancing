@@ -38,7 +38,7 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
     private readonly ILogService _log;
     private readonly Channel<DatasetCapture> _channel;
 
-    /// <summary>Mutex bảo vệ <see cref="_writerTask"/> và linearize start, handoff, dispose.</summary>
+    /// <summary>Mutex bảo vệ <see cref="_writerTask"/> và linearize recovery, start, handoff, dispose.</summary>
     private readonly object _startGate = new();
     private Task? _writerTask;
 
@@ -264,11 +264,15 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
         Volatile.Write(ref _purgeErrorLogs, 0);
         Volatile.Write(ref _recordErrorLogs, 0);
 
-        // Nếu failure publish chen giữa Increment và đoạn này, nó ghi cùng generation và giữ
-        // _disabled=true: save bắt đầu trước failure không được nhầm thành recovery.
-        if (Volatile.Read(ref _failureGeneration) != generation)
+        lock (_startGate)
         {
-            Volatile.Write(ref _disabled, false);
+            // Chỉ generation mới hơn failure đã publish mới recovery. Đọc/ghi dưới cùng gate với
+            // PublishFailure làm transition nguyên tử: callback save cũ resume muộn không thể xoá
+            // failure mới, và failure không thể chen giữa check và clear của một save hợp lệ.
+            if (generation > Volatile.Read(ref _failureGeneration))
+            {
+                Volatile.Write(ref _disabled, false);
+            }
         }
     }
 
@@ -550,10 +554,13 @@ public sealed class DatasetSink : IDatasetSink, IAsyncDisposable
 
     private void PublishFailure()
     {
-        // Ghi generation ngay tại failure publish. OnSettingsChanged dùng cặp generation này để
-        // phân biệt save trước/sau failure khi hai thread chen nhau giữa các store.
-        Volatile.Write(ref _failureGeneration, Volatile.Read(ref _settingsGeneration));
-        Volatile.Write(ref _disabled, true);
+        lock (_startGate)
+        {
+            // Dùng chung gate với OnSettingsChanged để failure generation và disabled publish như
+            // một transition; save cũ hoặc check-then-clear không thể chen giữa hai store này.
+            Volatile.Write(ref _failureGeneration, Volatile.Read(ref _settingsGeneration));
+            Volatile.Write(ref _disabled, true);
+        }
     }
 
     private void RetainCaptureForReplay(DatasetCapture capture)
