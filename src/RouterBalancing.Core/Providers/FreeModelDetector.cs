@@ -238,6 +238,24 @@ public static class FreeModelDetector
     /// </summary>
     private static FreeModelInfo ParseOpenRouterItem(string id, JsonElement item)
     {
+        var capabilities = ParseOpenRouterCapabilities(item);
+        return new FreeModelInfo(
+            id,
+            DisplayNameOf(item),
+            ContextWindowOf(item),
+            SupportsTools: capabilities.Tools,
+            SupportsThink: capabilities.Reasoning,
+            ThinkEfforts: capabilities.Efforts,
+            InputModalities: RouterModalitiesOf(item, "input_modalities"),
+            OutputModalities: RouterModalitiesOf(item, "output_modalities"));
+    }
+
+    /// <summary>
+    /// Đọc capability từ item list hoặc single-model detail của OpenRouter — hai endpoint dùng cùng Model schema.
+    /// </summary>
+    internal static (bool? Tools, bool? Reasoning, IReadOnlyList<string>? Efforts) ParseOpenRouterCapabilities(
+        JsonElement item)
+    {
         bool? tools = null;
         bool? reasoning = null;
         IReadOnlyList<string>? efforts = null;
@@ -270,15 +288,7 @@ public static class FreeModelDetector
             }
         }
 
-        return new FreeModelInfo(
-            id,
-            DisplayNameOf(item),
-            ContextWindowOf(item),
-            SupportsTools: tools,
-            SupportsThink: reasoning,
-            ThinkEfforts: efforts,
-            InputModalities: RouterModalitiesOf(item, "input_modalities"),
-            OutputModalities: RouterModalitiesOf(item, "output_modalities"));
+        return (tools, reasoning, efforts);
     }
 
     /// <summary>

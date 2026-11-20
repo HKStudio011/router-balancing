@@ -1,8 +1,10 @@
+using System.Net;
 using Microsoft.EntityFrameworkCore;
 using RouterBalancing.Core.Capabilities;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Providers;
 using RouterBalancing.Core.Proxies;
+using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Storage;
 
 namespace router_balancing_test.Providers;
@@ -426,5 +428,57 @@ public class ModelMetadataServiceTests : IDisposable
         Assert.True(view.AudioInput);
         Assert.True(view.VideoInput);
         Assert.Equal(new[] { "high" }, view.Efforts);
+    }
+
+    [Theory]
+    [InlineData("future-type")]
+    [InlineData("chat")]
+    public async Task TryFillAsync_UnknownModelType_LeavesVisionUnknownAndPersistsNoKnownAbsent(string modelType)
+    {
+        var modelId = await SeedModelAsync();
+        var handler = new JsonHandler($$"""{"id":"m","model_type":"{{modelType}}"}""");
+        var endpoint = new ProviderEndpointMetadataProvider(new StubFactory(handler), new DpapiSecretProtector());
+        var service = ServiceWith(endpoint);
+
+        await service.TryFillAsync(modelId);
+
+        var view = await Reader.ReadAsync(modelId);
+        Assert.True(view.IsEmpty);
+        Assert.Null(view.Vision);
+        using var db = _db.CreateDbContext();
+        Assert.Empty(await db.ModelModalities.Where(m => m.ModelId == modelId).ToListAsync());
+        Assert.Empty(await db.ModelCapabilities.Where(c => c.ModelId == modelId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task TryFillAsync_NonStringModelType_LeavesVisionUnknownAndPersistsNoKnownAbsent()
+    {
+        var modelId = await SeedModelAsync();
+        var handler = new JsonHandler("""{"id":"m","model_type":42}""");
+        var endpoint = new ProviderEndpointMetadataProvider(new StubFactory(handler), new DpapiSecretProtector());
+        var service = ServiceWith(endpoint);
+
+        await service.TryFillAsync(modelId);
+
+        var view = await Reader.ReadAsync(modelId);
+        Assert.True(view.IsEmpty);
+        Assert.Null(view.Vision);
+        using var db = _db.CreateDbContext();
+        Assert.Empty(await db.ModelModalities.Where(m => m.ModelId == modelId).ToListAsync());
+        Assert.Empty(await db.ModelCapabilities.Where(c => c.ModelId == modelId).ToListAsync());
+    }
+
+    private sealed class JsonHandler(string json) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json),
+            });
+    }
+
+    private sealed class StubFactory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
     }
 }
