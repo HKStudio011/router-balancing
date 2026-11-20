@@ -137,17 +137,28 @@ public sealed class NvidiaCatalogMetadataProvider : IModelMetadataProvider
     {
         try
         {
-            var uri = BuildPageUri(modelId);
-            if (uri is null) return new FetchResult(false, null);
+            var uris = BuildPageUris(modelId);
+            if (uris.Count == 0) return new FetchResult(false, null);
+            var httpOk = false;
 
-            // Nguồn công khai: absolute URI + named client (proxy pipeline), không auth header.
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
-                .SendAsync(request, ct).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.OK) return new FetchResult(false, null);
+            foreach (var uri in uris)
+            {
+                // Nguồn công khai: absolute URI + named client (proxy pipeline), không auth header.
+                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+                using var response = await _http.CreateClient(ProviderRequestFactory.HttpClientName)
+                    .SendAsync(request, ct).ConfigureAwait(false);
+                if (response.StatusCode == HttpStatusCode.NotFound) continue;
+                if (response.StatusCode != HttpStatusCode.OK) return new FetchResult(false, null);
 
-            var html = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return new FetchResult(true, ParsePage(html, modelId));
+                httpOk = true;
+                var html = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                var metadata = ParsePage(html, modelId);
+                if (metadata is not null) return new FetchResult(true, metadata);
+                // NVIDIA có thể trả 200 cho SPA fallback 404 — thử slug tiếp theo thay vì
+                // negative-cache URL đầu tiên và bỏ sót trang catalog thật.
+            }
+
+            return new FetchResult(httpOk, null);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                        or IOException or InvalidOperationException
@@ -159,12 +170,27 @@ public sealed class NvidiaCatalogMetadataProvider : IModelMetadataProvider
         }
     }
 
-    private static Uri? BuildPageUri(string modelId)
+    private static IReadOnlyList<Uri> BuildPageUris(string modelId)
     {
         var segments = modelId.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length == 0) return null;
-        var path = string.Join('/', segments.Select(Uri.EscapeDataString));
-        return new Uri($"{CatalogBaseUrl}/{path}", UriKind.Absolute);
+        if (segments.Length == 0) return [];
+
+        // API model id và catalog slug không luôn giống nhau: z-ai đổi '.' thành '-',
+        // moonshotai đổi thành '_', còn nhiều model khác giữ nguyên '.'. Luôn thử id gốc trước.
+        var slugs = new List<string> { segments[^1] };
+        if (segments[^1].Contains('.'))
+        {
+            slugs.Add(segments[^1].Replace('.', '-'));
+            slugs.Add(segments[^1].Replace('.', '_'));
+        }
+
+        var uris = new List<Uri>(slugs.Count);
+        foreach (var slug in slugs)
+        {
+            var path = string.Join('/', segments[..^1].Append(slug).Select(Uri.EscapeDataString));
+            uris.Add(new Uri($"{CatalogBaseUrl}/{path}", UriKind.Absolute));
+        }
+        return uris;
     }
 
     /// <summary>

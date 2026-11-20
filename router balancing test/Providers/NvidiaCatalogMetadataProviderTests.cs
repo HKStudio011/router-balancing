@@ -95,6 +95,65 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         Assert.Equal(ProviderRequestFactory.HttpClientName, factory.LastClientName);
     }
 
+    [Fact]
+    public async Task FetchAsync_HyphenCatalogSlug_FallsBackWhenOriginalPageIsMissing()
+    {
+        var (provider, model) = await NvidiaModelAsync("z-ai/glm-5.3-flash");
+        const string originalUrl = "https://build.nvidia.com/z-ai/glm-5.3-flash";
+        const string aliasUrl = "https://build.nvidia.com/z-ai/glm-5-3-flash";
+        var handler = new RoutingHtmlHandler(new Dictionary<string, string>
+        {
+            [aliasUrl] = PageWithCapabilities(
+                functionCalling: true, reasoning: true, context: "1M", input: "Text, Image"),
+        });
+
+        var meta = await ProviderWith(handler).FetchAsync(provider, model);
+
+        Assert.NotNull(meta);
+        Assert.Equal(1_000_000, meta.ContextWindow);
+        Assert.True(meta.SupportsTools);
+        Assert.True(meta.SupportsThink);
+        Assert.Equal(new[] { "Text", "Image" }, meta.InputModalities);
+        Assert.Equal(new[] { originalUrl, aliasUrl }, handler.Requests);
+    }
+
+    [Fact]
+    public async Task FetchAsync_UnderscoreCatalogSlug_FallsBackAfterHyphenAliasMisses()
+    {
+        var (provider, model) = await NvidiaModelAsync("moonshotai/kimi-k3.1-pro");
+        const string originalUrl = "https://build.nvidia.com/moonshotai/kimi-k3.1-pro";
+        const string hyphenUrl = "https://build.nvidia.com/moonshotai/kimi-k3-1-pro";
+        const string underscoreUrl = "https://build.nvidia.com/moonshotai/kimi-k3_1-pro";
+        var handler = new RoutingHtmlHandler(new Dictionary<string, string>
+        {
+            [underscoreUrl] = PageWithCapabilities(
+                functionCalling: true, reasoning: true, context: "1M", input: "Text, Image"),
+        });
+
+        var meta = await ProviderWith(handler).FetchAsync(provider, model);
+
+        Assert.NotNull(meta);
+        Assert.Equal(1_000_000, meta.ContextWindow);
+        Assert.True(meta.SupportsTools);
+        Assert.True(meta.SupportsThink);
+        Assert.Equal(new[] { originalUrl, hyphenUrl, underscoreUrl }, handler.Requests);
+    }
+
+    [Fact]
+    public async Task FetchAsync_CatalogNotFound_TriesAliasSlug()
+    {
+        var (provider, model) = await NvidiaModelAsync("z-ai/glm-5.3-flash");
+        var handler = new SequenceStatusHandler(
+            [HttpStatusCode.NotFound, HttpStatusCode.OK],
+            PageWith(context: "1M", input: "Text, Image"));
+
+        var meta = await ProviderWith(handler).FetchAsync(provider, model);
+
+        Assert.NotNull(meta);
+        Assert.Equal(1_000_000, meta.ContextWindow);
+        Assert.Equal(2, handler.Calls);
+    }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
@@ -280,7 +339,8 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
     [Fact]
     public async Task FetchAsync_PageWithoutSidebar_IsNegativeCached()
     {
-        var (provider, model) = await NvidiaModelAsync();
+        // Không có dấu '.' → chỉ một URL; test này nhằm negative-cache, alias đã có test riêng.
+        var (provider, model) = await NvidiaModelAsync("nvidia/model-without-version");
         var handler = new CountingHtmlHandler("<html><body>no model card</body></html>");
         var metadataProvider = ProviderWith(handler);
 
@@ -289,6 +349,20 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
 
         // 66/81 trang không có sidebar: cache cả kết quả null để lần fill sau không tải lại.
         Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task FetchAsync_AllAliasesWithoutSidebar_IsNegativeCached()
+    {
+        var (provider, model) = await NvidiaModelAsync("z-ai/glm-5.3-flash");
+        var handler = new CountingHtmlHandler("<html><body>no model card</body></html>");
+        var metadataProvider = ProviderWith(handler);
+
+        Assert.Null(await metadataProvider.FetchAsync(provider, model));
+        Assert.Equal(3, handler.Calls); // gốc → hyphen → underscore
+
+        Assert.Null(await metadataProvider.FetchAsync(provider, model));
+        Assert.Equal(3, handler.Calls); // kết quả null sau cả 3 URL cũng được cache, không gọi lại
     }
 
     [Fact]
@@ -442,7 +516,8 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
     /// script Next.js và quote bị escape (<c>\"</c>), không phải JSON độc lập.
     /// </summary>
     private static string PageWithCapabilities(
-        bool? functionCalling = null, bool? reasoning = null, bool? structuredOutput = null)
+        bool? functionCalling = null, bool? reasoning = null, bool? structuredOutput = null,
+        string? context = "262K", string? input = "Text, Image, Video", string? output = "Text")
     {
         var fields = new List<string>();
         if (functionCalling is { } fc)
@@ -454,7 +529,7 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
 
         var escaped = string.Join(',', fields).Replace("\"", "\\\"");
         var script = $"<script>self.__next_f.push([1,\"\\\"modelCapability\\\":{{{escaped}}}\"])</script>";
-        return PageWith().Replace("</body>", script + "\n  </body>");
+        return PageWith(context, input, output).Replace("</body>", script + "\n  </body>");
     }
 
     /// <summary>Trang tối giản cùng shape sidebar thật — dùng cho các biến thể context/modality.</summary>
@@ -509,6 +584,25 @@ public class NvidiaCatalogMetadataProviderTests : IDisposable
         public void LogRequestUsage(string? requestId, long? clientKeyId, int promptTokens, int completionTokens) { }
         public IReadOnlyList<LogEntry> Query(LogQuery query) => [];
         public int Count(LogQuery query) => 0;
+    }
+
+    /// <summary>URL không có trong map mô phỏng SPA fallback thật: HTTP 200 nhưng payload là 404.</summary>
+    private sealed class RoutingHtmlHandler(IReadOnlyDictionary<string, string> pages) : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var url = request.RequestUri!.ToString();
+            Requests.Add(url);
+            var html = pages.TryGetValue(url, out var page)
+                ? page
+                : "<html><body> NEXT_HTTP_ERROR_FALLBACK;404 </body></html>";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(html, Encoding.UTF8, "text/html"),
+            });
+        }
     }
 
     private class HtmlHandler(string html) : HttpMessageHandler
