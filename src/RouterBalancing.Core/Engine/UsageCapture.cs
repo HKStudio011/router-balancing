@@ -114,7 +114,7 @@ public static class UsageCapture
         await dest.WriteAsync(payload, ct);
         var body = Encoding.UTF8.GetString(payload);
         // ResponseBody monitor vẫn cap 64KB như cũ; CompletionJson (dataset) giữ NGUYÊN THÂN
-        // không cắt — record quá lớn do builder bỏ theo rule MaxFieldBytes, không phải ở đây.
+        // không cắt — record quá lớn do builder bỏ theo rule MaxExportFieldBytes, không phải ở đây.
         return new TeeResult(ParseUsage(payload), null,
             body.Length > BodyCapChars ? body[..BodyCapChars] + TruncatedMarker : body,
             CompletionJson: captureCompletion ? body : null);
@@ -130,9 +130,11 @@ public static class UsageCapture
         var bodyTruncated = false;
         DateTimeOffset? firstTokenAt = null;
         var terminal = false;
-        // Budget = MaxFieldBytes của dataset: chạm budget thì ngừng tích lũy (Overflowed) —
+        // Budget = MaxExportFieldBytes của dataset: chạm budget thì ngừng tích lũy (Overflowed) —
         // completion bị bỏ, nhưng byte client vẫn forward nguyên vẹn (không cắt ở đây).
-        var capture = captureCompletion ? new ChatSseAggregateState(DatasetRecordBuilder.MaxFieldBytes) : null;
+        var capture = captureCompletion
+            ? new ChatSseAggregateState(DatasetRecordBuilder.MaxExportFieldBytes, budgetInUtf8Bytes: true)
+            : null;
         try
         {
             var wroteAny = false;

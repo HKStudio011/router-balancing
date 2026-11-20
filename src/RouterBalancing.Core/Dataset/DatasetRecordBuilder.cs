@@ -16,11 +16,17 @@ namespace RouterBalancing.Core.Dataset;
 /// </summary>
 public static class DatasetRecordBuilder
 {
+    /// <summary>Ngưỡng body/completion được xem là record lớn khi chọn cách lưu JSONL.</summary>
+    public const int InlineMaxFieldBytes = 1 * 1024 * 1024;
+
     /// <summary>
-    /// Cap 1MB cho body và completion — điều kiện BỎ record, tuyệt đối không cắt nội dung
+    /// Cap 16 MiB cho body và completion — điều kiện BỎ record, tuyệt đối không cắt nội dung
     /// (spec §5/§7.3: cắt ở đường export là cắt dữ liệu train).
     /// </summary>
-    public const int MaxFieldBytes = 1024 * 1024;
+    public const int MaxExportFieldBytes = 16 * 1024 * 1024;
+
+    /// <summary>Tên cũ của ngưỡng export, giữ để caller hiện hữu chuyển sang cùng cap 16 MiB.</summary>
+    public const int MaxFieldBytes = MaxExportFieldBytes;
 
     // Heuristic refusal (spec §7.8): hai chuỗi từ chối đã ghi nhận thật ở upstream OpenCode.
     // Giới hạn của heuristic: upstream đổi cách diễn đạt là bỏ sót — chấp nhận, vì record refusal
@@ -48,13 +54,20 @@ public static class DatasetRecordBuilder
     /// <returns>Dòng JSON (không kèm newline cuối — writer tự thêm) hoặc lý do bỏ record.</returns>
     public static DatasetBuildResult Build(DatasetCapture capture)
     {
-        // Cap xét trước mọi thứ: body/completion vượt 1MB gần như chắc chắn là base64 ảnh hay
-        // stream bất thường — bỏ hẳn thay vì ghi record nửa vời (spec §7.3/§7.6).
-        if (capture.ClientBody.Length > MaxFieldBytes
-            || (capture.CompletionJson is not null && Encoding.UTF8.GetByteCount(capture.CompletionJson) > MaxFieldBytes))
+        var completionByteCount = capture.CompletionJson is null
+            ? 0
+            : Encoding.UTF8.GetByteCount(capture.CompletionJson);
+
+        // Cap export xét trước mọi thứ: body/completion vượt 16 MiB thì bỏ hẳn thay vì
+        // ghi record nửa vời (spec §7.3/§7.6).
+        if (capture.ClientBody.Length > MaxExportFieldBytes || completionByteCount > MaxExportFieldBytes)
         {
             return new DatasetBuildResult(null, DatasetSkipReason.TooLarge);
         }
+
+        // Ngưỡng inline chỉ phân loại record build thành công, không làm thay đổi quyết định skip.
+        var isLargeRecord = capture.ClientBody.Length > InlineMaxFieldBytes
+            || completionByteCount > InlineMaxFieldBytes;
 
         // Cụt giữa stream (không có terminal): completion thiếu — lý do cụ thể hơn Empty nên xét trước.
         if (!capture.CompletionComplete)
@@ -219,7 +232,7 @@ public static class DatasetRecordBuilder
             line["thread_hint"] = hint;
         }
 
-        return new DatasetBuildResult(JsonSerializer.Serialize(line, SerializerOptions), null);
+        return new DatasetBuildResult(JsonSerializer.Serialize(line, SerializerOptions), null, isLargeRecord);
     }
 
     /// <summary>
@@ -585,7 +598,7 @@ public static class DatasetRecordBuilder
         node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     /// <summary>Định dạng UTC ISO-8601 kiểu mẫu spec §7.4 (giây lẻ chỉ ghi khi có).</summary>
-    private static string FormatTimestamp(DateTimeOffset finishedAt)
+    internal static string FormatTimestamp(DateTimeOffset finishedAt)
     {
         var utc = finishedAt.ToUniversalTime();
         return utc.Millisecond == 0

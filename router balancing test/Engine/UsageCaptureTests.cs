@@ -469,23 +469,145 @@ public class UsageCaptureTests
     }
 
     [Fact]
-    public async Task Tee_Sse_CaptureCompletion_ContentOverBudget_SetsOverflowedAndKeepsClientBytes()
+    public async Task Tee_Sse_CaptureCompletion_ContentBetweenOneAndSixteenMiB_KeepsCompletion()
     {
-        // Content vượt budget export (MaxFieldBytes) — cap chỉ chặn TÍCH LŨY cho dataset,
-        // KHÔNG được cắt/trễ byte của client: dest phải bằng đúng SSE input ban đầu.
-        var big = new string('a', DatasetRecordBuilder.MaxFieldBytes + 1024);
+        var big = new string('a', DatasetRecordBuilder.InlineMaxFieldBytes + 1);
         var sse = "data: {\"choices\":[{\"delta\":{\"content\":\"" + big + "\"}}]}\n\n" +
                   "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
                   "data: [DONE]\n\n";
+        var originalClientBytes = Bytes(sse);
         using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
         using var dest = new MemoryStream();
 
         var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
             captureCompletion: true);
 
-        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));   // client nhận đủ byte
-        Assert.False(result.CompletionComplete);   // overflow → không có completion tin cậy
+        var forwardedBytes = dest.ToArray();
+        Assert.Equal(originalClientBytes, forwardedBytes);
+        Assert.NotNull(result.CompletionJson);
+        Assert.True(result.CompletionComplete);
+        using var doc = JsonDocument.Parse(result.CompletionJson!);
+        Assert.Equal(big.Length, doc.RootElement.GetProperty("choices")[0]
+            .GetProperty("message").GetProperty("content").GetString()!.Length);
     }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_OverSixteenMiB_PreservesClientBytes()
+    {
+        // Cap export chỉ chặn TÍCH LŨY cho dataset, KHÔNG được cắt/trễ byte của client.
+        var big = new string('a', DatasetRecordBuilder.MaxExportFieldBytes + 1);
+        var sse = "data: {\"choices\":[{\"delta\":{\"content\":\"" + big + "\"}}]}\n\n" +
+                  "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+                  "data: [DONE]\n\n";
+        var originalClientBytes = Bytes(sse);
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+            captureCompletion: true);
+
+        var forwardedBytes = dest.ToArray();
+        Assert.Equal(originalClientBytes, forwardedBytes);
+        Assert.Null(result.CompletionJson);
+        Assert.False(result.CompletionComplete);
+    }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_ExactBudgetAndPlusOneByte()
+    {
+        await AssertBudgetBoundaryAsync(16_777_216, expectCompletion: true);
+        await AssertBudgetBoundaryAsync(16_777_217, expectCompletion: false);
+
+        static async Task AssertBudgetBoundaryAsync(int contentBytes, bool expectCompletion)
+        {
+            var text = new string('a', contentBytes);
+            var sse = DatasetDeltaLine(text) + "data: [DONE]\n\n";
+            var originalClientSseBytes = Bytes(sse);
+            using var content = new ByteArrayContent(originalClientSseBytes);
+            content.Headers.ContentType = new("text/event-stream");
+            using var dest = new MemoryStream();
+
+            var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+                captureCompletion: true);
+
+            Assert.Equal(originalClientSseBytes, dest.ToArray());
+            Assert.Equal(expectCompletion, result.CompletionJson is not null);
+            Assert.Equal(expectCompletion, result.CompletionComplete);
+            if (!expectCompletion) return;
+
+            using var doc = JsonDocument.Parse(result.CompletionJson!);
+            Assert.Equal(16_777_216, doc.RootElement.GetProperty("choices")[0]
+                .GetProperty("message").GetProperty("content").GetString()!.Length);
+        }
+    }
+
+    [Fact]
+    public async Task Tee_Sse_CaptureCompletion_NonAsciiEscapedContent_UsesDefaultJsonUtf8Budget()
+    {
+        const string text = "Aé<&👋";
+        Assert.Equal(ExpectedDefaultEncodedByteCount(text), ActualDatasetAccumulatorSize(text));
+
+        // Mỗi 'é' chiếm một char nhưng default encoder của BuildCompletionJson ghi "\\u00E9"
+        // (6 byte). Chuỗi này vẫn dưới 16 MiB theo char nhưng vượt budget theo JSON UTF-8.
+        var largeText = new string('é', DatasetRecordBuilder.MaxExportFieldBytes / 6 + 1);
+        var sse = DatasetDeltaLine(largeText) + "data: [DONE]\n\n";
+        var originalClientBytes = Bytes(sse);
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeAsync(content, dest, CancellationToken.None,
+            captureCompletion: true);
+
+        Assert.Null(result.CompletionJson);
+        Assert.False(result.CompletionComplete);
+        Assert.Equal(originalClientBytes, dest.ToArray());
+    }
+
+    [Fact]
+    public void Tee_Sse_CaptureCompletion_SurrogateSplit_NeverOverrunsUtf8Budget()
+    {
+        const string highSurrogate = "\uD83D";
+        const string lowSurrogate = "\uDC4B";
+        var encodedPairBytes = ExpectedDefaultEncodedByteCount("👋");
+
+        var result = CaptureDatasetDeltas(encodedPairBytes - 1, highSurrogate, lowSurrogate);
+
+        Assert.True(result.Overflowed || result.CompletionJson is null);
+    }
+
+    private static int ExpectedDefaultEncodedByteCount(string text) =>
+        Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(text)) - 2;
+
+    private static int ActualDatasetAccumulatorSize(string text)
+    {
+        // Ngưỡng nhỏ nhất còn chấp nhận delta chính là kích thước accumulator quan sát được;
+        // không đọc private counter và không suy ra expected từ implementation.
+        for (var budget = 0; budget <= 128; budget++)
+        {
+            var result = CaptureDatasetDeltas(budget, text);
+            if (!result.Overflowed)
+            {
+                return budget;
+            }
+        }
+
+        throw new InvalidOperationException("Dataset accumulator vượt 128 byte cho fixture ngắn.");
+    }
+
+    private static (bool Overflowed, string? CompletionJson) CaptureDatasetDeltas(
+        int budget, params string[] deltas)
+    {
+        var state = new ChatSseAggregateState(budget, budgetInUtf8Bytes: true);
+        foreach (var delta in deltas)
+        {
+            state.HandleLine(Bytes(DatasetDeltaLine(delta)));
+        }
+
+        return (state.Overflowed, state.Overflowed ? null : state.BuildCompletionJson());
+    }
+
+    private static string DatasetDeltaLine(string text) =>
+        "data: {\"choices\":[{\"delta\":{\"content\":" + JsonSerializer.Serialize(text) + "}}]}\n\n";
 
     [Fact]
     public async Task Tee_Sse_CaptureCompletion_OutOfRangeNumber_ContainedAndForwardsClientBytes()

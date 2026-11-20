@@ -37,4 +37,16 @@ public class DatasetPathsTests
     {
         Assert.Equal("requests-2026-11-06.jsonl", DatasetPaths.FileName(new DateOnly(2026, 11, 6)));
     }
+
+    [Fact]
+    public void FileName_LargeAndPayload_UseExpectedUtcDay()
+    {
+        var day = new DateOnly(2026, 11, 17);
+
+        Assert.Equal("requests-large-2026-11-17.jsonl", DatasetPaths.LargeFileName(day));
+        Assert.Equal("requests-payload-2026-11-17.jsonl", DatasetPaths.PayloadFileName(day));
+        Assert.Equal("payloads/2026-11-17/export123", DatasetPaths.PayloadRelativeDirectory(day, "export123"));
+        Assert.Equal("payloads/2026-11-17/export123/request.json",
+            DatasetPaths.PayloadRelativePath(day, "export123", "request.json"));
+    }
 }
