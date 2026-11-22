@@ -466,6 +466,87 @@ func firstSSEDataPayload(t *testing.T, body []byte) map[string]any {
 	return nil
 }
 
+// requireSynthesizedTitleTerminal kiểm tra toàn bộ sequence SSE của title tổng
+// hợp: content chunk, terminal chunk rỗng với finish_reason=stop, rồi [DONE].
+func requireSynthesizedTitleTerminal(t *testing.T, body []byte) {
+	t.Helper()
+
+	var chunks []map[string]any
+	doneSeen := false
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if raw == "[DONE]" {
+			if doneSeen {
+				t.Fatal("response synthesize có nhiều hơn một dòng data: [DONE]")
+			}
+			doneSeen = true
+			if len(chunks) != 2 {
+				t.Fatalf("[DONE] xuất hiện sau %d JSON chunks, want 2", len(chunks))
+			}
+			continue
+		}
+		if doneSeen {
+			t.Fatalf("JSON chunk xuất hiện sau [DONE]: %.80q", raw)
+		}
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("parse SSE data payload %.80q: %v", raw, err)
+		}
+		chunks = append(chunks, chunk)
+	}
+	if !doneSeen {
+		t.Fatal("response synthesize thiếu data: [DONE]")
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("response synthesize có %d JSON chunks, want 2", len(chunks))
+	}
+
+	choiceAt := func(chunkIndex int) map[string]any {
+		t.Helper()
+		choices, ok := chunks[chunkIndex]["choices"].([]any)
+		if !ok || len(choices) != 1 {
+			t.Fatalf("chunk %d choices = %#v, want một choice", chunkIndex, chunks[chunkIndex]["choices"])
+		}
+		choice, ok := choices[0].(map[string]any)
+		if !ok {
+			t.Fatalf("chunk %d choices[0] không phải object: %T", chunkIndex, choices[0])
+		}
+		return choice
+	}
+
+	contentChoice := choiceAt(0)
+	contentDelta, ok := contentChoice["delta"].(map[string]any)
+	if !ok {
+		t.Fatalf("content chunk delta không phải object: %T", contentChoice["delta"])
+	}
+	if content, _ := contentDelta["content"].(string); content == "" {
+		t.Error("content chunk thiếu title trong choices[0].delta.content")
+	}
+	if finishReason, exists := contentChoice["finish_reason"]; !exists || finishReason != nil {
+		t.Errorf("content chunk finish_reason = %#v, want nil", finishReason)
+	}
+
+	terminalChoice := choiceAt(1)
+	terminalDelta, ok := terminalChoice["delta"].(map[string]any)
+	if !ok || len(terminalDelta) != 0 {
+		t.Errorf("terminal chunk delta = %#v, want object rỗng", terminalChoice["delta"])
+	}
+	if finishReason, _ := terminalChoice["finish_reason"].(string); finishReason != "stop" {
+		t.Errorf("terminal chunk finish_reason = %q, want stop", finishReason)
+	}
+
+	for _, key := range []string{"id", "object", "created", "model"} {
+		contentValue, contentExists := chunks[0][key]
+		terminalValue, terminalExists := chunks[1][key]
+		if !contentExists || !terminalExists || !reflect.DeepEqual(contentValue, terminalValue) {
+			t.Errorf("metadata %q không khớp: content=%#v terminal=%#v", key, contentValue, terminalValue)
+		}
+	}
+}
+
 func TestPipeline_TitleRequest_Upstream429_Synthesized200(t *testing.T) {
 	const userText = "Debugging the failing login flow across all production servers"
 	upstreamError := `{"error":{"message":"FreeUsageLimitError"}}`
@@ -522,6 +603,7 @@ func TestPipeline_TitleRequest_Upstream429_Synthesized200(t *testing.T) {
 	if content != "Debugging the failing login flow across" {
 		t.Errorf("title tổng hợp = %q, want %q", content, "Debugging the failing login flow across")
 	}
+	requireSynthesizedTitleTerminal(t, respBody)
 }
 
 func TestPipeline_ErrorPassthrough_KeyedAndFree(t *testing.T) {
@@ -596,6 +678,7 @@ func TestPipeline_TitleRequest_TransportError_Synthesized200(t *testing.T) {
 	if content, _ := delta["content"].(string); content != "Fix the login bug in auth.ts" {
 		t.Errorf("title tổng hợp = %q, want %q", content, "Fix the login bug in auth.ts")
 	}
+	requireSynthesizedTitleTerminal(t, respBody)
 }
 
 func TestPipeline_FreeLane_MalformedBody_ForwardedUnshaped(t *testing.T) {
