@@ -631,6 +631,7 @@ public class ProxyRetryIntegrationTests : IDisposable
         var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.StartsWith("data: {\"x\":1}\n\n", body);
         Assert.Contains("\"code\":\"upstream_disconnected\"", body);
+        Assert.Equal(1, body.Split("\"code\":\"upstream_disconnected\"").Length - 1);
         Assert.Contains("\"type\":\"error\"", body);
         Assert.DoesNotContain("[DONE]", body);
         Assert.DoesNotContain("finish_reason", body);
