@@ -2,13 +2,11 @@ namespace RouterBalancing.Core.Engine;
 
 /// <summary>
 /// Upstream đóng KẾT NỐI SẠCH (EOF, không RST/exception) khi SSE chưa gặp dấu hiệu kết
-/// thúc hợp lệ (<c>[DONE]</c> hoặc chunk <c>finish_reason</c> khác null) VÀ chưa có byte
-/// nào tới client — marker pre-content để retry/failover (tool_call arguments có thể còn dở).
-/// Kế thừa <see cref="IOException"/> để đi cùng nhánh xử lý lỗi mạng của marker.
-/// Mid-content (đã có byte) không còn dùng exception này: upstream tự đóng stream được coi
-/// là kết thúc bình thường — parity client nối trực tiếp, xem cờ
-/// <c>UsageCapture.TeeResult.EndedWithoutTerminal</c>; chỉ lỗi đọc thật (RST) mới propagate
-/// để dispatcher map Aborted → in-band <c>upstream_disconnected</c>.
+/// thúc hợp lệ (<c>[DONE]</c> hoặc chunk <c>finish_reason</c> khác null); tool_call arguments
+/// có thể còn dở. Pre-content được bọc marker để retry/failover. Mid-content, handler ném
+/// exception này khi tee báo <c>UsageCapture.TeeResult.EndedWithoutTerminal</c> để dispatcher
+/// map Aborted → in-band <c>upstream_disconnected</c>.
+/// Kế thừa <see cref="IOException"/> để đi cùng nhánh xử lý lỗi mạng hiện có.
 /// </summary>
 internal sealed class UpstreamTruncatedException : IOException
 {

@@ -188,10 +188,10 @@ public static class UsageCapture
             // EOF sạch (không RST/exception) nhưng thiếu dấu kết thúc hợp lệ ([DONE] hoặc
             // finish_reason) = upstream tự đóng stream giữa chừng (vd Unsloth cancel/swap khi
             // stream dài). Chưa có byte nào tới client → marker (retry/failover); đã có byte →
-            // client nối trực tiếp cũng chỉ thấy stream hết → kết thúc bình thường + cờ
-            // EndedWithoutTerminal cho caller log; KHÔNG dựng lỗi mạng/in-band
-            // upstream_disconnected (bug 2026-10-24: server-side cancel bị hiển thị
-            // "cancel · network"). Lỗi đọc thật (RST) vẫn propagate IOException như cũ.
+            // tee chỉ báo cờ EndedWithoutTerminal. ProxyRequestHandler chuyển cờ thành lỗi
+            // mid-content để đường Aborted phát in-band upstream_disconnected; tee vẫn là
+            // observer và không tự quyết định error policy. Lỗi đọc thật (RST) vẫn propagate
+            // IOException như cũ.
             // Completion chỉ tin cậy khi stream kết thúc hợp lệ VÀ không chạm budget —
             // cụt hoặc overflow đều để builder bỏ record (không train trên completion dở dang).
             var completionJson = capture is { Overflowed: false } ? capture.BuildCompletionJson() : null;
