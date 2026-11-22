@@ -373,7 +373,7 @@ func TestRenderOfficialPrompt_NoCaptureMachineLeaks(t *testing.T) {
 	if dateLine != "Today's date: "+dateBefore && dateLine != "Today's date: "+dateAfter {
 		t.Errorf("dòng date = %q, phải bằng ngày UTC tại thời điểm render (%q / %q)", dateLine, dateBefore, dateAfter)
 	}
-	datePattern := regexp.MustCompile(`^Today's date: (?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ 1]\d \d{4}$`)
+	datePattern := regexp.MustCompile(`^Today's date: (?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?: [1-9]|[12]\d|3[01]) \d{4}$`)
 	if !datePattern.MatchString(dateLine) {
 		t.Errorf("dòng date sai định dạng toDateString (Go layout %q): %q", "Mon Jan 2 2006", dateLine)
 	}
