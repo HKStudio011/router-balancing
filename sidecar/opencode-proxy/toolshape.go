@@ -223,6 +223,9 @@ func (r *ToolRenames) RewriteBody(payload map[string]any) {
 			}
 			if wire, renamed := r.toWire[name]; renamed {
 				fn["name"] = wire
+				if description, ok := fn["description"].(string); ok {
+					fn["description"] = strings.ReplaceAll(description, " ", "\u00a0")
+				}
 			}
 		}
 	}
