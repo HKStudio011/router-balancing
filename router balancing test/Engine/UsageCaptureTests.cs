@@ -368,9 +368,9 @@ public class UsageCaptureTests
     public async Task TeeSse_CleanEofMidStream_CompletesWithEndedWithoutTerminalFlag()
     {
         // Không [DONE], không finish_reason: upstream tự đóng SẠCH (EOF) giữa stream
-        // (vd Unsloth cancel/swap khi stream dài). Client nối trực tiếp cũng chỉ thấy
-        // stream hết → tee kết thúc bình thường + cờ EndedWithoutTerminal cho caller log
-        // dấu vết; KHÔNG dựng lỗi mạng / in-band upstream_disconnected (bug 2026-10-24).
+        // (vd Unsloth cancel/swap khi stream dài). Tee chỉ forward bytes và báo cờ;
+        // ProxyRequestHandler chuyển cờ thành lỗi mid-content để phát in-band
+        // upstream_disconnected — error policy không nằm trong observer này.
         const string sse =
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\"," +
             "\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\"\"}}]}}]}\n\n";

@@ -104,6 +104,132 @@ func TestRewriteBody_RenamesToolsAndAllReferences(t *testing.T) {
 	}
 }
 
+func TestRewriteBody_NBSPOnlyClientTopLevelDescription(t *testing.T) {
+	r := NewToolRenames([]string{"Bash"})
+	wire := wireNameOf(t, "Bash")
+	parameters := map[string]any{
+		"type":        "object",
+		"description": "schema description with spaces",
+		"properties": map[string]any{
+			"command": map[string]any{
+				"type":        "string",
+				"description": "parameter description with spaces",
+			},
+		},
+	}
+	payload := map[string]any{
+		"tools": []any{
+			map[string]any{"type": "function", "function": map[string]any{
+				"name":        "Bash",
+				"description": "run commands\tfast\nnext\u00a0line",
+				"parameters":  parameters,
+			}},
+		},
+	}
+
+	var wantOfficial []any
+	if err := json.Unmarshal(shapedOfficialToolsJSON(), &wantOfficial); err != nil {
+		t.Fatalf("parse official asset trước shaping: %v", err)
+	}
+	wantOfficialJSON, err := json.Marshal(wantOfficial)
+	if err != nil {
+		t.Fatalf("marshal official asset trước shaping: %v", err)
+	}
+
+	for pass := 1; pass <= 2; pass++ {
+		r.RewriteBody(payload)
+		r.AppendOfficial(payload)
+
+		tools := payload["tools"].([]any)
+		if len(tools) != 1+len(expectedOfficialNames) {
+			t.Fatalf("lần %d: số tool = %d, want %d", pass, len(tools), 1+len(expectedOfficialNames))
+		}
+		fn := tools[0].(map[string]any)["function"].(map[string]any)
+		if got := fn["name"]; got != wire {
+			t.Errorf("lần %d: client tool name = %v, want %q", pass, got, wire)
+		}
+		if got := fn["description"]; got != "run\u00a0commands\tfast\nnext\u00a0line" {
+			t.Errorf("lần %d: client description = %q, want %q", pass, got, "run\u00a0commands\tfast\nnext\u00a0line")
+		}
+		if got := parameters["description"]; got != "schema description with spaces" {
+			t.Errorf("lần %d: schema description bị đổi thành %q", pass, got)
+		}
+		parameter := parameters["properties"].(map[string]any)["command"].(map[string]any)
+		if got := parameter["description"]; got != "parameter description with spaces" {
+			t.Errorf("lần %d: parameter description bị đổi thành %q", pass, got)
+		}
+		if got, ok := r.Resolve(wire); !ok || got != "Bash" {
+			t.Errorf("lần %d: restore mapping = (%q, %v), want (Bash, true)", pass, got, ok)
+		}
+
+		gotOfficialJSON, err := json.Marshal(tools[1:])
+		if err != nil {
+			t.Fatalf("lần %d: marshal official tools sau shaping: %v", pass, err)
+		}
+		if string(gotOfficialJSON) != string(wantOfficialJSON) {
+			t.Errorf("lần %d: official tools khác asset trước shaping\ngot:  %s\nwant: %s", pass, gotOfficialJSON, wantOfficialJSON)
+		}
+	}
+}
+
+func TestRewriteBody_ExactOfficialNameCollisionPreservesOfficialAcrossPasses(t *testing.T) {
+	r := NewToolRenames([]string{"read"})
+	wire := wireNameOf(t, "read")
+	payload := map[string]any{
+		"tools": []any{
+			map[string]any{"type": "function", "function": map[string]any{
+				"name":        "read",
+				"description": "read file contents",
+			}},
+		},
+	}
+
+	var wantOfficial []any
+	if err := json.Unmarshal(shapedOfficialToolsJSON(), &wantOfficial); err != nil {
+		t.Fatalf("parse official asset trước shaping: %v", err)
+	}
+	wantOfficialJSON, err := json.Marshal(wantOfficial)
+	if err != nil {
+		t.Fatalf("marshal official asset trước shaping: %v", err)
+	}
+	wantNames := append([]string{wire}, expectedOfficialNames...)
+
+	for pass := 1; pass <= 2; pass++ {
+		r.RewriteBody(payload)
+		r.AppendOfficial(payload)
+
+		tools := payload["tools"].([]any)
+		if len(tools) >= 1+len(expectedOfficialNames) {
+			gotOfficialJSON, err := json.Marshal(tools[1 : 1+len(expectedOfficialNames)])
+			if err != nil {
+				t.Fatalf("lần %d: marshal official tools sau shaping: %v", pass, err)
+			}
+			if string(gotOfficialJSON) != string(wantOfficialJSON) {
+				t.Errorf("lần %d: official tools khác asset trước shaping\ngot:  %s\nwant: %s", pass, gotOfficialJSON, wantOfficialJSON)
+			}
+		}
+
+		gotNames := make([]string, len(tools))
+		for i, entry := range tools {
+			fn := entry.(map[string]any)["function"].(map[string]any)
+			gotNames[i], _ = fn["name"].(string)
+		}
+		if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+			t.Errorf("lần %d: tool names = %v, want %v", pass, gotNames, wantNames)
+		}
+		if len(tools) != len(wantNames) {
+			t.Errorf("lần %d: số tool = %d, want %d", pass, len(tools), len(wantNames))
+		}
+		fn := tools[0].(map[string]any)["function"].(map[string]any)
+		if got := fn["description"]; got != "read\u00a0file\u00a0contents" {
+			t.Errorf("lần %d: client description = %q, want %q", pass, got, "read\u00a0file\u00a0contents")
+		}
+		if got, ok := r.Resolve(wire); !ok || got != "read" {
+			t.Errorf("lần %d: restore mapping = (%q, %v), want (read, true)", pass, got, ok)
+		}
+	}
+}
+
 func TestRewriteBody_OrphanReferenceDropped(t *testing.T) {
 	r := NewToolRenames([]string{"Read"})
 	wire := wireNameOf(t, "Read")

@@ -101,9 +101,10 @@ func shapedOfficialToolsJSON() []byte {
 // (clint_+digest). Zero value / nil là no-op: mọi method kiểm tra receiver
 // trước khi đọc map — pipeline T7 có thể gọi an toàn trước khi construct.
 type ToolRenames struct {
-	toWire   map[string]string // client name → wire name
-	toClient map[string]string // wire name → client name
-	aliases  map[string]string // official tool name → client name (xem buildOfficialAliases)
+	toWire           map[string]string // client name → wire name
+	toClient         map[string]string // wire name → client name
+	aliases          map[string]string // official tool name → client name (xem buildOfficialAliases)
+	appendedOfficial int               // số entry official ở cuối payload do AppendOfficial thêm
 }
 
 // NewToolRenames xây mapping cho danh sách tên tool client. Mỗi tên → wire name
@@ -208,7 +209,11 @@ func (r *ToolRenames) RewriteBody(payload map[string]any) {
 		return
 	}
 	if tools, ok := payload["tools"].([]any); ok {
-		for _, entry := range tools {
+		clientToolCount := len(tools) - r.appendedOfficial
+		if clientToolCount < 0 {
+			clientToolCount = 0
+		}
+		for _, entry := range tools[:clientToolCount] {
 			tool, ok := entry.(map[string]any)
 			if !ok {
 				continue
@@ -223,6 +228,9 @@ func (r *ToolRenames) RewriteBody(payload map[string]any) {
 			}
 			if wire, renamed := r.toWire[name]; renamed {
 				fn["name"] = wire
+				if description, ok := fn["description"].(string); ok {
+					fn["description"] = strings.ReplaceAll(description, " ", "\u00a0")
+				}
 			}
 		}
 	}
@@ -341,6 +349,7 @@ func (r *ToolRenames) AppendOfficial(payload map[string]any) {
 			}
 		}
 	}
+	appended := 0
 	for _, entry := range official {
 		fn := entry.(map[string]any)["function"].(map[string]any) // đã verify trong shapedOfficialToolsJSON
 		name, _ := fn["name"].(string)
@@ -348,7 +357,11 @@ func (r *ToolRenames) AppendOfficial(payload map[string]any) {
 			continue
 		}
 		tools = append(tools, entry)
+		appended++
 	}
+	// Lần append idempotent không thêm entry mới nhưng phải giữ boundary cũ để
+	// RewriteBody sau đó vẫn chỉ duyệt phần declaration của client.
+	r.appendedOfficial += appended
 	payload["tools"] = tools
 }
 

@@ -362,27 +362,37 @@ func streamUpstreamBody(w http.ResponseWriter, body io.Reader, renames *ToolRena
 }
 
 // writeSynthesizedTitle trả title tự tổng hợp thay upstream (spec §5.8): 200
-// text/event-stream gồm một chunk OpenAI-compatible mang title từ user message
-// đầu tiên, rồi data: [DONE]. Header X-Sidecar-Title để host skip record dataset.
+// text/event-stream gồm content chunk mang title, terminal chunk có delta rỗng
+// và finish_reason=stop, rồi data: [DONE]. Header X-Sidecar-Title để host skip record dataset.
 func writeSynthesizedTitle(w http.ResponseWriter, payload map[string]any) {
 	model, _ := payload["model"].(string)
-	chunk := map[string]any{
-		"id":      "chatcmpl-sidecar-title",
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   model,
-		"choices": []any{
-			map[string]any{
-				"index": 0,
-				"delta": map[string]any{
-					"role":    "assistant",
-					"content": synthesizeTitle(payload),
+	created := time.Now().Unix()
+	encodeChunk := func(delta map[string]any, finishReason any) ([]byte, error) {
+		chunk := map[string]any{
+			"id":      "chatcmpl-sidecar-title",
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []any{
+				map[string]any{
+					"index":         0,
+					"delta":         delta,
+					"finish_reason": finishReason,
 				},
-				"finish_reason": nil,
 			},
-		},
+		}
+		return json.Marshal(chunk)
 	}
-	encoded, err := json.Marshal(chunk)
+
+	contentChunk, err := encodeChunk(map[string]any{
+		"role":    "assistant",
+		"content": synthesizeTitle(payload),
+	}, nil)
+	if err != nil {
+		http.Error(w, "marshal title chunk: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	terminalChunk, err := encodeChunk(map[string]any{}, "stop")
 	if err != nil {
 		http.Error(w, "marshal title chunk: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -392,7 +402,7 @@ func writeSynthesizedTitle(w http.ResponseWriter, payload map[string]any) {
 	w.Header().Set("X-Sidecar-Shaped", shapedNone)
 	w.Header().Set("X-Sidecar-Title", "synthesized")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", encoded)
+	fmt.Fprintf(w, "data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", contentChunk, terminalChunk)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
