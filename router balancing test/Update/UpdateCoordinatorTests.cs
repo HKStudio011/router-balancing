@@ -138,7 +138,7 @@ public class UpdateCoordinatorTests : IDisposable
 
         fx.Proxy.InFlight = 0;
         await WaitUntilAsync(() => fx.Proxy.WriteCalls == 1, "in-flight về 0 phải proceed tới snapshot");
-        Assert.True(File.Exists(SnapshotPath));
+        await WaitUntilAsync(() => File.Exists(SnapshotPath), "file snapshot phải được ghi sau khi in-flight về 0");
         await WaitUntilAsync(() => fx.Shutdown.QuitCount == 1, "pipeline phải đi tới Quit");
         await startTask;
     }
