@@ -11,6 +11,10 @@ public class UsageCaptureTests
 {
     private static byte[] Bytes(string json) => Encoding.UTF8.GetBytes(json);
 
+    private const string MultilineWriteSse =
+        "data: {\"id\":\"chatcmpl-write\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_write\",\"type\":\"function\",\"function\":{\"name\":\"write\",\n" +
+        "data: \"arguments\":\"{\\\"path\\\":\\\"/tmp/a.txt\\\",\\\"content\\\":\\\"hello\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n";
+
     [Fact]
     public void WithIncludeUsage_OpenAiStream_InjectsIncludeUsageWithoutMutatingOriginal()
     {
@@ -197,6 +201,92 @@ public class UsageCaptureTests
         Assert.Equal(SseFixture, Encoding.UTF8.GetString(dest.ToArray()));
         Assert.NotNull(result.Usage);
         Assert.Equal(9, result.Usage.PromptTokens);
+    }
+
+    [Fact]
+    public async Task TeeSse_MultilineToolCallWithFinishReasonWithoutDone_CompletesAndForwardsExactBytes()
+    {
+        var chunks = Bytes(MultilineWriteSse).Select(value => new[] { value }).ToArray();
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new ChunkedStream(chunks), dest, CancellationToken.None);
+
+        Assert.False(result.EndedWithoutTerminal);
+        Assert.Equal(MultilineWriteSse, Encoding.UTF8.GetString(dest.ToArray()));
+        Assert.Null(result.LastByteGap);
+    }
+
+    [Fact]
+    public async Task TeeSse_MultilineToolCallWithDone_CaptureCompletionPreservesDatasetToolCall()
+    {
+        const string sse = MultilineWriteSse + "data: [DONE]\n\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Bytes(sse)), dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.False(result.EndedWithoutTerminal);
+        Assert.True(result.CompletionComplete);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+        Assert.NotNull(result.CompletionJson);
+        using var doc = JsonDocument.Parse(result.CompletionJson!);
+        Assert.Equal("chatcmpl-write", doc.RootElement.GetProperty("id").GetString());
+        Assert.Equal("m1", doc.RootElement.GetProperty("model").GetString());
+        var choice = doc.RootElement.GetProperty("choices")[0];
+        Assert.Equal("tool_calls", choice.GetProperty("finish_reason").GetString());
+        var toolCall = choice.GetProperty("message").GetProperty("tool_calls")[0];
+        Assert.Equal("call_write", toolCall.GetProperty("id").GetString());
+        Assert.Equal("write", toolCall.GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("{\"path\":\"/tmp/a.txt\",\"content\":\"hello\"}",
+            toolCall.GetProperty("function").GetProperty("arguments").GetString());
+    }
+
+    [Fact]
+    public async Task TeeSse_MultilineToolCallWithDoneWithoutTrailingBlankLine_Completes()
+    {
+        const string sse = MultilineWriteSse + "data: [DONE]\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Bytes(sse)), dest, CancellationToken.None);
+
+        Assert.False(result.EndedWithoutTerminal);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+        Assert.Null(result.LastByteGap);
+    }
+
+    [Theory]
+    [InlineData("data:  [DONE]\n\n")]
+    [InlineData("data:\t[DONE]\n\n")]
+    public async Task TeeSse_NonCanonicalDoneAndFinishOnlyOnSecondChoice_RemainsTruncated(string done)
+    {
+        const string finishOnSecondChoice =
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}," +
+            "{\"index\":1,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        var sse = finishOnSecondChoice + done;
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Bytes(sse)), dest, CancellationToken.None);
+
+        Assert.True(result.EndedWithoutTerminal);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task TeeSse_CleanEofWithoutTerminal_ReportsNonNegativeLastByteGap()
+    {
+        const string sse = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture-content-must-not-be-logged\"}}]}\n\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Bytes(sse)), dest, CancellationToken.None);
+
+        Assert.True(result.EndedWithoutTerminal);
+        var lastByteGap = Assert.IsType<TimeSpan>(result.LastByteGap);
+        Assert.True(lastByteGap >= TimeSpan.Zero);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
     }
 
     [Fact]

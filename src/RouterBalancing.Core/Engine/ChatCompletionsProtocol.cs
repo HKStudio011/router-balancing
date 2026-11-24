@@ -69,7 +69,7 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
         // hành vi y hệt nested class cũ. Completion cho dataset đi đường TeeAsync captureCompletion.
         var state = new ChatSseAggregateState();
         var buffer = new byte[16 * 1024];
-        byte[] carry = [];
+        var parser = new SseDataEventParser();
         int read;
         while (true)
         {
@@ -85,20 +85,12 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
             if (read <= 0) break;
 
             state.FirstTokenAt ??= DateTimeOffset.UtcNow;
-            var combined = new byte[carry.Length + read];
-            Buffer.BlockCopy(carry, 0, combined, 0, carry.Length);
-            Buffer.BlockCopy(buffer, 0, combined, carry.Length, read);
-
-            var lineStart = 0;
-            for (var i = 0; i < combined.Length; i++)
+            foreach (var dataEvent in parser.HandleChunk(buffer.AsSpan(0, read)))
             {
-                if (combined[i] != (byte)'\n') continue;
-                state.HandleLine(combined.AsSpan(lineStart, i - lineStart));
-                lineStart = i + 1;
+                state.HandleLine(dataEvent);
             }
-            carry = combined[lineStart..];
         }
-        if (carry.Length > 0) state.HandleLine(carry);
+        if (parser.Finish() is { } finalEvent) state.HandleLine(finalEvent);
 
         // EOF sạch nhưng thiếu dấu kết thúc hợp lệ = upstream cắt cụt giữa chừng: tool_call
         // arguments có thể còn dở. Chưa ghi byte nào cho client nên đây là PRE-CONTENT →

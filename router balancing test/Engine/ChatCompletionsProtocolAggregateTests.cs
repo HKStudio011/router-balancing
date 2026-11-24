@@ -173,6 +173,32 @@ public class ChatCompletionsProtocolAggregateTests
     }
 
     [Fact]
+    public async Task Aggregate_MultilineToolCallWithDone_PreservesToolCallJson()
+    {
+        const string sse =
+            "data: {\"id\":\"chatcmpl-write\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_write\",\"type\":\"function\",\"function\":{\"name\":\"write\",\n" +
+            "data: \"arguments\":\"{\\\"path\\\":\\\"/tmp/a.txt\\\",\\\"content\\\":\\\"hello\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        using var content = new StringContent(sse, Encoding.UTF8, "text/event-stream");
+        using var dest = new MemoryStream();
+
+        var result = await Protocol.AggregateSseAsync(content, dest, CancellationToken.None);
+
+        var written = Encoding.UTF8.GetString(dest.ToArray());
+        Assert.Equal(result.ResponseBody, written);
+        using var doc = JsonDocument.Parse(written);
+        Assert.Equal("chatcmpl-write", doc.RootElement.GetProperty("id").GetString());
+        Assert.Equal("m1", doc.RootElement.GetProperty("model").GetString());
+        var choice = doc.RootElement.GetProperty("choices")[0];
+        Assert.Equal("tool_calls", choice.GetProperty("finish_reason").GetString());
+        var toolCall = choice.GetProperty("message").GetProperty("tool_calls")[0];
+        Assert.Equal("call_write", toolCall.GetProperty("id").GetString());
+        Assert.Equal("write", toolCall.GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("{\"path\":\"/tmp/a.txt\",\"content\":\"hello\"}",
+            toolCall.GetProperty("function").GetProperty("arguments").GetString());
+    }
+
+    [Fact]
     public async Task Aggregate_MultipleInterleavedToolCalls_OrdersByIndex()
     {
         var sse = SseChunk(new

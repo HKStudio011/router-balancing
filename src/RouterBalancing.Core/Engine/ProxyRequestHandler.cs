@@ -224,7 +224,7 @@ public sealed class ProxyRequestHandler(
                             : await protocol.TeeAsync(teeContent, dest, upstreamCts.Token,
                                 captureCompletion: datasetOn);
                         if (tee.EndedWithoutTerminal)
-                            throw new UpstreamTruncatedException();
+                            throw new UpstreamTruncatedException(tee.LastByteGap);
                     }
                     catch (UpstreamDiedBeforeContentException ex) when (!ctx.RequestAborted.IsCancellationRequested)
                     {

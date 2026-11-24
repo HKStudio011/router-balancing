@@ -28,6 +28,7 @@ public class ProxyRetryIntegrationTests : IDisposable
     private readonly ClientKeyService _clientKeys;
     private readonly DpapiSecretProtector _protector = new();
     private readonly List<string> _messages = [];
+    private readonly List<string> _details = [];
     private WebApplication? _app;
     private HttpClient? _client;
 
@@ -40,7 +41,11 @@ public class ProxyRetryIntegrationTests : IDisposable
         _log = new LogService(factory);
         _clientKeys = new ClientKeyService(factory);
         // Capture mọi log Write — assert theo nội dung Warn advance (§5)
-        _log.LogAdded += entry => _messages.Add(entry.Message);
+        _log.LogAdded += entry =>
+        {
+            _messages.Add(entry.Message);
+            _details.Add(entry.Details ?? string.Empty);
+        };
     }
 
     public void Dispose()
@@ -643,6 +648,9 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal(1, upstream.Calls);
         Assert.Contains(_messages, message => message.Contains("Stream chết sau 15 byte content")
             && message.Contains("upstream_disconnected") && message.Contains(id));
+        Assert.Equal(1, _messages.Count(message => message.Contains("upstream_disconnected")));
+        Assert.Contains(_details, details => details.Contains("silence_gap="));
+        Assert.DoesNotContain("{\"x\":1}", string.Join('\n', _messages.Concat(_details)));
     }
 
     [Fact]
