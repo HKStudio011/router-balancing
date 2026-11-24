@@ -8,8 +8,9 @@ Trạng thái: đã triển khai parser + dataset + LastByteGap; verification lo
 Reproduction bằng chính `UsageCapture.TeeSseAsync` đã chứng minh:
 
 - `finish_reason:"tool_calls"` trải trên nhiều dòng `data:` bị app đánh dấu `EndedWithoutTerminal=true` dù OpenCode/Effect ghép các dòng thành một event và parse được.
-- `[DONE]` chia thành nhiều dòng cũng bị bỏ sót.
 - Multi-line tool call đi kèm `[DONE]` cho `CompletionComplete=true`, nhưng completion mất tool `write`, model/id bị thay bằng giá trị tổng hợp và `finish_reason` bị đổi thành `stop`.
+
+Review cuối sửa một fixture terminal chưa đúng SSE semantics: hai data fields `data: [DO` và `data: NE]` trong cùng event phải join thành `[DO\nNE]`, nên **không** phải sentinel hợp lệ. Ngược lại, một physical line `data: [DONE]` bị chia giữa các network chunks vẫn là sentinel hợp lệ sau khi parser ghép line.
 
 Vì vậy cần sửa cả terminal detection và dataset aggregation. Thông điệp `UpstreamTruncatedException` hiện chỉ chứng minh app không nhận diện được terminal, chưa tự nó chứng minh upstream không gửi terminal. Chưa có raw event của các request NVIDIA thật nên vẫn không loại trừ upstream/proxy cắt stream.
 
@@ -42,8 +43,8 @@ Không thay `ResponsesProtocol` trong task này vì state machine đó còn ph�
 
 - Giữ raw forwarding byte-for-byte và TTFT hiện có.
 - Không retry sau khi đã forward content; pre-content retry/failover giữ nguyên.
-- Không tổng hợp `finish_reason` khi upstream thật sự không gửi.
-- Sau khi bỏ một optional space, `[DONE]` vẫn phải exact như OpenCode. Hai spaces/tab sau `data:` không được tự nới thành terminal.
+- Không tổng hợp `finish_reason` khi upstream thật sự không gửi: exact `[DONE]` không kèm finish reason phải giữ `finish_reason:null` trong completion đã gộp.
+- Sau khi bỏ một optional space, `[DONE]` vẫn phải exact như OpenCode. `[DONE]garbage`, `[DONE]x`, hai spaces/tab sau `data:` và payload nhiều data fields `[DO\nNE]` đều không được coi là terminal.
 - `finish_reason` chỉ ở `choices[1]` vẫn không được coi là terminal vì OpenCode cũng chỉ đọc `choices[0]`.
 - Dataset tiếp tục loại stream thật sự cụt và completion overflow; không làm thay đổi format export.
 - Hermes và các OpenAI-compatible clients khác dùng cùng SSE event semantics; không thêm workaround riêng theo client.
@@ -61,7 +62,7 @@ Viết test trước implementation và giữ bằng chứng RED từ parser hi�
 
 1. Multi-line `write` + `finish_reason:"tool_calls"` không `[DONE]`: terminal được nhận, bytes forward đúng.
 2. Cùng input có `[DONE]`, `captureCompletion=true`: `CompletionComplete=true`, completion giữ `write`, arguments và `finish_reason:"tool_calls"`; không synthetic `stop`.
-3. `[DONE]` chia nhiều dòng: terminal được nhận.
+3. Hai data fields `data: [DO` + `data: NE]` tạo `[DO\nNE]`: tee báo thiếu terminal/capture incomplete và aggregate từ chối completion; một physical line `data: [DONE]` chia giữa network chunks vẫn terminal.
 4. Không newline/blank line cuối: vẫn nhận terminal hợp lệ.
 5. CRLF và CR, kể cả CR/LF bị tách giữa chunks.
 6. Mỗi byte của multi-line tool call được feed như một chunk riêng: kết quả không đổi.
@@ -69,6 +70,8 @@ Viết test trước implementation và giữ bằng chứng RED từ parser hi�
 8. `finish_reason` chỉ ở `choices[1]`: vẫn không terminal.
 9. Non-stream `AggregateSseAsync` trên multi-line tool call: JSON đầy đủ, không ném truncation.
 10. EOF thiếu terminal thật: vẫn báo lỗi và có `LastByteGap`; pre-content retry/failover không đổi.
+11. `[DONE]garbage`/`[DONE]x`: tee báo thiếu terminal, payload vẫn hiện trong monitor và capture không được coi là complete; aggregate cũng từ chối.
+12. Exact `[DONE]` không có finish reason: tee/capture và non-stream aggregate giữ `finish_reason:null`; các giá trị upstream thật như `stop`, `tool_calls`, `length` không đổi.
 
 ## Verification
 

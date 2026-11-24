@@ -257,6 +257,72 @@ public class UsageCaptureTests
     }
 
     [Theory]
+    [InlineData("[DONE]garbage")]
+    [InlineData("[DONE]x")]
+    public async Task TeeSse_DonePrefixGarbage_RemainsTruncatedAndVisibleInCapture(string doneCandidate)
+    {
+        var sse = $"data: {doneCandidate}\n\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Bytes(sse)), dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.True(result.EndedWithoutTerminal);
+        Assert.False(result.CompletionComplete);
+        Assert.Equal(doneCandidate, result.ResponseBody);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task TeeSse_ExactDoneWithoutFinishReason_CapturePreservesNullFinishReason()
+    {
+        const string sse =
+            "data: {\"id\":\"chatcmpl-null\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n" +
+            "data: [DONE]\n\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Bytes(sse)), dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.False(result.EndedWithoutTerminal);
+        Assert.True(result.CompletionComplete);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+        Assert.NotNull(result.CompletionJson);
+        using var doc = JsonDocument.Parse(result.CompletionJson!);
+        Assert.Equal(JsonValueKind.Null,
+            doc.RootElement.GetProperty("choices")[0].GetProperty("finish_reason").ValueKind);
+    }
+
+    [Fact]
+    public async Task TeeSse_DoneSplitAcrossDataFields_RemainsTruncatedAndCaptureIncomplete()
+    {
+        const string sse = "data: [DO\ndata: NE]\n\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Bytes(sse)), dest, CancellationToken.None, captureCompletion: true);
+
+        Assert.True(result.EndedWithoutTerminal);
+        Assert.False(result.CompletionComplete);
+        Assert.Equal("[DO\nNE]", result.ResponseBody);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task TeeSse_DoneLineSplitAcrossNetworkChunks_Completes()
+    {
+        const string sse = "data: [DONE]\n\n";
+        byte[][] chunks = [Bytes("data: [DO"), Bytes("NE]\n\n")];
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new ChunkedStream(chunks), dest, CancellationToken.None);
+
+        Assert.False(result.EndedWithoutTerminal);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Theory]
     [InlineData("data:  [DONE]\n\n")]
     [InlineData("data:\t[DONE]\n\n")]
     public async Task TeeSse_NonCanonicalDoneAndFinishOnlyOnSecondChoice_RemainsTruncated(string done)

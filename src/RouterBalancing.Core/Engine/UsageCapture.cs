@@ -223,7 +223,7 @@ public static class UsageCapture
         if (truncated || !line.StartsWith("data:"u8)) return;
         var payload = line["data:"u8.Length..];
         if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];
-        if (payload.StartsWith("[DONE]"u8)) return;
+        if (payload.SequenceEqual("[DONE]"u8)) return;
         if (body.Length > 0) body.Append('\n');
         body.Append(Encoding.UTF8.GetString(payload));
         if (body.Length <= BodyCapChars) return;
@@ -246,7 +246,7 @@ public static class UsageCapture
         var payload = line["data:"u8.Length..];
         // SSE cho phép 1 space sau ':' — thiếu trim thì "data: [DONE]" không khớp
         if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];
-        if (payload.StartsWith("[DONE]"u8))
+        if (payload.SequenceEqual("[DONE]"u8))
         {
             terminal = true;
             return current;

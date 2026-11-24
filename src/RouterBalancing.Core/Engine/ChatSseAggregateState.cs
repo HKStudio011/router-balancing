@@ -55,7 +55,7 @@ internal sealed class ChatSseAggregateState(
         if (!line.StartsWith("data:"u8)) return;
         var payload = line["data:"u8.Length..];
         if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];
-        if (payload.StartsWith("[DONE]"u8))
+        if (payload.SequenceEqual("[DONE]"u8))
         {
             _doneSeen = true;
             return;
@@ -134,7 +134,7 @@ internal sealed class ChatSseAggregateState(
         {
             ["index"] = 0,
             ["message"] = message,
-            ["finish_reason"] = _finishReason ?? "stop",
+            ["finish_reason"] = _finishReason,
         };
         var completion = new JsonObject
         {
