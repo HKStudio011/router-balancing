@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -43,7 +44,11 @@ public static class UsageCapture
     /// (thiếu <c>[DONE]</c>/<c>finish_reason</c>) hoặc chạm budget tích lũy — caller phải bỏ
     /// record thay vì dùng completion dở dang.</param>
     public sealed record TeeResult(Usage? Usage, DateTimeOffset? FirstTokenAt, string? ResponseBody,
-        bool EndedWithoutTerminal = false, string? CompletionJson = null, bool CompletionComplete = true);
+        bool EndedWithoutTerminal = false, string? CompletionJson = null, bool CompletionComplete = true)
+    {
+        /// <summary>Khoảng lặng từ byte cuối tới EOF; chỉ có giá trị khi EOF thiếu terminal.</summary>
+        public TimeSpan? LastByteGap { get; init; }
+    }
 
     /// <summary>
     /// Trả body upstream (inject <c>stream_options.include_usage</c> nếu đủ điều kiện) + cờ
@@ -124,7 +129,8 @@ public static class UsageCapture
         bool captureCompletion = false)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
-        byte[] carry = [];
+        var parser = new SseDataEventParser();
+        long lastByteTimestamp = 0;
         Usage? usage = null;
         var body = new StringBuilder();
         var bodyTruncated = false;
@@ -155,35 +161,27 @@ public static class UsageCapture
 
                 // TTFT phải tính tại thời điểm byte đầu tiên về — đặt ngay khi read > 0 (spec api-monitor §5)
                 firstTokenAt ??= DateTimeOffset.UtcNow;
+                lastByteTimestamp = Stopwatch.GetTimestamp();
                 // Ghi NGUYÊN chunk cho client TRƯỚC khi scan — byte-forward không đổi (spec §6.1)
                 await dest.WriteAsync(buffer.AsMemory(0, read), ct);
                 wroteAny = true;
 
-                var combined = new byte[carry.Length + read];
-                Buffer.BlockCopy(carry, 0, combined, 0, carry.Length);
-                Buffer.BlockCopy(buffer, 0, combined, carry.Length, read);
-
-                var lineStart = 0;
-                for (var i = 0; i < combined.Length; i++)
+                foreach (var dataEvent in parser.HandleChunk(buffer.AsSpan(0, read)))
                 {
-                    if (combined[i] != (byte)'\n') continue;
-                    var line = combined.AsSpan(lineStart, i - lineStart);
-                    usage = ScanSseLine(line, usage, ref terminal);
-                    AppendSsePayload(line, body, ref bodyTruncated);
-                    // Gộp chung một lần/dòng cho dataset — chạy SAU khi chunk đã ghi dest nên
+                    usage = ScanSseLine(dataEvent, usage, ref terminal);
+                    AppendSsePayload(dataEvent, body, ref bodyTruncated);
+                    // Gộp chung một lần/event cho dataset — chạy SAU khi chunk đã ghi dest nên
                     // byte client luôn forward nguyên vẹn dù có lỗi parse; HandleLine chứa lại
                     // lỗi parse (JsonException/lỗi chuyển đổi số) bằng cách bỏ chunk hỏng.
-                    capture?.HandleLine(line);
-                    lineStart = i + 1;
+                    capture?.HandleLine(dataEvent);
                 }
-                carry = combined[lineStart..];
             }
-            // Dòng cuối không có \n (SSE chuẩn luôn có nhưng không assume) — xử lý nốt
-            if (carry.Length > 0)
+            // Event cuối có thể chưa gặp blank line — parser flush phần pending tại EOF.
+            if (parser.Finish() is { } finalEvent)
             {
-                usage = ScanSseLine(carry, usage, ref terminal);
-                AppendSsePayload(carry, body, ref bodyTruncated);
-                capture?.HandleLine(carry);
+                usage = ScanSseLine(finalEvent, usage, ref terminal);
+                AppendSsePayload(finalEvent, body, ref bodyTruncated);
+                capture?.HandleLine(finalEvent);
             }
             // EOF sạch (không RST/exception) nhưng thiếu dấu kết thúc hợp lệ ([DONE] hoặc
             // finish_reason) = upstream tự đóng stream giữa chừng (vd Unsloth cancel/swap khi
@@ -203,7 +201,10 @@ public static class UsageCapture
 
                 return new TeeResult(usage, firstTokenAt, body.ToString(),
                     EndedWithoutTerminal: true, CompletionJson: completionJson,
-                    CompletionComplete: completionComplete);
+                    CompletionComplete: completionComplete)
+                {
+                    LastByteGap = Stopwatch.GetElapsedTime(lastByteTimestamp),
+                };
             }
             return new TeeResult(usage, firstTokenAt, body.ToString(),
                 CompletionJson: completionJson, CompletionComplete: completionComplete);
@@ -222,7 +223,7 @@ public static class UsageCapture
         if (truncated || !line.StartsWith("data:"u8)) return;
         var payload = line["data:"u8.Length..];
         if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];
-        if (payload.StartsWith("[DONE]"u8)) return;
+        if (payload.SequenceEqual("[DONE]"u8)) return;
         if (body.Length > 0) body.Append('\n');
         body.Append(Encoding.UTF8.GetString(payload));
         if (body.Length <= BodyCapChars) return;
@@ -245,7 +246,7 @@ public static class UsageCapture
         var payload = line["data:"u8.Length..];
         // SSE cho phép 1 space sau ':' — thiếu trim thì "data: [DONE]" không khớp
         if (!payload.IsEmpty && payload[0] == (byte)' ') payload = payload[1..];
-        if (payload.StartsWith("[DONE]"u8))
+        if (payload.SequenceEqual("[DONE]"u8))
         {
             terminal = true;
             return current;

@@ -35,7 +35,7 @@ dotnet test "router balancing test/router balancing test.csproj"   # chạy unit
 
 ## CodeGraph
 
-Repo này (dự kiến) được index bằng CodeGraph — SQLite knowledge graph của symbols/edges/files. **Ưu tiên dùng CodeGraph thay cho grep/find/đọc file rải rác** khi cần hiểu hoặc định vị mã nguồn.
+CodeGraph đã được cài sẵn — SQLite knowledge graph của symbols/edges/files. Khi repo có thư mục `.codegraph/` ở gốc, **ưu tiên dùng CodeGraph thay cho grep/find/đọc file rải rác** khi cần hiểu hoặc định vị mã nguồn; nếu không có index, bỏ qua CodeGraph.
 
 ### Cách dùng
 
@@ -51,6 +51,47 @@ Repo này (dự kiến) được index bằng CodeGraph — SQLite knowledge gra
 - Kiểm tra: `Test-Path .codegraph`
 - Nếu chưa có, báo người dùng rằng họ có thể chạy `codegraph init` để bật CodeGraph cho repo này (**không tự chạy init** — việc index là quyết định của người dùng).
 - Khi chưa có index, quay lại công cụ mặc định: `glob` (tìm file), `grep` (tìm nội dung), `read` (đọc file).
+
+---
+
+## Bản đồ công cụ & workflow
+
+### Nguyên tắc chọn workflow
+
+- **Superpowers là đường mặc định** cho feature/bug nếu người dùng không chọn một workflow riêng. Bắt đầu bằng `using-superpowers`, rồi process skill phù hợp trước implementation skill.
+- **Speckit là workflow riêng** khi người dùng gọi `/speckit.*` hoặc chọn Spec-Driven Development. Giữ chuỗi artifacts của Speckit làm trục chính; không thay bằng bộ spec/plan của Superpowers giữa chừng.
+- **Không trộn hai chuỗi duyệt/plan** trong cùng một feature. CodeGraph, TDD, test và review có thể bổ trợ, nhưng phải phục vụ workflow chính đã chọn.
+- Chỉ dùng công cụ khi phù hợp ngữ cảnh, không phải vì công cụ có sẵn. Khi cần flags chi tiết, đọc `--help` hoặc tài liệu chính thức thay vì đoán.
+
+### Chọn công cụ theo tình huống
+
+| Nhu cầu | Công cụ và cách dùng |
+|---|---|
+| Hiểu/định vị code | **CodeGraph** trước grep/read khi repo có `.codegraph/`; xem section CodeGraph ở trên. Không tự `codegraph init`. |
+| Feature mặc định | **Superpowers**: `brainstorming` → design được duyệt → `writing-plans` → TDD/execution → verification và review. |
+| Bug/test failure/regression | **`systematic-debugging`** để tìm root cause trước fix; kết hợp CodeGraph và test RED trước production change. |
+| Spec-Driven Development | **Speckit**: `specify` → `clarify` khi cần → `plan` → `tasks` → `analyze` → `implement` → `converge`. |
+| Review trực tiếp bằng OCR LLM | **`ocr_review`** cho workspace/commit/range; dùng `preview` khi cần chốt scope trước. Dùng **`ocr_health`** khi nghi vấn cấu hình/kết nối OCR. |
+| Host-agent tự điều phối review | **`ocr delegate preview`** lấy file/mode/ref metadata, **`ocr delegate rule`** lấy resolved rules; không gọi LLM qua OCR. Không dùng trùng với `ocr_review` cho cùng một review seat. |
+| Security question/review | Skill **`security-audit`**, mức độ theo request. Full workflow chỉ khi explicit audit/pentest/full review/report; không tự biến bugfix thường thành pentest. |
+| UI mới hoặc reshaping UI | Skill **`frontend-design`** cho aesthetic direction, typography và lựa chọn không theo template; không bắt buộc cho mọi CSS/bug nhỏ. |
+| Cần người dùng chọn phần trực quan | **Visual Companion** của `brainstorming`: chỉ đề xuất just-in-time và chỉ dùng sau khi được chấp nhận; đọc `visual-companion.md` trước khi mở browser. |
+
+Ghi chú Speckit:
+
+- `checklist` kiểm tra chất lượng/completeness của requirements, **không phải test implementation**.
+- `constitution` chỉ tạo/cập nhật project constitution; `github.taskstoissues` chuyển tasks thành issues.
+- `analyze` là non-destructive consistency analysis giữa spec/plan/tasks, không thay thế code review.
+
+### Pipeline mẫu
+
+1. **Bugfix:** `systematic-debugging` → CodeGraph → test RED → fix tối thiểu → focused/full tests → chọn `ocr_review` hoặc delegation.
+2. **Feature mặc định:** `brainstorming` → design approved → `writing-plans` → TDD/execution → verification → independent review.
+3. **Speckit:** `specify`/`clarify` → `plan` → `tasks` → `analyze` → `implement` → `converge` để bổ sung việc còn thiếu.
+4. **UI:** `frontend-design` → Visual Companion nếu người dùng muốn chọn bằng hình → implementation/tests → review UI.
+5. **Security:** chốt scope → `security-audit` đúng mức → findings kèm evidence/severity → test remediation nếu có fix.
+
+Visual Companion **không** dùng cho quyết định thuần kỹ thuật hoặc requirements còn mơ hồ; requirements/tradeoffs luôn làm rõ bằng text trước. Không tự mở browser khi chưa có chấp thuận của người dùng.
 
 ---
 

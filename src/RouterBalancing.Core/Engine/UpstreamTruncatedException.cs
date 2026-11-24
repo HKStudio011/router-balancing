@@ -10,10 +10,16 @@ namespace RouterBalancing.Core.Engine;
 /// </summary>
 internal sealed class UpstreamTruncatedException : IOException
 {
+    /// <summary>Khoảng lặng từ byte cuối tới EOF, nếu stream đã có content.</summary>
+    public TimeSpan? LastByteGap { get; }
+
     /// <summary>Tạo exception phát hiện SSE cụt tại EOF sạch.</summary>
-    public UpstreamTruncatedException()
+    /// <param name="lastByteGap">Khoảng lặng từ byte cuối tới EOF; chỉ telemetry, không chứa content.</param>
+    public UpstreamTruncatedException(TimeSpan? lastByteGap = null)
         : base("Upstream SSE stream ended cleanly without [DONE] or finish_reason — "
-               + "response truncated mid-stream (partial tool_call arguments possible).")
+               + "response truncated mid-stream (partial tool_call arguments possible)."
+               + (lastByteGap is { } gap ? $" silence_gap={gap.TotalSeconds:0.###}s" : string.Empty))
     {
+        LastByteGap = lastByteGap;
     }
 }
