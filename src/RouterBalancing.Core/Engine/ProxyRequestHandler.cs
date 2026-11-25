@@ -238,7 +238,8 @@ public sealed class ProxyRequestHandler(
                         {
                             Severity = LogSeverity.Error,
                             Category = LogCategory.Request,
-                            Message = $"Upstream '{provider.Name}' cắt kết nối trước khi gửi content — sẽ retry/failover.",
+                            Message = $"Upstream '{provider.Name}' cắt kết nối trước khi gửi content "
+                                      + $"(idle_timeout={idleSec}s) — sẽ retry/failover.",
                             Details = (ex.InnerException ?? ex).ToString(),
                             ErrorCode = (ex.InnerException ?? ex).GetType().Name,
                             RequestId = ClientKeyItems.RequestIdOf(ctx),
@@ -272,7 +273,8 @@ public sealed class ProxyRequestHandler(
                                     Severity = LogSeverity.Warning,
                                     Category = LogCategory.Request,
                                     Message = $"Upstream '{provider.Name}' đứt stream sau {stopwatch.ElapsedMilliseconds}ms "
-                                              + $"— account '{account.Name}', route {DescribeProxyRoute(provider, account)}.",
+                                              + $"— account '{account.Name}', idle_timeout={idleSec}s, "
+                                              + $"route {DescribeProxyRoute(provider, account)}.",
                                     Details = ex.ToString(),
                                     // Type lỗi đọc GỐC (watchdog bọc thành UpstreamStreamDiedException) — cùng quy ước
                                     // với catch pre-content để filter được HttpIOException trong DB

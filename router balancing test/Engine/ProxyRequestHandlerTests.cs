@@ -102,7 +102,7 @@ public class ProxyRequestHandlerTests
         }
     }
 
-    // Stub settings cho handler — default 300 như production để test hiện có chạy với watchdog bật
+    // Stub settings cho handler — default 0 như production; test watchdog phải bật timeout tường minh.
     private sealed class StubSettings : IAppSettingsService
     {
         public event Action? SettingsChanged { add { } remove { } }
@@ -118,7 +118,7 @@ public class ProxyRequestHandlerTests
         public int StatsErrorRateThreshold => 10;
         public int TransientMaxRetries => 5;
         public int TransientBackoffBaseMs => 1000;
-        public int UpstreamIdleTimeoutSec { get; set; } = 300;
+        public int UpstreamIdleTimeoutSec { get; set; } = 0;
         public int ProviderQuotaBlockSec { get; set; } = 120;
         public string OpenCodeConfigPath => OpenCodeConfigPaths.DefaultPath;
         // Settable: test dataset cần bật export để đi vào khối capture của ForwardAsync
@@ -872,7 +872,7 @@ public class ProxyRequestHandlerTests
         var sut = Create(new StubUpstream(() => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new BrokenSseContent(),
-        }), log, monitor: monitor);
+        }), log, monitor: monitor, settings: new StubSettings { UpstreamIdleTimeoutSec = 1 });
         var ctx = Ctx();
         ctx.Items[ClientKeyItems.RequestId] = "req-mid";
         // Stream client (đã qua flush point) → dest là pipe writer: chunk đầu ĐÃ tới client
@@ -902,7 +902,7 @@ public class ProxyRequestHandlerTests
         Assert.Equal(LogSeverity.Warning, diag.Severity);
         Assert.Equal(LogCategory.Request, diag.Category);
         Assert.Equal("req-mid", diag.RequestId);
-        Assert.Matches(@"^Upstream 'openai-main' đứt stream sau \d+ms — account 'a1', route direct\.$",
+        Assert.Matches(@"^Upstream 'openai-main' đứt stream sau \d+ms — account 'a1', idle_timeout=1s, route direct\.$",
             diag.Message);
         Assert.Equal("IOException", diag.ErrorCode);
         Assert.Contains("upstream stream broke mid-chunk", diag.Details);
@@ -991,7 +991,30 @@ public class ProxyRequestHandlerTests
         var record = monitor.Find("req-idle-pre");
         Assert.NotNull(record);
         Assert.Equal("network", record.FailureKind);
-        Assert.Contains(log.Errors, m => m.Contains("cắt kết nối trước khi gửi content"));
+        Assert.Contains(log.Errors, m => m.Contains("cắt kết nối trước khi gửi content")
+            && m.Contains("idle_timeout=1s", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ForwardAsync_WhenUpstreamEofWithIdleDisabled_LogsAppliedIdleTimeout()
+    {
+        var log = new CapturingLog();
+        var settings = new StubSettings { UpstreamIdleTimeoutSec = 0 };
+        var sut = Create(new StubUpstream(() => Upstream(200,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "text/event-stream")),
+            log, settings: settings);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-eof-idle-off";
+        ctx.Items[SsePipeItems.Key] = new Pipe();
+        var provider = SeedProvider();
+
+        var ex = await Assert.ThrowsAsync<UpstreamTruncatedException>(() =>
+            sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+                AccountIdOf(provider), ProxyProtocols.Chat, default));
+
+        Assert.NotNull(ex.LastByteGap);
+        var diag = Assert.Single(log.Entries, entry => entry.Message.Contains("đứt stream"));
+        Assert.Contains("idle_timeout=0s", diag.Message, StringComparison.Ordinal);
     }
 
     [Fact]

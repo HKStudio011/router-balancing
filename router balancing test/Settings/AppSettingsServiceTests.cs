@@ -30,7 +30,7 @@ public class AppSettingsServiceTests : IDisposable
         Assert.True(service.CloseToTray);
         Assert.Equal(5, service.TransientMaxRetries);
         Assert.Equal(1000, service.TransientBackoffBaseMs);
-        Assert.Equal(300, service.UpstreamIdleTimeoutSec);
+        Assert.Equal(0, service.UpstreamIdleTimeoutSec);
         Assert.Equal(120, service.ProviderQuotaBlockSec);
         Assert.False(service.DatasetExportEnabled);
         Assert.Equal("", service.DatasetExportPath);
@@ -48,6 +48,34 @@ public class AppSettingsServiceTests : IDisposable
         using var reopened = Create();
 
         Assert.Equal(9000, reopened.Port);
+    }
+
+    [Fact]
+    public void UpstreamIdleTimeout_WhenSaved300_PreservesSavedValue()
+    {
+        using (var service = Create())
+        {
+            service.Set(SettingsKeys.UpstreamIdleTimeoutSec, 300);
+        }
+
+        using var reopened = Create();
+
+        Assert.Equal(300, reopened.UpstreamIdleTimeoutSec);
+    }
+
+    [Fact]
+    public void UpstreamIdleTimeout_WhenSavedZeroOverPreviousValue_PreservesZero()
+    {
+        using (var service = Create())
+        {
+            service.Set(SettingsKeys.UpstreamIdleTimeoutSec, 300);
+            Assert.Equal(300, service.UpstreamIdleTimeoutSec);
+            service.Set(SettingsKeys.UpstreamIdleTimeoutSec, 0);
+        }
+
+        using var reopened = Create();
+
+        Assert.Equal(0, reopened.UpstreamIdleTimeoutSec);
     }
 
     [Fact]
