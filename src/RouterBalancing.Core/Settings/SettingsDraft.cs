@@ -31,7 +31,7 @@ public sealed record SettingsDraft
 
     public int TransientBackoffBaseMs { get; set; } = 1000;
 
-    public int UpstreamIdleTimeoutSec { get; set; } = 300;
+    public int UpstreamIdleTimeoutSec { get; set; } = 0;
 
     /// <summary>Cooldown quota cấp provider (giây) — 0 = tắt cooldown (spec quota-gate).</summary>
     public int ProviderQuotaBlockSec { get; set; } = 120;

@@ -3,11 +3,19 @@ using RouterBalancing.Core.Settings;
 namespace router_balancing_test.Settings;
 
 /// <summary>
-/// Chốt chống đổi default của dataset export (spec dataset-export §7.6) — SettingsPanel là UI
-/// nên test ở đây chỉ assert default, không test markup.
+/// Chốt các default hành vi của Settings: tắt upstream idle watchdog và dataset export.
+/// SettingsPanel là UI nên test ở đây chỉ assert default, không test markup.
 /// </summary>
 public class SettingsDraftTests
 {
+    [Fact]
+    public void SettingsDraft_UpstreamIdleTimeout_DefaultsOff()
+    {
+        var draft = new SettingsDraft();
+
+        Assert.Equal(0, draft.UpstreamIdleTimeoutSec);
+    }
+
     /// <summary>
     /// Export mặc định TẮT, path rỗng (= mặc định AppData), retention 0 = giữ mãi — đổi bất kỳ
     /// giá trị nào là đổi hành vi của người dùng hiện có (mặc định phải fail-open).
