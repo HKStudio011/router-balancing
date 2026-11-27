@@ -65,4 +65,7 @@ Kết quả mong đợi: toàn bộ test pass, Windows build 0 warnings/errors, 
 - Focused suites đã pass cho parser, finite/infinite grace, resumed stream, handler/endpoint, dataset và event boundaries.
 - `git diff --check`: không có whitespace error.
 - Whole-branch review tìm thấy 2 blockers: blocking grace read không bị deadline giới hạn và mixed CR/LF boundaries bị bỏ sót. Cả hai đã được sửa bằng deadline-aware read và incremental line-ending scanner; regression tests mới đều pass trong full suite.
+- Scoped re-review phát hiện thêm trailing-CR race; scanner hiện defer CR cuối buffer cho tới khi byte kế tiếp phân biệt CR/CRLF. Verdict cuối: **Resolved, không còn Critical/Important issue**.
+- Deferred minors: caller cancellation đồng thởi với completed-read deadline và graceful tail write ngoài drain exception protection. Không thuộc hai blockers đã sửa và đã được ghi nhận cho follow-up riêng.
+- Spec Kit convergence: 20/20 requirements/outcomes, 12/12 plan decisions; không còn missing/partial/contradicts/unrequested finding.
 - Lưu ý môi trường: `dotnet test` orchestration trên long worktree path có handshake mismatch, nên verification dùng chính built MTP test application; CI vẫn phải chạy `dotnet test` trên runner sạch.
