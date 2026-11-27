@@ -1024,25 +1024,29 @@ public class ProxyRequestHandlerTests
     }
 
     [Fact]
-    public async Task ForwardAsync_WhenUpstreamEofWithIdleDisabled_LogsAppliedIdleTimeout()
+    public async Task ForwardAsync_WhenUpstreamEofWithInfiniteGrace_CancelsWithoutTimeout()
     {
         var log = new CapturingLog();
         var settings = new StubSettings { UpstreamIdleTimeoutSec = 0 };
-        var sut = Create(new StubUpstream(() => Upstream(200,
-            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "text/event-stream")),
-            log, settings: settings);
+        var upstream = new StubUpstream(() => Upstream(200,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "text/event-stream"));
+        var sut = Create(upstream, log, settings: settings);
+        using var cts = new CancellationTokenSource();
         var ctx = Ctx();
+        ctx.RequestAborted = cts.Token;
         ctx.Items[ClientKeyItems.RequestId] = "req-eof-idle-off";
         ctx.Items[SsePipeItems.Key] = new Pipe();
         var provider = SeedProvider();
 
-        var ex = await Assert.ThrowsAsync<UpstreamTruncatedException>(() =>
-            sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
-                AccountIdOf(provider), ProxyProtocols.Chat, default));
+        var forwardTask = sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+            AccountIdOf(provider), ProxyProtocols.Chat, cts.Token);
+        await Task.Delay(50);
+        cts.Cancel();
 
-        Assert.NotNull(ex.LastByteGap);
-        var diag = Assert.Single(log.Entries, entry => entry.Message.Contains("đứt stream"));
-        Assert.Contains("idle_timeout=0s", diag.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            forwardTask.WaitAsync(TimeSpan.FromMilliseconds(250)));
+        Assert.True(upstream.LastCt.IsCancellationRequested);
+        Assert.DoesNotContain(log.Entries, entry => entry.Message.Contains("đứt stream"));
     }
 
     [Fact]

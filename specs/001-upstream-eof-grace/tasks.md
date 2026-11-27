@@ -69,14 +69,14 @@ description: "Task list for Upstream EOF Grace implementation"
 
 ### Tests for User Story 2 ⚠️ Write first and observe RED
 
-- [ ] T015 [P] [US2] Add failing infinite-grace polling and strict client-cancellation tests in `router balancing test/Engine/UsageCaptureTests.cs`, including no overlapping reads, no app timeout and OCE propagation
-- [ ] T016 [P] [US2] Add failing endpoint keep-alive/client-abort coverage and update the old immediate-zero expectation in `router balancing test/Server/ProxyRetryIntegrationTests.cs` and `router balancing test/Engine/ProxyRequestHandlerTests.cs`; assert both server-side upstream cancellation and endpoint completion, not only client read completion
+- [X] T015 [P] [US2] Add failing infinite-grace polling and strict client-cancellation tests in `router balancing test/Engine/UsageCaptureTests.cs`, including no overlapping reads, no app timeout and OCE propagation
+- [X] T016 [P] [US2] Add failing endpoint keep-alive/client-abort coverage and update the old immediate-zero expectation in `router balancing test/Server/ProxyRetryIntegrationTests.cs` and `router balancing test/Engine/ProxyRequestHandlerTests.cs`; assert both server-side upstream cancellation and endpoint completion, not only client read completion
 
 ### Implementation for User Story 2
 
-- [ ] T017 [US2] Implement infinite-grace and cancellation behavior in `src/RouterBalancing.Core/Engine/UsageCapture.cs` and `src/RouterBalancing.Core/Engine/ProxyRequestHandler.cs` (depends on T010, T012, T015, T016); pass caller token through every delay/read and never translate caller OCE into timeout
-- [ ] T018 [US2] Update legacy immediate-EOF fixtures to explicit no-grace or finite-grace options where appropriate in `router balancing test/Engine/UsageCaptureTests.cs` and `router balancing test/Server/ProxyRetryIntegrationTests.cs` (depends on T017), preventing hangs while preserving legacy API coverage
-- [ ] T019 [US2] Add the explicit 10-minute zero-grace validation and its runnable filter in `router balancing test/Engine/UsageCaptureTests.cs` and `specs/001-upstream-eof-grace/quickstart.md`; keep it out of the default suite and assert keep-alive only at boundary
+- [X] T017 [US2] Implement infinite-grace and cancellation behavior in `src/RouterBalancing.Core/Engine/UsageCapture.cs` and `src/RouterBalancing.Core/Engine/ProxyRequestHandler.cs` (depends on T010, T012, T015, T016); pass caller token through every delay/read and never translate caller OCE into timeout
+- [X] T018 [US2] Update legacy immediate-EOF fixtures to explicit no-grace or finite-grace options where appropriate in `router balancing test/Engine/UsageCaptureTests.cs` and `router balancing test/Server/ProxyRetryIntegrationTests.cs` (depends on T017), preventing hangs while preserving legacy API coverage
+- [X] T019 [US2] Add the explicit 10-minute zero-grace validation and its runnable filter in `router balancing test/Engine/UsageCaptureTests.cs` and `specs/001-upstream-eof-grace/quickstart.md`; keep it out of the default suite and assert keep-alive only at boundary
 
 **Checkpoint**: User Story 2 is independently functional and green
 
@@ -90,13 +90,13 @@ description: "Task list for Upstream EOF Grace implementation"
 
 ### Tests for User Story 3 ⚠️ Write first and observe RED
 
-- [ ] T020 [P] [US3] Add failing partial-event resume, fresh-grace-after-resume, repeated peek and no-duplicate aggregation tests in `router balancing test/Engine/UsageCaptureTests.cs` and `router balancing test/Engine/SseDataEventParserTests.cs`; cite `data-model.md → Parser State` and `Grace Session Transitions` 6–7
-- [ ] T021 [P] [US3] Add failing resumed-byte framing/dataset integration tests in `router balancing test/Server/ProxyRetryIntegrationTests.cs`: pending event completes and flushes once, real terminal completes, no replay and no truncated record
+- [X] T020 [P] [US3] Add failing partial-event resume, fresh-grace-after-resume, repeated peek and no-duplicate aggregation tests in `router balancing test/Engine/UsageCaptureTests.cs` and `router balancing test/Engine/SseDataEventParserTests.cs`; cite `data-model.md → Parser State` and `Grace Session Transitions` 6–7
+- [X] T021 [P] [US3] Add failing resumed-byte framing/dataset integration tests in `router balancing test/Server/ProxyRetryIntegrationTests.cs`: pending event completes and flushes once, real terminal completes, no replay and no truncated record
 
 ### Implementation for User Story 3
 
-- [ ] T022 [US3] Implement resumed-byte transitions and fresh grace handling in `src/RouterBalancing.Core/Engine/UsageCapture.cs`, with parser adjustments limited to `src/RouterBalancing.Core/Engine/SseDataEventParser.cs` only if a RED test proves necessary (depends on T020 and T021); forward original bytes before processing and never feed synthetic delimiters
-- [ ] T023 [US3] Run resumed-stream, exact-terminal, dataset and event-boundary regressions in `router balancing test/Engine/UsageCaptureTests.cs`, `router balancing test/Engine/SseDataEventParserTests.cs`, `router balancing test/Server/StreamLoopTests.cs` and `router balancing test/Server/ProxyRetryIntegrationTests.cs`
+- [X] T022 [US3] Implement resumed-byte transitions and fresh grace handling in `src/RouterBalancing.Core/Engine/UsageCapture.cs`, with parser adjustments limited to `src/RouterBalancing.Core/Engine/SseDataEventParser.cs` only if a RED test proves necessary (depends on T020 and T021); forward original bytes before processing and never feed synthetic delimiters
+- [X] T023 [US3] Run resumed-stream, exact-terminal, dataset and event-boundary regressions in `router balancing test/Engine/UsageCaptureTests.cs`, `router balancing test/Engine/SseDataEventParserTests.cs`, `router balancing test/Server/StreamLoopTests.cs` and `router balancing test/Server/ProxyRetryIntegrationTests.cs`
 
 **Checkpoint**: All three user stories are independently functional and green
 

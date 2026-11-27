@@ -37,7 +37,7 @@ Chạy kịch bản explicit với grace vô hạn ở event boundary, giữ str
 Test này là explicit long test, không nằm trong suite mặc định. Command filter chính xác sẽ trỏ tới test `TeeSse_ZeroGrace_TenMinutes_RemainsActiveUntilClientCancellation` sau khi task tạo fixture.
 
 ```powershell
-dotnet test "router balancing test/router balancing test.csproj" -- --filter-method "*TeeSse_ZeroGrace_TenMinutes_RemainsActiveUntilClientCancellation"
+dotnet test "router balancing test/router balancing test.csproj" -- --explicit only --filter-method "*TeeSse_ZeroGrace_TenMinutes_RemainsActiveUntilClientCancellation"
 ```
 
 ## Full Verification

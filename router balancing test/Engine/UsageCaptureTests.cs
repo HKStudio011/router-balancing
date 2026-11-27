@@ -1,6 +1,9 @@
+using System.IO.Pipelines;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
+using RouterBalancing.Core.Server;
 using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
@@ -596,6 +599,122 @@ public class UsageCaptureTests
         Assert.True(result.TerminalWaitTimedOut);
         Assert.Equal([TimeSpan.FromMilliseconds(500)], clock.Delays);
         Assert.Equal(3, source.ReadCount);
+    }
+
+    [Fact]
+    public async Task TeeSse_ZeroGrace_WaitsUntilClientCancellationWithoutTimeout()
+    {
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+            ResumableSseStream.Eof());
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+        using var cts = new CancellationTokenSource();
+
+        var teeTask = UsageCapture.TeeSseAsync(source, dest, cts.Token,
+            gracePeriod: Timeout.InfiniteTimeSpan, graceClock: clock);
+        while (clock.Delays.Count < 2)
+        {
+            Assert.False(teeTask.IsCompleted);
+            await Task.Yield();
+        }
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            teeTask.WaitAsync(TimeSpan.FromMilliseconds(250)));
+        Assert.Equal(1, source.MaxConcurrentReads);
+        Assert.True(source.ReadCount >= 3);
+        Assert.All(clock.Delays, delay => Assert.Equal(TimeSpan.FromSeconds(1), delay));
+    }
+
+    [Fact(Explicit = true)]
+    public async Task TeeSse_ZeroGrace_TenMinutes_RemainsActiveUntilClientCancellation()
+    {
+        const string content = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content(content), ResumableSseStream.Eof());
+        using var cts = new CancellationTokenSource();
+        var ctx = new DefaultHttpContext { RequestAborted = cts.Token };
+        var responseBody = new MemoryStream();
+        ctx.Response.Body = responseBody;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var teeTask = UsageCapture.TeeSseAsync(source, pipe.Writer.AsStream(), cts.Token,
+            gracePeriod: Timeout.InfiniteTimeSpan);
+        var loopTask = ProxyApp.RunStreamLoopAsync(ctx, pipe, completion.Task);
+
+        await Task.Delay(TimeSpan.FromMinutes(10));
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            teeTask.WaitAsync(TimeSpan.FromMilliseconds(250)));
+        completion.SetResult(new DispatchOutcome.Aborted());
+        var (outcome, contentBytes, upstreamBytes) = await loopTask.WaitAsync(
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.IsType<DispatchOutcome.Aborted>(outcome);
+        Assert.Equal(content.Length, contentBytes);
+        Assert.Equal(content.Length, upstreamBytes);
+        var responseText = Encoding.UTF8.GetString(responseBody.ToArray());
+        var keepAliveCount = responseText.Split(": keep-alive\n\n").Length - 1;
+        Assert.InRange(keepAliveCount, 100, 130);
+        Assert.DoesNotContain("timeout_waiting_for_terminal", responseText);
+        Assert.Equal(1, source.MaxConcurrentReads);
+    }
+
+    [Fact]
+    public async Task TeeSse_PartialEventResumedAfterEof_ForwardsAndCapturesEventExactlyOnce()
+    {
+        const string first = "data: {\"choices\":[{\"delta\":{\"content\":\"He";
+        const string resumed = "llo\"}}]}\n\n";
+        const string terminal = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        const string done = "data: [DONE]\n\n";
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content(first),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Content(resumed),
+            ResumableSseStream.Content(terminal),
+            ResumableSseStream.Content(done),
+            ResumableSseStream.Eof());
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+
+        var result = await UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+            captureCompletion: true, gracePeriod: TimeSpan.FromSeconds(3), graceClock: clock);
+
+        Assert.False(result.EndedWithoutTerminal);
+        Assert.False(result.TerminalWaitTimedOut);
+        Assert.True(result.CompletionComplete);
+        Assert.Equal(first + resumed + terminal + done, Encoding.UTF8.GetString(dest.ToArray()));
+        Assert.Equal([TimeSpan.FromSeconds(1)], clock.Delays);
+        Assert.NotNull(result.CompletionJson);
+        using var doc = JsonDocument.Parse(result.CompletionJson!);
+        Assert.Equal("Hello", doc.RootElement.GetProperty("choices")[0]
+            .GetProperty("message").GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task TeeSse_EofAfterResume_StartsFreshFullGrace()
+    {
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: one\n\n"),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Content("data: two\n\n"),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof());
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+
+        var result = await UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+            gracePeriod: TimeSpan.FromSeconds(3), graceClock: clock);
+
+        Assert.True(result.TerminalWaitTimedOut);
+        Assert.Equal(TimeSpan.FromSeconds(4), clock.GetElapsedTime(0));
+        Assert.Equal(4, clock.Delays.Count);
+        Assert.All(clock.Delays, delay => Assert.Equal(TimeSpan.FromSeconds(1), delay));
+        Assert.Equal(1, source.MaxConcurrentReads);
     }
 
     [Fact]
