@@ -62,6 +62,41 @@ public class SseDataEventParserTests
     }
 
     [Fact]
+    public void PeekFinish_PartialDataThenMoreBytes_PreservesEventWithoutDuplication()
+    {
+        var parser = new SseDataEventParser();
+        Assert.Empty(parser.HandleChunk(Encoding.UTF8.GetBytes("data: first\n")));
+
+        var peeked = parser.PeekFinish();
+
+        Assert.Equal("data: first", Encoding.UTF8.GetString(peeked!));
+        var resumed = Assert.Single(parser.HandleChunk(Encoding.UTF8.GetBytes("data: second\n\n")));
+        Assert.Equal("data: first\nsecond", Encoding.UTF8.GetString(resumed));
+        Assert.Null(parser.PeekFinish());
+    }
+
+    [Fact]
+    public void PeekFinish_MultilineAndPendingCr_MatchesFinishWithoutMutatingState()
+    {
+        var parser = new SseDataEventParser();
+        var control = new SseDataEventParser();
+        foreach (var chunk in new[] { "data: first\r", "\ndata: second\r" })
+        {
+            var bytes = Encoding.UTF8.GetBytes(chunk);
+            Assert.Empty(parser.HandleChunk(bytes));
+            Assert.Empty(control.HandleChunk(bytes));
+        }
+
+        var expected = control.Finish();
+        var firstPeek = parser.PeekFinish();
+        var secondPeek = parser.PeekFinish();
+
+        Assert.Equal(expected, firstPeek);
+        Assert.Equal(firstPeek, secondPeek);
+        Assert.Equal(expected, parser.Finish());
+    }
+
+    [Fact]
     public void EmptyDataAndEmptyStream_DoNotProduceEvents()
     {
         Assert.Empty(Parse("data: \n\n"));

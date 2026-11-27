@@ -293,7 +293,8 @@ public static class ProxyApp
         // client nhận head khi request còn trong queue; content/keep-alive/in-band error
         // do loop phía dưới forward qua pipe. Non-stream giữ nguyên đường cũ.
         DispatchOutcome outcome;
-        long contentBytes = 0;   // CHỈ byte từ pipe — keep-alive không đếm (phân loại #7/#8)
+        long contentBytes = 0;   // CHỈ event bytes thật sự ghi xuống wire — keep-alive không đếm
+        long upstreamBytes = 0;  // Mọi byte upstream nhận được, kể cả fragment chưa forward
         if (prepared.IsStream)
         {
             var pipe = ssePipe!; // đã publish vào Items TRƯỚC enqueue — xem comment trên
@@ -315,7 +316,7 @@ public static class ProxyApp
                 // G2: head đã commit 200 — đánh dấu cho trace (stream only; non-stream không có flush point)
                 trace.Publish(new TraceEvent(id, TraceStage.Received, request.Model,
                     null, null, null, null, null, DateTimeOffset.Now, HeadersSent: true));
-                (outcome, contentBytes) =
+                (outcome, contentBytes, upstreamBytes) =
                     await RunStreamLoopAsync(ctx, pipe, request.Completion.Task);
             }
             catch (OperationCanceledException)
@@ -343,7 +344,7 @@ public static class ProxyApp
         // Override đỏ #7 (spec early-headers §4.3): stream chết TRƯỚC khi có byte content
         // nào (Aborted, 0 contentBytes, client còn nối) = lỗi server, không phải client
         // ngắt — row đỏ status 500 dù wire là 200.
-        if (prepared.IsStream && contentBytes == 0 && outcome is DispatchOutcome.Aborted
+        if (prepared.IsStream && upstreamBytes == 0 && outcome is DispatchOutcome.Aborted
             && !ctx.RequestAborted.IsCancellationRequested)
         {
             stage = TraceStage.Finished;
@@ -407,7 +408,7 @@ public static class ProxyApp
                     });
                     await WriteInBand(ctx, SseErrorEvent.Cancelled());
                     break;
-                case DispatchOutcome.Aborted when contentBytes == 0
+                case DispatchOutcome.Aborted when upstreamBytes == 0
                     && !ctx.RequestAborted.IsCancellationRequested:
                     // Upstream chết trước tee, chưa byte nào tới client — fault in-band (#7)
                     // Điểm #3 (spec §4.3): breadcrumb "sự thật trên wire" — ghi TRƯỚC WriteInBand để còn
@@ -432,7 +433,26 @@ public static class ProxyApp
                     }
                     await WriteInBand(ctx, SseErrorEvent.ServerFault());
                     break;
-                case DispatchOutcome.Aborted when contentBytes > 0
+                case DispatchOutcome.Aborted aborted when aborted.TerminalWaitTimedOut
+                    && upstreamBytes > 0 && !ctx.RequestAborted.IsCancellationRequested:
+                    try
+                    {
+                        log.Write(new LogEntry
+                        {
+                            Severity = LogSeverity.Warning,
+                            Category = LogCategory.Request,
+                            Message = $"Stream chết sau {contentBytes} byte content — trả in-band timeout_waiting_for_terminal (request {id}).",
+                            RequestId = id,
+                            ClientKeyId = ClientKeyItems.IdOf(ctx),
+                        });
+                    }
+                    catch
+                    {
+                        // Chẩn đoán không được chặn event lỗi tới client.
+                    }
+                    await WriteInBand(ctx, SseErrorEvent.TerminalWaitTimeout());
+                    break;
+                case DispatchOutcome.Aborted when upstreamBytes > 0
                     && !ctx.RequestAborted.IsCancellationRequested:
                     // Upstream cắt giữa chừng (HttpIOException mid-SSE) — client đang đọc
                     // phải biết stream cụt để discard tool-call partial, không parse JSON hụt;
@@ -717,25 +737,25 @@ public static class ProxyApp
     /// <summary>Frame SSE comment — parser bỏ qua, chỉ có tác dụng đẩy byte trên wire.</summary>
     private static readonly byte[] KeepAliveComment = ": keep-alive\n\n"u8.ToArray();
 
+    private const int MaxPendingEventBytes = 1024 * 1024;
+
     /// <summary>
-    /// Forward pipe → Response.Body trong lúc chờ outcome: quá hạn chưa có data thì viết
-    /// keep-alive (CHỈ ở line boundary — xem <see cref="KeepAliveComment"/>); outcome về
-    /// thì complete writer và drain nốt phần còn lại. Trả số byte content đã forward
-    /// (keep-alive KHÔNG đếm) — quyết định phân loại #7/#8 ở caller.
+    /// Forward pipe → Response.Body theo event boundary: fragment ở lại pending nên keep-alive
+    /// luôn bắt đầu tại boundary. Outcome về thì complete writer và drain phần còn lại;
+    /// graceful tail được flush, abnormal tail bị loại trước khi caller append in-band error.
     /// </summary>
     /// <param name="ctx">Context đã commit head 200+event-stream (flush point ở caller).</param>
     /// <param name="pipe">Pipe handler 2xx dùng làm dest tee.</param>
     /// <param name="completion">Task outcome của request — endpoint là người chờ duy nhất.</param>
-    /// <returns>Outcome cuối và tổng byte content đã ghi xuống wire.</returns>
-    internal static async Task<(DispatchOutcome Outcome, long ContentBytes)> RunStreamLoopAsync(
+    /// <returns>Outcome, byte event thật sự ghi xuống wire và tổng byte upstream đã nhận.</returns>
+    internal static async Task<(DispatchOutcome Outcome, long ContentBytes, long UpstreamBytes)> RunStreamLoopAsync(
         HttpContext ctx, Pipe pipe, Task<DispatchOutcome> completion)
     {
         var ct = ctx.RequestAborted;
         var readTask = pipe.Reader.ReadAsync(ct).AsTask();
         long contentBytes = 0;
-        // false = đang giữa dòng data (byte cuối forward chưa phải \n): keep-alive bị skip —
-        // TCP split mid-JSON + pause >5s là common case khi stream tool-call từ model chậm
-        var atLineStart = true;
+        long upstreamBytes = 0;
+        using var pending = new MemoryStream();
         try
         {
             while (true)
@@ -752,49 +772,40 @@ public static class ProxyApp
                     var result = await readTask;
                     if (result.Buffer.Length > 0)
                     {
-                        byte lastByte = 0;
                         foreach (var segment in result.Buffer)
                         {
-                            await ctx.Response.Body.WriteAsync(segment, ct);
-                            contentBytes += segment.Length;
-                            if (segment.Length > 0)
-                                lastByte = segment.Span[^1];
+                            upstreamBytes += segment.Length;
+                            pending.Write(segment.Span);
                         }
-                        atLineStart = lastByte == (byte)'\n';
+                        await FlushCompleteEventsAsync(pending, ctx.Response.Body,
+                            () => contentBytes, value => contentBytes = value, ct);
+                        EnsurePendingWithinCap(pending);
                         pipe.Reader.AdvanceTo(result.Buffer.End);
                     }
                     else
                     {
-                        // Read rỗng (writer chưa có gì) — chỉ re-arm, không advance
                         pipe.Reader.AdvanceTo(result.Buffer.Start);
                     }
                     if (result.IsCompleted)
                     {
-                        // Writer complete TRƯỚC khi outcome về (ordering ngoài invariant
-                        // "endpoint là completer duy nhất" — test mô phỏng được): re-arm sẽ
-                        // trả task completed ngay, WhenAny luôn chọn readTask (đầu args) →
-                        // spin vô hạn, không bao giờ thoát bằng completion. Drain bên dưới
-                        // xử lý phần còn lại — đọc lại task MỚI (result cũ đã advance rồi).
+                        // Re-arm bằng read không-cancel để drain phần cuối sau khi writer complete.
                         readTask = pipe.Reader.ReadAsync(CancellationToken.None).AsTask();
                         break;
                     }
                     readTask = pipe.Reader.ReadAsync(ct).AsTask();
                 }
-                else if (atLineStart)
+                else
                 {
-                    // KeepAliveIntervalMs trôi qua chưa có data, đang ở boundary → comment giữ kết nối
+                    // Pending chưa từng rồi endpoint nên wire luôn ở event boundary.
                     await ctx.Response.Body.WriteAsync(KeepAliveComment, ct);
                 }
-                // atLineStart=false: im lặng — chèn ": keep-alive" giữa dòng data chưa đóng
-                // làm \n\n của comment đóng nhầm dòng → client gộp JSON cụt + comment thành
-                // 1 event sai định dạng (bug 2026-10-16)
             }
         }
         catch (OperationCanceledException)
         {
             // Client ngắt giữa loop: Register/Dispatcher LUÔN set outcome khi abort —
             // await completion không deadlock (đó là lý do abort không cần timeout ở đây)
-            return (await completion, contentBytes);
+            return (await completion, contentBytes, upstreamBytes);
         }
         finally
         {
@@ -821,24 +832,72 @@ public static class ProxyApp
                 {
                     foreach (var segment in result.Buffer)
                     {
-                        await ctx.Response.Body.WriteAsync(segment, CancellationToken.None);
-                        contentBytes += segment.Length;
+                        upstreamBytes += segment.Length;
+                        pending.Write(segment.Span);
                     }
+                    await FlushCompleteEventsAsync(pending, ctx.Response.Body,
+                        () => contentBytes, value => contentBytes = value, CancellationToken.None);
+                    EnsurePendingWithinCap(pending);
                 }
                 pipe.Reader.AdvanceTo(result.Buffer.End);
                 if (result.IsCompleted)
                     break;
                 readTask = pipe.Reader.ReadAsync(CancellationToken.None).AsTask();
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is not UpstreamStreamDiedException)
             {
-                // IOException/OCE khi client đã chết lúc drain — KHÔNG propagate: publish H4
-                // chưa chạy (nằm sau outcome ở caller) → phải rơi về classification như chủ
-                // đích "viết response có thể nổ" đã phòng. contentBytes tới đây đủ phân loại.
+                // Client đã chết lúc drain: giữ classification hiện có, không propagate lỗi ghi.
                 break;
             }
         }
-        return (await completion, contentBytes);
+        var outcome = await completion;
+        if (outcome is DispatchOutcome.Handled && pending.Length > 0)
+        {
+            // EOF cũng dispatch event cuối dù chưa có blank line; outcome Handled chỉ có khi
+            // protocol đã xác nhận terminal hợp lệ nên tail này không phải fragment bị loại.
+            await ctx.Response.Body.WriteAsync(pending.GetBuffer().AsMemory(0, (int)pending.Length),
+                CancellationToken.None);
+            contentBytes += pending.Length;
+        }
+        return (outcome, contentBytes, upstreamBytes);
+    }
+
+    private static async Task FlushCompleteEventsAsync(MemoryStream pending, Stream destination,
+        Func<long> getContentBytes, Action<long> setContentBytes, CancellationToken ct)
+    {
+        var boundaryEnd = LastEventBoundaryEnd(pending.GetBuffer().AsSpan(0, (int)pending.Length));
+        if (boundaryEnd <= 0) return;
+
+        await destination.WriteAsync(pending.GetBuffer().AsMemory(0, boundaryEnd), ct);
+        setContentBytes(getContentBytes() + boundaryEnd);
+
+        var remaining = pending.GetBuffer().AsSpan(boundaryEnd,
+            (int)pending.Length - boundaryEnd).ToArray();
+        pending.SetLength(0);
+        pending.Write(remaining);
+    }
+
+    private static int LastEventBoundaryEnd(ReadOnlySpan<byte> buffer)
+    {
+        var boundaryEnd = 0;
+        for (var i = 0; i < buffer.Length - 1; i++)
+        {
+            if ((buffer[i] == (byte)'\n' && buffer[i + 1] == (byte)'\n')
+                || (buffer[i] == (byte)'\r' && buffer[i + 1] == (byte)'\r'))
+                boundaryEnd = i + 2;
+            else if (i + 3 < buffer.Length
+                && buffer[i] == (byte)'\r' && buffer[i + 1] == (byte)'\n'
+                && buffer[i + 2] == (byte)'\r' && buffer[i + 3] == (byte)'\n')
+                boundaryEnd = i + 4;
+        }
+        return boundaryEnd;
+    }
+
+    private static void EnsurePendingWithinCap(MemoryStream pending)
+    {
+        if (pending.Length <= MaxPendingEventBytes) return;
+        throw new UpstreamStreamDiedException(
+            new InvalidDataException("pending SSE event exceeds 1 MiB"), TimeSpan.Zero);
     }
 
     /// <summary>

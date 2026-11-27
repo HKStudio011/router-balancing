@@ -622,21 +622,23 @@ public class ProxyRetryIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Stream_WhenUpstreamEndsCleanlyMidStream_EmitsInBandUpstreamLostEvent()
+    public async Task Stream_WhenTerminalWaitTimesOut_EmitsDistinctErrorWithoutDoneOrRetry()
     {
         SeedProvider("p-main", maxConcurrent: 4, "m1");
+        _settings.Set(SettingsKeys.UpstreamIdleTimeoutSec, 1);
         var upstream = new ScriptedUpstream((_, _) => SseCleanEof());
         var client = await StartAsync(upstream);
 
         var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        // EOF sạch nhưng thiếu terminal sau content vẫn là upstream cắt cụt: client phải nhận
-        // lỗi in-band để discard partial, monitor ghi network và không retry sau content.
+        // Grace hết mà vẫn không có byte mới: client nhận timeout riêng, không retry và
+        // không có terminal giả. Monitor vẫn là mid-content network failure.
         var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.StartsWith("data: {\"x\":1}\n\n", body);
-        Assert.Contains("\"code\":\"upstream_disconnected\"", body);
-        Assert.Equal(1, body.Split("\"code\":\"upstream_disconnected\"").Length - 1);
+        Assert.Contains("\"code\":\"timeout_waiting_for_terminal\"", body);
+        Assert.Equal(1, body.Split("\"code\":\"timeout_waiting_for_terminal\"").Length - 1);
+        Assert.DoesNotContain("upstream_disconnected", body);
         Assert.Contains("\"type\":\"error\"", body);
         Assert.DoesNotContain("[DONE]", body);
         Assert.DoesNotContain("finish_reason", body);
@@ -647,9 +649,9 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal("network", record.FailureKind);
         Assert.Equal(1, upstream.Calls);
         Assert.Contains(_messages, message => message.Contains("Stream chết sau 15 byte content")
-            && message.Contains("upstream_disconnected") && message.Contains(id));
-        Assert.Equal(1, _messages.Count(message => message.Contains("upstream_disconnected")));
-        Assert.Contains(_details, details => details.Contains("silence_gap="));
+            && message.Contains("timeout_waiting_for_terminal") && message.Contains(id));
+        Assert.Equal(1, _messages.Count(message => message.Contains("timeout_waiting_for_terminal")));
+        Assert.Contains(_details, details => details.Contains("UpstreamTerminalTimeoutException"));
         Assert.DoesNotContain("{\"x\":1}", string.Join('\n', _messages.Concat(_details)));
     }
 

@@ -305,7 +305,10 @@ public sealed class DispatcherLoop(
                     // Nuốt chủ đích: "log không được làm hỏng request path"
                 }
                 outcome = request.Context.Response.HasStarted
-                    ? new DispatchOutcome.Aborted()
+                    ? new DispatchOutcome.Aborted
+                    {
+                        TerminalWaitTimedOut = ex is UpstreamTerminalTimeoutException,
+                    }
                     : new DispatchOutcome.Error(500, "Internal server error", "server_error", null, null);
             }
 

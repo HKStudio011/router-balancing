@@ -7,18 +7,13 @@ using RouterBalancing.Core.Server;
 namespace router_balancing_test.Server;
 
 /// <summary>
-/// Unit test trực tiếp <see cref="ProxyApp.RunStreamLoopAsync"/> — nhánh keep-alive SSE
-/// (bug 2026-10-16: keep-alive dính giữa dòng data chưa đóng phá framing — client parse
-/// JSON lỗi: "Expected ',' or '}' ... position 96" đúng sau chuỗi cắt + ": keep-alive").
+/// Unit test trực tiếp <see cref="ProxyApp.RunStreamLoopAsync"/> — event buffering,
+/// keep-alive, drain và hai byte counters.
 /// </summary>
 public class StreamLoopTests
 {
-    /// <summary>
-    /// Dòng <c>data:</c> chưa đóng (TCP split mid-JSON) thì keep-alive KHÔNG được viết —
-    /// comment dính vào dòng cụt sẽ bị client gộp vào cùng dòng → JSON hỏng.
-    /// </summary>
     [Fact]
-    public async Task RunStreamLoop_DataLineNotTerminated_SkipsKeepAliveUntilBoundary()
+    public async Task RunStreamLoop_PartialEventBeforeBoundary_BuffersAndKeepsAlive()
     {
         var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
         var body = new MemoryStream();
@@ -26,35 +21,127 @@ public class StreamLoopTests
         var pipe = new Pipe();
         var completion = new TaskCompletionSource<DispatchOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-
-        // Nửa dòng JSON không có \n — mô phỏng upstream chunk bị cắt giữa chừng
         var partial = "data: {\"created\":179212631"u8.ToArray();
+        var keepAlive = ": keep-alive\n\n"u8.ToArray();
+        var fullEvent = "data: {\"created\":179212631}\n\n"u8.ToArray();
         await pipe.Writer.WriteAsync(partial);
         await pipe.Writer.FlushAsync();
 
         var loop = ProxyApp.RunStreamLoopAsync(ctx, pipe, completion.Task);
 
-        // Quá KeepAliveIntervalMs (5s) mà dòng chưa đóng — im lặng, không giữ kết nối bằng cách phá framing
+        // Fragment chưa được forward, nên wire vẫn ở boundary và keep-alive an toàn.
         await Task.Delay(TimeSpan.FromMilliseconds(5500));
-        Assert.Equal(partial, body.ToArray());
+        Assert.Equal(keepAlive, body.ToArray());
 
-        // Đóng dòng + outcome về → drain nốt phần còn lại, loop thoát
         await pipe.Writer.WriteAsync("}\n\n"u8.ToArray());
         await pipe.Writer.FlushAsync();
         pipe.Writer.Complete();
         completion.SetResult(new DispatchOutcome.Handled());
 
-        var (outcome, contentBytes) = await loop.WaitAsync(TimeSpan.FromSeconds(10));
+        var (outcome, contentBytes, upstreamBytes) = await loop.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.IsType<DispatchOutcome.Handled>(outcome);
-        Assert.Equal(partial.Length + 3, contentBytes);
-        Assert.Equal("data: {\"created\":179212631}\n\n", Encoding.UTF8.GetString(body.ToArray()));
+        Assert.Equal(fullEvent.Length, contentBytes);
+        Assert.Equal(fullEvent.Length, upstreamBytes);
+        Assert.Equal(keepAlive.Concat(fullEvent).ToArray(), body.ToArray());
+    }
+
+    [Fact]
+    public async Task RunStreamLoop_PartialEventThenAborted_DropsFragmentButCountsUpstreamBytes()
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var partial = "data: {\"choices\":["u8.ToArray();
+        await pipe.Writer.WriteAsync(partial);
+        await pipe.Writer.FlushAsync();
+        completion.SetResult(new DispatchOutcome.Aborted());
+
+        var (outcome, contentBytes, upstreamBytes) = await ProxyApp.RunStreamLoopAsync(
+            ctx, pipe, completion.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsType<DispatchOutcome.Aborted>(outcome);
+        Assert.Equal(0, contentBytes);
+        Assert.Equal(partial.Length, upstreamBytes);
+        Assert.Empty(body.ToArray());
+    }
+
+    [Fact]
+    public async Task RunStreamLoop_CompleteEventSplitAcrossReads_ForwardsOnlyAtBoundary()
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await pipe.Writer.WriteAsync("data: one\n"u8.ToArray());
+        await pipe.Writer.FlushAsync();
+
+        var loop = ProxyApp.RunStreamLoopAsync(ctx, pipe, completion.Task);
+        await Task.Delay(100);
+        Assert.Empty(body.ToArray());
+
+        var tail = "data: two\n\n"u8.ToArray();
+        await pipe.Writer.WriteAsync(tail);
+        await pipe.Writer.FlushAsync();
+        completion.SetResult(new DispatchOutcome.Handled());
+        var fullEvent = "data: one\ndata: two\n\n"u8.ToArray();
+
+        var (outcome, contentBytes, upstreamBytes) = await loop.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(fullEvent.Length, contentBytes);
+        Assert.Equal(fullEvent.Length, upstreamBytes);
+        Assert.Equal(fullEvent, body.ToArray());
+    }
+
+    [Fact]
+    public async Task RunStreamLoop_HandledWithoutBlankLine_FlushesTailAtEof()
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var tail = "data: [DONE]"u8.ToArray();
+        await pipe.Writer.WriteAsync(tail);
+        await pipe.Writer.FlushAsync();
+        completion.SetResult(new DispatchOutcome.Handled());
+
+        var (outcome, contentBytes, upstreamBytes) = await ProxyApp.RunStreamLoopAsync(
+            ctx, pipe, completion.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(tail.Length, contentBytes);
+        Assert.Equal(tail.Length, upstreamBytes);
+        Assert.Equal(tail, body.ToArray());
+    }
+
+    [Fact]
+    public async Task RunStreamLoop_PendingEventOverOneMiB_ThrowsUpstreamStreamDied()
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        ctx.Response.Body = new MemoryStream();
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var loop = ProxyApp.RunStreamLoopAsync(ctx, pipe, completion.Task);
+        var writeTask = pipe.Writer.WriteAsync(new byte[1024 * 1024 + 1]);
+
+        await Assert.ThrowsAsync<UpstreamStreamDiedException>(() =>
+            loop.WaitAsync(TimeSpan.FromMilliseconds(200)));
+        pipe.Writer.Complete();
+        _ = writeTask.AsTask().ContinueWith(static task => { _ = task.Exception; },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <summary>
     /// Client chết ở tầng write (keep-alive ném OCE) khi read còn pending → loop phải rời qua
-    /// nhánh catch-abort (await completion, không deadlock không cần timeout) và trả đúng
-    /// outcome; task read bị bỏ rơi ở chính nhánh này được observe bởi finally — trước đây
-    /// nó faulted/OCE không ai đọc → finalizer ném lại làm sập tiến trình (lỗi 2026-10-19).
+    /// nhánh catch-abort (await completion, không deadlock không cần timeout) và trả đúng outcome.
     /// </summary>
     [Fact]
     public async Task RunStreamLoop_KeepAliveWriteThrowsOce_ReturnsOutcomeWhenCompletionArrives()
@@ -66,17 +153,15 @@ public class StreamLoopTests
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         var loop = ProxyApp.RunStreamLoopAsync(ctx, pipe, completion.Task);
-
-        // Chưa có data (read pending) + chưa outcome: sau KeepAliveIntervalMs (5s) loop chạm
-        // keep-alive đầu tiên → write ném OCE → rơi vào catch abort, chờ completion
         await Task.Delay(TimeSpan.FromMilliseconds(5600));
         Assert.False(loop.IsCompleted);
 
         completion.SetResult(new DispatchOutcome.Aborted());
 
-        var (outcome, contentBytes) = await loop.WaitAsync(TimeSpan.FromSeconds(10));
+        var (outcome, contentBytes, upstreamBytes) = await loop.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.IsType<DispatchOutcome.Aborted>(outcome);
         Assert.Equal(0, contentBytes);
+        Assert.Equal(0, upstreamBytes);
 
         pipe.Writer.Complete();
     }

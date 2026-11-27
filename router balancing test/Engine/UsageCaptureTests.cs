@@ -540,6 +540,115 @@ public class UsageCaptureTests
     }
 
     [Fact]
+    public async Task TeeSse_NullGraceOption_CleanEofKeepsImmediateLegacyResult()
+    {
+        const string sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(
+            new MemoryStream(Encoding.UTF8.GetBytes(sse)), dest, CancellationToken.None,
+            gracePeriod: null);
+
+        Assert.True(result.EndedWithoutTerminal);
+        Assert.Equal(sse, Encoding.UTF8.GetString(dest.ToArray()));
+    }
+
+    [Fact]
+    public async Task TeeSse_FiniteGraceWithoutBytes_TimesOutAtDeadlineAfterFinalRead()
+    {
+        const string content = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content(content),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof());
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+
+        var result = await UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+            gracePeriod: TimeSpan.FromSeconds(3), graceClock: clock);
+
+        Assert.True(result.EndedWithoutTerminal);
+        Assert.True(result.TerminalWaitTimedOut);
+        Assert.False(result.CompletionComplete);
+        Assert.Equal(content, Encoding.UTF8.GetString(dest.ToArray()));
+        Assert.Equal(5, source.ReadCount); // content + initial EOF + 3 polling reads
+        Assert.Equal(1, source.MaxConcurrentReads);
+        Assert.Equal([
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1),
+        ], clock.Delays);
+    }
+
+    [Fact]
+    public async Task TeeSse_GraceShorterThanPollInterval_ReadsAtDeadlineThenTimesOut()
+    {
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof());
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+
+        var result = await UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+            gracePeriod: TimeSpan.FromMilliseconds(500), graceClock: clock);
+
+        Assert.True(result.TerminalWaitTimedOut);
+        Assert.Equal([TimeSpan.FromMilliseconds(500)], clock.Delays);
+        Assert.Equal(3, source.ReadCount);
+    }
+
+    [Fact]
+    public async Task TeeSse_PreContentEof_WithInfiniteGrace_KeepsImmediateFailoverMarker()
+    {
+        using var source = new ResumableSseStream(ResumableSseStream.Eof());
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+
+        await Assert.ThrowsAsync<UpstreamDiedBeforeContentException>(() =>
+            UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+                gracePeriod: Timeout.InfiniteTimeSpan, graceClock: clock));
+
+        Assert.Empty(clock.Delays);
+        Assert.Equal(1, source.ReadCount);
+    }
+
+    [Fact]
+    public async Task TeeSse_TransportExceptionDuringGrace_RethrowsOriginalIOException()
+    {
+        var failure = new IOException("upstream reset during grace");
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Failure(failure));
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+
+        var actual = await Assert.ThrowsAsync<IOException>(() =>
+            UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+                gracePeriod: TimeSpan.FromSeconds(3), graceClock: clock));
+
+        Assert.Same(failure, actual);
+        Assert.Equal([TimeSpan.FromSeconds(1)], clock.Delays);
+    }
+
+    [Fact]
+    public async Task TeeSse_CompleteTerminalTailAtEof_DoesNotEnterGrace()
+    {
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: [DONE]"),
+            ResumableSseStream.Eof());
+        using var dest = new MemoryStream();
+        var clock = new DeterministicGraceClock();
+
+        var result = await UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+            gracePeriod: TimeSpan.FromSeconds(3), graceClock: clock);
+
+        Assert.False(result.EndedWithoutTerminal);
+        Assert.Empty(clock.Delays);
+    }
+
+    [Fact]
     public async Task TeeSse_CleanEofBeforeAnyByte_ThrowsPreContentMarker()
     {
         using var dest = new MemoryStream();

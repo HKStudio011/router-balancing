@@ -996,6 +996,34 @@ public class ProxyRequestHandlerTests
     }
 
     [Fact]
+    public async Task ForwardAsync_WhenTerminalWaitTimesOut_ThrowsDistinctExceptionWithoutDatasetCapture()
+    {
+        var log = new CapturingLog();
+        var monitor = new ApiMonitorStore(new TraceFeed(log), log, TimeProvider.System);
+        var settings = new StubSettings { UpstreamIdleTimeoutSec = 1, DatasetExportEnabled = true };
+        var upstream = new StubUpstream(() => Upstream(200,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "text/event-stream"));
+        var dataset = new CapturingDatasetSink();
+        var sut = Create(upstream, log, monitor: monitor, settings: settings, dataset: dataset);
+        var ctx = Ctx();
+        ctx.Items[ClientKeyItems.RequestId] = "req-terminal-timeout";
+        ctx.Items[SsePipeItems.Key] = new Pipe();
+        var provider = SeedProvider();
+
+        var ex = await Assert.ThrowsAsync<UpstreamTerminalTimeoutException>(() =>
+            sut.ForwardAsync(ctx, provider, ModelOf(provider), Body(ValidJson),
+                AccountIdOf(provider), ProxyProtocols.Chat, default)
+                .WaitAsync(TimeSpan.FromSeconds(3)));
+
+        Assert.Equal(TimeSpan.FromSeconds(1), ex.GracePeriod);
+        Assert.True(upstream.LastCt.IsCancellationRequested);
+        Assert.Empty(dataset.Captures);
+        var diag = Assert.Single(log.Entries, entry => entry.Message.Contains("đứt stream"));
+        Assert.Contains("idle_timeout=1s", diag.Message, StringComparison.Ordinal);
+        Assert.Equal("UpstreamTerminalTimeoutException", diag.ErrorCode);
+    }
+
+    [Fact]
     public async Task ForwardAsync_WhenUpstreamEofWithIdleDisabled_LogsAppliedIdleTimeout()
     {
         var log = new CapturingLog();

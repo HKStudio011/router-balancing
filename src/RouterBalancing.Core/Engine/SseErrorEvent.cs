@@ -81,6 +81,19 @@ internal static class SseErrorEvent
             },
         });
 
+    /// <summary>Hết grace chờ terminal mà upstream vẫn không có byte mới.</summary>
+    internal static byte[] TerminalWaitTimeout() =>
+        Frame(new
+        {
+            type = "error",
+            error = new
+            {
+                message = "Upstream did not resume or send a terminal event within the configured grace period.",
+                type = "server_error",
+                code = "timeout_waiting_for_terminal",
+            },
+        });
+
     /// <summary>
     /// Đóng nguyên payload lỗi của upstream vào event:
     /// body JSON còn key <c>error</c> → giữ nguyên, gắn <c>type:"error"</c> và
