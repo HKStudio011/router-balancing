@@ -55,3 +55,13 @@ go vet ./...
 ```
 
 Kết quả mong đợi: toàn bộ test pass, Windows build 0 warnings/errors, Go test/vet pass. Chạy independent review theo `AGENTS.md` trước khi merge. Không khẳng định rằng grace có thể làm HTTP stream chuẩn sống lại sau EOF; nó chỉ điều khiển thờigian chờ phía client và hỗ trợ nguồn non-standard có thể resume.
+
+## Verification Evidence — 2026-11-27
+
+- Full xUnit/MTP suite qua built test application: **1629/1630 succeeded, 0 failed, 1 explicit skipped**.
+- Explicit zero-grace long test: **1/1 passed in 10m 00.468s**, keep-alive và cancellation đạt yêu cầu.
+- Windows `net10.0-windows10.0.19041.0` build: **0 warnings / 0 errors**.
+- Go `go test ./...`: passed. Go `go vet ./...`: passed.
+- Focused suites đã pass cho parser, finite/infinite grace, resumed stream, handler/endpoint, dataset và event boundaries.
+- `git diff --check`: không có whitespace error.
+- Lưu ý môi trường: `dotnet test` orchestration trên long worktree path có handshake mismatch, nên verification dùng chính built MTP test application; CI vẫn phải chạy `dotnet test` trên runner sạch.

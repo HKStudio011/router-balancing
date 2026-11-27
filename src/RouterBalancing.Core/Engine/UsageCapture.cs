@@ -166,6 +166,14 @@ public static class UsageCapture
 
     private static readonly TimeSpan GracePollInterval = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// Tee SSE nguyên byte và quản lý grace sau EOF thiếu terminal: legacy khi <paramref name="gracePeriod"/>
+    /// là <see langword="null"/>, chờ vô hạn với <see cref="Timeout.InfiniteTimeSpan"/>, hoặc timeout
+    /// sau grace hữu hạn. Polling cố định 1 giây và không replay request.
+    /// </summary>
+    /// <param name="captureCompletion">Bật aggregation cho dataset; completion cụt vẫn bị loại.</param>
+    /// <param name="gracePeriod">Grace sau EOF; null = immediate-truncation behavior của caller cũ.</param>
+    /// <param name="graceClock">Clock monotonic/delay để test deadline mà không phụ thuộc wall-clock.</param>
     internal static async Task<TeeResult> TeeSseAsync(Stream source, Stream dest, CancellationToken ct,
         bool captureCompletion = false, TimeSpan? gracePeriod = null, IGraceClock? graceClock = null)
     {

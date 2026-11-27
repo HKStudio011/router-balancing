@@ -34,7 +34,10 @@ public static class SettingsKeys
     /// <summary>Đệm (base) backoff exponential cho retry transient — 250..4000 ms, mặc định 1000.</summary>
     public const string TransientBackoffBaseMs = "transientBackoffBaseMs";
 
-    /// <summary>Ngưỡng idle-read watchdog upstream — 0..3600 giây, mặc định 0 (0 = tắt watchdog).</summary>
+    /// <summary>
+    /// Ngưỡng idle-read watchdog và grace sau EOF — 0..3600 giây, mặc định 0
+    /// (0 = tắt watchdog và chờ vô hạn sau EOF; &gt;0 = grace tối đa trước timeout chờ terminal).
+    /// </summary>
     public const string UpstreamIdleTimeoutSec = "upstreamIdleTimeoutSec";
 
     /// <summary>
