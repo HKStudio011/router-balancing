@@ -904,7 +904,10 @@ public static class ProxyApp
     {
         if (buffer[index] == (byte)'\n') return 1;
         if (buffer[index] != (byte)'\r') return 0;
-        return index + 1 < buffer.Length && buffer[index + 1] == (byte)'\n' ? 2 : 1;
+        // CR cuối buffer phải chờ byte kế tiếp để phân biệt CR độc lập với CRLF;
+        // nếu flush sớm, LF ở chunk sau có thể bị drop hoặc keep-alive chen giữa CRLF.
+        if (index + 1 >= buffer.Length) return 0;
+        return buffer[index + 1] == (byte)'\n' ? 2 : 1;
     }
 
     private static void EnsurePendingWithinCap(MemoryStream pending)

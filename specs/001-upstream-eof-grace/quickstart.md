@@ -58,7 +58,7 @@ Kết quả mong đợi: toàn bộ test pass, Windows build 0 warnings/errors, 
 
 ## Verification Evidence — 2026-11-27
 
-- Full xUnit/MTP suite qua built test application: **1640/1641 succeeded, 0 failed, 1 explicit skipped**.
+- Full xUnit/MTP suite qua built test application: **1642/1643 succeeded, 0 failed, 1 explicit skipped**.
 - Explicit zero-grace long test: **1/1 passed in 10m 00.468s**, keep-alive và cancellation đạt yêu cầu.
 - Windows `net10.0-windows10.0.19041.0` build: **0 warnings / 0 errors**.
 - Go `go test ./...`: passed. Go `go vet ./...`: passed.

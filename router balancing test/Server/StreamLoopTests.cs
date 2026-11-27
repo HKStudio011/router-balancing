@@ -222,6 +222,58 @@ public class StreamLoopTests
         Assert.Equal(complete, body.ToArray());
     }
 
+    [Fact]
+    public async Task RunStreamLoop_SplitAtFinalCr_AbortedBeforeNextByte_DropsWholeFragment()
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var partial = "data: one\n\r"u8.ToArray();
+        await pipe.Writer.WriteAsync(partial);
+        await pipe.Writer.FlushAsync();
+        completion.SetResult(new DispatchOutcome.Aborted());
+
+        var (outcome, contentBytes, upstreamBytes) = await ProxyApp.RunStreamLoopAsync(
+            ctx, pipe, completion.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsType<DispatchOutcome.Aborted>(outcome);
+        Assert.Equal(0, contentBytes);
+        Assert.Equal(partial.Length, upstreamBytes);
+        Assert.Empty(body.ToArray());
+    }
+
+    [Fact]
+    public async Task RunStreamLoop_SplitAtFinalCr_KeepAliveDoesNotSplitCrLf()
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var keepAlive = ": keep-alive\n\n"u8.ToArray();
+        var fullEvent = "data: one\n\r\n"u8.ToArray();
+        await pipe.Writer.WriteAsync("data: one\n\r"u8.ToArray());
+        await pipe.Writer.FlushAsync();
+
+        var loop = ProxyApp.RunStreamLoopAsync(ctx, pipe, completion.Task);
+        await Task.Delay(TimeSpan.FromMilliseconds(5500));
+        Assert.Equal(keepAlive, body.ToArray());
+
+        await pipe.Writer.WriteAsync("\n"u8.ToArray());
+        await pipe.Writer.FlushAsync();
+        completion.SetResult(new DispatchOutcome.Aborted());
+        var (outcome, contentBytes, upstreamBytes) = await loop.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsType<DispatchOutcome.Aborted>(outcome);
+        Assert.Equal(fullEvent.Length, contentBytes);
+        Assert.Equal(fullEvent.Length, upstreamBytes);
+        Assert.Equal(keepAlive.Concat(fullEvent).ToArray(), body.ToArray());
+    }
+
     /// <summary>
     /// Client chết ở tầng write (keep-alive ném OCE) khi read còn pending → loop phải rời qua
     /// nhánh catch-abort (await completion, không deadlock không cần timeout) và trả đúng outcome.
