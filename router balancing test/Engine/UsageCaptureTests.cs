@@ -718,6 +718,23 @@ public class UsageCaptureTests
     }
 
     [Fact]
+    public async Task TeeSse_BlockingReadPastFiniteDeadline_TimesOutAndCancelsRead()
+    {
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof(TimeSpan.FromSeconds(30)));
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+                gracePeriod: TimeSpan.FromSeconds(3), graceClock: SystemGraceClock.Instance)
+            .WaitAsync(TimeSpan.FromSeconds(4));
+
+        Assert.True(result.TerminalWaitTimedOut);
+        Assert.Equal(1, source.MaxConcurrentReads);
+    }
+
+    [Fact]
     public async Task TeeSse_PreContentEof_WithInfiniteGrace_KeepsImmediateFailoverMarker()
     {
         using var source = new ResumableSseStream(ResumableSseStream.Eof());

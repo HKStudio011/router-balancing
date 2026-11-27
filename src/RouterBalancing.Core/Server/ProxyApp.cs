@@ -880,17 +880,31 @@ public static class ProxyApp
     private static int LastEventBoundaryEnd(ReadOnlySpan<byte> buffer)
     {
         var boundaryEnd = 0;
-        for (var i = 0; i < buffer.Length - 1; i++)
+        var previousEndingEnd = -1;
+        for (var i = 0; i < buffer.Length;)
         {
-            if ((buffer[i] == (byte)'\n' && buffer[i + 1] == (byte)'\n')
-                || (buffer[i] == (byte)'\r' && buffer[i + 1] == (byte)'\r'))
-                boundaryEnd = i + 2;
-            else if (i + 3 < buffer.Length
-                && buffer[i] == (byte)'\r' && buffer[i + 1] == (byte)'\n'
-                && buffer[i + 2] == (byte)'\r' && buffer[i + 3] == (byte)'\n')
-                boundaryEnd = i + 4;
+            var endingLength = LineEndingLength(buffer, i);
+            if (endingLength == 0)
+            {
+                previousEndingEnd = -1;
+                i++;
+                continue;
+            }
+
+            // Hai line ending liền nhau tạo blank line; CRLF được coi là một ending duy nhất.
+            if (previousEndingEnd == i)
+                boundaryEnd = i + endingLength;
+            i += endingLength;
+            previousEndingEnd = i;
         }
         return boundaryEnd;
+    }
+
+    private static int LineEndingLength(ReadOnlySpan<byte> buffer, int index)
+    {
+        if (buffer[index] == (byte)'\n') return 1;
+        if (buffer[index] != (byte)'\r') return 0;
+        return index + 1 < buffer.Length && buffer[index + 1] == (byte)'\n' ? 2 : 1;
     }
 
     private static void EnsurePendingWithinCap(MemoryStream pending)

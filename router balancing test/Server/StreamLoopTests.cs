@@ -139,6 +139,89 @@ public class StreamLoopTests
             TaskScheduler.Default);
     }
 
+    [Theory]
+    [InlineData("\n\n")]
+    [InlineData("\n\r")]
+    [InlineData("\n\r\n")]
+    [InlineData("\r\n")]
+    [InlineData("\r\r")]
+    [InlineData("\r\n\n")]
+    [InlineData("\r\n\r")]
+    [InlineData("\r\n\r\n")]
+    public async Task RunStreamLoop_MixedLineEndings_ForwardsCompleteEvent(string endings)
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var input = Encoding.UTF8.GetBytes("data: one" + endings);
+        await pipe.Writer.WriteAsync(input);
+        await pipe.Writer.FlushAsync();
+        completion.SetResult(new DispatchOutcome.Handled());
+
+        var (outcome, contentBytes, upstreamBytes) = await ProxyApp.RunStreamLoopAsync(
+            ctx, pipe, completion.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsType<DispatchOutcome.Handled>(outcome);
+        Assert.Equal(input.Length, contentBytes);
+        Assert.Equal(input.Length, upstreamBytes);
+        Assert.Equal(input, body.ToArray());
+    }
+
+    [Fact]
+    public async Task RunStreamLoop_MixedBoundarySplitAtEveryByte_ForwardsExactBytesOnce()
+    {
+        var input = "data: one\n\r\ndata: two\r\r\n"u8.ToArray();
+        for (var cut = 1; cut < input.Length; cut++)
+        {
+            var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+            var body = new MemoryStream();
+            ctx.Response.Body = body;
+            var pipe = new Pipe();
+            var completion = new TaskCompletionSource<DispatchOutcome>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            await pipe.Writer.WriteAsync(input[..cut]);
+            await pipe.Writer.FlushAsync();
+            await pipe.Writer.WriteAsync(input[cut..]);
+            await pipe.Writer.FlushAsync();
+            completion.SetResult(new DispatchOutcome.Handled());
+
+            var (outcome, contentBytes, upstreamBytes) = await ProxyApp.RunStreamLoopAsync(
+                ctx, pipe, completion.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.IsType<DispatchOutcome.Handled>(outcome);
+            Assert.Equal(input.Length, contentBytes);
+            Assert.Equal(input.Length, upstreamBytes);
+            Assert.Equal(input, body.ToArray());
+        }
+    }
+
+    [Fact]
+    public async Task RunStreamLoop_MixedBoundaryThenAborted_DropsOnlyNextFragment()
+    {
+        var ctx = new DefaultHttpContext { RequestAborted = CancellationToken.None };
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+        var pipe = new Pipe();
+        var completion = new TaskCompletionSource<DispatchOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var complete = "data: one\n\r\n"u8.ToArray();
+        var fragment = "data: partial"u8.ToArray();
+        await pipe.Writer.WriteAsync(complete.Concat(fragment).ToArray());
+        await pipe.Writer.FlushAsync();
+        completion.SetResult(new DispatchOutcome.Aborted());
+
+        var (outcome, contentBytes, upstreamBytes) = await ProxyApp.RunStreamLoopAsync(
+            ctx, pipe, completion.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsType<DispatchOutcome.Aborted>(outcome);
+        Assert.Equal(complete.Length, contentBytes);
+        Assert.Equal(complete.Length + fragment.Length, upstreamBytes);
+        Assert.Equal(complete, body.ToArray());
+    }
+
     /// <summary>
     /// Client chết ở tầng write (keep-alive ném OCE) khi read còn pending → loop phải rời qua
     /// nhánh catch-abort (await completion, không deadlock không cần timeout) và trả đúng outcome.

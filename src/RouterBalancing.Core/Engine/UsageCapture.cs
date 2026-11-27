@@ -220,16 +220,55 @@ public static class UsageCapture
                 }
 
                 int read;
+                CancellationTokenSource? deadlineCts = null;
+                if (graceStartedAt is { } readStarted && gracePeriod is { } finiteRead
+                    && finiteRead != Timeout.InfiniteTimeSpan)
+                {
+                    var remaining = finiteRead - graceClock.GetElapsedTime(readStarted);
+                    if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
+                    deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    deadlineCts.CancelAfter(remaining);
+                }
                 try
                 {
-                    read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                    try
+                    {
+                        read = deadlineCts is null
+                            ? await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)
+                            : await source.ReadAsync(buffer.AsMemory(0, buffer.Length), deadlineCts.Token);
+                    }
+                    catch (UpstreamIdleTimeoutException) when (DeadlineReached()
+                        && !ct.IsCancellationRequested)
+                    {
+                        // Watchdog cùng ngưỡng không được biến grace timeout thành disconnect khác.
+                        terminalWaitTimedOut = true;
+                        break;
+                    }
+                    catch (OperationCanceledException) when (DeadlineReached()
+                        && !ct.IsCancellationRequested)
+                    {
+                        terminalWaitTimedOut = true;
+                        break;
+                    }
+                    catch (Exception ex) when (!wroteAny && ex is not OperationCanceledException)
+                    {
+                        // Chết trước byte đầu tới client → marker failover/retry;
+                        // đã có byte trên wire (wroteAny) → giữ IOException gốc (mid-content không retry)
+                        throw new UpstreamDiedBeforeContentException(ex);
+                    }
                 }
-                catch (Exception ex) when (!wroteAny && ex is not OperationCanceledException)
+                finally
                 {
-                    // Chết trước byte đầu tới client → marker failover/retry;
-                    // đã có byte trên wire (wroteAny) → giữ IOException gốc (mid-content không retry)
-                    throw new UpstreamDiedBeforeContentException(ex);
+                    deadlineCts?.Dispose();
                 }
+
+                // Read hoàn thành sau deadline cũng không được revive grace hoặc forward byte trễ.
+                if (DeadlineReached())
+                {
+                    terminalWaitTimedOut = true;
+                    break;
+                }
+
                 if (read > 0)
                 {
                     // Byte mới hủy grace hiện tại; EOF sau đó bắt đầu một grace mới.
