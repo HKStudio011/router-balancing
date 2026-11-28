@@ -237,16 +237,18 @@ public static class UsageCapture
                             ? await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)
                             : await source.ReadAsync(buffer.AsMemory(0, buffer.Length), deadlineCts.Token);
                     }
-                    catch (UpstreamIdleTimeoutException) when (DeadlineReached()
-                        && !ct.IsCancellationRequested)
+                    catch (UpstreamIdleTimeoutException) when (deadlineCts is not null
+                        && deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
                     {
                         // Watchdog cùng ngưỡng không được biến grace timeout thành disconnect khác.
                         terminalWaitTimedOut = true;
                         break;
                     }
-                    catch (OperationCanceledException) when (DeadlineReached()
-                        && !ct.IsCancellationRequested)
+                    catch (OperationCanceledException) when (deadlineCts is not null
+                        && deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
                     {
+                        // Timer có thể fire vài ms trước khi elapsed-time check kịp bắt kịp;
+                        // deadline CTS là bằng chứng trực tiếp rằng grace đã hết hạn.
                         terminalWaitTimedOut = true;
                         break;
                     }

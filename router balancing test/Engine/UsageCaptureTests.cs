@@ -735,6 +735,23 @@ public class UsageCaptureTests
     }
 
     [Fact]
+    public async Task TeeSse_DeadlineCancellationBeforeClockCatchesUp_ReturnsTimeoutInsteadOfThrowing()
+    {
+        using var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Eof(TimeSpan.FromMilliseconds(50)));
+        using var dest = new MemoryStream();
+
+        var result = await UsageCapture.TeeSseAsync(source, dest, CancellationToken.None,
+                gracePeriod: TimeSpan.FromMilliseconds(1), graceClock: new StalledGraceClock())
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(result.TerminalWaitTimedOut);
+        Assert.Equal(1, source.MaxConcurrentReads);
+    }
+
+    [Fact]
     public async Task TeeSse_PreContentEof_WithInfiniteGrace_KeepsImmediateFailoverMarker()
     {
         using var source = new ResumableSseStream(ResumableSseStream.Eof());
@@ -1070,5 +1087,13 @@ public class UsageCaptureTests
 
         Assert.Null(result.Usage);   // usage hỏng bị bỏ — degrade về null như body parse lỗi
         Assert.Equal(json, Encoding.UTF8.GetString(dest));
+    }
+
+    /// <summary>Clock mô phỏng timer fire trước khi elapsed-time check kịp bắt kịp.</summary>
+    private sealed class StalledGraceClock : IGraceClock
+    {
+        public long GetTimestamp() => 0;
+        public TimeSpan GetElapsedTime(long timestamp) => TimeSpan.Zero;
+        public Task Delay(TimeSpan delay, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }
