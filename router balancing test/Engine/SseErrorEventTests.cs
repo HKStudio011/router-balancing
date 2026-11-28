@@ -89,6 +89,22 @@ public class SseErrorEventTests
     }
 
     [Fact]
+    public void TerminalWaitTimeout_ProducesDistinctErrorWithoutDone()
+    {
+        var bytes = SseErrorEvent.TerminalWaitTimeout();
+
+        const string expected =
+            "data: {\"type\":\"error\",\"error\":{\"message\":\"Upstream did not resume or send a terminal event within the configured grace period.\"," +
+            "\"type\":\"server_error\",\"code\":\"timeout_waiting_for_terminal\"}}\n\n";
+        Assert.Equal(expected, AsText(bytes));
+
+        var error = ParseEvent(bytes)["error"]!.AsObject();
+        Assert.Equal(new[] { "message", "type", "code" }, error.Select(p => p.Key).ToArray());
+        Assert.Equal("timeout_waiting_for_terminal", error["code"]!.GetValue<string>());
+        Assert.DoesNotContain("[DONE]", AsText(bytes));
+    }
+
+    [Fact]
     public void Passthrough_WhenBodyHasErrorKey_MergesTypeAndRetryAfter()
     {
         var body = Encoding.UTF8.GetBytes("""{"error":{"message":"rate limited"}}""");

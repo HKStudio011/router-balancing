@@ -45,6 +45,23 @@ internal sealed class SseDataEventParser
         return FlushEvent();
     }
 
+    /// <summary>
+    /// Nhìn event cuối như khi gặp EOF nhưng không tiêu hủy parser state, để caller có thể
+    /// quyết định chờ và tiếp tục ghép byte nếu nguồn non-standard resume sau temporary EOF.
+    /// </summary>
+    public byte[]? PeekFinish()
+    {
+        var clone = new SseDataEventParser();
+        clone._line.Write(_line.GetBuffer().AsSpan(0, (int)_line.Length));
+        if (_data is not null)
+        {
+            clone._data = new MemoryStream();
+            clone._data.Write(_data.GetBuffer().AsSpan(0, (int)_data.Length));
+        }
+        clone._pendingCr = _pendingCr;
+        return clone.Finish();
+    }
+
     private void CompleteLine(List<byte[]> events)
     {
         if (_line.Length > 0)
