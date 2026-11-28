@@ -6,8 +6,10 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RouterBalancing.Core.Dataset;
 using RouterBalancing.Core.Domain;
 using RouterBalancing.Core.Engine;
+using router_balancing_test.Engine;
 using RouterBalancing.Core.Logging;
 using RouterBalancing.Core.Security;
 using RouterBalancing.Core.Server;
@@ -121,6 +123,8 @@ public class ProxyRetryIntegrationTests : IDisposable
             get { lock (_gate) return _calls.Count; }
         }
 
+        public CancellationToken LastCt { get; private set; }
+
         /// <summary>Lịch sử gọi theo thứ tự (provider, apiKey) — assert walk thử TK/provider nào.</summary>
         public IReadOnlyList<(string Provider, string ApiKey)> Records
         {
@@ -130,6 +134,7 @@ public class ProxyRetryIntegrationTests : IDisposable
         public Task<HttpResponseMessage> PostAsync(
             Provider provider, string apiKey, string path, byte[] body, string idempotencyKey, CancellationToken ct)
         {
+            LastCt = ct;
             // Ghi TRƯỚC khi factory throw (mạng giả) — test vẫn đếm được attempt đó
             lock (_gate)
                 _calls.Add((provider.Name, apiKey));
@@ -207,15 +212,39 @@ public class ProxyRetryIntegrationTests : IDisposable
         Json($"{{\"model\":\"{model}\",\"messages\":[{{\"role\":\"user\"}}],\"stream\":true}}");
 
     // SendAsync với HttpCompletionOption.ResponseHeadersRead — PostAsync mặc định buffer toàn body sẽ treo
-    private static Task<HttpResponseMessage> SendStreamAsync(HttpClient client, string model) =>
+    private static Task<HttpResponseMessage> SendStreamAsync(HttpClient client, string model,
+        CancellationToken ct = default) =>
         client.SendAsync(new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
-            { Content = StreamChatBody(model) }, HttpCompletionOption.ResponseHeadersRead);
+            { Content = StreamChatBody(model) }, HttpCompletionOption.ResponseHeadersRead, ct);
 
     /// <summary>
     /// Content SSE giao byte (tùy chọn) rồi nổ IOException khi đọc tiếp — upstream đứt giữa stream.
     /// Đọc qua CreateContentReadStreamAsync (lazy) như BrokenSseContent: byte tới tee rồi mới nổ,
     /// không bị LoadIntoBuffer nuốt (phân loại #7/#8 phụ thuộc số byte thực forward).
     /// </summary>
+    private sealed class ResumableSseContent : HttpContent
+    {
+        private readonly ResumableSseStream _source;
+
+        public ResumableSseContent(ResumableSseStream source)
+        {
+            _source = source;
+            Headers.TryAddWithoutValidation("Content-Type", "text/event-stream");
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(_source);
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
     private sealed class ThrowingContent : HttpContent
     {
         private readonly bool _writeFirst;
@@ -622,21 +651,23 @@ public class ProxyRetryIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Stream_WhenUpstreamEndsCleanlyMidStream_EmitsInBandUpstreamLostEvent()
+    public async Task Stream_WhenTerminalWaitTimesOut_EmitsDistinctErrorWithoutDoneOrRetry()
     {
         SeedProvider("p-main", maxConcurrent: 4, "m1");
+        _settings.Set(SettingsKeys.UpstreamIdleTimeoutSec, 1);
         var upstream = new ScriptedUpstream((_, _) => SseCleanEof());
         var client = await StartAsync(upstream);
 
         var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        // EOF sạch nhưng thiếu terminal sau content vẫn là upstream cắt cụt: client phải nhận
-        // lỗi in-band để discard partial, monitor ghi network và không retry sau content.
+        // Grace hết mà vẫn không có byte mới: client nhận timeout riêng, không retry và
+        // không có terminal giả. Monitor vẫn là mid-content network failure.
         var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.StartsWith("data: {\"x\":1}\n\n", body);
-        Assert.Contains("\"code\":\"upstream_disconnected\"", body);
-        Assert.Equal(1, body.Split("\"code\":\"upstream_disconnected\"").Length - 1);
+        Assert.Contains("\"code\":\"timeout_waiting_for_terminal\"", body);
+        Assert.Equal(1, body.Split("\"code\":\"timeout_waiting_for_terminal\"").Length - 1);
+        Assert.DoesNotContain("upstream_disconnected", body);
         Assert.Contains("\"type\":\"error\"", body);
         Assert.DoesNotContain("[DONE]", body);
         Assert.DoesNotContain("finish_reason", body);
@@ -647,10 +678,96 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Equal("network", record.FailureKind);
         Assert.Equal(1, upstream.Calls);
         Assert.Contains(_messages, message => message.Contains("Stream chết sau 15 byte content")
-            && message.Contains("upstream_disconnected") && message.Contains(id));
-        Assert.Equal(1, _messages.Count(message => message.Contains("upstream_disconnected")));
-        Assert.Contains(_details, details => details.Contains("silence_gap="));
+            && message.Contains("timeout_waiting_for_terminal") && message.Contains(id));
+        Assert.Equal(1, _messages.Count(message => message.Contains("timeout_waiting_for_terminal")));
+        Assert.Contains(_details, details => details.Contains("UpstreamTerminalTimeoutException"));
         Assert.DoesNotContain("{\"x\":1}", string.Join('\n', _messages.Concat(_details)));
+    }
+
+    [Fact]
+    public async Task Stream_WithZeroGrace_KeepsAliveUntilClientCancellation()
+    {
+        SeedProvider("p-main", maxConcurrent: 4, "m1");
+        _settings.Set(SettingsKeys.UpstreamIdleTimeoutSec, 0);
+        var upstream = new ScriptedUpstream((_, _) => SseCleanEof());
+        var client = await StartAsync(upstream);
+        using var cts = new CancellationTokenSource();
+        using var resp = await SendStreamAsync(client, "m1", cts.Token)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        Assert.Equal("data: {\"x\":1}", await reader.ReadLineAsync(cts.Token));
+        Assert.Equal(string.Empty, await reader.ReadLineAsync(cts.Token));
+        var keepAlive = await reader.ReadLineAsync(cts.Token).AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(8));
+        Assert.Equal(": keep-alive", keepAlive);
+
+        stream.Dispose();
+        resp.Dispose();
+
+        var id = resp.Headers.GetValues("X-Request-Id").Single();
+        var record = await WaitForTerminalStateAsync(id, TimeSpan.FromMilliseconds(250));
+        Assert.DoesNotContain(_messages, message => message.Contains("timeout_waiting_for_terminal"));
+        Assert.Equal(ApiCallState.Cancelled, record.State);
+        Assert.True(upstream.LastCt.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task Stream_WhenBytesResumeDuringGrace_CompletesAndWritesDatasetOnce()
+    {
+        SeedProvider("p-main", maxConcurrent: 4, "m1");
+        _settings.Set(SettingsKeys.UpstreamIdleTimeoutSec, 2);
+        _settings.Set(SettingsKeys.DatasetExportEnabled, true);
+        var datasetDir = Path.Combine(Path.GetTempPath(), "rb-grace-resume-" + Guid.NewGuid().ToString("N"));
+        _settings.Set(SettingsKeys.DatasetExportPath, datasetDir);
+        var source = new ResumableSseStream(
+            ResumableSseStream.Content("data: {\"choices\":[{\"delta\":{\"content\":\"Hel"),
+            ResumableSseStream.Eof(),
+            ResumableSseStream.Content("lo\"}}]}\n\n"),
+            ResumableSseStream.Content("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"),
+            ResumableSseStream.Content("data: [DONE]\n\n"),
+            ResumableSseStream.Eof());
+        var upstream = new ScriptedUpstream((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new ResumableSseContent(source) });
+
+        try
+        {
+            var client = await StartAsync(upstream);
+            using var resp = await SendStreamAsync(client, "m1").WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+            var body = await resp.Content.ReadAsStringAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: [DONE]\n\n", body);
+            Assert.Equal(1, upstream.Calls);
+
+            var id = resp.Headers.GetValues("X-Request-Id").Single();
+            var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(id);
+            Assert.Equal(ApiCallState.Done, record!.State);
+            var sink = _app.Services.GetRequiredService<IDatasetSink>();
+            await WaitForDatasetWriteAsync(sink, TimeSpan.FromSeconds(5));
+            Assert.Equal(1, sink.Stats.RecordsWritten);
+            Assert.Equal(0, sink.Stats.SkippedTruncated);
+            var file = Assert.Single(Directory.GetFiles(datasetDir));
+            using var datasetStream = new FileStream(file, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite);
+            using var datasetReader = new StreamReader(datasetStream);
+            var lines = datasetReader.ReadToEnd().Split(
+                new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+            Assert.Single(lines);
+        }
+        finally
+        {
+            if (_app is not null)
+            {
+                await _app.DisposeAsync();
+                _app = null;
+            }
+            if (Directory.Exists(datasetDir)) Directory.Delete(datasetDir, recursive: true);
+        }
     }
 
     [Fact]
@@ -702,5 +819,29 @@ public class ProxyRetryIntegrationTests : IDisposable
         Assert.Contains("\"status\":404", body);
         Assert.Contains("The model 'nope' does not exist", body);
         Assert.DoesNotContain("[DONE]", body);
+    }
+
+    private static async Task WaitForDatasetWriteAsync(IDatasetSink sink, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (sink.Stats.RecordsWritten == 0)
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException("Dataset writer did not flush a record before the deadline.");
+            await Task.Delay(10);
+        }
+    }
+
+    private async Task<ApiCallRecord> WaitForTerminalStateAsync(string requestId, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            var record = _app!.Services.GetRequiredService<IApiMonitorStore>().Find(requestId);
+            if (record?.State == ApiCallState.Cancelled) return record;
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException("Server did not reach cancelled state before the SLA.");
+            await Task.Delay(10);
+        }
     }
 }

@@ -8,7 +8,7 @@ namespace RouterBalancing.Core.Engine;
 /// validate qua <see cref="ChatRequestValidator"/>, rewrite alias + inject
 /// <c>stream_options.include_usage</c>, tee qua <see cref="UsageCapture"/> (spec v1-responses §3.1).
 /// </summary>
-internal sealed class ChatCompletionsProtocol : IProxyProtocol
+internal sealed class ChatCompletionsProtocol : IProxyProtocol, IChatEofGraceTee
 {
     /// <inheritdoc/>
     public ProxyEndpoint Endpoint => ProxyEndpoint.Chat;
@@ -57,6 +57,11 @@ internal sealed class ChatCompletionsProtocol : IProxyProtocol
     public Task<UsageCapture.TeeResult> TeeAsync(HttpContent source, Stream dest, CancellationToken ct,
         bool captureCompletion = false) =>
         UsageCapture.TeeAsync(source, dest, ct, captureCompletion);
+
+    /// <inheritdoc/>
+    public Task<UsageCapture.TeeResult> TeeWithEofGraceAsync(HttpContent source, Stream dest,
+        TimeSpan gracePeriod, CancellationToken ct, bool captureCompletion = false) =>
+        UsageCapture.TeeWithEofGraceAsync(source, dest, gracePeriod, ct, captureCompletion);
 
     /// <inheritdoc/>
     public async Task<UsageCapture.TeeResult> AggregateSseAsync(HttpContent source, Stream dest,

@@ -8,6 +8,28 @@ using RouterBalancing.Core.Domain;
 
 namespace RouterBalancing.Core.Engine;
 
+/// <summary>Clock cho deadline/polling sau EOF; test có thể dùng deterministic implementation.</summary>
+internal interface IGraceClock
+{
+    long GetTimestamp();
+    TimeSpan GetElapsedTime(long timestamp);
+    Task Delay(TimeSpan delay, CancellationToken cancellationToken);
+}
+
+internal sealed class SystemGraceClock : IGraceClock
+{
+    public static readonly SystemGraceClock Instance = new();
+
+    private SystemGraceClock() { }
+
+    public long GetTimestamp() => Stopwatch.GetTimestamp();
+
+    public TimeSpan GetElapsedTime(long timestamp) => Stopwatch.GetElapsedTime(timestamp);
+
+    public Task Delay(TimeSpan delay, CancellationToken cancellationToken) =>
+        Task.Delay(delay, cancellationToken);
+}
+
 /// <summary>
 /// Đọc usage token từ upstream response (spec client-keys §6):
 /// (1) <see cref="WithIncludeUsage"/> chèn <c>stream_options.include_usage=true</c> cho stream OpenAI;
@@ -48,6 +70,9 @@ public static class UsageCapture
     {
         /// <summary>Khoảng lặng từ byte cuối tới EOF; chỉ có giá trị khi EOF thiếu terminal.</summary>
         public TimeSpan? LastByteGap { get; init; }
+
+        /// <summary>Hết grace hữu hạn mà upstream vẫn không có byte mới hoặc terminal.</summary>
+        public bool TerminalWaitTimedOut { get; init; }
     }
 
     /// <summary>
@@ -125,9 +150,39 @@ public static class UsageCapture
             CompletionJson: captureCompletion ? body : null);
     }
 
-    internal static async Task<TeeResult> TeeSseAsync(Stream source, Stream dest, CancellationToken ct,
-        bool captureCompletion = false)
+    /// <summary>Tee với grace sau EOF chỉ cho nhánh SSE; JSON/non-SSE dùng behavior thông thường.</summary>
+    internal static async Task<TeeResult> TeeWithEofGraceAsync(HttpContent source, Stream dest,
+        TimeSpan gracePeriod, CancellationToken ct, bool captureCompletion = false)
     {
+        if (string.Equals(source.Headers.ContentType?.MediaType, "text/event-stream",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var stream = await source.ReadAsStreamAsync(ct);
+            return await TeeSseAsync(stream, dest, ct, captureCompletion, gracePeriod);
+        }
+
+        return await TeeAsync(source, dest, ct, captureCompletion);
+    }
+
+    private static readonly TimeSpan GracePollInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Tee SSE nguyên byte và quản lý grace sau EOF thiếu terminal: legacy khi <paramref name="gracePeriod"/>
+    /// là <see langword="null"/>, chờ vô hạn với <see cref="Timeout.InfiniteTimeSpan"/>, hoặc timeout
+    /// sau grace hữu hạn. Polling cố định 1 giây và không replay request.
+    /// </summary>
+    /// <param name="captureCompletion">Bật aggregation cho dataset; completion cụt vẫn bị loại.</param>
+    /// <param name="gracePeriod">Grace sau EOF; null = immediate-truncation behavior của caller cũ.</param>
+    /// <param name="graceClock">Clock monotonic/delay để test deadline mà không phụ thuộc wall-clock.</param>
+    internal static async Task<TeeResult> TeeSseAsync(Stream source, Stream dest, CancellationToken ct,
+        bool captureCompletion = false, TimeSpan? gracePeriod = null, IGraceClock? graceClock = null)
+    {
+        if (gracePeriod is { } configured && configured != Timeout.InfiniteTimeSpan
+            && configured <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(gracePeriod),
+                "Use Timeout.InfiniteTimeSpan for an infinite grace period.");
+
+        graceClock ??= SystemGraceClock.Instance;
         var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
         var parser = new SseDataEventParser();
         long lastByteTimestamp = 0;
@@ -136,6 +191,8 @@ public static class UsageCapture
         var bodyTruncated = false;
         DateTimeOffset? firstTokenAt = null;
         var terminal = false;
+        long? graceStartedAt = null;
+        var terminalWaitTimedOut = false;
         // Budget = MaxExportFieldBytes của dataset: chạm budget thì ngừng tích lũy (Overflowed) —
         // completion bị bỏ, nhưng byte client vẫn forward nguyên vẹn (không cắt ở đây).
         var capture = captureCompletion
@@ -144,56 +201,122 @@ public static class UsageCapture
         try
         {
             var wroteAny = false;
-            int read;
             while (true)
             {
+                if (graceStartedAt is { } started)
+                {
+                    var elapsed = graceClock.GetElapsedTime(started);
+                    if (gracePeriod == Timeout.InfiniteTimeSpan)
+                    {
+                        await graceClock.Delay(GracePollInterval, ct);
+                    }
+                    else if (gracePeriod is { } finite && elapsed < finite)
+                    {
+                        var remaining = finite - elapsed;
+                        await graceClock.Delay(
+                            remaining < GracePollInterval ? remaining : GracePollInterval, ct);
+                    }
+                    ct.ThrowIfCancellationRequested();
+                }
+
+                int read;
+                CancellationTokenSource? deadlineCts = null;
+                if (graceStartedAt is { } readStarted && gracePeriod is { } finiteRead
+                    && finiteRead != Timeout.InfiniteTimeSpan)
+                {
+                    var remaining = finiteRead - graceClock.GetElapsedTime(readStarted);
+                    if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
+                    deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    deadlineCts.CancelAfter(remaining);
+                }
                 try
                 {
-                    read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                    try
+                    {
+                        read = deadlineCts is null
+                            ? await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)
+                            : await source.ReadAsync(buffer.AsMemory(0, buffer.Length), deadlineCts.Token);
+                    }
+                    catch (UpstreamIdleTimeoutException) when (deadlineCts is not null
+                        && deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                    {
+                        // Watchdog cùng ngưỡng không được biến grace timeout thành disconnect khác.
+                        terminalWaitTimedOut = true;
+                        break;
+                    }
+                    catch (OperationCanceledException) when (deadlineCts is not null
+                        && deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                    {
+                        // Timer có thể fire vài ms trước khi elapsed-time check kịp bắt kịp;
+                        // deadline CTS là bằng chứng trực tiếp rằng grace đã hết hạn.
+                        terminalWaitTimedOut = true;
+                        break;
+                    }
+                    catch (Exception ex) when (!wroteAny && ex is not OperationCanceledException)
+                    {
+                        // Chết trước byte đầu tới client → marker failover/retry;
+                        // đã có byte trên wire (wroteAny) → giữ IOException gốc (mid-content không retry)
+                        throw new UpstreamDiedBeforeContentException(ex);
+                    }
                 }
-                catch (Exception ex) when (!wroteAny && ex is not OperationCanceledException)
+                finally
                 {
-                    // Chết trước byte đầu tới client → marker failover/retry;
-                    // đã có byte trên wire (wroteAny) → giữ IOException gốc (mid-content không retry)
-                    throw new UpstreamDiedBeforeContentException(ex);
+                    deadlineCts?.Dispose();
                 }
-                if (read <= 0) break;
 
-                // TTFT phải tính tại thời điểm byte đầu tiên về — đặt ngay khi read > 0 (spec api-monitor §5)
-                firstTokenAt ??= DateTimeOffset.UtcNow;
-                lastByteTimestamp = Stopwatch.GetTimestamp();
-                // Ghi NGUYÊN chunk cho client TRƯỚC khi scan — byte-forward không đổi (spec §6.1)
-                await dest.WriteAsync(buffer.AsMemory(0, read), ct);
-                wroteAny = true;
-
-                foreach (var dataEvent in parser.HandleChunk(buffer.AsSpan(0, read)))
+                // Read hoàn thành sau deadline cũng không được revive grace hoặc forward byte trễ.
+                if (DeadlineReached())
                 {
-                    usage = ScanSseLine(dataEvent, usage, ref terminal);
-                    AppendSsePayload(dataEvent, body, ref bodyTruncated);
-                    // Gộp chung một lần/event cho dataset — chạy SAU khi chunk đã ghi dest nên
-                    // byte client luôn forward nguyên vẹn dù có lỗi parse; HandleLine chứa lại
-                    // lỗi parse (JsonException/lỗi chuyển đổi số) bằng cách bỏ chunk hỏng.
-                    capture?.HandleLine(dataEvent);
+                    terminalWaitTimedOut = true;
+                    break;
+                }
+
+                if (read > 0)
+                {
+                    // Byte mới hủy grace hiện tại; EOF sau đó bắt đầu một grace mới.
+                    graceStartedAt = null;
+                    firstTokenAt ??= DateTimeOffset.UtcNow;
+                    lastByteTimestamp = graceClock.GetTimestamp();
+                    await dest.WriteAsync(buffer.AsMemory(0, read), ct);
+                    wroteAny = true;
+                    foreach (var dataEvent in parser.HandleChunk(buffer.AsSpan(0, read)))
+                        ProcessEvent(dataEvent);
+                    continue;
+                }
+
+                if (terminal) break;
+
+                // Peek không tiêu hủy parser: tail non-terminal chưa được commit nếu còn grace.
+                var finalEvent = parser.PeekFinish();
+                if (finalEvent is not null)
+                {
+                    var tailTerminal = terminal;
+                    _ = ScanSseLine(finalEvent, usage, ref tailTerminal);
+                    if (tailTerminal || gracePeriod is null || !wroteAny)
+                        ProcessEvent(finalEvent);
+                }
+
+                if (terminal) break;
+                if (!wroteAny)
+                    throw new UpstreamDiedBeforeContentException(new UpstreamTruncatedException());
+                if (gracePeriod is null) break;
+
+                if (graceStartedAt is null)
+                {
+                    graceStartedAt = graceClock.GetTimestamp();
+                    continue;
+                }
+
+                if (DeadlineReached())
+                {
+                    terminalWaitTimedOut = true;
+                    break;
                 }
             }
-            // Event cuối có thể chưa gặp blank line — parser flush phần pending tại EOF.
-            if (parser.Finish() is { } finalEvent)
-            {
-                usage = ScanSseLine(finalEvent, usage, ref terminal);
-                AppendSsePayload(finalEvent, body, ref bodyTruncated);
-                capture?.HandleLine(finalEvent);
-            }
-            // EOF sạch (không RST/exception) nhưng thiếu dấu kết thúc hợp lệ ([DONE] hoặc
-            // finish_reason) = upstream tự đóng stream giữa chừng (vd Unsloth cancel/swap khi
-            // stream dài). Chưa có byte nào tới client → marker (retry/failover); đã có byte →
-            // tee chỉ báo cờ EndedWithoutTerminal. ProxyRequestHandler chuyển cờ thành lỗi
-            // mid-content để đường Aborted phát in-band upstream_disconnected; tee vẫn là
-            // observer và không tự quyết định error policy. Lỗi đọc thật (RST) vẫn propagate
-            // IOException như cũ.
-            // Completion chỉ tin cậy khi stream kết thúc hợp lệ VÀ không chạm budget —
-            // cụt hoặc overflow đều để builder bỏ record (không train trên completion dở dang).
+
             var completionJson = capture is { Overflowed: false } ? capture.BuildCompletionJson() : null;
-            var completionComplete = capture is null || (capture.CompletedCleanly && !capture.Overflowed);
+            var completionComplete = !terminalWaitTimedOut
+                && (capture is null || (capture.CompletedCleanly && !capture.Overflowed));
             if (!terminal)
             {
                 if (!wroteAny)
@@ -203,7 +326,8 @@ public static class UsageCapture
                     EndedWithoutTerminal: true, CompletionJson: completionJson,
                     CompletionComplete: completionComplete)
                 {
-                    LastByteGap = Stopwatch.GetElapsedTime(lastByteTimestamp),
+                    LastByteGap = graceClock.GetElapsedTime(lastByteTimestamp),
+                    TerminalWaitTimedOut = terminalWaitTimedOut,
                 };
             }
             return new TeeResult(usage, firstTokenAt, body.ToString(),
@@ -213,7 +337,20 @@ public static class UsageCapture
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+
+        void ProcessEvent(byte[] dataEvent)
+        {
+            usage = ScanSseLine(dataEvent, usage, ref terminal);
+            AppendSsePayload(dataEvent, body, ref bodyTruncated);
+            capture?.HandleLine(dataEvent);
+        }
+
+        bool DeadlineReached() => graceStartedAt is { } started
+            && gracePeriod is { } finite
+            && finite != Timeout.InfiniteTimeSpan
+            && graceClock.GetElapsedTime(started) >= finite;
     }
+
 
     // Tích payload dòng "data:" (bỏ 1 space sau ':' theo SSE spec, bỏ [DONE]) làm ResponseBody cho monitor.
     // Vượt cap thì cắt + gắn marker đúng 1 lần rồi ngừng tích — body cuối luôn ≤ cap, không phình vô hạn

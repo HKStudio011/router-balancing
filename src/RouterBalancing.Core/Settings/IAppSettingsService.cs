@@ -36,7 +36,10 @@ public interface IAppSettingsService
     /// <summary>Đệm backoff exponential (ms) cho retry transient — đọc tại thời điểm quyết định.</summary>
     int TransientBackoffBaseMs { get; }
 
-    /// <summary>Ngưỡng idle-read watchdog upstream (giây) — 0 = tắt; đọc mỗi lần bắt đầu stream.</summary>
+    /// <summary>
+    /// Ngưỡng idle-read watchdog và grace sau EOF (giây) — 0 = tắt watchdog và chờ vô hạn sau EOF;
+    /// &gt;0 áp dụng cho cả idle-read lẫn grace thiếu terminal. Đọc mỗi lần bắt đầu stream.
+    /// </summary>
     int UpstreamIdleTimeoutSec { get; }
 
     /// <summary>

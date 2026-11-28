@@ -219,10 +219,18 @@ public sealed class ProxyRequestHandler(
                         // handler KHÔNG dispose/Complete writer ở đây (spec early-headers §3.2).
                         // captureCompletion chỉ cho đường tee: aggregate không nhận tham số (spec §7.3 —
                         // completion của nó đã nằm trong ResponseBody, lấy ở khối capture bên dưới)
+                        var gracePeriod = idleSec == 0
+                            ? Timeout.InfiniteTimeSpan
+                            : TimeSpan.FromSeconds(idleSec);
                         tee = aggregate
                             ? await protocol.AggregateSseAsync(teeContent, dest, upstreamCts.Token)
-                            : await protocol.TeeAsync(teeContent, dest, upstreamCts.Token,
-                                captureCompletion: datasetOn);
+                            : protocol is IChatEofGraceTee graceful
+                                ? await graceful.TeeWithEofGraceAsync(teeContent, dest, gracePeriod,
+                                    upstreamCts.Token, captureCompletion: datasetOn)
+                                : await protocol.TeeAsync(teeContent, dest, upstreamCts.Token,
+                                    captureCompletion: datasetOn);
+                        if (tee.TerminalWaitTimedOut)
+                            throw new UpstreamTerminalTimeoutException(gracePeriod);
                         if (tee.EndedWithoutTerminal)
                             throw new UpstreamTruncatedException(tee.LastByteGap);
                     }

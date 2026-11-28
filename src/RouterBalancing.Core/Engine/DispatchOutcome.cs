@@ -14,7 +14,11 @@ public abstract record DispatchOutcome
     public sealed record Cancelled : DispatchOutcome;
 
     /// <summary>Client đã ngắt — endpoint không ghi gì (response đã đóng).</summary>
-    public sealed record Aborted : DispatchOutcome;
+    public sealed record Aborted : DispatchOutcome
+    {
+        /// <summary>Abort do hết grace chờ terminal, để endpoint chọn error code riêng.</summary>
+        public bool TerminalWaitTimedOut { get; init; }
+    }
 
     /// <summary>Lỗi cần endpoint ghi JSON lỗi OpenAI-style.</summary>
     /// <param name="Status">HTTP statuscode.</param>

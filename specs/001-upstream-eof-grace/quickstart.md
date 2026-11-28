@@ -1,0 +1,71 @@
+# Quickstart Validation: Upstream EOF Grace
+
+## Prerequisites
+
+- .NET 10 SDK và MAUI workload cho Windows build.
+- Không cần provider/API key hoặc request thật: dùng scripted resumable stream, không replay production request và không ghi prompt/response content vào log.
+- Đọc behavior contract tại [contracts/streaming-grace.md](contracts/streaming-grace.md) và state model tại [data-model.md](data-model.md).
+
+## Focused Automated Validation
+
+Từ repository root:
+
+```powershell
+dotnet test "router balancing test/router balancing test.csproj" --filter "FullyQualifiedName~SseDataEventParserTests|FullyQualifiedName~UsageCaptureTests|FullyQualifiedName~StreamLoopTests|FullyQualifiedName~ProxyRetryIntegrationTests"
+```
+
+Các nhóm kịch bản bắt buộc:
+
+1. **Finite grace:** grace 3 giây không báo lỗi sớm; vẫn EOF sau final read tại deadline → đúng một `timeout_waiting_for_terminal` trong khoảng 3,0–3,5 giây.
+2. **Zero/infinite:** không có timeout do app; client cancellation dừng timer/read trong 250ms và không có byte/lỗi tiếp theo.
+3. **Resume:** partial event nhận EOF, byte mới sau 1,5 giây rồi terminal hợp lệ → byte được ghép đúng một lần, không duplicate parser/dataset event.
+4. **Deadline rules:** EOF lặp lại không reset deadline hoặc tạo read song song; EOF sau resume bắt đầu grace mới; grace ngắn hơn 1 giây vẫn có final read tại deadline.
+5. **Legacy boundaries:** pre-content EOF vẫn failover, terminal tail hợp lệ hoàn tất ngay, transport exception giữ nguyên, Responses/non-stream/JSON behavior không đổi.
+6. **Framing:** keep-alive chỉ ở boundary; timeout bỏ pending fragment trước error; `upstreamBytes` và `contentBytes` đúng; không có `[DONE]` giả.
+7. **Dataset:** grace timeout/client abort giữ completion incomplete và không ghi record; resume có terminal thật mới được phép capture đầy đủ.
+8. **Terminal regressions:** giữ các case exact `[DONE]`, split across network chunks, multiline `[DO\nNE]`, second-choice finish và complete tail không blank line.
+
+## Long-Running Zero Validation
+
+Chạy kịch bản explicit với grace vô hạn ở event boundary, giữ stream ít nhất 10 phút:
+
+- Không có timeout do app.
+- Keep-alive tiếp tục mỗi 5 giây ±1 giây.
+- Không có read song song và không quay vòng CPU.
+- Hủy client ở cuối; toàn bộ wait/read dừng trong 250ms.
+
+Test này là explicit long test, không nằm trong suite mặc định. Command filter chính xác sẽ trỏ tới test `TeeSse_ZeroGrace_TenMinutes_RemainsActiveUntilClientCancellation` sau khi task tạo fixture.
+
+```powershell
+dotnet test "router balancing test/router balancing test.csproj" -- --explicit only --filter-method "*TeeSse_ZeroGrace_TenMinutes_RemainsActiveUntilClientCancellation"
+```
+
+## Full Verification
+
+```powershell
+dotnet test "router balancing test/router balancing test.csproj"
+dotnet build "router-balancing/router-balancing.csproj" -f net10.0-windows10.0.19041.0 --no-restore
+```
+
+Trong `sidecar/opencode-proxy`:
+
+```powershell
+go test ./...
+go vet ./...
+```
+
+Kết quả mong đợi: toàn bộ test pass, Windows build 0 warnings/errors, Go test/vet pass. Chạy independent review theo `AGENTS.md` trước khi merge. Không khẳng định rằng grace có thể làm HTTP stream chuẩn sống lại sau EOF; nó chỉ điều khiển thờigian chờ phía client và hỗ trợ nguồn non-standard có thể resume.
+
+## Verification Evidence — 2026-11-27
+
+- Full xUnit/MTP suite qua built test application: **1643/1644 succeeded, 0 failed, 1 explicit skipped**.
+- Explicit zero-grace long test: **1/1 passed in 10m 00.468s**, keep-alive và cancellation đạt yêu cầu.
+- Windows `net10.0-windows10.0.19041.0` build: **0 warnings / 0 errors**.
+- Go `go test ./...`: passed. Go `go vet ./...`: passed.
+- Focused suites đã pass cho parser, finite/infinite grace, resumed stream, handler/endpoint, dataset và event boundaries.
+- `git diff --check`: không có whitespace error.
+- Whole-branch review tìm thấy 2 blockers: blocking grace read không bị deadline giới hạn và mixed CR/LF boundaries bị bỏ sót. Cả hai đã được sửa bằng deadline-aware read và incremental line-ending scanner; regression tests mới đều pass trong full suite.
+- Scoped re-review phát hiện thêm trailing-CR race; scanner hiện defer CR cuối buffer cho tới khi byte kế tiếp phân biệt CR/CRLF. Verdict cuối: **Resolved, không còn Critical/Important issue**.
+- Deferred minors: caller cancellation đồng thởi với completed-read deadline và graceful tail write ngoài drain exception protection. Không thuộc hai blockers đã sửa và đã được ghi nhận cho follow-up riêng.
+- Spec Kit convergence: 20/20 requirements/outcomes, 12/12 plan decisions; không còn missing/partial/contradicts/unrequested finding.
+- Lưu ý môi trường: `dotnet test` orchestration trên long worktree path có handshake mismatch, nên verification dùng chính built MTP test application; CI vẫn phải chạy `dotnet test` trên runner sạch.
